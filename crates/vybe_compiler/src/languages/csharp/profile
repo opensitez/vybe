@@ -40,34 +40,21 @@ multi_value_tuple_returns = true
 "Console.Write"           = { emit = "common:dotnet.console_writeline", min_args = 1, max_args = 1 }
 "Console.ReadLine"        = { emit = "host:wasi:cli:readLine",    min_args = 0, max_args = 0 }
 "Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
+"Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
+"__csharp_object_get"     = { emit = "host:ecma:object:get",      min_args = 2, max_args = 2 }
 
-# ── Math — WASM opcodes ─────────────────────────────────────────────────────
-
+# ── Math — shorthand (C# `using System;` makes Math available) ──────────────
 "Math.Abs"          = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
-"System.Math.Abs"   = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
 "Math.Floor"        = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
-"System.Math.Floor" = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
 "Math.Ceiling"      = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
-"System.Math.Ceiling" = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
 "Math.Ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
-"System.Math.Ceil"  = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
 "Math.Sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
-"System.Math.Sqrt"  = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
 "Math.Truncate"     = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
-"System.Math.Truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
 "Math.Trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
-"System.Math.Trunc" = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
 "Math.Round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
-"System.Math.Round" = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
 "Math.Min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
-"System.Math.Min"   = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
 "Math.Max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
-"System.Math.Max"   = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
-
-# ── Math — host calls ───────────────────────────────────────────────────────
-
 "Math.Pow"          = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
-"System.Math.Pow"   = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
 "Math.Sin"          = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
 "Math.Cos"          = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
 "Math.Tan"          = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
@@ -77,6 +64,7 @@ multi_value_tuple_returns = true
 "Math.Atan2"        = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
 "Math.Log"          = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
 "Math.Log10"        = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
+"Math.Log2"         = { emit = "host:ecma:math:log2",     min_args = 1, max_args = 1 }
 "Math.Exp"          = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
 "Math.Sinh"         = { emit = "host:ecma:math:sinh",     min_args = 1, max_args = 1 }
 "Math.Cosh"         = { emit = "host:ecma:math:cosh",     min_args = 1, max_args = 1 }
@@ -267,6 +255,7 @@ SelectMany         = { emit = "common:dotnet.linq_select_many",           min_ar
 ToDictionary       = { emit = "common:dotnet.linq_to_dictionary",         min_args = 2, max_args = 2 }
 Zip                = { emit = "common:dotnet.linq_zip",                   min_args = 2, max_args = 2 }
 AddRange           = { emit = "common:dotnet.list_add_range",             min_args = 1, max_args = 1 }
+EntriesSorted      = { emit = "common:dotnet.sorted_dictionary_entries",  min_args = 0, max_args = 0 }
 
 # Dictionary methods
 ContainsKey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
@@ -394,6 +383,7 @@ ConvertAll = "__array_map"
 [namespace_constants]
 "Math.PI"               = 3.141592653589793
 "Math.E"                = 2.718281828459045
+"Math.Tau"              = 6.283185307179586
 "int.MaxValue"          = 2147483647
 "int.MinValue"          = -2147483648
 "double.MaxValue"       = 1.7976931348623157e308

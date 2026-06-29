@@ -121,11 +121,14 @@ class_member = {
 // binary `a + b` form back via the same canonical name when both
 // operands are class instances.
 operator_declaration = {
-    type_name ~ "operator" ~ operator_symbol ~ "(" ~ param_list? ~ ")" ~
+    ((conversion_operator_kind ~ "operator" ~ type_name) | (type_name ~ "operator" ~ operator_symbol)) ~
+        "(" ~ param_list? ~ ")" ~
         (block_statement | expression_body)
 }
+conversion_operator_kind = { "implicit" | "explicit" }
 operator_symbol = @{
-    "==" | "!=" | "<=" | ">=" | "<<" | ">>"
+    "==" | "!=" | "<=" | ">=" | "<<" | ">>" | "++" | "--"
+    | "true" | "false"
     | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^"
     | "~" | "!" | "<" | ">"
 }
@@ -222,13 +225,21 @@ interface_declaration = {
 interface_body = { "{" ~ interface_member* ~ "}" }
 
 interface_member = {
-    type_name ~ (
+    class_modifiers ~ (
+        interface_operator_declaration
+        | type_name ~ (
         ident_name ~ (
-            "(" ~ param_list? ~ ")" ~ ";"                         // method
+            generic_params? ~ "(" ~ param_list? ~ ")" ~ where_clauses? ~ ";" // method
             | "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"       // property
         )
         | "this" ~ "[" ~ param_list ~ "]" ~ "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"
+        )
     )
+}
+
+interface_operator_declaration = {
+    ((conversion_operator_kind ~ "operator" ~ type_name) | (type_name ~ "operator" ~ operator_symbol)) ~
+        "(" ~ param_list? ~ ")" ~ ";"
 }
 
 // ── Enum ────────────────────────────────────────────────────────────────────
@@ -647,6 +658,11 @@ call_expression = {
 }
 
 new_expression = {
+    // C# 9 target-typed new: `new()` / `new() { ... }`. The walker
+    // normalizes the initializer shape; the declaration's type hint
+    // supplies the target type downstream.
+    new_kw ~ "(" ~ argument_list? ~ ")" ~ (object_initializer | array_initializer)?
+    |
     // C# 3+ implicit-typed array creation: `new[] { 1, 2 }`. The
     // element type is inferred from the initializer.
     new_kw ~ "[" ~ "]" ~ array_initializer
@@ -736,6 +752,7 @@ argument = {
 primary = {
     tuple_literal                    // (a, b, c) — must come before paren_expr
     | "(" ~ expression ~ ")"           // parenthesized
+    | collection_expression
     | typeof_expression
     | nameof_expression
     | default_expression
@@ -755,6 +772,12 @@ primary = {
     | global_qualified_name
     | ident_name
 }
+
+// C# 12 collection expression: `[1, 2, ..items]`. Target typing is
+// handled in the walker/normalizer; the expression shape here is the
+// common JS-style array literal with spread elements.
+collection_expression = { "[" ~ (collection_expression_element ~ ("," ~ collection_expression_element)*)? ~ ","? ~ "]" }
+collection_expression_element = { ".." ~ expression | expression }
 
 generic_type_expr = { base_type ~ generic_type_args }
 

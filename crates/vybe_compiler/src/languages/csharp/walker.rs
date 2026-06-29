@@ -93,6 +93,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_record_uses(&mut module);
     rewrite_tuple_uses(&mut module);
     rewrite_extension_calls(&mut module);
+    rewrite_linked_list_node_uses(&mut module.body);
+    rewrite_sorted_dictionary_foreach(&mut module.body);
+    rewrite_user_defined_operator_calls(&mut module);
     Ok(module)
 }
 
@@ -295,6 +298,7 @@ fn parse_explicit_interface_runtime_name(name: &str) -> Option<(String, String)>
 fn strip_global_namespace_qualifier(name: &str) -> &str {
     name.strip_prefix("global::").unwrap_or(name)
 }
+
 
 fn extract_explicit_interface_name(pair: Pair<Rule>) -> String {
     strip_global_namespace_qualifier(pair.as_str())
@@ -2286,10 +2290,7 @@ fn lower_csharp_using_declarations(body: &mut Vec<Statement>) {
     }
 }
 
-fn visit_csharp_stmt_lists_for_using(
-    kind: &mut StmtKind,
-    visit: fn(&mut Vec<Statement>),
-) {
+fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Statement>)) {
     match kind {
         StmtKind::Block(body)
         | StmtKind::NamespaceDecl { body, .. }
@@ -2380,11 +2381,7 @@ fn visit_csharp_stmt_lists_for_using(
     }
 }
 
-fn lower_one_csharp_using(
-    var: &str,
-    resource: Expression,
-    tail: Vec<Statement>,
-) -> Vec<Statement> {
+fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>) -> Vec<Statement> {
     let decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(var.to_string()),
@@ -2440,6 +2437,407 @@ fn rewrite_set_algebra_bool_calls(body: &mut [Statement]) {
     for stmt in body.iter_mut() {
         rewrite_set_algebra_bool_calls_in_stmt(stmt);
     }
+}
+
+#[derive(Clone)]
+struct LinkedListNodeAlias {
+    list: Expression,
+    index: Expression,
+}
+
+fn rewrite_linked_list_node_uses(body: &mut [Statement]) {
+    let mut aliases = HashMap::new();
+    rewrite_linked_list_node_uses_in_body(body, &mut aliases);
+}
+
+fn rewrite_sorted_dictionary_foreach(body: &mut [Statement]) {
+    let mut sorted_dicts = HashSet::new();
+    rewrite_sorted_dictionary_foreach_in_body(body, &mut sorted_dicts);
+}
+
+fn rewrite_sorted_dictionary_foreach_in_body(
+    body: &mut [Statement],
+    sorted_dicts: &mut HashSet<String>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if decl
+                            .type_hint
+                            .as_deref()
+                            .map(|hint| hint.to_ascii_lowercase().contains("sorteddictionary"))
+                            .unwrap_or(false)
+                        {
+                            sorted_dicts.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            StmtKind::ForIn { iter, body, .. } => {
+                if let ExprKind::Ident(name) = &iter.kind {
+                    if sorted_dicts.contains(name) {
+                        *iter = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(name)),
+                                field: "EntriesSorted".into(),
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        });
+                    }
+                }
+                let mut scoped = sorted_dicts.clone();
+                rewrite_sorted_dictionary_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                let mut scoped = sorted_dicts.clone();
+                rewrite_sorted_dictionary_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut scoped = HashSet::new();
+                rewrite_sorted_dictionary_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                let mut scoped = sorted_dicts.clone();
+                rewrite_sorted_dictionary_foreach_in_body(then_body, &mut scoped);
+                for (_, elif_body) in elifs {
+                    let mut scoped = sorted_dicts.clone();
+                    rewrite_sorted_dictionary_foreach_in_body(elif_body, &mut scoped);
+                }
+                if let Some(else_body) = else_body {
+                    let mut scoped = sorted_dicts.clone();
+                    rewrite_sorted_dictionary_foreach_in_body(else_body, &mut scoped);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_linked_list_node_uses_in_body(
+    body: &mut [Statement],
+    aliases: &mut HashMap<String, LinkedListNodeAlias>,
+) {
+    for stmt in body {
+        rewrite_linked_list_node_uses_in_stmt(stmt, aliases);
+    }
+}
+
+fn rewrite_linked_list_node_uses_in_stmt(
+    stmt: &mut Statement,
+    aliases: &mut HashMap<String, LinkedListNodeAlias>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_linked_list_node_uses_in_expr(init, aliases);
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if let Some(alias) = linked_list_alias_from_call(init) {
+                            aliases.insert(name.clone(), alias);
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_linked_list_node_uses_in_expr(expr, aliases);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = aliases.clone();
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            let mut scoped = HashMap::new();
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_linked_list_node_uses_in_expr(cond, aliases);
+            let mut then_aliases = aliases.clone();
+            rewrite_linked_list_node_uses_in_body(then_body, &mut then_aliases);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_linked_list_node_uses_in_expr(elif_cond, aliases);
+                let mut elif_aliases = aliases.clone();
+                rewrite_linked_list_node_uses_in_body(elif_body, &mut elif_aliases);
+            }
+            if let Some(else_body) = else_body {
+                let mut else_aliases = aliases.clone();
+                rewrite_linked_list_node_uses_in_body(else_body, &mut else_aliases);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = aliases.clone();
+            if let Some(init) = init {
+                rewrite_linked_list_node_uses_in_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_linked_list_node_uses_in_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_linked_list_node_uses_in_expr(update, &scoped);
+            }
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_linked_list_node_uses_in_expr(iter, aliases);
+            let mut scoped = aliases.clone();
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+            if let Some(else_body) = else_body {
+                rewrite_linked_list_node_uses_in_body(else_body, &mut scoped);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_linked_list_node_uses_in_expr(cond, aliases);
+            let mut scoped = aliases.clone();
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+            if let Some(else_body) = else_body {
+                rewrite_linked_list_node_uses_in_body(else_body, &mut scoped);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = aliases.clone();
+            rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+            rewrite_linked_list_node_uses_in_expr(cond, &scoped);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        let mut scoped = HashMap::new();
+                        rewrite_linked_list_node_uses_in_stmt(stmt, &mut scoped);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        let mut scoped = HashMap::new();
+                        rewrite_linked_list_node_uses_in_body(body, &mut scoped);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_linked_list_node_uses_in_expr(
+    expr: &mut Expression,
+    aliases: &HashMap<String, LinkedListNodeAlias>,
+) {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            rewrite_linked_list_node_uses_in_expr(object, aliases);
+            if field.eq_ignore_ascii_case("Value") {
+                if let Some(alias) = linked_list_node_alias_for_expr(object, aliases) {
+                    expr.kind = ExprKind::Index {
+                        object: Box::new(alias.list),
+                        index: Box::new(alias.index),
+                        null_safe: false,
+                    };
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_linked_list_node_uses_in_expr(&mut arg.value, aliases);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("AddAfter") && args.len() == 2 {
+                    if let Some(alias) = linked_list_node_alias_for_expr(&args[0].value, aliases) {
+                        expr.kind = linked_list_insert_call(
+                            (**object).clone(),
+                            Expression::new(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(alias.index),
+                                right: Box::new(Expression::int(1)),
+                            }),
+                            args[1].value.clone(),
+                        )
+                        .kind;
+                        return;
+                    }
+                }
+                if field.eq_ignore_ascii_case("AddBefore") && args.len() == 2 {
+                    if let Some(alias) = linked_list_node_alias_for_expr(&args[0].value, aliases) {
+                        expr.kind = linked_list_insert_call(
+                            (**object).clone(),
+                            alias.index,
+                            args[1].value.clone(),
+                        )
+                        .kind;
+                        return;
+                    }
+                }
+                if field.eq_ignore_ascii_case("Remove") && args.len() == 1 {
+                    if let Some(alias) = linked_list_node_alias_for_expr(&args[0].value, aliases) {
+                        expr.kind = linked_list_remove_at_call((**object).clone(), alias.index).kind;
+                        return;
+                    }
+                }
+                if field.eq_ignore_ascii_case("RemoveFirst") && args.is_empty() {
+                    expr.kind = linked_list_remove_at_call((**object).clone(), Expression::int(0)).kind;
+                    return;
+                }
+                if field.eq_ignore_ascii_case("RemoveLast") && args.is_empty() {
+                    expr.kind = linked_list_remove_at_call(
+                        (**object).clone(),
+                        Expression::new(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
+                            right: Box::new(Expression::int(1)),
+                        }),
+                    )
+                    .kind;
+                    return;
+                }
+            }
+            rewrite_linked_list_node_uses_in_expr(callee, aliases);
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_linked_list_node_uses_in_expr(left, aliases);
+            rewrite_linked_list_node_uses_in_expr(right, aliases);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_linked_list_node_uses_in_expr(object, aliases);
+            rewrite_linked_list_node_uses_in_expr(index, aliases);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_linked_list_node_uses_in_expr(&mut item.value, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn linked_list_alias_from_call(expr: &Expression) -> Option<LinkedListNodeAlias> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field.eq_ignore_ascii_case("AddFirst") {
+        return Some(LinkedListNodeAlias {
+            list: (**object).clone(),
+            index: Expression::int(0),
+        });
+    }
+    if field.eq_ignore_ascii_case("AddLast") {
+        return Some(LinkedListNodeAlias {
+            list: (**object).clone(),
+            index: Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
+                right: Box::new(Expression::int(1)),
+            }),
+        });
+    }
+    if field.eq_ignore_ascii_case("Find") && args.len() == 1 {
+        return Some(LinkedListNodeAlias {
+            list: (**object).clone(),
+            index: Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new((**object).clone()),
+                    field: "IndexOf".into(),
+                    null_safe: false,
+                })),
+                args: vec![args[0].clone()],
+                optional: false,
+            }),
+        });
+    }
+    None
+}
+
+fn linked_list_node_alias_for_expr(
+    expr: &Expression,
+    aliases: &HashMap<String, LinkedListNodeAlias>,
+) -> Option<LinkedListNodeAlias> {
+    if let ExprKind::Ident(name) = &expr.kind {
+        return aliases.get(name).cloned();
+    }
+    if let Some((list, index)) = linked_list_node_index_expr(expr) {
+        return Some(LinkedListNodeAlias { list, index });
+    }
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Next") => {
+            let alias = linked_list_node_alias_for_expr(object, aliases)?;
+            Some(LinkedListNodeAlias {
+                list: alias.list,
+                index: Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(alias.index),
+                    right: Box::new(Expression::int(1)),
+                }),
+            })
+        }
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Previous") => {
+            let alias = linked_list_node_alias_for_expr(object, aliases)?;
+            Some(LinkedListNodeAlias {
+                list: alias.list,
+                index: Expression::new(ExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: Box::new(alias.index),
+                    right: Box::new(Expression::int(1)),
+                }),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn linked_list_insert_call(list: Expression, index: Expression, value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(list),
+            field: "InsertAtRaw".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(index), Argument::positional(value)],
+        optional: false,
+    })
+}
+
+fn linked_list_remove_at_call(list: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(list),
+            field: "RemoveAt".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(index)],
+        optional: false,
+    })
 }
 
 fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
@@ -2505,7 +2903,13 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
                 rewrite_set_algebra_bool_calls(else_body);
             }
         }
-        StmtKind::For { init, cond, update, body, .. } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
             if let Some(init) = init {
                 rewrite_set_algebra_bool_calls_in_stmt(init);
             }
@@ -2571,7 +2975,12 @@ fn rewrite_set_algebra_bool_calls_in_stmt(stmt: &mut Statement) {
                 rewrite_set_algebra_bool_calls(finally);
             }
         }
-        StmtKind::Switch { expr, cases, default, .. } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
             rewrite_set_algebra_bool_calls_in_expr(expr);
             for case in cases {
                 rewrite_set_algebra_bool_calls(&mut case.body);
@@ -2649,7 +3058,10 @@ fn rewrite_set_algebra_bool_calls_in_expr(expr: &mut Expression) {
         | ExprKind::Delete(inner) => rewrite_set_algebra_bool_calls_in_expr(inner),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
-        | ExprKind::Assign { target: left, value: right } => {
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        } => {
             rewrite_set_algebra_bool_calls_in_expr(left);
             rewrite_set_algebra_bool_calls_in_expr(right);
         }
@@ -4677,6 +5089,738 @@ fn infer_csharp_foreach_element_type(iter: &Expression) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct CSharpOperatorInfo {
+    return_type: Option<String>,
+}
+
+type CSharpOperatorTable = HashMap<String, HashMap<String, CSharpOperatorInfo>>;
+
+fn rewrite_user_defined_operator_calls(module: &mut Module) {
+    let operators = collect_csharp_operator_methods(&module.body);
+    let mut scopes = vec![HashMap::new()];
+    rewrite_user_defined_operator_calls_in_statements(&mut module.body, &operators, &mut scopes);
+}
+
+fn collect_csharp_operator_methods(body: &[Statement]) -> CSharpOperatorTable {
+    let mut operators = HashMap::new();
+    for stmt in body {
+        collect_csharp_operator_methods_in_statement(stmt, &mut operators);
+    }
+    operators
+}
+
+fn collect_csharp_operator_methods_in_statement(
+    stmt: &Statement,
+    operators: &mut CSharpOperatorTable,
+) {
+    match &stmt.kind {
+        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                collect_csharp_operator_methods_in_statement(stmt, operators);
+            }
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            collect_csharp_operator_methods_in_members(name, members, operators);
+        }
+        StmtKind::ModuleDecl { name, members, .. } => {
+            collect_csharp_operator_methods_in_members(name, members, operators);
+        }
+        StmtKind::EnumDecl {
+            name, body_members, ..
+        } => collect_csharp_operator_methods_in_members(name, body_members, operators),
+        _ => {}
+    }
+}
+
+fn collect_csharp_operator_methods_in_members(
+    type_name: &str,
+    members: &[ClassMember],
+    operators: &mut CSharpOperatorTable,
+) {
+    let type_key = csharp_type_key(type_name);
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    return_type,
+                    modifiers,
+                    ..
+                } = &stmt.kind
+                {
+                    if modifiers.is_static && name.starts_with("op_") {
+                        operators.entry(type_key.clone()).or_default().insert(
+                            name.clone(),
+                            CSharpOperatorInfo {
+                                return_type: return_type.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+            ClassMember::NestedType(stmt) => collect_csharp_operator_methods_in_statement(stmt, operators),
+            _ => {}
+        }
+    }
+}
+
+fn csharp_type_key(type_name: &str) -> String {
+    normalize_runtime_type_name(type_name)
+        .trim_end_matches('?')
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .to_string()
+}
+
+fn csharp_operator_info<'a>(
+    operators: &'a CSharpOperatorTable,
+    type_name: &str,
+    method: &str,
+) -> Option<&'a CSharpOperatorInfo> {
+    operators.get(&csharp_type_key(type_name))?.get(method)
+}
+
+fn build_csharp_operator_static_call(
+    type_name: &str,
+    method: &str,
+    args: Vec<Expression>,
+    span: Span,
+    return_type: Option<&str>,
+) -> Expression {
+    let call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::ident(&csharp_type_key(type_name))),
+                    field: method.into(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        },
+        span.clone(),
+    );
+    if return_type
+        .map(|type_name| normalize_runtime_type_name(type_name).eq_ignore_ascii_case("bool"))
+        .unwrap_or(false)
+    {
+        materialize_csharp_bool_expr(call)
+    } else {
+        call
+    }
+}
+
+fn rewrite_csharp_implicit_conversion(
+    expr: &mut Expression,
+    target_type: &str,
+    operators: &CSharpOperatorTable,
+    scopes: &[HashMap<String, String>],
+) -> Option<String> {
+    let source_type = infer_csharp_expr_type(expr, operators, scopes);
+    if source_type
+        .as_deref()
+        .map(|source| csharp_type_key(source) == csharp_type_key(target_type))
+        .unwrap_or(false)
+    {
+        return source_type;
+    }
+    let method = format!("op_Implicit{}", csharp_operator_type_suffix(target_type));
+    let dispatch_type = if csharp_operator_info(operators, target_type, &method).is_some() {
+        Some(target_type.to_string())
+    } else {
+        source_type
+            .as_deref()
+            .filter(|source| csharp_operator_info(operators, source, &method).is_some())
+            .map(ToString::to_string)
+    }?;
+    let return_type = csharp_operator_info(operators, &dispatch_type, &method)
+        .and_then(|info| info.return_type.clone())
+        .or_else(|| Some(target_type.to_string()));
+    let span = expr.span.clone();
+    let value = expr.clone();
+    *expr = build_csharp_operator_static_call(
+        &dispatch_type,
+        &method,
+        vec![value],
+        span,
+        return_type.as_deref(),
+    );
+    return_type
+}
+
+fn rewrite_user_defined_operator_calls_in_members(
+    type_name: &str,
+    members: &mut [ClassMember],
+    operators: &CSharpOperatorTable,
+) {
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { params, body, .. } = &mut stmt.kind {
+                    let mut scopes = vec![HashMap::new()];
+                    scopes.last_mut().unwrap().insert("this".into(), type_name.into());
+                    for param in params {
+                        if let Some(type_hint) = &param.type_hint {
+                            scopes
+                                .last_mut()
+                                .unwrap()
+                                .insert(param.name.clone(), type_hint.clone());
+                        }
+                    }
+                    rewrite_user_defined_operator_calls_in_statements(body, operators, &mut scopes);
+                }
+            }
+            ClassMember::Constructor { params, body, .. } => {
+                let mut scopes = vec![HashMap::new()];
+                scopes.last_mut().unwrap().insert("this".into(), type_name.into());
+                for param in params {
+                    if let Some(type_hint) = &param.type_hint {
+                        scopes
+                            .last_mut()
+                            .unwrap()
+                            .insert(param.name.clone(), type_hint.clone());
+                    }
+                }
+                rewrite_user_defined_operator_calls_in_statements(body, operators, &mut scopes);
+            }
+            ClassMember::Field { init: Some(init), .. } | ClassMember::Const { value: init, .. } => {
+                let mut scopes = vec![HashMap::new()];
+                rewrite_user_defined_operator_expr(init, operators, &mut scopes);
+            }
+            ClassMember::Property { getter, setter, .. } => {
+                if let Some(getter) = getter {
+                    let mut scopes = vec![HashMap::new()];
+                    rewrite_user_defined_operator_calls_in_statements(getter, operators, &mut scopes);
+                }
+                if let Some(setter) = setter {
+                    let mut scopes = vec![HashMap::new()];
+                    scopes.last_mut().unwrap().insert(
+                        setter.param.name.clone(),
+                        setter.param.type_hint.clone().unwrap_or_else(|| "object".into()),
+                    );
+                    rewrite_user_defined_operator_calls_in_statements(
+                        &mut setter.body,
+                        operators,
+                        &mut scopes,
+                    );
+                }
+            }
+            ClassMember::NestedType(stmt) => {
+                rewrite_user_defined_operator_calls_in_statement(stmt, operators, &mut vec![HashMap::new()]);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_user_defined_operator_calls_in_statements(
+    body: &mut [Statement],
+    operators: &CSharpOperatorTable,
+    scopes: &mut Vec<HashMap<String, String>>,
+) {
+    for stmt in body {
+        rewrite_user_defined_operator_calls_in_statement(stmt, operators, scopes);
+    }
+}
+
+fn rewrite_user_defined_operator_calls_in_statement(
+    stmt: &mut Statement,
+    operators: &CSharpOperatorTable,
+    scopes: &mut Vec<HashMap<String, String>>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => {
+            rewrite_user_defined_operator_expr(expr, operators, scopes);
+        }
+        StmtKind::Block(body) => {
+            scopes.push(HashMap::new());
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            scopes.pop();
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_user_defined_operator_expr(init, operators, scopes);
+                    if let Some(target_type) = decl.type_hint.as_deref() {
+                        rewrite_csharp_implicit_conversion(init, target_type, operators, scopes);
+                    }
+                }
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    let inferred = decl
+                        .type_hint
+                        .clone()
+                        .or_else(|| decl.init.as_ref().and_then(|e| infer_csharp_expr_type(e, operators, scopes)));
+                    if let Some(type_name) = inferred {
+                        scopes.last_mut().unwrap().insert(name.clone(), type_name);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            scopes.push(HashMap::new());
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(param.name.clone(), type_hint.clone());
+                }
+            }
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            scopes.pop();
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            rewrite_user_defined_operator_calls_in_members(name, members, operators);
+        }
+        StmtKind::ModuleDecl { name, members, .. } => {
+            rewrite_user_defined_operator_calls_in_members(name, members, operators);
+        }
+        StmtKind::EnumDecl {
+            name, body_members, ..
+        } => rewrite_user_defined_operator_calls_in_members(name, body_members, operators),
+        StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_user_defined_operator_expr(cond, operators, scopes);
+            scopes.push(HashMap::new());
+            rewrite_user_defined_operator_calls_in_statements(then_body, operators, scopes);
+            scopes.pop();
+            for (elif_cond, elif_body) in elifs {
+                rewrite_user_defined_operator_expr(elif_cond, operators, scopes);
+                scopes.push(HashMap::new());
+                rewrite_user_defined_operator_calls_in_statements(elif_body, operators, scopes);
+                scopes.pop();
+            }
+            if let Some(else_body) = else_body {
+                scopes.push(HashMap::new());
+                rewrite_user_defined_operator_calls_in_statements(else_body, operators, scopes);
+                scopes.pop();
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            scopes.push(HashMap::new());
+            if let Some(init) = init {
+                rewrite_user_defined_operator_calls_in_statement(init, operators, scopes);
+            }
+            if let Some(cond) = cond {
+                rewrite_user_defined_operator_expr(cond, operators, scopes);
+            }
+            if let Some(update) = update {
+                rewrite_user_defined_operator_expr(update, operators, scopes);
+            }
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            scopes.pop();
+        }
+        StmtKind::ForIn {
+            var,
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_user_defined_operator_expr(iter, operators, scopes);
+            scopes.push(HashMap::new());
+            if let Some(element_type) = infer_csharp_foreach_element_type(iter) {
+                scopes.last_mut().unwrap().insert(var.clone(), element_type);
+            }
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            scopes.pop();
+            if let Some(else_body) = else_body {
+                rewrite_user_defined_operator_calls_in_statements(else_body, operators, scopes);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_user_defined_operator_expr(cond, operators, scopes);
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            if let Some(else_body) = else_body {
+                rewrite_user_defined_operator_calls_in_statements(else_body, operators, scopes);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            rewrite_user_defined_operator_expr(cond, operators, scopes);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_user_defined_operator_expr(expr, operators, scopes);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(cond)
+                        | CaseCondition::Comparison { expr: cond, .. } => {
+                            rewrite_user_defined_operator_expr(cond, operators, scopes);
+                        }
+                        CaseCondition::Range { from, to } => {
+                            rewrite_user_defined_operator_expr(from, operators, scopes);
+                            rewrite_user_defined_operator_expr(to, operators, scopes);
+                        }
+                    }
+                }
+                rewrite_user_defined_operator_calls_in_statements(&mut case.body, operators, scopes);
+            }
+            if let Some(default) = default {
+                rewrite_user_defined_operator_calls_in_statements(default, operators, scopes);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+            for catch in catches {
+                rewrite_user_defined_operator_calls_in_statements(&mut catch.body, operators, scopes);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_user_defined_operator_calls_in_statements(else_body, operators, scopes);
+            }
+            if let Some(finally) = finally {
+                rewrite_user_defined_operator_calls_in_statements(finally, operators, scopes);
+            }
+        }
+        StmtKind::Using { resource, body, .. } | StmtKind::Lock { expr: resource, body } => {
+            rewrite_user_defined_operator_expr(resource, operators, scopes);
+            rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+        }
+        StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_user_defined_operator_expr(expr, operators, scopes);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_user_defined_operator_expr(target, operators, scopes);
+            }
+            rewrite_user_defined_operator_expr(value, operators, scopes);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_user_defined_operator_expr(target, operators, scopes);
+            rewrite_user_defined_operator_expr(value, operators, scopes);
+        }
+        StmtKind::AddHandler {
+            control, handler, ..
+        }
+        | StmtKind::RemoveHandler {
+            control, handler, ..
+        } => {
+            rewrite_user_defined_operator_expr(control, operators, scopes);
+            rewrite_user_defined_operator_expr(handler, operators, scopes);
+        }
+        StmtKind::RaiseEvent { args, .. }
+        | StmtKind::PrintFile { items: args, .. }
+        | StmtKind::WriteFile { items: args, .. } => {
+            for arg in args {
+                rewrite_user_defined_operator_expr(arg, operators, scopes);
+            }
+        }
+        StmtKind::Delete(exprs) => {
+            for expr in exprs {
+                rewrite_user_defined_operator_expr(expr, operators, scopes);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_user_defined_operator_expr(
+    expr: &mut Expression,
+    operators: &CSharpOperatorTable,
+    scopes: &mut Vec<HashMap<String, String>>,
+) -> Option<String> {
+    match &mut expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            let left_type = rewrite_user_defined_operator_expr(left, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(left, operators, scopes));
+            let right_type = rewrite_user_defined_operator_expr(right, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(right, operators, scopes));
+            if let Some(method) = csharp_binary_operator_method_name(*op) {
+                let dispatch_type = left_type
+                    .as_deref()
+                    .filter(|type_name| csharp_operator_info(operators, type_name, method).is_some())
+                    .or_else(|| {
+                        right_type
+                            .as_deref()
+                            .filter(|type_name| csharp_operator_info(operators, type_name, method).is_some())
+                    });
+                if let Some(type_name) = dispatch_type {
+                    let return_type = csharp_operator_info(operators, type_name, method)
+                        .and_then(|info| info.return_type.clone());
+                    let span = expr.span.clone();
+                    *expr = build_csharp_operator_static_call(
+                        type_name,
+                        method,
+                        vec![(**left).clone(), (**right).clone()],
+                        span,
+                        return_type.as_deref(),
+                    );
+                    return return_type;
+                }
+            }
+            if csharp_builtin_bool_binary_op(*op) {
+                let span = expr.span.clone();
+                let bool_expr = Expression::with_span(
+                    ExprKind::Binary {
+                        op: *op,
+                        left: Box::new((**left).clone()),
+                        right: Box::new((**right).clone()),
+                    },
+                    span,
+                );
+                *expr = materialize_csharp_bool_expr(bool_expr);
+                return Some("bool".into());
+            }
+            None
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let operand_type = rewrite_user_defined_operator_expr(inner, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(inner, operators, scopes));
+            if let (Some(method), Some(type_name)) =
+                (csharp_unary_operator_method_name(*op), operand_type.as_deref())
+            {
+                if let Some(info) = csharp_operator_info(operators, type_name, method) {
+                    let return_type = info.return_type.clone();
+                    let span = expr.span.clone();
+                    *expr = build_csharp_operator_static_call(
+                        type_name,
+                        method,
+                        vec![(**inner).clone()],
+                        span,
+                        return_type.as_deref(),
+                    );
+                    return return_type;
+                }
+            }
+            if matches!(op, UnaryOp::Not) {
+                let span = expr.span.clone();
+                let bool_expr = Expression::with_span(
+                    ExprKind::Unary {
+                        op: *op,
+                        expr: Box::new((**inner).clone()),
+                    },
+                    span,
+                );
+                *expr = materialize_csharp_bool_expr(bool_expr);
+                return Some("bool".into());
+            }
+            None
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_user_defined_operator_expr(callee, operators, scopes);
+            for arg in args {
+                rewrite_user_defined_operator_expr(&mut arg.value, operators, scopes);
+            }
+            infer_csharp_expr_type(expr, operators, scopes)
+        }
+        ExprKind::New { class: _, args } => {
+            for arg in args {
+                rewrite_user_defined_operator_expr(&mut arg.value, operators, scopes);
+            }
+            infer_csharp_expr_type(expr, operators, scopes)
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_user_defined_operator_expr(object, operators, scopes);
+            infer_csharp_expr_type(expr, operators, scopes)
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_user_defined_operator_expr(object, operators, scopes);
+            rewrite_user_defined_operator_expr(index, operators, scopes);
+            None
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_user_defined_operator_expr(target, operators, scopes);
+            rewrite_user_defined_operator_expr(value, operators, scopes)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_user_defined_operator_expr(cond, operators, scopes);
+            let then_type = rewrite_user_defined_operator_expr(then, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(then, operators, scopes));
+            let else_type = rewrite_user_defined_operator_expr(else_, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(else_, operators, scopes));
+            if then_type == else_type { then_type } else { None }
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            scopes.push(HashMap::new());
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(param.name.clone(), type_hint.clone());
+                }
+            }
+            match body {
+                LambdaBody::Expr(lambda_expr) => {
+                    rewrite_user_defined_operator_expr(lambda_expr, operators, scopes);
+                }
+                LambdaBody::Block(body) => {
+                    rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
+                }
+            }
+            scopes.pop();
+            None
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                rewrite_user_defined_operator_expr(&mut element.value, operators, scopes);
+            }
+            infer_csharp_expr_type(expr, operators, scopes)
+        }
+        ExprKind::Tuple(elements) | ExprKind::Set(elements) => {
+            for element in elements {
+                rewrite_user_defined_operator_expr(element, operators, scopes);
+            }
+            None
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_user_defined_operator_expr(key, operators, scopes);
+                        rewrite_user_defined_operator_expr(value, operators, scopes);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_user_defined_operator_expr(value, operators, scopes);
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        rewrite_user_defined_operator_expr(key, operators, scopes);
+                        rewrite_user_defined_operator_expr(value, operators, scopes);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_user_defined_operator_calls_in_statement(
+                            value,
+                            operators,
+                            &mut vec![HashMap::new()],
+                        );
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+            None
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(part_expr) = part {
+                    rewrite_user_defined_operator_expr(part_expr, operators, scopes);
+                }
+            }
+            None
+        }
+        ExprKind::Cast { expr: inner, type_name } => {
+            rewrite_user_defined_operator_expr(inner, operators, scopes);
+            let method = format!("op_Explicit{}", csharp_operator_type_suffix(type_name));
+            let source_type = infer_csharp_expr_type(inner, operators, scopes);
+            let dispatch_type = if csharp_operator_info(operators, type_name, &method).is_some() {
+                Some(type_name.clone())
+            } else {
+                source_type
+                    .as_deref()
+                    .filter(|source| csharp_operator_info(operators, source, &method).is_some())
+                    .map(ToString::to_string)
+            };
+            if let Some(dispatch_type) = dispatch_type {
+                if let Some(info) = csharp_operator_info(operators, &dispatch_type, &method) {
+                    let return_type = info.return_type.clone().or_else(|| Some(type_name.clone()));
+                    let span = expr.span.clone();
+                    *expr = build_csharp_operator_static_call(
+                        &dispatch_type,
+                        &method,
+                        vec![(**inner).clone()],
+                        span,
+                        return_type.as_deref(),
+                    );
+                    return return_type;
+                }
+            }
+            Some(type_name.clone())
+        }
+        ExprKind::IsType { expr: inner, .. }
+        => {
+            rewrite_user_defined_operator_expr(inner, operators, scopes);
+            let span = expr.span.clone();
+            let bool_expr = expr.clone();
+            *expr = materialize_csharp_bool_expr(Expression::with_span(bool_expr.kind, span));
+            Some("bool".into())
+        }
+        ExprKind::TypeOf(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Spread(inner)
+        | ExprKind::RefLoad(inner) => {
+            rewrite_user_defined_operator_expr(inner, operators, scopes);
+            infer_csharp_expr_type(expr, operators, scopes)
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            let left_type = rewrite_user_defined_operator_expr(left, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(left, operators, scopes));
+            rewrite_user_defined_operator_expr(right, operators, scopes);
+            left_type
+        }
+        ExprKind::Yield(Some(inner)) => {
+            rewrite_user_defined_operator_expr(inner, operators, scopes);
+            None
+        }
+        _ => infer_csharp_expr_type(expr, operators, scopes),
+    }
+}
+
+fn infer_csharp_expr_type(
+    expr: &Expression,
+    operators: &CSharpOperatorTable,
+    scopes: &[HashMap<String, String>],
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned()),
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.starts_with("op_") {
+                    if let Some(type_name) = infer_csharp_expr_type(object, operators, scopes) {
+                        return csharp_operator_info(operators, &type_name, field)
+                            .and_then(|info| info.return_type.clone());
+                    }
+                    if let ExprKind::Ident(type_name) = &object.kind {
+                        return csharp_operator_info(operators, type_name, field)
+                            .and_then(|info| info.return_type.clone());
+                    }
+                }
+            }
+            infer_csharp_type_from_expr(expr)
+        }
+        ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        _ => infer_csharp_type_from_expr(expr),
+    }
+}
+
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
@@ -4993,7 +6137,10 @@ fn disambiguate_explicit_property_backing_fields(members: &mut [ClassMember]) {
 
     let mut renames: HashMap<String, String> = HashMap::new();
     for member in members.iter() {
-        if let ClassMember::Field { name, modifiers, .. } = member {
+        if let ClassMember::Field {
+            name, modifiers, ..
+        } = member
+        {
             if modifiers.is_static {
                 continue;
             }
@@ -5026,7 +6173,9 @@ fn rewrite_property_backing_field_idents_in_member(
     renames: &HashMap<String, String>,
 ) {
     match member {
-        ClassMember::Field { init, array_bounds, .. } => {
+        ClassMember::Field {
+            init, array_bounds, ..
+        } => {
             if let Some(init) = init {
                 rewrite_property_backing_field_idents_in_expr(init, renames);
             }
@@ -6791,28 +7940,115 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
 /// canonical method name (`op_Addition`, `op_Equality`, …). Used by
 /// the operator-overload walker so the method can be located via the
 /// same name C# ABI emits.
-fn operator_method_name(symbol: &str) -> &'static str {
-    match symbol {
-        "+" => "op_Addition",
-        "-" => "op_Subtraction",
-        "*" => "op_Multiply",
-        "/" => "op_Division",
-        "%" => "op_Modulus",
-        "==" => "op_Equality",
-        "!=" => "op_Inequality",
-        "<" => "op_LessThan",
-        ">" => "op_GreaterThan",
-        "<=" => "op_LessThanOrEqual",
-        ">=" => "op_GreaterThanOrEqual",
-        "&" => "op_BitwiseAnd",
-        "|" => "op_BitwiseOr",
-        "^" => "op_ExclusiveOr",
-        "<<" => "op_LeftShift",
-        ">>" => "op_RightShift",
-        "~" => "op_OnesComplement",
-        "!" => "op_LogicalNot",
+fn operator_method_name(symbol: &str, arity: usize) -> &'static str {
+    match (symbol, arity) {
+        ("+", 1) => "op_UnaryPlus",
+        ("-", 1) => "op_UnaryNegation",
+        ("++", 1) => "op_Increment",
+        ("--", 1) => "op_Decrement",
+        ("true", 1) => "op_True",
+        ("false", 1) => "op_False",
+        ("~", 1) => "op_OnesComplement",
+        ("!", 1) => "op_LogicalNot",
+        ("+", _) => "op_Addition",
+        ("-", _) => "op_Subtraction",
+        ("*", _) => "op_Multiply",
+        ("/", _) => "op_Division",
+        ("%", _) => "op_Modulus",
+        ("==", _) => "op_Equality",
+        ("!=", _) => "op_Inequality",
+        ("<", _) => "op_LessThan",
+        (">", _) => "op_GreaterThan",
+        ("<=", _) => "op_LessThanOrEqual",
+        (">=", _) => "op_GreaterThanOrEqual",
+        ("&", _) => "op_BitwiseAnd",
+        ("|", _) => "op_BitwiseOr",
+        ("^", _) => "op_ExclusiveOr",
+        ("<<", _) => "op_LeftShift",
+        (">>", _) => "op_RightShift",
         _ => "op_Unknown",
     }
+}
+
+fn conversion_operator_method_name(keyword: &str, return_type: Option<&str>) -> Option<String> {
+    let op = match keyword {
+        "implicit" => "op_Implicit",
+        "explicit" => "op_Explicit",
+        _ => return None,
+    };
+    let suffix = return_type.map(csharp_operator_type_suffix).unwrap_or_default();
+    Some(format!("{op}{suffix}"))
+}
+
+fn csharp_operator_type_suffix(type_name: &str) -> String {
+    normalize_runtime_type_name(type_name)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn csharp_binary_operator_method_name(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("op_Addition"),
+        BinOp::Sub => Some("op_Subtraction"),
+        BinOp::Mul => Some("op_Multiply"),
+        BinOp::Div => Some("op_Division"),
+        BinOp::Mod => Some("op_Modulus"),
+        BinOp::Eq => Some("op_Equality"),
+        BinOp::NotEq => Some("op_Inequality"),
+        BinOp::Lt => Some("op_LessThan"),
+        BinOp::Gt => Some("op_GreaterThan"),
+        BinOp::LtEq => Some("op_LessThanOrEqual"),
+        BinOp::GtEq => Some("op_GreaterThanOrEqual"),
+        BinOp::BitAnd => Some("op_BitwiseAnd"),
+        BinOp::BitOr => Some("op_BitwiseOr"),
+        BinOp::BitXor => Some("op_ExclusiveOr"),
+        BinOp::Shl => Some("op_LeftShift"),
+        BinOp::Shr => Some("op_RightShift"),
+        _ => None,
+    }
+}
+
+fn csharp_unary_operator_method_name(op: UnaryOp) -> Option<&'static str> {
+    match op {
+        UnaryOp::Neg => Some("op_UnaryNegation"),
+        UnaryOp::Pos => Some("op_UnaryPlus"),
+        UnaryOp::Not => Some("op_LogicalNot"),
+        UnaryOp::BitNot => Some("op_OnesComplement"),
+        UnaryOp::PreInc | UnaryOp::PostInc => Some("op_Increment"),
+        UnaryOp::PreDec | UnaryOp::PostDec => Some("op_Decrement"),
+        _ => None,
+    }
+}
+
+fn csharp_builtin_bool_binary_op(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::StrictEq
+            | BinOp::StrictNotEq
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::LtEq
+            | BinOp::GtEq
+            | BinOp::And
+            | BinOp::Or
+            | BinOp::Is
+            | BinOp::IsNot
+    )
+}
+
+fn materialize_csharp_bool_expr(expr: Expression) -> Expression {
+    let span = expr.span.clone();
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(expr),
+            then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+        },
+        span,
+    )
 }
 
 /// Walk an `operator_declaration`. Lowers to a static method named
@@ -6821,12 +8057,14 @@ fn operator_method_name(symbol: &str) -> &'static str {
 fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
     mods.is_static = true;
     let mut return_type = None;
+    let mut conversion_kind = None;
     let mut symbol = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => return_type = Some(p.as_str().to_string()),
+            Rule::conversion_operator_kind => conversion_kind = Some(p.as_str().to_string()),
             Rule::operator_symbol => symbol = p.as_str().trim().to_string(),
             Rule::param_list => params = walk_params(p)?,
             Rule::block_statement => body = walk_body(p)?,
@@ -6840,7 +8078,10 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
             _ => {}
         }
     }
-    let name = operator_method_name(&symbol).to_string();
+    let name = conversion_kind
+        .as_deref()
+        .and_then(|kind| conversion_operator_method_name(kind, return_type.as_deref()))
+        .unwrap_or_else(|| operator_method_name(&symbol, params.len()).to_string());
     let is_sub = return_type.as_deref() == Some("void");
     let is_generator = body_has_yield(&body);
     Ok(ClassMember::Method(Box::new(Statement::new(
@@ -7272,6 +8513,10 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::class_modifiers => {}
+            Rule::interface_operator_declaration => {
+                return walk_interface_operator_member(p);
+            }
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
             Rule::param_list => {
@@ -7311,6 +8556,36 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
             is_writeonly: !has_getter && has_setter,
         })
     }
+}
+
+fn walk_interface_operator_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
+    let mut return_type = None;
+    let mut conversion_kind = None;
+    let mut symbol = String::new();
+    let mut params = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::type_name => return_type = Some(p.as_str().to_string()),
+            Rule::conversion_operator_kind => conversion_kind = Some(p.as_str().to_string()),
+            Rule::operator_symbol => symbol = p.as_str().trim().to_string(),
+            Rule::param_list => params = walk_params(p)?,
+            _ => {}
+        }
+    }
+
+    let name = conversion_kind
+        .as_deref()
+        .and_then(|kind| conversion_operator_method_name(kind, return_type.as_deref()))
+        .unwrap_or_else(|| operator_method_name(&symbol, params.len()).to_string());
+    let is_sub = return_type.as_deref() == Some("void");
+    Ok(InterfaceMember::Method {
+        name,
+        params,
+        return_type,
+        is_sub,
+        signature_source: None,
+    })
 }
 
 // ── Enum ────────────────────────────────────────────────────────────────────
@@ -7921,7 +9196,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
             let entry_object = Expression::new(ExprKind::Object(vec![
                 ObjectProperty::KeyValue {
-                    key: Expression::string("key"),
+                    key: Expression::string("Key"),
                     value: Expression::new(ExprKind::Index {
                         object: Box::new(Expression::ident(&source_var)),
                         index: Box::new(Expression::int(0)),
@@ -7929,7 +9204,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }),
                 },
                 ObjectProperty::KeyValue {
-                    key: Expression::string("value"),
+                    key: Expression::string("Value"),
                     value: Expression::new(ExprKind::Index {
                         object: Box::new(Expression::ident(&source_var)),
                         index: Box::new(Expression::int(1)),
@@ -9202,28 +10477,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let cast_type_pair = inner.remove(0);
             let type_name = normalize_runtime_type_name(cast_type_pair.as_str());
             let operand = walk_expression(inner.remove(0))?;
-            let convert_method = match type_name.as_str() {
-                "float" | "double" | "decimal" => Some("float"),
-                "string" => Some("tostring"),
-                "char" => None,
-                _ => None,
-            };
-            let span = operand.span.clone();
-            if let Some(convert_name) = convert_method {
-                Ok(ExprKind::Call {
-                    callee: Box::new(Expression::with_span(
-                        ExprKind::Ident(convert_name.into()),
-                        span.clone(),
-                    )),
-                    args: vec![Argument::positional(operand)],
-                    optional: false,
-                })
-            } else {
-                Ok(ExprKind::Cast {
-                    expr: Box::new(operand),
-                    type_name,
-                })
-            }
+            Ok(ExprKind::Cast {
+                expr: Box::new(operand),
+                type_name,
+            })
         }
 
         // Postfix
@@ -9259,6 +10516,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::primary => {
             let inner = pair.into_inner().next().ok_or("Empty primary")?;
             walk_expr_kind(inner)
+        }
+
+        Rule::collection_expression => {
+            let span = to_span(&pair);
+            let elements = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::collection_expression_element)
+                .map(walk_collection_expression_element)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expression::with_span(ExprKind::Array(elements), span).kind)
         }
 
         // typeof(Type) → push the .NET FullName as a string. Matches
@@ -11617,6 +12884,20 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
     walk_expression(pair)
 }
 
+fn walk_collection_expression_element(pair: Pair<Rule>) -> Result<ArrayElement, String> {
+    let spread = pair.as_str().trim_start().starts_with("..");
+    let expr_pair = pair
+        .into_inner()
+        .next()
+        .ok_or_else(|| "collection expression element missing expression".to_string())?;
+    Ok(ArrayElement {
+        key: None,
+        value: walk_expression(expr_pair)?,
+        spread,
+        by_ref: false,
+    })
+}
+
 /// Map a C# primitive type name to its `typeof` result string in JS,
 /// or `None` if the type is a user class. `string`, `int`, etc. lower
 /// to typeof tests because JS values don't carry a `__type` slot.
@@ -11775,6 +13056,59 @@ fn unquote(s: &str) -> String {
 /// `arr.Length` → `Call(__len__, [arr])`
 /// `list.Count` → `Call(__len__, [list])`
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
+    // Resolve System.Math.PI / System.Math.E / System.Math.Tau at walk time
+    if let Some(path) = expr_dotted_name(&object) {
+        let full = format!("{}.{}", path, name);
+        match full.as_str() {
+            "System.Math.PI" => return Expression::float(std::f64::consts::PI),
+            "System.Math.E" => return Expression::float(std::f64::consts::E),
+            "System.Math.Tau" => return Expression::float(std::f64::consts::TAU),
+            _ => {}
+        }
+    }
+    if matches!(
+        name,
+        "Year"
+            | "Month"
+            | "Day"
+            | "Hour"
+            | "Minute"
+            | "Second"
+            | "DayOfWeek"
+            | "Date"
+            | "TimeOfDay"
+            | "Ticks"
+            | "Kind"
+            | "TotalMilliseconds"
+            | "TotalSeconds"
+            | "TotalMinutes"
+            | "TotalHours"
+            | "TotalDays"
+            | "Days"
+            | "Hours"
+            | "Minutes"
+            | "Seconds"
+    ) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__csharp_object_get")),
+            args: vec![
+                Argument::positional(object),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(name.to_string())))),
+            ],
+            optional: false,
+        });
+    }
+
+    if name.eq_ignore_ascii_case("Value") {
+        if let Some((list, index)) = linked_list_node_index_expr(&object) {
+            return Expression::new(ExprKind::Index {
+                object: Box::new(list),
+                index: Box::new(index),
+                null_safe: false,
+            });
+        }
+    }
+
     if let Some(path) = expr_dotted_name(&object) {
         let normalized = path.trim();
         if (normalized.eq_ignore_ascii_case("StringComparer")
@@ -11806,6 +13140,40 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 "__dotnet_comparer_default".into(),
             )));
         }
+        if (normalized.eq_ignore_ascii_case("DateTime")
+            || normalized.eq_ignore_ascii_case("System.DateTime"))
+            && matches!(name, "Now" | "UtcNow" | "Today")
+        {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(object),
+                    field: name.to_string(),
+                    null_safe: false,
+                })),
+                args: vec![],
+                optional: false,
+            });
+        }
+        if (normalized.eq_ignore_ascii_case("TimeSpan")
+            || normalized.eq_ignore_ascii_case("System.TimeSpan"))
+            && name.eq_ignore_ascii_case("Zero")
+        {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(object),
+                    field: name.to_string(),
+                    null_safe: false,
+                })),
+                args: vec![],
+                optional: false,
+            });
+        }
+        if (normalized.eq_ignore_ascii_case("DateTimeKind")
+            || normalized.eq_ignore_ascii_case("System.DateTimeKind"))
+            && matches!(name, "Utc" | "Local" | "Unspecified")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(name.to_string())));
+        }
     }
 
     // typeof(T) emits a string literal `"System.<Name>"`. Resolve
@@ -11829,7 +13197,7 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     // unwrap to the ternary directly. Standalone `expr.GetType()` (no
     // chained access) is left alone — its result is unused in any
     // current test path.
-    if name == "Name" || name == "FullName" {
+    if name == "Name" || name == "FullName" || name == "IsArray" {
         if let ExprKind::Call { callee, args, .. } = &object.kind {
             if args.is_empty() {
                 if let ExprKind::Member {
@@ -11839,6 +13207,17 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 } = &callee.kind
                 {
                     if field == "GetType" {
+                        if name == "IsArray" {
+                            return Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::ident("Array")),
+                                    field: "isArray".into(),
+                                    null_safe: false,
+                                })),
+                                args: vec![Argument::positional((**receiver).clone())],
+                                optional: false,
+                            });
+                        }
                         let short = dotnet_runtime_type_name_expr((**receiver).clone());
                         if name == "Name" {
                             return short;
@@ -11897,6 +13276,47 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     }
 }
 
+fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Expression)> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("First") => {
+            Some(((**object).clone(), Expression::int(0)))
+        }
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Last") => {
+            Some((
+                (**object).clone(),
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: Box::new(canonicalize_member_access((**object).clone(), "Length")),
+                    right: Box::new(Expression::int(1)),
+                }),
+            ))
+        }
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Next") => {
+            let (list, index) = linked_list_node_index_expr(object)?;
+            Some((
+                list,
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(index),
+                    right: Box::new(Expression::int(1)),
+                }),
+            ))
+        }
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Previous") => {
+            let (list, index) = linked_list_node_index_expr(object)?;
+            Some((
+                list,
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: Box::new(index),
+                    right: Box::new(Expression::int(1)),
+                }),
+            ))
+        }
+        _ => None,
+    }
+}
+
 // C# method call canonicalization is intentionally minimal:
 // Methods like .ToString() may be overridden on user classes, so we leave them as
 // regular method calls and let the compiler dispatch via the class method binding.
@@ -11925,6 +13345,24 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             if let Some(dimension) = try_csharp_usize_literal(&args[0].value) {
                 return build_csharp_get_length_expr((**object).clone(), dimension);
             }
+        }
+        if field.eq_ignore_ascii_case("AsReadOnly") && args.is_empty() {
+            return (**object).clone();
+        }
+        if field.eq_ignore_ascii_case("AddYears") && args.len() == 1 {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new((**object).clone()),
+                    field: "AddMonths".into(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(args[0].value.clone()),
+                    right: Box::new(Expression::int(12)),
+                }))],
+                optional: false,
+            });
         }
         if field.eq_ignore_ascii_case("CopyTo")
             && args.len() == 2
@@ -12119,6 +13557,17 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             }
         }
         if let Some(path) = expr_dotted_name(object) {
+            if (path.eq_ignore_ascii_case("Enumerable")
+                || path.eq_ignore_ascii_case("System.Linq.Enumerable"))
+                && field.eq_ignore_ascii_case("Count")
+                && args.len() == 1
+            {
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(args[0].value.clone()),
+                    field: "Length".into(),
+                    null_safe: false,
+                });
+            }
             if (path.eq_ignore_ascii_case("string") || path.eq_ignore_ascii_case("System.String"))
                 && field.eq_ignore_ascii_case("Compare")
                 && (args.len() == 2 || args.len() == 3)
@@ -12148,9 +13597,16 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             {
                 let sep = args[0].value.clone();
                 let arr = args[1].value.clone();
+                // Wrap in [...arr] to materialize generators/iterators
+                let materialized = Expression::new(ExprKind::Array(vec![ArrayElement {
+                    key: None,
+                    spread: true,
+                    by_ref: false,
+                    value: arr,
+                }]));
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(arr),
+                        object: Box::new(materialized),
                         field: "join".to_string(),
                         null_safe: false,
                     })),
@@ -12252,9 +13708,15 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             {
                 let sep = args[0].value.clone();
                 let arr = args[1].value.clone();
+                let materialized = Expression::new(ExprKind::Array(vec![ArrayElement {
+                    key: None,
+                    spread: true,
+                    by_ref: false,
+                    value: arr,
+                }]));
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(arr),
+                        object: Box::new(materialized),
                         field: "join".to_string(),
                         null_safe: false,
                     })),
