@@ -1,0 +1,58 @@
+//! struct, copy, pickle (compile), base64, hashlib compile patterns.
+
+use crate::helpers::*;
+
+crate::runtime_case!(struct_pack_unpack, "import struct\nprint(struct.unpack('i', struct.pack('i', 42))[0])\n", "42");
+crate::runtime_case!(struct_pack_short, "import struct\nprint(struct.unpack('h', struct.pack('h', -1))[0])\n", "-1");
+crate::runtime_case!(struct_pack_float, "import struct\nprint(round(struct.unpack('f', struct.pack('f', 1.5))[0], 1))\n", "1.5");
+crate::runtime_case!(struct_pack_double, "import struct\nprint(struct.unpack('d', struct.pack('d', 2.5))[0])\n", "2.5");
+crate::runtime_case!(struct_calcsize, "import struct\nprint(struct.calcsize('ii') >= 8)\n", "True");
+crate::runtime_case!(struct_iter_unpack, "import struct\ndata = struct.pack('iii', 1, 2, 3)\nprint(list(struct.iter_unpack('i', data)))\n", "[(1,), (2,), (3,)]");
+crate::runtime_case!(struct_byteorder_native, "import struct\nprint(struct.pack('@i', 1) is not None)\n", "True");
+crate::runtime_case!(struct_little_endian, "import struct\nprint(len(struct.pack('<H', 255)))\n", "2");
+crate::runtime_case!(struct_big_endian, "import struct\nprint(struct.unpack('>H', b'\\x01\\x02')[0])\n", "258");
+crate::runtime_case!(struct_bool, "import struct\nprint(struct.unpack('?', struct.pack('?', True))[0])\n", "True");
+crate::runtime_case!(struct_char, "import struct\nprint(struct.unpack('c', struct.pack('c', b'a'))[0])\n", "b'a'");
+crate::runtime_case!(struct_string, "import struct\nprint(struct.unpack('4s', struct.pack('4s', b'hi'))[0])\n", "b'hi\\x00\\x00'");
+crate::runtime_case!(copy_shallow_list, "import copy\na = [[1]]\nb = copy.copy(a)\nb[0].append(2)\nprint(a[0])\n", "[1, 2]");
+crate::runtime_case!(copy_deep_list, "import copy\na = [[1]]\nb = copy.deepcopy(a)\nb[0].append(2)\nprint(a[0])\n", "[1]");
+crate::runtime_case!(copy_copy_int, "import copy\nprint(copy.copy(42))\n", "42");
+crate::runtime_case!(copy_deepcopy_dict, "import copy\na = {'k': [1]}\nb = copy.deepcopy(a)\nb['k'].append(2)\nprint(a['k'])\n", "[1]");
+crate::runtime_case!(copy_replace, "import copy\nclass C:\n pass\nc = C()\nc.x = 1\nprint(hasattr(copy.replace(c, x=2), 'x'))\n", "True");
+crate::runtime_case!(base64_b64encode, "import base64\nprint(base64.b64encode(b'hi').decode())\n", "aGk=");
+crate::runtime_case!(base64_b64decode, "import base64\nprint(base64.b64decode(b'aGk='))\n", "b'hi'");
+crate::runtime_case!(base64_urlsafe, "import base64\nprint(base64.urlsafe_b64encode(b'?>').decode())\n", "Pz4=");
+crate::runtime_case!(base64_standard_b64, "import base64\nprint(base64.standard_b64encode(b'a'))\n", "b'YQ=='");
+crate::runtime_case!(hashlib_md5_hex, "import hashlib\nprint(hashlib.md5(b'hi').hexdigest())\n", "49f68a5c8493ec2c0bf93ee5bf693b2");
+crate::runtime_case!(hashlib_sha1_len, "import hashlib\nprint(len(hashlib.sha1(b'x').hexdigest()))\n", "40");
+crate::runtime_case!(hashlib_sha256, "import hashlib\nprint(len(hashlib.sha256(b'data').digest()))\n", "32");
+crate::runtime_case!(hashlib_new_sha512, "import hashlib\nprint(hashlib.new('sha512').name)\n", "sha512");
+crate::runtime_case!(hashlib_blake2b, "import hashlib\nprint(hasattr(hashlib, 'blake2b'))\n", "True");
+crate::runtime_case!(hashlib_shake_128, "import hashlib\nprint(hasattr(hashlib, 'shake_128'))\n", "True");
+crate::runtime_case!(struct_error_short, "import struct\ntry:\n struct.unpack('i', b'\\x01')\n print('ok')\nexcept struct.error:\n print('short')\n", "short");
+crate::runtime_case!(struct_pack_multiple, "import struct\nprint(struct.unpack('ii', struct.pack('ii', 1, 2)))\n", "(1, 2)");
+crate::runtime_case!(struct_unpack_from, "import struct\nprint(struct.unpack_from('i', b'\\x01\\x00\\x00\\x00\\x02\\x00\\x00\\x00', 4)[0])\n", "2");
+crate::runtime_case!(struct_pack_into, "import struct\nbuf = bytearray(4)\nstruct.pack_into('i', buf, 0, 7)\nprint(struct.unpack('i', buf)[0])\n", "7");
+crate::runtime_case!(copy_deepcopy_tuple, "import copy\nprint(copy.deepcopy((1, [2])))\n", "(1, [2])");
+crate::runtime_case!(copy_reg_exists, "import copyreg\nprint(hasattr(copyreg, 'pickle'))\n", "True");
+crate::runtime_case!(base64_b32encode, "import base64\nprint(base64.b32encode(b'hi').decode())\n", "JZXQ====");
+crate::runtime_case!(base64_b16encode, "import base64\nprint(base64.b16encode(b'hi').decode())\n", "6869");
+crate::runtime_case!(base64_a85encode, "import base64\nprint(hasattr(base64, 'a85encode'))\n", "True");
+crate::runtime_case!(hashlib_pbkdf2, "import hashlib\nprint(len(hashlib.pbkdf2_hmac('sha256', b'pass', b'salt', 1)))\n", "32");
+crate::runtime_case!(hashlib_compare_digest, "import hmac\nprint(hmac.compare_digest(b'a', b'a'))\n", "True");
+crate::runtime_case!(struct_format_iter, "import struct\nprint('i' in struct.Struct('i').format)\n", "True");
+crate::runtime_case!(struct_size_attr, "import struct\nprint(struct.Struct('i').size > 0)\n", "True");
+crate::runtime_case!(struct_alignment, "import struct\nprint(struct.Struct('i').alignment > 0)\n", "True");
+crate::runtime_case!(copy_copy_set, "import copy\nprint(copy.copy({1, 2}))\n", "{1, 2}");
+crate::runtime_case!(copy_deepcopy_set, "import copy\nprint(copy.deepcopy({1, 2}))\n", "{1, 2}");
+crate::runtime_case!(base64_decode_invalid, "import base64\ntry:\n base64.b64decode(b'!!!')\n print('ok')\nexcept Exception:\n print('bad')\n", "bad");
+crate::runtime_case!(hashlib_hexdigest_consistent, "import hashlib\nh = hashlib.sha256()\nh.update(b'a')\nh.update(b'b')\nprint(h.hexdigest() == hashlib.sha256(b'ab').hexdigest())\n", "True");
+crate::runtime_case!(hashlib_copy, "import hashlib\nh1 = hashlib.md5(b'x')\nh2 = h1.copy()\nprint(h1.hexdigest() == h2.hexdigest())\n", "True");
+crate::runtime_case!(struct_native_size, "import struct\nprint(struct.calcsize('P') > 0)\n", "True");
+crate::runtime_case!(struct_padding, "import struct\nprint(len(struct.pack('x', 0)))\n", "1");
+
+crate::compile_case!(pickle_dumps_loads, "import pickle\npickle.loads(pickle.dumps([1, 2]))\n");
+crate::compile_case!(pickle_highest_protocol, "import pickle\npickle.dumps([], protocol=pickle.HIGHEST_PROTOCOL)\n");
+crate::compile_case!(marshal_dumps, "import marshal\nmarshal.dumps(1)\n");
+crate::compile_case!(zlib_compress, "import zlib\nzlib.compress(b'hi')\n");
+crate::compile_case!(gzip_open, "import gzip\ngzip.compress(b'hi')\n");

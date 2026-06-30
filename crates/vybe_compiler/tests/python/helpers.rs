@@ -1,6 +1,26 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+#[macro_export]
+macro_rules! runtime_case {
+    ($name:ident, $src:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            assert_eq!($crate::helpers::run_python_one($src), $expected);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! compile_case {
+    ($name:ident, $src:expr) => {
+        #[test]
+        fn $name() {
+            $crate::helpers::compile_ok($src);
+        }
+    };
+}
+
 /// Run Python source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_python(src: &str) -> Vec<String> {
     let module = vybe_compiler::languages::python::parse(src).expect("Python parse failed");

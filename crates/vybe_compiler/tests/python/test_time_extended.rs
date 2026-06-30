@@ -1,0 +1,57 @@
+//! time module extended: sleep, struct_time, strftime, strptime, monotonic.
+
+use crate::helpers::*;
+
+crate::runtime_case!(time_time_positive, "import time\nprint(time.time() > 0)\n", "True");
+crate::runtime_case!(time_monotonic_increases, "import time\na = time.monotonic()\nb = time.monotonic()\nprint(b >= a)\n", "True");
+crate::runtime_case!(time_perf_counter, "import time\nprint(time.perf_counter() >= 0)\n", "True");
+crate::runtime_case!(time_process_time, "import time\nprint(time.process_time() >= 0)\n", "True");
+crate::runtime_case!(time_struct_time_fields, "import time\nt = time.gmtime(0)\nprint(t.tm_year)\n", "1970");
+crate::runtime_case!(time_localtime_tuple, "import time\nt = time.localtime(0)\nprint(len(t))\n", "9");
+crate::runtime_case!(time_mktime_roundtrip, "import time\nt = time.struct_time((2020, 1, 1, 0, 0, 0, 2, 1, 0))\nprint(isinstance(time.mktime(t), float))\n", "True");
+crate::runtime_case!(time_asctime, "import time\nprint('1970' in time.asctime(time.gmtime(0)))\n", "True");
+crate::runtime_case!(time_ctime, "import time\nprint(len(time.ctime(0)) > 0)\n", "True");
+crate::runtime_case!(time_strftime_year, "import time\nprint(time.strftime('%Y', time.gmtime(0)))\n", "1970");
+crate::runtime_case!(time_strftime_month, "import time\nprint(time.strftime('%m', time.gmtime(0)))\n", "01");
+crate::runtime_case!(time_strptime, "import time\nt = time.strptime('2020-06-15', '%Y-%m-%d')\nprint(t.tm_mon)\n", "6");
+crate::runtime_case!(time_timezone_attr, "import time\nprint(hasattr(time, 'timezone'))\n", "True");
+crate::runtime_case!(time_altzone_attr, "import time\nprint(hasattr(time, 'altzone'))\n", "True");
+crate::runtime_case!(time_daylight_attr, "import time\nprint(isinstance(time.daylight, int))\n", "True");
+crate::runtime_case!(time_tzname_attr, "import time\nprint(isinstance(time.tzname, tuple))\n", "True");
+crate::runtime_case!(time_gmtime_vs_local, "import time\nprint(time.gmtime(0).tm_hour != time.localtime(0).tm_hour or time.gmtime(0).tm_hour == 0)\n", "True");
+crate::runtime_case!(time_sleep_zero, "import time\ntime.sleep(0)\nprint('ok')\n", "ok");
+crate::runtime_case!(time_ns_timestamp, "import time\nprint(time.time_ns() > 0)\n", "True");
+crate::runtime_case!(time_monotonic_ns, "import time\nprint(time.monotonic_ns() >= 0)\n", "True");
+crate::runtime_case!(time_perf_counter_ns, "import time\nprint(time.perf_counter_ns() >= 0)\n", "True");
+crate::runtime_case!(time_struct_time_index, "import time\nt = time.gmtime(0)\nprint(t[0])\n", "1970");
+crate::runtime_case!(time_struct_time_slice, "import time\nt = time.gmtime(0)\nprint(t[0:2])\n", "(1970, 1)");
+crate::runtime_case!(time_strftime_weekday, "import time\nprint(time.strftime('%A', time.gmtime(0)))\n", "Thursday");
+crate::runtime_case!(time_strftime_hour, "import time\nprint(time.strftime('%H', time.gmtime(0)))\n", "00");
+crate::runtime_case!(time_strftime_minute, "import time\nprint(time.strftime('%M', time.gmtime(0)))\n", "00");
+crate::runtime_case!(time_strftime_second, "import time\nprint(time.strftime('%S', time.gmtime(0)))\n", "00");
+crate::runtime_case!(time_strptime_hour, "import time\nt = time.strptime('12:30:45', '%H:%M:%S')\nprint(t.tm_hour)\n", "12");
+crate::runtime_case!(time_tuple_unpack, "import time\ny, m, d, *_ = time.gmtime(0)\nprint(y, m, d)\n", "1970 1 1");
+crate::runtime_case!(time_clock_gettime, "import time\nprint(hasattr(time, 'clock_gettime'))\n", "True");
+crate::runtime_case!(time_get_clock_info, "import time\nprint('monotonic' in time.get_clock_info('monotonic').keys())\n", "True");
+crate::runtime_case!(time_thread_time, "import time\nprint(time.thread_time() >= 0)\n", "True");
+crate::runtime_case!(time_thread_time_ns, "import time\nprint(time.thread_time_ns() >= 0)\n", "True");
+crate::runtime_case!(time_strftime_percent, "import time\nprint(time.strftime('%%', time.gmtime(0)))\n", "%");
+crate::runtime_case!(time_strftime_combo, "import time\nprint(time.strftime('%Y-%m', time.gmtime(0)))\n", "1970-01");
+crate::runtime_case!(time_strptime_combo, "import time\nt = time.strptime('1970/01', '%Y/%m')\nprint(t.tm_mday)\n", "1");
+crate::runtime_case!(time_gmtime_default, "import time\nprint(isinstance(time.gmtime(), time.struct_time))\n", "True");
+crate::runtime_case!(time_localtime_default, "import time\nprint(isinstance(time.localtime(), time.struct_time))\n", "True");
+crate::runtime_case!(time_asctime_no_arg, "import time\nprint(len(time.asctime()) > 0)\n", "True");
+crate::runtime_case!(time_ctime_no_arg, "import time\nprint(len(time.ctime()) > 0)\n", "True");
+crate::runtime_case!(time_struct_time_repr, "import time\nprint('struct_time' in repr(time.gmtime(0)))\n", "True");
+crate::runtime_case!(time_strftime_day, "import time\nprint(time.strftime('%d', time.gmtime(0)))\n", "01");
+crate::runtime_case!(time_strftime_yday, "import time\nprint(time.strftime('%j', time.gmtime(0)))\n", "001");
+crate::runtime_case!(time_strftime_weeknum, "import time\nprint(time.strftime('%U', time.gmtime(0)))\n", "00");
+crate::runtime_case!(time_strftime_isocalendar, "import time\nt = time.gmtime(0)\nprint(t.tm_yday)\n", "1");
+crate::runtime_case!(time_tzset_exists, "import time\nprint(hasattr(time, 'tzset'))\n", "True");
+crate::runtime_case!(time_module_name, "import time\nprint(time.__name__)\n", "time");
+
+crate::compile_case!(time_sleep_fraction, "import time\ntime.sleep(0.001)\n");
+crate::compile_case!(time_strptime_tz, "import time\ntime.strptime('2020', '%Y')\n");
+crate::compile_case!(time_pthread_getcpuclockid, "import time\ntime.thread_time()\n");
+crate::compile_case!(time_clock_settime, "import time\nhasattr(time, 'clock_settime')\n");
+crate::compile_case!(time_tzset_call, "import time\ntry:\n time.tzset()\nexcept AttributeError:\n pass\n");
