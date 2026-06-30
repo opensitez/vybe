@@ -239,10 +239,22 @@ pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
 /// Call this at the END of compilation, after all user chunks are finalized.
 /// The script chunk (chunks[0]) gets global_inits with RefFunc entries.
 pub fn finalize_with_runtime_helpers(chunks: &mut Vec<Chunk>) {
+    finalize_with_runtime_helpers_excluding(chunks, &[]);
+}
+
+/// Same as [`finalize_with_runtime_helpers`], but skips selected helper exports.
+/// Used by profiles with platform-owned replacements for a generic helper.
+pub fn finalize_with_runtime_helpers_excluding(
+    chunks: &mut Vec<Chunk>,
+    excluded_exports: &[&'static str],
+) {
     use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
 
     let mut requested = referenced_helper_exports(chunks);
     add_helper_dependencies(&mut requested);
+    for excluded in excluded_exports {
+        requested.remove(excluded);
+    }
     if requested.is_empty() {
         return;
     }

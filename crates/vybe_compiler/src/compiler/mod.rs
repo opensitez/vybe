@@ -2672,7 +2672,14 @@ impl Compiler {
         // and recurse forever. Cheap thread-local guard since polyfill
         // compilation is single-threaded at vybex build time.
         if !crate::emitter::runtime_helpers::is_compiling_runtime_helper() {
-            common::bundle::finalize_with_runtime_helpers(&mut self.chunks);
+            if self.profile.name == "c" {
+                common::bundle::finalize_with_runtime_helpers_excluding(
+                    &mut self.chunks,
+                    &["__stdlib_sprintf"],
+                );
+            } else {
+                common::bundle::finalize_with_runtime_helpers(&mut self.chunks);
+            }
         }
         Self::normalize_import_table(&mut self.chunks);
         let host_imports = self.collected_host_imports();

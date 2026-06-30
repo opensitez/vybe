@@ -57,13 +57,14 @@ pub use type_registry::CompileTimeTypes;
 
 /// Resolve a shared *platform* emit dispatcher by its `common:<prefix>.*`
 /// prefix. Platforms are emit surfaces shared by more than one language —
-/// currently only `dotnet` (VB / C# / JS). Each platform module under
+/// currently `dotnet` (VB / C# / JS) and `libc` (C). Each platform module under
 /// `emitter/` registers its prefix here; languages register their own via
 /// [`crate::languages::Language::emit_dispatch`]. Returns `None` for
 /// non-platform prefixes.
 pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
     match prefix {
         "dotnet" => Some(dotnet::dispatch::dispatch),
+        "libc" => Some(crate::platforms::libc::emitter::dispatch::dispatch),
         _ => None,
     }
 }

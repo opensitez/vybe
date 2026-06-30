@@ -789,6 +789,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.phpversion" => {
             crate::emitter::php::misc_adapter::emit_php_phpversion(chunks, current, argc, line)
         }
+        "php.phpinfo" => {
+            crate::emitter::php::misc_adapter::emit_php_phpinfo(chunks, current, argc, line)
+        }
         "php.spl_autoload_register" => {
             crate::emitter::php::misc_adapter::emit_php_spl_autoload_register(
                 chunks, current, argc, line,

@@ -27,10 +27,11 @@ uses_normalize_class = false
 
 # ── stdio ────────────────────────────────────────────────────────────────────
 # Walker normalizations (in walker.rs):
-#   printf(fmt, args...)    → puts(sprintf(fmt, args...))
+#   printf(fmt, args...)    → libc printf emitter / C fputs lowering
 #   fprintf(f, fmt, args...)→ puts(sprintf(fmt, args...))  (stream dropped)
 #   sprintf(buf, fmt, args...)→ sprintf(fmt, args...)      (buf dropped)
 #   snprintf(buf,n,fmt,...) → sprintf(fmt, args...)
+"printf"  = { emit = "common:libc.stdio.printf",  min_args = 1, max_args = 255 }
 # sprintf routes through the libc inline emitter helper (no JS polyfill).
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }

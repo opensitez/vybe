@@ -229,7 +229,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     c.local_count = NLOCALS;
 
     let str_len = c.add_import("ecma:string", "length");
-    let str_ccat = c.add_import("ecma:string", "charCodeAt");
+    let str_ccat = c.add_import("wasm:js-string", "charCodeAt");
     let str_chat = c.add_import("ecma:string", "charAt");
     let str_slice = c.add_import("ecma:string", "slice");
     let str_tostr = c.add_import("ecma:string", "String");

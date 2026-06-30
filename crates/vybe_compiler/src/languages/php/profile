@@ -513,6 +513,7 @@ unlink              = { emit = "common:php.unlink",             min_args = 1, ma
 getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
 extension_loaded    = { emit = "common:php.extension_loaded", min_args = 1, max_args = 1 }
 phpversion          = { emit = "common:php.phpversion",       min_args = 0, max_args = 1 }
+phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_args = 1 }
 
 # ── PHP error / INI runtime (no-ops for CLI / web compilation) ──────────────
 # These are runtime configuration calls that don't affect compiled-bytecode

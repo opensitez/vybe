@@ -249,6 +249,42 @@ pub fn emit_php_phpversion(chunks: &mut [Chunk], current: usize, argc: u8, line:
     push_str(chunk, "8.0.0", line);
 }
 
+/// PHP `phpinfo([$flags])` — text report of core runtime facts (subset of full
+/// PHP `phpinfo()`). Writes to stdout without an extra trailing newline beyond
+/// the final report line, returns `true`.
+pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+    let rd_slot = alloc_local(chunk);
+    let wr_slot = alloc_local(chunk);
+    crate::emitter::io::emit_write_stdout_with_imports(
+        chunk,
+        write_idx,
+        rd_slot,
+        wr_slot,
+        line,
+        |c| {
+            push_str(
+                c,
+                "phpinfo()\n\
+                 PHP Version => 8.0.0\n\
+                 System => Darwin\n\
+                 Build Date => vybe\n\
+                 Server API => cli\n\
+                 PHP API => vybex\n\
+                 PHP Extension Build => vybe\n\
+                 Zend Extension Build => n/a\n\
+                 PHP Integer Size => 8\n",
+                line,
+            );
+        },
+    );
+    push_const(chunk, Value::Bool(true), line);
+}
+
 pub fn emit_php_spl_autoload_register(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 0..argc {
