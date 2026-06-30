@@ -268,3 +268,108 @@ echo count($statuses) >= 2 ? 'two levels' : 'less';
 "#,
     );
 }
+
+// ── Runtime output buffering (`php_cases!`) ─────────────────────
+
+crate::php_cases! {
+    ob_get_clean_captures_buffered_echo => {
+        r#"<?php
+ob_start();
+echo 'buf';
+$c = ob_get_clean();
+echo $c;
+"#,
+        ["buf"]
+    };
+
+    ob_nested_buffers_flush_in_order => {
+        r#"<?php
+ob_start();
+echo 'outer-';
+ob_start();
+echo 'inner';
+$inner = ob_get_clean();
+echo $inner . '-end';
+$outer = ob_get_clean();
+echo $outer;
+"#,
+        ["inner", "outer-inner-end"]
+    };
+
+    ob_get_contents_without_end => {
+        r#"<?php
+ob_start();
+echo 'stay';
+$s = ob_get_contents();
+ob_end_clean();
+echo $s;
+"#,
+        ["stay"]
+    };
+
+    ob_get_length_reports_byte_count => {
+        r#"<?php
+ob_start();
+echo '12345';
+echo ob_get_length();
+ob_end_clean();
+"#,
+        ["123455"]
+    };
+
+    ob_get_level_increments_with_nested_start => {
+        r#"<?php
+$base = ob_get_level();
+ob_start();
+echo $base + 1;
+ob_end_clean();
+"#,
+        ["1"]
+    };
+
+    ob_end_flush_prints_buffer => {
+        r#"<?php
+ob_start();
+echo 'flushme';
+ob_end_flush();
+"#,
+        ["flushme"]
+    };
+
+    ob_implicit_flush_zero_disables_auto_flush_flag => {
+        r#"<?php
+ob_implicit_flush(0);
+echo ob_get_level() >= 0 ? 'ok' : 'bad';
+"#,
+        ["ok"]
+    };
+
+    ob_clean_clears_active_buffer => {
+        r#"<?php
+ob_start();
+echo 'remove';
+ob_clean();
+echo 'kept';
+$c = ob_get_clean();
+echo '|' . $c;
+"#,
+        ["kept", "|kept"]
+    };
+
+    ob_gzhandler_not_active_without_compression => {
+        r#"<?php
+echo function_exists('ob_gzhandler') ? 'exists' : 'missing';
+"#,
+        ["exists"]
+    };
+
+    ob_list_includes_current_buffer_after_start => {
+        r#"<?php
+ob_start();
+$list = ob_list_handlers();
+ob_end_clean();
+echo count($list) >= 0 ? 'listed' : 'none';
+"#,
+        ["listed"]
+    };
+}

@@ -194,3 +194,25 @@ echo ($v ?: 'falsy') . '|' . ($v ?? 'null');
         vec!["falsy|0"]
     );
 }
+
+crate::php_cases! {
+    nullsafe_operator_calls_method_when_present => {
+        r#"<?php
+class Profile { public function name(): string { return 'ada'; } }
+class User { public ?Profile $profile = null; }
+$u = new User();
+$u->profile = new Profile();
+echo $u->profile?->name();
+"#,
+        ["ada"]
+    };
+
+    nullsafe_short_circuits_on_null => {
+        r#"<?php
+class User { public ?object $profile = null; }
+$u = new User();
+echo $u->profile?->missing ?? 'none';
+"#,
+        ["none"]
+    };
+}

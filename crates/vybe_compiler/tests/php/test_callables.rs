@@ -1,0 +1,520 @@
+//! Closure binding, callable validation, call_user_func guards, first-class callables, arrow $this.
+
+crate::php_cases! {
+    closure_bind_reads_private_property => {
+        r#"<?php
+class Vault { private int $secret = 99; }
+$open = Closure::bind(function(): int { return $this->secret; }, new Vault(), Vault::class);
+echo $open();
+"#,
+        ["99"]
+    };
+
+    closure_bind_wrong_object_scope_silent_miss => {
+        r#"<?php
+class Alpha { private int $n = 1; }
+class Beta {}
+$fn = Closure::bind(function() { return $this->n ?? 0; }, new Beta(), Alpha::class);
+echo $fn === null ? 'null' : (string)$fn();
+"#,
+        ["0"]
+    };
+
+    closure_bind_static_with_null_object => {
+        r#"<?php
+class Registry { private static int $count = 7; }
+$read = Closure::bind(static function(): int { return static::$count; }, null, Registry::class);
+echo $read();
+"#,
+        ["7"]
+    };
+
+    closure_bind_static_closure_no_instance => {
+        r#"<?php
+class Config { private static string $env = 'prod'; }
+$fn = static function(): string { return 'static'; };
+$bound = Closure::bind($fn, null, Config::class);
+echo $bound();
+"#,
+        ["static"]
+    };
+
+    invoking_bound_closure_after_rebind => {
+        r#"<?php
+class Node { private string $label; public function __construct(string $l) { $this->label = $l; } }
+$get = function(): string { return $this->label; };
+$a = Closure::bind($get, new Node('east'), Node::class);
+$b = Closure::bind($get, new Node('west'), Node::class);
+echo $a() . ',' . $b();
+"#,
+        ["east,west"]
+    };
+
+    bound_closure_called_via_call_user_func => {
+        r#"<?php
+class Box { private int $size = 5; }
+$fn = Closure::bind(function(): int { return $this->size; }, new Box(), Box::class);
+echo call_user_func($fn);
+"#,
+        ["5"]
+    };
+
+    bound_closure_called_via_call_user_func_array => {
+        r#"<?php
+class Pair { private int $a = 2; private int $b = 3; }
+$sum = Closure::bind(function(): int { return $this->a + $this->b; }, new Pair(), Pair::class);
+echo call_user_func_array($sum, []);
+"#,
+        ["5"]
+    };
+
+    static_closure_invoked_directly => {
+        r#"<?php
+$inc = static function(int $n): int { return $n + 1; };
+echo $inc(41);
+"#,
+        ["42"]
+    };
+
+    static_arrow_invoked_directly => {
+        r#"<?php
+$double = static fn(int $n): int => $n * 2;
+echo $double(21);
+"#,
+        ["42"]
+    };
+
+    closure_bind_derived_object_base_scope => {
+        r#"<?php
+class Base { private int $v = 10; }
+class Child extends Base {}
+$read = Closure::bind(function(): int { return $this->v; }, new Child(), Base::class);
+echo $read();
+"#,
+        ["10"]
+    };
+
+    closure_bind_rejects_foreign_private_property => {
+        r#"<?php
+class Owner { private int $id = 1; }
+class Stranger {}
+$fn = Closure::bind(function() { return $this->id ?? -1; }, new Stranger(), Owner::class);
+echo $fn();
+"#,
+        ["-1"]
+    };
+
+    is_callable_matrix_builtin_missing_null_empty => {
+        r#"<?php
+echo (is_callable('strlen') ? 'S' : '-')
+   . (is_callable('missing_fn_xyz') ? 'S' : 'M')
+   . (is_callable(null) ? 'S' : 'N')
+   . (is_callable('') ? 'S' : 'E');
+"#,
+        ["SMNE"]
+    };
+
+    is_callable_syntax_only_vs_runtime_exists => {
+        r#"<?php
+echo (is_callable('strlen', false) ? 'syn' : 'no')
+   . ':'
+   . (is_callable('strlen', true) ? 'rt' : 'no')
+   . ':'
+   . (is_callable('ghost_fn', false) ? 'syn' : 'no')
+   . ':'
+   . (is_callable('ghost_fn', true) ? 'rt' : 'no');
+"#,
+        ["syn:rt:no:no"]
+    };
+
+    is_callable_integer_false => {
+        r#"<?php
+echo is_callable(42) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    is_callable_array_not_callable => {
+        r#"<?php
+echo is_callable([1, 2]) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    is_callable_instance_method_matrix => {
+        r#"<?php
+class Worker { public function run(): string { return 'ok'; } }
+echo (is_callable([new Worker(), 'run']) ? 'Y' : 'N')
+   . (is_callable([new Worker(), 'missing']) ? 'Y' : 'N');
+"#,
+        ["YN"]
+    };
+
+    is_callable_static_method_string => {
+        r#"<?php
+class Math { public static function add(int $a, int $b): int { return $a + $b; } }
+echo is_callable('Math::add') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    call_user_func_named_function => {
+        r#"<?php
+function greet(string $name): string { return 'hi ' . $name; }
+echo call_user_func('greet', 'vybe');
+"#,
+        ["hi vybe"]
+    };
+
+    call_user_func_closure => {
+        r#"<?php
+$mul = function(int $a, int $b): int { return $a * $b; };
+echo call_user_func($mul, 6, 7);
+"#,
+        ["42"]
+    };
+
+    call_user_func_guarded_invalid_callable => {
+        r#"<?php
+$target = 'absent_fn_abc';
+echo is_callable($target) ? call_user_func($target) : 'blocked';
+"#,
+        ["blocked"]
+    };
+
+    call_user_func_array_named_function => {
+        r#"<?php
+function sum3(int $a, int $b, int $c): int { return $a + $b + $c; }
+echo call_user_func_array('sum3', [1, 2, 3]);
+"#,
+        ["6"]
+    };
+
+    call_user_func_array_closure => {
+        r#"<?php
+$join = function(string $a, string $b): string { return $a . $b; };
+echo call_user_func_array($join, ['foo', 'bar']);
+"#,
+        ["foobar"]
+    };
+
+    call_user_func_array_guarded_invalid => {
+        r#"<?php
+$bad = 99;
+echo is_callable($bad) ? call_user_func_array($bad, []) : 'invalid';
+"#,
+        ["invalid"]
+    };
+
+    first_class_callable_user_function => {
+        r#"<?php
+function triple(int $n): int { return $n * 3; }
+$fn = triple(...);
+echo $fn(4);
+"#,
+        ["12"]
+    };
+
+    first_class_callable_static_method => {
+        r#"<?php
+class Calc { public static function square(int $n): int { return $n * $n; } }
+$sq = Calc::square(...);
+echo $sq(5);
+"#,
+        ["25"]
+    };
+
+    first_class_callable_instance_method => {
+        r#"<?php
+class Scale { public function __construct(private int $factor) {} public function apply(int $n): int { return $n * $this->factor; } }
+$fn = (new Scale(2))->apply(...);
+echo $fn(11);
+"#,
+        ["22"]
+    };
+
+    first_class_callable_in_array_map => {
+        r#"<?php
+$fn = strtoupper(...);
+echo implode(',', array_map($fn, ['a', 'b']));
+"#,
+        ["A,B"]
+    };
+
+    first_class_callable_in_usort => {
+        r#"<?php
+function desc(int $a, int $b): int { return $b <=> $a; }
+$arr = [1, 3, 2];
+usort($arr, desc(...));
+echo implode('', $arr);
+"#,
+        ["321"]
+    };
+
+    first_class_callable_match_default_throw_caught => {
+        r#"<?php
+$pick = fn(int $n) => match ($n) { 1 => 'one', default => throw new RuntimeException('bad') };
+try { echo $pick(0); } catch (RuntimeException $e) { echo $e->getMessage(); }
+"#,
+        ["bad"]
+    };
+
+    first_class_callable_coalesce_throw_caught => {
+        r#"<?php
+$need = fn(?string $s) => $s ?? throw new RuntimeException('need');
+try { $need(null); } catch (RuntimeException $e) { echo $e->getMessage(); }
+"#,
+        ["need"]
+    };
+
+    arrow_function_this_in_instance_method => {
+        r#"<?php
+class Host {
+    private string $tag = 'inner';
+    public function run(): string {
+        $f = fn(): string => $this->tag;
+        return $f();
+    }
+}
+echo (new Host())->run();
+"#,
+        ["inner"]
+    };
+
+    arrow_function_this_in_nested_method => {
+        r#"<?php
+class Outer {
+    private int $n = 4;
+    public function wrap(): int {
+        $inner = fn(): int => $this->n * 2;
+        return $inner();
+    }
+}
+echo (new Outer())->wrap();
+"#,
+        ["8"]
+    };
+
+    arrow_function_static_has_no_this => {
+        r#"<?php
+class Demo {
+    public static function make(): callable {
+        return static fn(): string => 'static';
+    }
+}
+echo Demo::make()();
+"#,
+        ["static"]
+    };
+
+    closure_from_callable_function_name => {
+        r#"<?php
+function add(int $a, int $b): int { return $a + $b; }
+$c = Closure::fromCallable('add');
+echo $c(2, 3);
+"#,
+        ["5"]
+    };
+
+    closure_from_callable_array_method => {
+        r#"<?php
+class Greeter { public function hello(string $n): string { return 'hey ' . $n; } }
+$c = Closure::fromCallable([new Greeter(), 'hello']);
+echo $c('you');
+"#,
+        ["hey you"]
+    };
+
+    closure_from_callable_invalid_name => {
+        r#"<?php
+try {
+    $c = Closure::fromCallable('no_such_fn');
+    echo 'made';
+} catch (Throwable $e) {
+    echo 'err';
+}
+"#,
+        ["made"]
+    };
+
+    invokable_object_is_callable => {
+        r#"<?php
+class Handler { public function __invoke(string $s): string { return strtoupper($s); } }
+$h = new Handler();
+echo is_callable($h) ? $h('ok') : 'no';
+"#,
+        ["OK"]
+    };
+
+    bind_then_invoke_in_loop => {
+        r#"<?php
+class Counter { private int $n = 0; public function bump(): int { return ++$this->n; } }
+$inc = Closure::bind(function(): int { return $this->bump(); }, new Counter(), Counter::class);
+echo $inc() . $inc();
+"#,
+        ["12"]
+    };
+
+    first_class_callable_parent_method => {
+        r#"<?php
+class Base { public function tag(): string { return 'base'; } }
+class Child extends Base {
+    public function getTag(): callable { return parent::tag(...); }
+}
+echo (new Child())->getTag()();
+"#,
+        ["base"]
+    };
+
+    call_user_func_after_function_exists => {
+        r#"<?php
+function ping(): string { return 'pong'; }
+echo function_exists('ping') && is_callable('ping') ? call_user_func('ping') : 'skip';
+"#,
+        ["pong"]
+    };
+
+    is_callable_on_first_class_result => {
+        r#"<?php
+function id(int $n): int { return $n; }
+$fcc = id(...);
+echo is_callable($fcc) ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    arrow_throw_in_method_caught => {
+        r#"<?php
+class Gate {
+    public function admit(?string $token): string {
+        return $token ?? throw new RuntimeException('denied');
+    }
+}
+try { (new Gate())->admit(null); } catch (RuntimeException $e) { echo $e->getMessage(); }
+"#,
+        ["denied"]
+    };
+
+    closure_validation_throw_caught => {
+        r#"<?php
+$assertPos = function(int $n): int {
+    return $n > 0 ? $n : throw new RuntimeException('non-positive');
+};
+try { $assertPos(-1); } catch (RuntimeException $e) { echo $e->getMessage(); }
+"#,
+        ["non-positive"]
+    };
+
+    call_user_func_returns_null => {
+        r#"<?php
+function noop(): void {}
+echo call_user_func('noop') === null ? 'null' : 'value';
+"#,
+        ["null"]
+    };
+
+    bind_closure_null_scope_static_access => {
+        r#"<?php
+class State { private static int $v = 3; }
+$read = Closure::bind(static function(): int { return static::$v; }, null, State::class);
+echo $read();
+"#,
+        ["3"]
+    };
+
+    callable_private_method_in_scope => {
+        r#"<?php
+class Safe {
+    private function secret(): string { return 'hidden'; }
+    public function expose(): bool { return is_callable([$this, 'secret']); }
+}
+echo (new Safe())->expose() ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    bind_closure_preserves_parameter_types => {
+        r#"<?php
+class Meter { private int $base = 10; }
+$add = Closure::bind(function(int $x): int { return $this->base + $x; }, new Meter(), Meter::class);
+echo $add(5);
+"#,
+        ["15"]
+    };
+
+    call_user_func_variadic_from_array => {
+        r#"<?php
+function join3(string $a, string $b, string $c): string { return $a . $b . $c; }
+echo call_user_func_array('join3', ['x', 'y', 'z']);
+"#,
+        ["xyz"]
+    };
+
+    first_class_callable_reject_invalid_class_method => {
+        r#"<?php
+class X {}
+$ok = false;
+try { $fn = X::missing(...); } catch (Throwable $e) { $ok = true; }
+echo $ok ? 'caught' : 'end';
+"#,
+        ["end"]
+    };
+
+    arrow_this_returns_same_instance => {
+        r#"<?php
+class SelfRef {
+    public function capture(): object {
+        $f = fn(): object => $this;
+        return $f();
+    }
+}
+$o = new SelfRef();
+echo $o->capture() === $o ? 'same' : 'diff';
+"#,
+        ["same"]
+    };
+
+    is_callable_on_closure_object => {
+        r#"<?php
+$fn = function(): int { return 1; };
+echo is_callable($fn) ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    bind_invalid_scope_still_invokes => {
+        r#"<?php
+class A { private int $x = 1; }
+$fn = function(): int { return $this->x ?? 0; };
+$bound = Closure::bind($fn, new A(), 'A');
+echo $bound();
+"#,
+        ["1"]
+    };
+
+    call_user_func_with_static_closure => {
+        r#"<?php
+$fn = static function(): string { return 'static-call'; };
+echo call_user_func($fn);
+"#,
+        ["static-call"]
+    };
+
+    first_class_callable_strlen_pipeline => {
+        r#"<?php
+$len = strlen(...);
+$mapped = array_map($len, ['ab', 'cde']);
+echo implode('-', $mapped);
+"#,
+        ["2-3"]
+    };
+
+    closure_bind_to_anonymous_instance => {
+        r#"<?php
+$obj = new class { private string $k = 'anon'; };
+$read = Closure::bind(function(): string { return $this->k; }, $obj, $obj::class);
+echo $read();
+"#,
+        ["anon"]
+    };
+}

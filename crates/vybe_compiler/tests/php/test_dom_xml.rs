@@ -481,3 +481,118 @@ echo $arr['key'] . ':' . $arr['num'];
 "#,
     );
 }
+
+// ── SimpleXML / DOM runtime (`php_cases!`) ──────────────────────
+
+crate::php_cases! {
+    simplexml_load_string_reads_element_text => {
+        r#"<?php
+$xml = simplexml_load_string('<root><title>Post</title></root>');
+echo (string)$xml->title;
+"#,
+        ["Post"]
+    };
+
+    simplexml_attribute_access => {
+        r#"<?php
+$xml = simplexml_load_string('<item id="9"/>');
+echo (string)$xml['id'];
+"#,
+        ["9"]
+    };
+
+    simplexml_children_iteration_count => {
+        r#"<?php
+$xml = simplexml_load_string('<rss><item/><item/><item/></rss>');
+echo count($xml->item);
+"#,
+        ["3"]
+    };
+
+    dom_document_create_element_and_save_xml => {
+        r#"<?php
+$doc = new DOMDocument('1.0', 'UTF-8');
+$root = $doc->createElement('root');
+$doc->appendChild($root);
+$child = $doc->createElement('name', 'vybe');
+$root->appendChild($child);
+echo $doc->saveXML($child);
+"#,
+        ["<name>vybe</name>\n"]
+    };
+
+    dom_get_elements_by_tag_name => {
+        r#"<?php
+$doc = new DOMDocument();
+$doc->loadXML('<list><item>a</item><item>b</item></list>');
+echo $doc->getElementsByTagName('item')->length;
+"#,
+        ["2"]
+    };
+
+    dom_element_text_content => {
+        r#"<?php
+$doc = new DOMDocument();
+$doc->loadXML('<p>hello</p>');
+echo $doc->documentElement->textContent;
+"#,
+        ["hello"]
+    };
+
+    dom_import_simplexml_roundtrip => {
+        r#"<?php
+$sx = simplexml_load_string('<wrap><x>1</x></wrap>');
+$doc = new DOMDocument();
+$imported = $doc->importNode(dom_import_simplexml($sx), true);
+$doc->appendChild($imported);
+echo $doc->getElementsByTagName('x')->item(0)->textContent;
+"#,
+        ["1"]
+    };
+
+    libxml_use_internal_errors_on_bad_xml => {
+        r#"<?php
+libxml_use_internal_errors(true);
+echo simplexml_load_string('<bad') === false ? 'fail' : 'ok';
+"#,
+        ["fail"]
+    };
+
+    dom_document_preserve_white_space_off => {
+        r#"<?php
+$doc = new DOMDocument();
+$doc->preserveWhiteSpace = false;
+$doc->loadXML("<root>  <a/></root>");
+echo $doc->getElementsByTagName('a')->length;
+"#,
+        ["1"]
+    };
+
+    simplexml_load_string_false_on_empty => {
+        r#"<?php
+echo simplexml_load_string('') === false ? 'false' : 'ok';
+"#,
+        ["false"]
+    };
+
+    dom_create_attribute_on_element => {
+        r#"<?php
+$doc = new DOMDocument();
+$el = $doc->createElement('link');
+$el->setAttribute('href', '/home');
+$doc->appendChild($el);
+echo $el->getAttribute('href');
+"#,
+        ["/home"]
+    };
+
+    dom_xpath_query_finds_nodes => {
+        r#"<?php
+$doc = new DOMDocument();
+$doc->loadXML('<root><item key="a"/><item key="b"/></root>');
+$xpath = new DOMXPath($doc);
+echo $xpath->query('//item[@key="b"]')->length;
+"#,
+        ["1"]
+    };
+}

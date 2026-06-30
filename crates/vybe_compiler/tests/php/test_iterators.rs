@@ -374,3 +374,115 @@ echo iterator_count($it);
 "#,
     );
 }
+
+// ── Iterator protocol runtime (`php_cases!`) ────────────────────
+
+crate::php_cases! {
+    iterator_manual_next_advances_custom_class => {
+        r#"<?php
+class Three implements Iterator {
+    private int $i = 0;
+    public function current(): int { return $this->i; }
+    public function key(): int { return $this->i; }
+    public function next(): void { $this->i++; }
+    public function rewind(): void { $this->i = 0; }
+    public function valid(): bool { return $this->i < 3; }
+}
+$c = new Three();
+$out = [];
+while ($c->valid()) { $out[] = $c->current(); $c->next(); }
+echo implode(',', $out);
+"#,
+        ["0,1,2"]
+    };
+
+    iterator_foreach_rewinds_before_loop => {
+        r#"<?php
+class Letters implements Iterator {
+    private int $p = 0;
+    private array $v = ['a', 'b'];
+    public function current(): string { return $this->v[$this->p]; }
+    public function key(): int { return $this->p; }
+    public function next(): void { $this->p++; }
+    public function rewind(): void { $this->p = 0; }
+    public function valid(): bool { return $this->p < count($this->v); }
+}
+$it = new Letters();
+foreach ($it as $ch) { echo $ch; }
+"#,
+        ["ab"]
+    };
+
+    arrayiterator_offset_access => {
+        r#"<?php
+$it = new ArrayIterator(['x' => 1, 'y' => 2]);
+echo $it['x'] . $it['y'];
+"#,
+        ["12"]
+    };
+
+    iterator_to_array_preserves_values => {
+        r#"<?php
+$it = new ArrayIterator([3, 1, 2]);
+echo implode(',', iterator_to_array($it));
+"#,
+        ["3,1,2"]
+    };
+
+    iterator_count_on_arrayiterator => {
+        r#"<?php
+echo iterator_count(new ArrayIterator([1, 2, 3]));
+"#,
+        ["3"]
+    };
+
+    emptyiterator_is_not_valid => {
+        r#"<?php
+$it = new EmptyIterator();
+echo $it->valid() ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    cachingiterator_has_next_after_first => {
+        r#"<?php
+$base = new ArrayIterator([1, 2]);
+$cache = new CachingIterator($base);
+$cache->next();
+echo $cache->hasNext() ? 'more' : 'done';
+"#,
+        ["more"]
+    };
+
+    limititerator_caps_elements => {
+        r#"<?php
+$base = new ArrayIterator([1, 2, 3, 4, 5]);
+$lim = new LimitIterator($base, 1, 2);
+echo implode(',', iterator_to_array($lim));
+"#,
+        ["2,3"]
+    };
+
+    appenditerator_chains_two_iterators => {
+        r#"<?php
+$app = new AppendIterator();
+$app->append(new ArrayIterator([1, 2]));
+$app->append(new ArrayIterator([3]));
+echo implode('', iterator_to_array($app));
+"#,
+        ["123"]
+    };
+
+    iteratoraggregate_yields_from_getiterator => {
+        r#"<?php
+class Bag implements IteratorAggregate {
+    public function __construct(private array $items) {}
+    public function getIterator(): Traversable {
+        return new ArrayIterator($this->items);
+    }
+}
+echo implode(',', iterator_to_array(new Bag([4, 5])));
+"#,
+        ["4,5"]
+    };
+}

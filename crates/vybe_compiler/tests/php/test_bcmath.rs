@@ -385,3 +385,97 @@ echo implode(',', $result);
 "#,
     );
 }
+
+// ── Runtime bcmath output (`php_cases!`) ────────────────────────
+
+crate::php_cases! {
+    bcmath_output_bcadd_integers_default_scale => {
+        r#"<?php
+echo bcadd('10', '5');
+"#,
+        ["15"]
+    };
+
+    bcmath_output_bcadd_with_fraction_scale => {
+        r#"<?php
+echo bcadd('1.25', '2.50', 2);
+"#,
+        ["3.75"]
+    };
+
+    bcmath_output_bcsub => {
+        r#"<?php
+echo bcsub('10', '4');
+"#,
+        ["6"]
+    };
+
+    bcmath_output_bcmul => {
+        r#"<?php
+echo bcmul('6', '7');
+"#,
+        ["42"]
+    };
+
+    bcmath_output_bcdiv_with_scale => {
+        r#"<?php
+echo bcdiv('10', '4', 2);
+"#,
+        ["2.50"]
+    };
+
+    bcmath_output_bcmod_remainder => {
+        r#"<?php
+echo bcmod('10', '3');
+"#,
+        ["1"]
+    };
+
+    bcmath_output_bcpow_exponent => {
+        r#"<?php
+echo bcpow('2', '8');
+"#,
+        ["256"]
+    };
+
+    bcmath_output_bccomp_equal_returns_zero => {
+        r#"<?php
+echo bccomp('3.00', '3', 2);
+"#,
+        ["0"]
+    };
+
+    bcmath_output_bccomp_less_than_returns_negative_one => {
+        r#"<?php
+echo bccomp('1', '2');
+"#,
+        ["-1"]
+    };
+
+    bcmath_output_bcscale_affects_add => {
+        r#"<?php
+bcscale(3);
+echo bcadd('1', '2');
+bcscale(0);
+"#,
+        ["3.000"]
+    };
+
+    bcmath_output_currency_total => {
+        r#"<?php
+$total = '0.00';
+foreach (['10.99', '5.49', '0.01'] as $p) {
+    $total = bcadd($total, $p, 2);
+}
+echo $total;
+"#,
+        ["16.49"]
+    };
+
+    bcmath_output_bcadd_large_strings => {
+        r#"<?php
+echo bcadd('99999999999999999999', '1');
+"#,
+        ["100000000000000000000"]
+    };
+}

@@ -150,3 +150,70 @@ echo $result;
 "#,
     );
 }
+
+// ── Runtime `goto` flow (`php_cases!`) ──────────────────────────
+
+crate::php_cases! {
+    goto_skips_unreachable_echo => {
+        r#"<?php
+goto end;
+echo 'skip';
+end:
+echo 'ok';
+"#,
+        ["ok"]
+    };
+
+    goto_positive_branch_label => {
+        r#"<?php
+$x = 1;
+if ($x > 0) goto pos;
+echo 'neg';
+goto done;
+pos:
+echo 'pos';
+done:
+"#,
+        ["pos"]
+    };
+
+    goto_exits_loop_early => {
+        r#"<?php
+$sum = 0;
+for ($i = 1; $i <= 10; $i++) {
+    if ($i > 3) goto stop;
+    $sum += $i;
+}
+stop:
+echo $sum;
+"#,
+        ["6"]
+    };
+
+    goto_forward_to_cleanup_block => {
+        r#"<?php
+$result = 'pending';
+foreach ([1, 2, -1] as $v) {
+    if ($v < 0) goto cleanup;
+    $result = "ok:$v";
+    goto done;
+}
+cleanup:
+$result = 'cleaned';
+done:
+echo $result;
+"#,
+        ["cleaned"]
+    };
+
+    goto_backward_repeat_once => {
+        r#"<?php
+$i = 0;
+again:
+echo $i;
+$i++;
+if ($i < 2) goto again;
+"#,
+        ["0", "1"]
+    };
+}

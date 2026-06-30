@@ -16,6 +16,18 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+#[macro_export]
+macro_rules! php_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_php_prints($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
 // Output capture mirrors the two real output surfaces:
 //
 // - `wasi:cli/stdout.write-via-stream(data: stream<u8>)` (echo/printf):
@@ -151,6 +163,12 @@ pub fn run_prints(src: &str) -> Vec<String> {
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("run failed");
     finish_output(&output)
+}
+
+pub fn assert_php_prints(src: &str, expected: &[&str]) {
+    let actual = run_prints(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
 
 pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {

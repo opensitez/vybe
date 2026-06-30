@@ -1,32 +1,7 @@
 use super::helpers::compile_ok;
 
-// ── WeakReference (PHP 8.0+) ──────────────────────────────────
-
-#[test]
-fn weak_reference_basic() {
-    compile_ok(
-        r#"<?php
-class Node { public int $id; public function __construct(int $id) { $this->id = $id; } }
-$obj = new Node(42);
-$ref = WeakReference::create($obj);
-echo $ref->get()->id;
-"#,
-    );
-}
-
-#[test]
-fn weak_reference_get_while_alive() {
-    compile_ok(
-        r#"<?php
-class Resource { public string $name; public function __construct(string $n) { $this->name = $n; } }
-$res = new Resource('db_conn');
-$weak = WeakReference::create($res);
-$alive = $weak->get();
-echo $alive !== null ? 'alive' : 'collected';
-echo ':' . $weak->get()->name;
-"#,
-    );
-}
+// Compile-time coverage for WeakReference / WeakMap APIs. Runtime behavior
+// is asserted in `test_weak_references_runtime.rs`.
 
 #[test]
 fn weak_reference_null_after_collect() {
@@ -39,54 +14,8 @@ $weak = null;
     $weak = WeakReference::create($obj);
     unset($obj);
 }
-// After unset, get() may return null
 $result = $weak->get();
 echo $result === null ? 'null' : 'alive';
-"#,
-    );
-}
-
-#[test]
-fn weak_reference_in_cache() {
-    compile_ok(
-        r#"<?php
-class ExpensiveObject {
-    public function __construct(public readonly int $id) {}
-}
-$cache = [];
-$obj1 = new ExpensiveObject(1);
-$cache[1] = WeakReference::create($obj1);
-$retrieved = $cache[1]->get();
-echo $retrieved?->id ?? 'not found';
-"#,
-    );
-}
-
-#[test]
-fn weak_reference_multiple() {
-    compile_ok(
-        r#"<?php
-class Item { public function __construct(public string $label) {} }
-$items = [new Item('a'), new Item('b'), new Item('c')];
-$refs = array_map(fn($i) => WeakReference::create($i), $items);
-$count = 0;
-foreach ($refs as $ref) { if ($ref->get() !== null) $count++; }
-echo $count;
-"#,
-    );
-}
-
-// ── WeakMap (PHP 8.0+) ───────────────────────────────────────
-
-#[test]
-fn weak_map_basic() {
-    compile_ok(
-        r#"<?php
-$map = new WeakMap();
-$obj = new stdClass();
-$obj->name = 'test';
-$map[$obj] = 'associated data';
-echo $map[$obj];
 "#,
     );
 }
@@ -181,55 +110,11 @@ echo implode(',', $vals);
 }
 
 #[test]
-fn weak_map_as_event_listener_table() {
-    compile_ok(
-        r#"<?php
-class EventEmitter {
-    private WeakMap $listeners;
-    public function __construct() { $this->listeners = new WeakMap(); }
-    public function on(object $target, callable $cb): void { $this->listeners[$target] = $cb; }
-    public function emit(object $target, string $event): void {
-        $cb = $this->listeners[$target] ?? null;
-        if ($cb) $cb($event);
-    }
-}
-$emitter = new EventEmitter();
-$btn = new stdClass();
-$emitter->on($btn, fn($e) => print("Button: $e"));
-$emitter->emit($btn, 'click');
-"#,
-    );
-}
-
-#[test]
 fn weak_map_type_checking() {
     compile_ok(
         r#"<?php
 $map = new WeakMap();
 echo ($map instanceof WeakMap) ? 'is WeakMap' : 'not WeakMap';
-"#,
-    );
-}
-
-#[test]
-fn weak_reference_create_static() {
-    compile_ok(
-        r#"<?php
-class Singleton {
-    private static ?Singleton $instance = null;
-    private static ?WeakReference $weakRef = null;
-    public static function getInstance(): static {
-        if (static::$instance === null) {
-            static::$instance = new static();
-        }
-        return static::$instance;
-    }
-    public static function createWeak(): WeakReference {
-        return WeakReference::create(static::getInstance());
-    }
-}
-$ref = Singleton::createWeak();
-echo ($ref->get() instanceof Singleton) ? 'ok' : 'fail';
 "#,
     );
 }

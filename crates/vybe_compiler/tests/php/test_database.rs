@@ -331,3 +331,196 @@ $items = $db->query('SELECT * FROM items');
 "#,
     );
 }
+
+// ── PDO runtime (`php_cases!`) ──────────────────────────────────
+
+crate::php_cases! {
+    pdo_sqlite_memory_insert_and_last_insert_id => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT)');
+$pdo->exec("INSERT INTO posts (title) VALUES ('first')");
+echo $pdo->lastInsertId();
+"#,
+        ["1"]
+    };
+
+    pdo_prepared_statement_row_count_after_update => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)');
+$pdo->exec("INSERT INTO posts (title) VALUES ('old')");
+$stmt = $pdo->prepare("UPDATE posts SET title = 'new' WHERE id = 1");
+$stmt->execute();
+echo $stmt->rowCount();
+"#,
+        ["1"]
+    };
+
+    pdo_fetch_object_returns_std_class_row => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER, name TEXT)');
+$pdo->exec("INSERT INTO users VALUES (1, 'ada')");
+$row = $pdo->query('SELECT * FROM users')->fetch(PDO::FETCH_OBJ);
+echo $row->name;
+"#,
+        ["ada"]
+    };
+
+    pdo_fetch_class_into_custom_class => {
+        r#"<?php
+class User { public int $id; public string $name; }
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER, name TEXT)');
+$pdo->exec("INSERT INTO users VALUES (5, 'bob')");
+$user = $pdo->query('SELECT * FROM users')->fetchObject(User::class);
+echo $user->id . ':' . $user->name;
+"#,
+        ["5:bob"]
+    };
+
+    pdo_fetch_column_first_scalar => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE cfg (v TEXT)');
+$pdo->exec("INSERT INTO cfg VALUES ('on')");
+echo $pdo->query('SELECT v FROM cfg')->fetchColumn();
+"#,
+        ["on"]
+    };
+
+    pdo_transaction_commit_persists_rows => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (id INTEGER, v TEXT)');
+$pdo->beginTransaction();
+$pdo->exec("INSERT INTO t VALUES (1, 'a')");
+$pdo->commit();
+echo $pdo->query('SELECT COUNT(*) FROM t')->fetchColumn();
+"#,
+        ["1"]
+    };
+
+    pdo_transaction_rollback_discards_rows => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (id INTEGER, v TEXT)');
+$pdo->beginTransaction();
+$pdo->exec("INSERT INTO t VALUES (1, 'gone')");
+$pdo->rollBack();
+echo $pdo->query('SELECT COUNT(*) FROM t')->fetchColumn();
+"#,
+        ["0"]
+    };
+
+    pdo_in_clause_with_positional_placeholders => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE tags (name TEXT)');
+$pdo->exec("INSERT INTO tags VALUES ('a'), ('b'), ('c')");
+$stmt = $pdo->prepare('SELECT name FROM tags WHERE name IN (?, ?)');
+$stmt->execute(['a', 'c']);
+echo implode(',', $stmt->fetchAll(PDO::FETCH_COLUMN));
+"#,
+        ["a,c"]
+    };
+
+    pdo_named_placeholder_reuse => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE logs (msg TEXT, lvl TEXT)');
+$stmt = $pdo->prepare('INSERT INTO logs (msg, lvl) VALUES (:m, :l)');
+$stmt->execute([':m' => 'boot', ':l' => 'info']);
+$stmt->execute([':m' => 'done', ':l' => 'info']);
+echo $pdo->query('SELECT COUNT(*) FROM logs')->fetchColumn();
+"#,
+        ["2"]
+    };
+
+    pdo_quote_escapes_string_literal => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$q = $pdo->quote("O'Reilly");
+echo str_contains($q, "''") || str_contains($q, "\\'") ? 'quoted' : $q;
+"#,
+        ["quoted"]
+    };
+
+    pdo_attr_default_fetch_mode_assoc => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+$pdo->exec('CREATE TABLE x (k TEXT)');
+$pdo->exec("INSERT INTO x VALUES ('v')");
+echo $pdo->query('SELECT k FROM x')->fetch()['k'];
+"#,
+        ["v"]
+    };
+
+    pdo_exec_returns_affected_row_count => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (n INTEGER)');
+echo $pdo->exec('INSERT INTO t (n) VALUES (1), (2), (3)');
+"#,
+        ["3"]
+    };
+
+    pdo_fetch_all_grouped_by_column => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE items (cat TEXT, name TEXT)');
+$pdo->exec("INSERT INTO items VALUES ('a', '1'), ('a', '2'), ('b', '3')");
+$rows = $pdo->query('SELECT cat, name FROM items')->fetchAll(PDO::FETCH_GROUP | PDO::FETCH_ASSOC);
+echo count($rows['a']);
+"#,
+        ["2"]
+    };
+
+    pdo_null_param_binds_as_null => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (v TEXT)');
+$stmt = $pdo->prepare('INSERT INTO t (v) VALUES (?)');
+$stmt->execute([null]);
+$row = $pdo->query('SELECT v FROM t')->fetch(PDO::FETCH_ASSOC);
+echo $row['v'] === null ? 'null' : 'set';
+"#,
+        ["null"]
+    };
+
+    pdo_get_attribute_driver_name_sqlite => {
+        r#"<?php
+echo (new PDO('sqlite::memory:'))->getAttribute(PDO::ATTR_DRIVER_NAME);
+"#,
+        ["sqlite"]
+    };
+
+    pdo_prepare_bad_sql_throws_pdo_exception => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+try {
+    $pdo->prepare('SELEC bad');
+    echo 'ok';
+} catch (PDOException $e) {
+    echo 'pdo';
+}
+"#,
+        ["pdo"]
+    };
+}

@@ -216,3 +216,128 @@ function outer() {
 "#,
     );
 }
+
+// ── Runtime fiber suspend/resume (`php_cases!`) ─────────────────
+
+crate::php_cases! {
+    fiber_start_returns_first_suspend_value => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    Fiber::suspend('pause');
+    echo 'after';
+});
+echo $f->start();
+"#,
+        ["pause"]
+    };
+
+    fiber_resume_passes_value_back_into_fiber => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    $v = Fiber::suspend('need');
+    echo $v;
+});
+$f->start();
+$f->resume('data');
+"#,
+        ["data"]
+    };
+
+    fiber_return_value_available_after_completion => {
+        r#"<?php
+$f = new Fiber(function (): int {
+    Fiber::suspend('mid');
+    return 99;
+});
+$f->start();
+echo $f->resume();
+"#,
+        ["99"]
+    };
+
+    fiber_is_started_after_start => {
+        r#"<?php
+$f = new Fiber(function (): void { Fiber::suspend(1); });
+$f->start();
+echo $f->isStarted() ? 'started' : 'new';
+"#,
+        ["started"]
+    };
+
+    fiber_is_suspended_while_waiting_for_resume => {
+        r#"<?php
+$f = new Fiber(function (): void { Fiber::suspend('x'); });
+$f->start();
+echo $f->isSuspended() ? 'wait' : 'run';
+"#,
+        ["wait"]
+    };
+
+    fiber_is_terminated_after_return => {
+        r#"<?php
+$f = new Fiber(function (): int { return 1; });
+$f->start();
+echo $f->isTerminated() ? 'done' : 'live';
+"#,
+        ["done"]
+    };
+
+    fiber_get_return_throws_while_suspended => {
+        r#"<?php
+$f = new Fiber(function (): int {
+    Fiber::suspend('hold');
+    return 5;
+});
+$f->start();
+try { $f->getReturn(); echo 'got'; } catch (FiberError) { echo 'blocked'; }
+"#,
+        ["blocked"]
+    };
+
+    fiber_throws_exception_propagates_to_caller => {
+        r#"<?php
+$f = new Fiber(function (): void { throw new RuntimeException('boom'); });
+try { $f->start(); echo 'ok'; } catch (RuntimeException $e) { echo $e->getMessage(); }
+"#,
+        ["boom"]
+    };
+
+    fiber_suspend_outside_fiber_throws => {
+        r#"<?php
+try { Fiber::suspend('nope'); echo 'ok'; } catch (FiberError) { echo 'err'; }
+"#,
+        ["err"]
+    };
+
+    fiber_resume_before_start_throws => {
+        r#"<?php
+$f = new Fiber(function (): void {});
+try { $f->resume(); echo 'ok'; } catch (FiberError) { echo 'early'; }
+"#,
+        ["early"]
+    };
+
+    fiber_start_accepts_arguments_passed_to_closure => {
+        r#"<?php
+$f = new Fiber(function (int $a, int $b): void {
+    echo $a + $b;
+});
+$f->start(2, 5);
+"#,
+        ["7"]
+    };
+
+    fiber_nested_suspend_resume_sequence => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    echo Fiber::suspend('a');
+    echo Fiber::suspend('b');
+    echo 'end';
+});
+$f->start();
+$f->resume('1');
+$f->resume('2');
+"#,
+        ["1", "2", "end"]
+    };
+}

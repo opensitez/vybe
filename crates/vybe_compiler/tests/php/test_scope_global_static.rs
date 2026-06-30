@@ -255,3 +255,13 @@ echo $total;
         vec!["20"]
     );
 }
+
+crate::php_cases! {
+    static_local_variable_increments_per_call => {
+        r#"<?php
+function counter(): int { static $n = 0; return ++$n; }
+echo counter() . counter();
+"#,
+        ["12"]
+    };
+}
