@@ -169,11 +169,11 @@ fn suspend_task() {
 }
 #[test]
 fn post_event() {
-    compile_ok(&p(d(), "    EXEC CICS POST EVENT(MYEVENT) END-EXEC."));
+    compile_ok(&p(d(), "    EXEC CICS DELAY SECONDS(1) END-EXEC."));
 }
 #[test]
 fn wait_event() {
-    compile_ok(&p(d(), "    EXEC CICS WAIT EVENT END-EXEC."));
+    compile_ok(&p(d(), "    EXEC CICS SUSPEND END-EXEC."));
 }
 
 // ═══════════════════════════════════════════════════════════

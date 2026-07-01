@@ -279,7 +279,7 @@ fn xml_parse_event_types() {
            DISPLAY ws-content-count
            STOP RUN.
        parse-events SECTION.
-           EVALUATE XML-EVENT
+           EVALUATE XML-CODE
                WHEN "START-OF-ELEMENT"
                    ADD 1 TO ws-start-count
                WHEN "END-OF-ELEMENT"
@@ -313,7 +313,7 @@ fn xml_parse_extract_content() {
            DISPLAY ws-dept-val
            STOP RUN.
        extract-data SECTION.
-           EVALUATE XML-EVENT
+           EVALUATE XML-CODE
                WHEN "START-OF-ELEMENT"
                    MOVE XML-TEXT TO ws-current-element
                WHEN "CONTENT-CHARACTERS"

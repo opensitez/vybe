@@ -1,0 +1,10 @@
+use super::helpers::compile_ok;
+
+#[test] fn call_basic_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    CALL \"SUB-A\".\n    STOP RUN."); }
+#[test] fn call_using_one_argument_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 N PIC 9(3) VALUE 7.\nPROCEDURE DIVISION.\n    CALL \"SUB-B\" USING N.\n    STOP RUN."); }
+#[test] fn call_using_two_arguments_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A PIC X(10) VALUE \"ALICE\".\n01 B PIC 9(4) VALUE 1001.\nPROCEDURE DIVISION.\n    CALL \"SUB-C\" USING A B.\n    STOP RUN."); }
+#[test] fn call_on_exception_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    CALL \"SUB-E\"\n        ON EXCEPTION DISPLAY \"ERR\"\n        NOT ON EXCEPTION DISPLAY \"OK\"\n    END-CALL.\n    STOP RUN."); }
+#[test] fn call_chain_three_programs_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    CALL \"STEP-A\".\n    CALL \"STEP-B\".\n    CALL \"STEP-C\".\n    STOP RUN."); }
+#[test] fn perform_until_with_call_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 I PIC 9 VALUE 0.\nPROCEDURE DIVISION.\n    PERFORM UNTIL I >= 2\n        ADD 1 TO I\n        CALL \"SUB-L\"\n    END-PERFORM.\n    STOP RUN."); }
+#[test] fn evaluate_with_call_branches_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 K PIC 9 VALUE 2.\nPROCEDURE DIVISION.\n    EVALUATE K\n        WHEN 1 CALL \"P1\"\n        WHEN 2 CALL \"P2\"\n        WHEN OTHER CALL \"PX\"\n    END-EVALUATE.\n    STOP RUN."); }
+#[test] fn if_else_with_call_compiles() { compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 F PIC 9 VALUE 1.\nPROCEDURE DIVISION.\n    IF F = 1\n        CALL \"OK-P\"\n    ELSE\n        CALL \"NO-P\"\n    END-IF.\n    STOP RUN."); }

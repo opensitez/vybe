@@ -1,0 +1,71 @@
+use super::helpers::compile_ok;
+
+#[test]
+fn decimal_float_definition_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP1.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 DF USAGE FLOAT-DECIMAL-16.\nPROCEDURE DIVISION.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_compute_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP2.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-34.\n01 C USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    COMPUTE C = A + B.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_move_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP3.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    MOVE A TO B.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_34_definition_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP4.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 DF USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_add_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP5.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-16.\nPROCEDURE DIVISION.\n    ADD B TO A.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_subtract_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP6.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-34.\n01 B USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    SUBTRACT B FROM A.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_multiply_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP7.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-16.\nPROCEDURE DIVISION.\n    MULTIPLY A BY B.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_divide_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP8.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    DIVIDE A INTO B.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_compute_parentheses_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP9.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-16.\n01 B USAGE FLOAT-DECIMAL-34.\n01 C USAGE FLOAT-DECIMAL-34.\nPROCEDURE DIVISION.\n    COMPUTE C = (A + B) * B.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn decimal_float_move_between_precisions_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. DFP10.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE FLOAT-DECIMAL-34.\n01 B USAGE FLOAT-DECIMAL-16.\nPROCEDURE DIVISION.\n    MOVE A TO B.\n    STOP RUN.",
+    );
+}

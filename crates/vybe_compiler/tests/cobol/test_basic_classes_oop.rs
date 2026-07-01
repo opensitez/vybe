@@ -1,0 +1,164 @@
+use super::helpers::compile_ok;
+
+#[test]
+fn class_minimal_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. BASIC-CLASS.
+END CLASS BASIC-CLASS.
+"#,
+    );
+}
+
+#[test]
+fn class_with_object_section_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. LOGGER.
+OBJECT.
+METHOD-ID. LOG-MSG.
+PROCEDURE DIVISION.
+    DISPLAY "LOG".
+END METHOD LOG-MSG.
+END OBJECT.
+END CLASS LOGGER.
+"#,
+    );
+}
+
+#[test]
+fn class_with_factory_method_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. COUNTER-FACTORY.
+FACTORY.
+METHOD-ID. CREATE-COUNTER.
+PROCEDURE DIVISION RETURNING WS-INSTANCE.
+    DISPLAY "CREATE".
+END METHOD CREATE-COUNTER.
+END FACTORY.
+END CLASS COUNTER-FACTORY.
+"#,
+    );
+}
+
+#[test]
+fn class_with_data_items_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. PERSON.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(20).
+01 WS-AGE PIC 9(3).
+METHOD-ID. SET-NAME.
+PROCEDURE DIVISION USING WS-IN.
+    MOVE WS-IN TO WS-NAME.
+END METHOD SET-NAME.
+END OBJECT.
+END CLASS PERSON.
+"#,
+    );
+}
+
+#[test]
+fn class_method_returning_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. METRICS.
+OBJECT.
+METHOD-ID. GET-CODE.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE 7 TO WS-RESULT.
+END METHOD GET-CODE.
+END OBJECT.
+END CLASS METRICS.
+"#,
+    );
+}
+
+#[test]
+fn class_property_get_set_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. POINT.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-X PIC S9(5)V99 VALUE 0.
+METHOD-ID. GET-X PROPERTY GET.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE WS-X TO WS-RESULT.
+END METHOD GET-X.
+METHOD-ID. SET-X PROPERTY SET.
+PROCEDURE DIVISION USING WS-INPUT.
+    MOVE WS-INPUT TO WS-X.
+END METHOD SET-X.
+END OBJECT.
+END CLASS POINT.
+"#,
+    );
+}
+
+#[test]
+fn invoke_method_on_object_reference_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INVOKE-CLASS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ USAGE POINTER.
+01 WS-OUT PIC 9(4).
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ GET-CODE RETURNING WS-OUT.
+    DISPLAY WS-OUT.
+    STOP RUN.
+"#,
+    );
+}
+
+#[test]
+fn class_with_constructor_style_method_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. ACCOUNT.
+OBJECT.
+METHOD-ID. NEW.
+PROCEDURE DIVISION.
+    DISPLAY "INIT".
+END METHOD NEW.
+END OBJECT.
+END CLASS ACCOUNT.
+"#,
+    );
+}
+
+#[test]
+fn class_with_two_object_methods_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. COUNTER.
+OBJECT.
+METHOD-ID. INC.
+PROCEDURE DIVISION.
+    DISPLAY "INC".
+END METHOD INC.
+METHOD-ID. GET.
+PROCEDURE DIVISION RETURNING WS-V.
+    MOVE 1 TO WS-V.
+END METHOD GET.
+END OBJECT.
+END CLASS COUNTER.
+"#,
+    );
+}
