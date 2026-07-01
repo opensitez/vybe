@@ -292,32 +292,32 @@ fortran_cases! {
         ["57"]
     };
 
-    ichar_letter_a => {
+    ichar_uppercase_a_code => {
         "program t\nprint *, ichar('A')\nend program t\n",
         ["65"]
     };
 
-    ichar_letter_m => {
+    ichar_uppercase_m_code => {
         "program t\nprint *, ichar('M')\nend program t\n",
         ["77"]
     };
 
-    ichar_letter_z => {
+    ichar_uppercase_z_code => {
         "program t\nprint *, ichar('Z')\nend program t\n",
         ["90"]
     };
 
-    ichar_letter_a => {
+    ichar_lowercase_a_code => {
         "program t\nprint *, ichar('a')\nend program t\n",
         ["97"]
     };
 
-    ichar_letter_m => {
+    ichar_lowercase_m_code => {
         "program t\nprint *, ichar('m')\nend program t\n",
         ["109"]
     };
 
-    ichar_letter_z => {
+    ichar_lowercase_z_code => {
         "program t\nprint *, ichar('z')\nend program t\n",
         ["122"]
     };
