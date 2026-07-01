@@ -1708,17 +1708,7 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let is_generator = has_generator_marker || body_contains_yield(&body);
-    Ok(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type: None,
-        body,
-        modifiers: Modifiers::default(),
-        handles: Vec::new(),
-        is_async,
-        is_generator,
-        is_sub: false,
-    })
+    Ok(wrap_generator_if_needed(name, params, body, is_async, is_generator))
 }
 
 fn walk_params_with_prologue(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Statement>), String> {
@@ -2065,22 +2055,27 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 if !is_generator {
                     is_generator = body_contains_yield(&body);
                 }
-                Ok(ClassMember::Method(Box::new(Statement::new(
-                    StmtKind::FunctionDecl {
-                        name,
-                        params,
-                        return_type: None,
-                        body,
-                        modifiers: Modifiers {
-                            is_static,
-                            ..Default::default()
-                        },
-                        handles: Vec::new(),
-                        is_async,
-                        is_generator,
-                        is_sub: false,
-                    },
-                ))))
+                let wrapped = wrap_generator_if_needed(name, params, body, is_async, is_generator);
+                if let StmtKind::FunctionDecl { name, params, body, is_async, is_generator, is_sub, .. } = wrapped {
+                    Ok(ClassMember::Method(Box::new(Statement::new(
+                        StmtKind::FunctionDecl {
+                            name,
+                            params,
+                            return_type: None,
+                            body,
+                            modifiers: Modifiers {
+                                is_static,
+                                ..Default::default()
+                            },
+                            handles: Vec::new(),
+                            is_async,
+                            is_generator,
+                            is_sub,
+                        }
+                    ))))
+                } else {
+                    unreachable!()
+                }
             }
         }
         Rule::class_property => {
@@ -4892,34 +4887,16 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
     // §15.4.4 MethodDefinitionEvaluation — so emit a function expression,
     // not a Lambda (Lambdas compile with arrow-style lexical `this`).
     if let Some(key_expr) = computed_expr {
-        let func = Statement::new(StmtKind::FunctionDecl {
-            name: String::new(),
-            params,
-            return_type: None,
-            body,
-            modifiers: Modifiers::default(),
-            handles: Vec::new(),
-            is_async,
-            is_generator,
-            is_sub: false,
-        });
+        let wrapped = wrap_generator_if_needed(String::new(), params, body, is_async, is_generator);
+        let func = Statement::new(wrapped);
         return Ok(ObjectProperty::Computed {
             key: key_expr,
             value: Expression::new(ExprKind::FunctionExpr(Box::new(func))),
         });
     }
 
-    let func = Statement::new(StmtKind::FunctionDecl {
-        name: key.clone(),
-        params,
-        return_type: None,
-        body,
-        modifiers: Modifiers::default(),
-        handles: Vec::new(),
-        is_async,
-        is_generator,
-        is_sub: false,
-    });
+    let wrapped = wrap_generator_if_needed(key.clone(), params, body, is_async, is_generator);
+    let func = Statement::new(wrapped);
     Ok(ObjectProperty::Method {
         key,
         value: Box::new(func),
@@ -5139,3 +5116,518 @@ fn compound_to_binop(op: CompoundOp) -> BinOp {
         CompoundOp::Concat => BinOp::Concat,
     }
 }
+
+fn body_contains_this(stmts: &[Statement]) -> bool {
+    fn eth(e: &Expression) -> bool {
+        match &e.kind {
+            ExprKind::This => true,
+            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => {
+                false
+            }
+            ExprKind::RefOf(place) => match place.as_ref() {
+                PlaceExpr::Ident(_) => false,
+                PlaceExpr::Member { object, .. } => eth(object),
+                PlaceExpr::Index { object, index, .. } => eth(object) || eth(index),
+                PlaceExpr::Deref(expr) => eth(expr),
+            },
+            ExprKind::Lit(_)
+            | ExprKind::Ident(_)
+            | ExprKind::DefaultOf(_)
+            | ExprKind::Super
+            | ExprKind::AddressOf(_)
+            | ExprKind::Destructure(_) => false,
+            ExprKind::Unary { expr: i, .. }
+            | ExprKind::RefLoad(i)
+            | ExprKind::IsType { expr: i, .. }
+            | ExprKind::Cast { expr: i, .. }
+            | ExprKind::TypeOf(i)
+            | ExprKind::Spread(i)
+            | ExprKind::Await(i)
+            | ExprKind::Void(i)
+            | ExprKind::Delete(i) => eth(i),
+            ExprKind::Binary { left: a, right: b, .. }
+            | ExprKind::NullCoalesce { left: a, right: b }
+            | ExprKind::Assign { target: a, value: b }
+            | ExprKind::Walrus { target: a, value: b }
+            | ExprKind::Range { start: a, end: b, .. } => eth(a) || eth(b),
+            ExprKind::StaticAccess { class: a, member: b } => eth(a) || eth(b),
+            ExprKind::Ternary { cond, then, else_ } => eth(cond) || eth(then) || eth(else_),
+            ExprKind::Member { object, .. } => eth(object),
+            ExprKind::Index { object, index, .. } => eth(object) || eth(index),
+            ExprKind::Call { callee, args, .. } => eth(callee) || args.iter().any(|a| eth(&a.value)),
+            ExprKind::New { class, args } => eth(class) || args.iter().any(|a| eth(&a.value)),
+            ExprKind::SuperCall { args, .. } => args.iter().any(|a| eth(&a.value)),
+            ExprKind::Array(elems) => elems
+                .iter()
+                .any(|el| eth(&el.value) || el.key.as_ref().map_or(false, |k| eth(k))),
+            ExprKind::Tuple(es) | ExprKind::Set(es) | ExprKind::Sequence(es) => {
+                es.iter().any(|x| eth(x))
+            }
+            ExprKind::Object(props) => props.iter().any(|p| match p {
+                ObjectProperty::KeyValue { key, value }
+                | ObjectProperty::Computed { key, value } => eth(key) || eth(value),
+                ObjectProperty::Spread(x) => eth(x),
+                _ => false,
+            }),
+            ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
+                InterpolPart::Expr(x) | InterpolPart::Formatted(x, _) => eth(x),
+                _ => false,
+            }),
+            ExprKind::Match { subject, arms } => {
+                eth(subject)
+                    || arms.iter().any(|a| {
+                        a.conditions
+                            .as_ref()
+                            .map_or(false, |cs| cs.iter().any(|c| eth(c)))
+                            || eth(&a.body)
+                    })
+            }
+            ExprKind::Comprehension { element, generators, .. } => {
+                eth(element)
+                    || generators
+                        .iter()
+                        .any(|g| eth(&g.iter) || g.conditions.iter().any(|c| eth(c)))
+            }
+            ExprKind::Slice { lower, upper, step } => [lower, upper, step]
+                .iter()
+                .any(|o| o.as_ref().map_or(false, |x| eth(x))),
+            ExprKind::Yield(x) => x.as_ref().map_or(false, |y| eth(y)),
+            ExprKind::YieldFrom(x) => eth(x),
+        }
+    }
+    fn sth(s: &Statement) -> bool {
+        match &s.kind {
+            StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => false,
+            StmtKind::Expr(e) => eth(e),
+            StmtKind::Block(ss) => ss.iter().any(|s| sth(s)),
+            StmtKind::VarDecl { declarations, .. } => declarations
+                .iter()
+                .any(|d| d.init.as_ref().map_or(false, |e| eth(e))),
+            StmtKind::Return(e) => e.as_ref().map_or(false, |e| eth(e)),
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                eth(cond)
+                    || then_body.iter().any(|s| sth(s))
+                    || elifs.iter().any(|(c, b)| eth(c) || b.iter().any(|s| sth(s)))
+                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+            }
+            StmtKind::While { cond, body, else_body } => {
+                eth(cond)
+                    || body.iter().any(|s| sth(s))
+                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+            }
+            StmtKind::DoWhile { body, cond, .. } => body.iter().any(|s| sth(s)) || eth(cond),
+            StmtKind::For { init, cond, update, body } => {
+                init.as_ref().map_or(false, |s| sth(s))
+                    || cond.as_ref().map_or(false, |e| eth(e))
+                    || update.as_ref().map_or(false, |e| eth(e))
+                    || body.iter().any(|s| sth(s))
+            }
+            StmtKind::ForIn { iter, body, else_body, .. } => {
+                eth(iter)
+                    || body.iter().any(|s| sth(s))
+                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                eth(expr)
+                    || cases.iter().any(|c| c.body.iter().any(|s| sth(s)))
+                    || default.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+            }
+            StmtKind::Try { body, catches, else_body, finally } => {
+                body.iter().any(|s| sth(s))
+                    || catches.iter().any(|c| c.body.iter().any(|s| sth(s)))
+                    || else_body.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+                    || finally.as_ref().map_or(false, |b| b.iter().any(|s| sth(s)))
+            }
+            StmtKind::Assign { targets, value } => targets.iter().any(|e| eth(e)) || eth(value),
+            StmtKind::CompoundAssign { target, value, .. } => eth(target) || eth(value),
+            StmtKind::Throw { expr, cause } => {
+                expr.as_ref().map_or(false, |e| eth(e)) || cause.as_ref().map_or(false, |e| eth(e))
+            }
+            StmtKind::Labeled { body, .. } => sth(body),
+            StmtKind::Echo(es) | StmtKind::Delete(es) => es.iter().any(|e| eth(e)),
+            StmtKind::Export { declaration, default, .. } => {
+                declaration.as_ref().map_or(false, |s| sth(s))
+                    || default.as_ref().map_or(false, |e| eth(e))
+            }
+            StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. }
+            | StmtKind::NamespaceDecl { body, .. } => body.iter().any(|s| sth(s)),
+            StmtKind::MatchStatement { subject, cases } => {
+                eth(subject)
+                    || cases.iter().any(|c| {
+                        c.guard.as_ref().map_or(false, |e| eth(e)) || c.body.iter().any(|s| sth(s))
+                    })
+            }
+            StmtKind::Assert { test, msg } => eth(test) || msg.as_ref().map_or(false, |e| eth(e)),
+            _ => false,
+        }
+    }
+    stmts.iter().any(|s| sth(s))
+}
+
+fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
+    fn rwe(e: &mut Expression) {
+        match &mut e.kind {
+            ExprKind::This => {
+                e.kind = ExprKind::Ident("__self_captured".to_string());
+            }
+            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => {
+                // Scope boundary — separate this context
+            }
+            ExprKind::RefOf(place) => match place.as_mut() {
+                PlaceExpr::Ident(_) => {}
+                PlaceExpr::Member { object, .. } => rwe(object),
+                PlaceExpr::Index { object, index, .. } => {
+                    rwe(object);
+                    rwe(index);
+                }
+                PlaceExpr::Deref(expr) => rwe(expr),
+            },
+            ExprKind::Unary { expr: i, .. }
+            | ExprKind::RefLoad(i)
+            | ExprKind::IsType { expr: i, .. }
+            | ExprKind::Cast { expr: i, .. }
+            | ExprKind::TypeOf(i)
+            | ExprKind::Spread(i)
+            | ExprKind::Await(i)
+            | ExprKind::Void(i)
+            | ExprKind::Delete(i) => rwe(i),
+            ExprKind::Binary { left: a, right: b, .. }
+            | ExprKind::NullCoalesce { left: a, right: b }
+            | ExprKind::Assign { target: a, value: b }
+            | ExprKind::Walrus { target: a, value: b }
+            | ExprKind::Range { start: a, end: b, .. } => {
+                rwe(a);
+                rwe(b);
+            }
+            ExprKind::StaticAccess { class: a, member: b } => {
+                rwe(a);
+                rwe(b);
+            }
+            ExprKind::Ternary { cond, then, else_ } => {
+                rwe(cond);
+                rwe(then);
+                rwe(else_);
+            }
+            ExprKind::Member { object, .. } => rwe(object),
+            ExprKind::Index { object, index, .. } => {
+                rwe(object);
+                rwe(index);
+            }
+            ExprKind::Call { callee, args, .. } => {
+                rwe(callee);
+                for arg in args {
+                    rwe(&mut arg.value);
+                }
+            }
+            ExprKind::New { class, args } => {
+                rwe(class);
+                for arg in args {
+                    rwe(&mut arg.value);
+                }
+            }
+            ExprKind::SuperCall { args, .. } => {
+                for arg in args {
+                    rwe(&mut arg.value);
+                }
+            }
+            ExprKind::Array(elems) => {
+                for el in elems {
+                    rwe(&mut el.value);
+                    if let Some(k) = &mut el.key {
+                        rwe(k);
+                    }
+                }
+            }
+            ExprKind::Tuple(es) | ExprKind::Set(es) | ExprKind::Sequence(es) => {
+                for x in es {
+                    rwe(x);
+                }
+            }
+            ExprKind::Object(props) => {
+                for p in props {
+                    match p {
+                        ObjectProperty::KeyValue { key, value }
+                        | ObjectProperty::Computed { key, value } => {
+                            rwe(key);
+                            rwe(value);
+                        }
+                        ObjectProperty::Spread(x) => rwe(x),
+                        _ => {}
+                    }
+                }
+            }
+            ExprKind::Interpolation(parts) => {
+                for p in parts {
+                    match p {
+                        InterpolPart::Expr(x) | InterpolPart::Formatted(x, _) => rwe(x),
+                        _ => {}
+                    }
+                }
+            }
+            ExprKind::Match { subject, arms } => {
+                rwe(subject);
+                for a in arms {
+                    if let Some(cs) = &mut a.conditions {
+                        for c in cs {
+                            rwe(c);
+                        }
+                    }
+                    rwe(&mut a.body);
+                }
+            }
+            ExprKind::Comprehension { element, generators, .. } => {
+                rwe(element);
+                for g in generators {
+                    rwe(&mut g.iter);
+                    for c in &mut g.conditions {
+                        rwe(c);
+                    }
+                }
+            }
+            ExprKind::Slice { lower, upper, step } => {
+                if let Some(x) = lower { rwe(x); }
+                if let Some(x) = upper { rwe(x); }
+                if let Some(x) = step { rwe(x); }
+            }
+            ExprKind::Yield(x) => {
+                if let Some(y) = x { rwe(y); }
+            }
+            ExprKind::YieldFrom(x) => rwe(x),
+            _ => {}
+        }
+    }
+    fn rws(s: &mut Statement) {
+        match &mut s.kind {
+            StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {
+                // Scope boundary — separate this context
+            }
+            StmtKind::Expr(e) => rwe(e),
+            StmtKind::Block(ss) => {
+                for s in ss {
+                    rws(s);
+                }
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for d in declarations {
+                    if let Some(e) = &mut d.init {
+                        rwe(e);
+                    }
+                }
+            }
+            StmtKind::Return(e) => {
+                if let Some(x) = e { rwe(x); }
+            }
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                rwe(cond);
+                for s in then_body { rws(s); }
+                for (c, b) in elifs {
+                    rwe(c);
+                    for s in b { rws(s); }
+                }
+                if let Some(b) = else_body {
+                    for s in b { rws(s); }
+                }
+            }
+            StmtKind::While { cond, body, else_body } => {
+                rwe(cond);
+                for s in body { rws(s); }
+                if let Some(b) = else_body {
+                    for s in b { rws(s); }
+                }
+            }
+            StmtKind::DoWhile { body, cond, .. } => {
+                for s in body { rws(s); }
+                rwe(cond);
+            }
+            StmtKind::For { init, cond, update, body } => {
+                if let Some(s) = init { rws(s); }
+                if let Some(e) = cond { rwe(e); }
+                if let Some(e) = update { rwe(e); }
+                for s in body { rws(s); }
+            }
+            StmtKind::ForIn { iter, body, else_body, .. } => {
+                rwe(iter);
+                for s in body { rws(s); }
+                if let Some(b) = else_body {
+                    for s in b { rws(s); }
+                }
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                rwe(expr);
+                for c in cases {
+                    for cond in &mut c.conditions {
+                        match cond {
+                            CaseCondition::Value(e) => rwe(e),
+                            CaseCondition::Range { from, to } => {
+                                rwe(from);
+                                rwe(to);
+                            }
+                            CaseCondition::Comparison { expr, .. } => rwe(expr),
+                        }
+                    }
+                    for s in &mut c.body { rws(s); }
+                }
+                if let Some(b) = default {
+                    for s in b { rws(s); }
+                }
+            }
+            StmtKind::Try { body, catches, else_body, finally } => {
+                for s in body { rws(s); }
+                for c in catches {
+                    for s in &mut c.body { rws(s); }
+                }
+                if let Some(b) = else_body {
+                    for s in b { rws(s); }
+                }
+                if let Some(b) = finally {
+                    for s in b { rws(s); }
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                for e in targets { rwe(e); }
+                rwe(value);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rwe(target);
+                rwe(value);
+            }
+            StmtKind::Throw { expr, cause } => {
+                if let Some(e) = expr { rwe(e); }
+                if let Some(e) = cause { rwe(e); }
+            }
+            StmtKind::Labeled { body, .. } => rws(body),
+            StmtKind::Echo(es) | StmtKind::Delete(es) => {
+                for e in es { rwe(e); }
+            }
+            StmtKind::Export { declaration, default, .. } => {
+                if let Some(s) = declaration { rws(s); }
+                if let Some(e) = default { rwe(e); }
+            }
+            StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. }
+            | StmtKind::NamespaceDecl { body, .. } => {
+                for s in body { rws(s); }
+            }
+            StmtKind::MatchStatement { subject, cases } => {
+                rwe(subject);
+                for c in cases {
+                    if let Some(e) = &mut c.guard { rwe(e); }
+                    for s in &mut c.body { rws(s); }
+                }
+            }
+            StmtKind::Assert { test, msg } => {
+                rwe(test);
+                if let Some(e) = msg { rwe(e); }
+            }
+            _ => {}
+        }
+    }
+    for stmt in stmts {
+        rws(stmt);
+    }
+}
+
+fn wrap_generator(
+    name: String,
+    params: Vec<Param>,
+    body: Vec<Statement>,
+    is_async: bool,
+) -> StmtKind {
+    let mut body = body;
+    rewrite_this_in_generator_body(&mut body);
+
+    let gen_func_expr = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async,
+            is_generator: true,
+            is_sub: false,
+        }
+    ))));
+
+    let gen_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("__gen_fn".to_string()),
+            type_hint: None,
+            init: Some(gen_func_expr),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
+
+    let self_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("__self_captured".to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::This)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Const,
+    });
+
+    let callee = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident("__gen_fn")),
+        field: "call".to_string(),
+        null_safe: false,
+    });
+    let call_expr = Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args: vec![
+            Argument {
+                name: None,
+                value: Expression::ident("__self_captured"),
+            }
+        ],
+        optional: false,
+    });
+    let ret_stmt = Statement::new(StmtKind::Return(Some(call_expr)));
+
+    let outer_body = vec![self_decl, gen_decl, ret_stmt];
+
+    StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type: None,
+        body: outer_body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    }
+}
+
+fn wrap_generator_if_needed(
+    name: String,
+    params: Vec<Param>,
+    body: Vec<Statement>,
+    is_async: bool,
+    is_generator: bool,
+) -> StmtKind {
+    if is_generator {
+        wrap_generator(name, params, body, is_async)
+    } else {
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async,
+            is_generator: false,
+            is_sub: false,
+        }
+    }
+}
+

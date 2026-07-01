@@ -5,7 +5,6 @@
 //! inline WASM GC sequences.
 
 use super::*;
-use crate::scope::UpvalueDesc;
 
 fn python_is_identifier_literal(value: &str) -> bool {
     let mut chars = value.chars();
@@ -101,51 +100,6 @@ fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
     None
 }
 
-#[derive(Clone, Copy)]
-enum JsPromiseChainKind {
-    Then,
-    Catch,
-    Finally,
-}
-
-const JS_PROMISE_CHAIN_INPUT: &str = "__js_promise_chain_input";
-const JS_PROMISE_CHAIN_ON_FULFILLED: &str = "__js_promise_chain_on_fulfilled";
-const JS_PROMISE_CHAIN_ON_REJECTED: &str = "__js_promise_chain_on_rejected";
-const JS_PROMISE_CHAIN_ON_FINALLY: &str = "__js_promise_chain_on_finally";
-const JS_PROMISE_CHAIN_ERROR: &str = "__js_promise_chain_error";
-
-const JS_PROMISE_THEN_PARAMS: [&str; 3] = [
-    JS_PROMISE_CHAIN_INPUT,
-    JS_PROMISE_CHAIN_ON_FULFILLED,
-    JS_PROMISE_CHAIN_ON_REJECTED,
-];
-const JS_PROMISE_CATCH_PARAMS: [&str; 2] = [JS_PROMISE_CHAIN_INPUT, JS_PROMISE_CHAIN_ON_REJECTED];
-const JS_PROMISE_FINALLY_PARAMS: [&str; 2] = [JS_PROMISE_CHAIN_INPUT, JS_PROMISE_CHAIN_ON_FINALLY];
-
-fn js_promise_chain_params(kind: JsPromiseChainKind) -> &'static [&'static str] {
-    match kind {
-        JsPromiseChainKind::Then => &JS_PROMISE_THEN_PARAMS,
-        JsPromiseChainKind::Catch => &JS_PROMISE_CATCH_PARAMS,
-        JsPromiseChainKind::Finally => &JS_PROMISE_FINALLY_PARAMS,
-    }
-}
-
-fn js_ident(name: &str) -> Expression {
-    Expression::new(ExprKind::Ident(name.to_string()))
-}
-
-fn js_await(expr: Expression) -> Expression {
-    Expression::new(ExprKind::Await(Box::new(expr)))
-}
-
-fn js_call_ident(name: &str, args: Vec<Expression>) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(js_ident(name)),
-        args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
-}
-
 fn js_dynamic_import_alias(module: &str) -> String {
     let suffix: String = module
         .chars()
@@ -154,6 +108,65 @@ fn js_dynamic_import_alias(module: &str) -> String {
     format!("__js_dynamic_import_{}", suffix)
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+enum JsPromiseChainKind {
+    Then,
+    Catch,
+    Finally,
+}
+
+#[allow(dead_code)]
+const JS_PROMISE_CHAIN_INPUT: &str = "__js_promise_chain_input";
+#[allow(dead_code)]
+const JS_PROMISE_CHAIN_ON_FULFILLED: &str = "__js_promise_chain_on_fulfilled";
+#[allow(dead_code)]
+const JS_PROMISE_CHAIN_ON_REJECTED: &str = "__js_promise_chain_on_rejected";
+#[allow(dead_code)]
+const JS_PROMISE_CHAIN_ON_FINALLY: &str = "__js_promise_chain_on_finally";
+#[allow(dead_code)]
+const JS_PROMISE_CHAIN_ERROR: &str = "__js_promise_chain_error";
+
+#[allow(dead_code)]
+const JS_PROMISE_THEN_PARAMS: [&str; 3] = [
+    JS_PROMISE_CHAIN_INPUT,
+    JS_PROMISE_CHAIN_ON_FULFILLED,
+    JS_PROMISE_CHAIN_ON_REJECTED,
+];
+#[allow(dead_code)]
+const JS_PROMISE_CATCH_PARAMS: [&str; 2] = [JS_PROMISE_CHAIN_INPUT, JS_PROMISE_CHAIN_ON_REJECTED];
+#[allow(dead_code)]
+const JS_PROMISE_FINALLY_PARAMS: [&str; 2] = [JS_PROMISE_CHAIN_INPUT, JS_PROMISE_CHAIN_ON_FINALLY];
+
+#[allow(dead_code)]
+fn js_promise_chain_params(kind: JsPromiseChainKind) -> &'static [&'static str] {
+    match kind {
+        JsPromiseChainKind::Then => &JS_PROMISE_THEN_PARAMS,
+        JsPromiseChainKind::Catch => &JS_PROMISE_CATCH_PARAMS,
+        JsPromiseChainKind::Finally => &JS_PROMISE_FINALLY_PARAMS,
+    }
+}
+
+#[allow(dead_code)]
+fn js_ident(name: &str) -> Expression {
+    Expression::new(ExprKind::Ident(name.to_string()))
+}
+
+#[allow(dead_code)]
+fn js_await(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Await(Box::new(expr)))
+}
+
+#[allow(dead_code)]
+fn js_call_ident(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(js_ident(name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+#[allow(dead_code)]
 fn js_nullish_check(name: &str) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Or,
@@ -170,6 +183,7 @@ fn js_nullish_check(name: &str) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
     match kind {
         JsPromiseChainKind::Then => vec![Statement::new(StmtKind::Try {
@@ -231,8 +245,6 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
             finally: None,
         })],
         JsPromiseChainKind::Finally => {
-            // await __input; __onFinally?.(); return awaited value.
-            // Avoid try/finally + return which has async resumption issues.
             let input_var = "__finally_val";
             vec![
                 Statement::new(StmtKind::VarDecl {
@@ -650,111 +662,16 @@ impl Compiler {
                 && is_numeric_overload_type(&normalized_arg))
     }
 
-    fn match_method_overload(
-        &self,
-        overloads: &[PendingMethodOverload],
-        arg_exprs: &[&Expression],
-        require_multiple: bool,
-    ) -> Option<PendingMethodOverload> {
-        if require_multiple && overloads.len() < 2 {
-            return None;
-        }
-
-        let same_arity: Vec<&PendingMethodOverload> = overloads
-            .iter()
-            .filter(|overload| overload.param_types.len() == arg_exprs.len())
-            .collect();
-        if same_arity.len() == 1 {
-            return Some(same_arity[0].clone());
-        }
-
-        let arg_types: Vec<Option<String>> = arg_exprs
-            .iter()
-            .map(|expr| {
-                self.infer_expr_type_hint(expr)
-                    .map(|hint| Self::normalize_type_hint(&hint))
-            })
-            .collect();
-        if arg_types.iter().any(|hint| hint.is_none()) {
-            return None;
-        }
-
-        let matching: Vec<&PendingMethodOverload> =
-            same_arity
-                .into_iter()
-                .filter(|overload| {
-                    overload.param_types.iter().zip(arg_types.iter()).all(
-                        |(param_type, arg_type)| {
-                            arg_type.as_deref().is_some_and(|arg_type| {
-                                self.overload_type_matches(param_type, arg_type)
-                            })
-                        },
-                    )
-                })
-                .collect();
-        if matching.len() == 1 {
-            Some(matching[0].clone())
-        } else {
-            None
-        }
-    }
-
-    fn match_method_overload_chunk(
-        &self,
-        overloads: &[PendingMethodOverload],
-        arg_exprs: &[&Expression],
-        require_multiple: bool,
-    ) -> Option<usize> {
-        self.match_method_overload(overloads, arg_exprs, require_multiple)
-            .map(|overload| overload.chunk_idx)
-    }
-
-    fn resolve_instance_method_overload(
-        &self,
-        object: &Expression,
-        field: &str,
-        arg_exprs: &[&Expression],
-        require_multiple: bool,
-    ) -> Option<PendingMethodOverload> {
-        let receiver_type = resolve_receiver_type_hint(self, object)?;
-        let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
-        let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.js_member_storage_name_for_class(&class_name, field);
-        let overloads = pending.instance_method_overloads.get(&method_key)?;
-        self.match_method_overload(overloads, arg_exprs, require_multiple)
-    }
-
-    fn resolve_instance_method_overload_chunk(
-        &self,
-        object: &Expression,
-        field: &str,
-        arg_exprs: &[&Expression],
-    ) -> Option<usize> {
-        self.resolve_instance_method_overload(object, field, arg_exprs, true)
-            .map(|overload| overload.chunk_idx)
-    }
-
     pub(super) fn resolve_pending_class_name_for_type_hint(
         &self,
         type_hint: &str,
     ) -> Option<String> {
-        let resolved_type = self.resolve_source_type_alias(type_hint);
-        let receiver_type = resolved_type
+        let receiver_type = type_hint
             .trim()
-            .trim_end_matches('?')
-            .trim_start_matches('*')
-            .trim_start_matches('^')
-            .trim();
-        let receiver_type = receiver_type
-            .strip_prefix("type(")
+            .strip_prefix("class(")
             .and_then(|inner| inner.strip_suffix(')'))
-            .or_else(|| {
-                receiver_type
-                    .strip_prefix("class(")
-                    .and_then(|inner| inner.strip_suffix(')'))
-            })
             .map(str::trim)
-            .unwrap_or(receiver_type);
+            .unwrap_or(type_hint.trim());
         let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
         if self.pending_classes.contains_key(&receiver_canon) {
             return Some(receiver_canon);
@@ -766,6 +683,77 @@ impl Compiler {
                     || name.eq_ignore_ascii_case(&receiver_canon)
             })
             .cloned()
+    }
+
+    fn match_method_overload_chunk(
+        &self,
+        overloads: &[PendingMethodOverload],
+        arg_exprs: &[&Expression],
+        include_receiver: bool,
+    ) -> Option<usize> {
+        self.match_method_overload(overloads, arg_exprs, include_receiver)
+            .map(|overload| overload.chunk_idx)
+    }
+
+    fn match_method_overload(
+        &self,
+        overloads: &[PendingMethodOverload],
+        arg_exprs: &[&Expression],
+        include_receiver: bool,
+    ) -> Option<PendingMethodOverload> {
+        let effective_args = if include_receiver && !arg_exprs.is_empty() {
+            &arg_exprs[1..]
+        } else {
+            arg_exprs
+        };
+        let actual_arity = effective_args.len();
+
+        'overload_search: for overload in overloads {
+            let signature = &overload.signature;
+            let param_count = overload.param_types.len();
+            let arity_ok = actual_arity >= signature.min_arity
+                && (signature.has_rest || actual_arity <= param_count);
+            if !arity_ok {
+                continue;
+            }
+
+            for (arg_expr, param_type) in effective_args.iter().zip(overload.param_types.iter()) {
+                if let Some(arg_type) = self.infer_expr_type_hint(arg_expr) {
+                    if !self.overload_type_matches(param_type, &arg_type) {
+                        continue 'overload_search;
+                    }
+                }
+            }
+
+            return Some(overload.clone());
+        }
+
+        None
+    }
+
+    fn resolve_instance_method_overload_chunk(
+        &self,
+        object: &Expression,
+        method_name: &str,
+        arg_exprs: &[&Expression],
+    ) -> Option<usize> {
+        self.resolve_instance_method_overload(object, method_name, arg_exprs, false)
+            .map(|overload| overload.chunk_idx)
+    }
+
+    fn resolve_instance_method_overload(
+        &self,
+        object: &Expression,
+        method_name: &str,
+        arg_exprs: &[&Expression],
+        include_receiver: bool,
+    ) -> Option<PendingMethodOverload> {
+        let receiver_type = resolve_receiver_type_hint(self, object)?;
+        let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
+        let pending = self.pending_classes.get(&class_name)?;
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
+        let overloads = pending.instance_method_overloads.get(&method_key)?;
+        self.match_method_overload(overloads, arg_exprs, include_receiver)
     }
 
     pub(super) fn pending_class_has_method_name_for_type(
@@ -1490,7 +1478,7 @@ impl Compiler {
         obj_slot: u16,
         method_name: &str,
         args_slot: u16,
-        known_len: Option<usize>,
+        _known_len: Option<usize>,
     ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         inst!(self, core_wasm::string_const, method_name);
@@ -1743,6 +1731,7 @@ impl Compiler {
         }
     }
 
+    #[allow(dead_code)]
     fn compile_js_promise_chain_wrapper(
         &mut self,
         kind: JsPromiseChainKind,
@@ -9315,56 +9304,38 @@ impl Compiler {
     ) -> Result<(), String> {
         match binding {
             ReflectionBinding::Type(type_name) => {
-                self.compile_reflection_type_value(type_name)?;
-            }
-            ReflectionBinding::Constructor { .. } => {
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
-                        value: Expression::string(".ctor"),
+                        value: Expression::string(type_name),
                     },
                 ])))?;
             }
-            ReflectionBinding::Method {
-                type_name,
-                method_name,
-            } => {
-                let is_static = self
-                    .reflection_type_metadata(type_name)
-                    .and_then(|meta| meta.methods.get(method_name))
-                    .map(|meta| meta.is_static)
-                    .unwrap_or(false);
+            ReflectionBinding::Constructor { type_name, .. } => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(type_name),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Method { method_name, .. } => {
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
                         value: Expression::string(method_name),
                     },
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("IsStatic"),
-                        value: Expression::bool(is_static),
-                    },
                 ])))?;
             }
-            ReflectionBinding::Property {
-                type_name,
-                property_name,
-            } => {
-                let can_write = self
-                    .reflection_type_metadata(type_name)
-                    .and_then(|meta| meta.properties.get(property_name))
-                    .map(|meta| meta.can_write)
-                    .unwrap_or(false);
+            ReflectionBinding::Property { property_name, .. } => {
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
                         value: Expression::string(property_name),
                     },
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("CanWrite"),
-                        value: Expression::bool(can_write),
-                    },
                 ])))?;
             }
+
             ReflectionBinding::Field { field_name, .. } => {
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {

@@ -9,7 +9,7 @@
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 // ── helpers ────────────────────────────────────────────────────────────
 

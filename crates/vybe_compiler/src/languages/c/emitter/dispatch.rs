@@ -1,6 +1,6 @@
 use vybe_bytecode::Chunk;
 
-use crate::emitter::{collections, ops, strings};
+use crate::emitter::{collections, strings};
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) -> bool {
     match name {

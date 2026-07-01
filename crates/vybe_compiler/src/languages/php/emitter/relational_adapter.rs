@@ -35,6 +35,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         }
     }
 }
+#[allow(dead_code)]
 fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(v)), line);
 }

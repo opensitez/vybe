@@ -1,8 +1,6 @@
 //! Extended IF construct coverage: multi-branch ELSEIF chains, block IF without
 //! ELSE, compound logical conditions, character comparisons, and legacy arithmetic IF.
 
-use super::helpers;
-
 fortran_cases! {
     // ── IF-THEN-ELSEIF chains ─────────────────────────────────────────
 

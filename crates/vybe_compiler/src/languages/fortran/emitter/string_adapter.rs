@@ -10,7 +10,6 @@
 
 use crate::emitter::instructions::host;
 use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
 
 /// Fortran `len_trim(s)` — length of string after stripping trailing
 /// blanks. Composes `STR_TRIM_END` + `STR_LENGTH`.

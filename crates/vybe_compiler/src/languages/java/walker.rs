@@ -1034,7 +1034,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_for_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner().peekable();
+    let inner = pair.into_inner().peekable();
 
     let mut init: Option<Box<Statement>> = None;
     let mut cond: Option<Expression> = None;

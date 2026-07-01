@@ -3,8 +3,6 @@
 //! Distinct from `test_where_advanced.rs` (compile-only), `test_array_transforms.rs`
 //! (basic MERGE scalars/arrays), and `test_arrays.rs` (basic WHERE compile).
 
-use super::helpers;
-
 fortran_cases! {
     // ── Masked assignment (no ELSEWHERE) ────────────────────────────
 

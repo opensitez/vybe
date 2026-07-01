@@ -1,7 +1,6 @@
 use crate::ast::{ExprKind, Expression, Literal};
 use crate::compiler::*;
 use crate::emitter as common;
-use crate::emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::{Op, Value};
 

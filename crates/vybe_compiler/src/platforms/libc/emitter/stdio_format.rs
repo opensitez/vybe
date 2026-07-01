@@ -10,9 +10,8 @@
 //! Rust bytecode (no JS polyfill) and in the proper emitter path.
 
 use crate::emitter::instructions::core_wasm;
-use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 

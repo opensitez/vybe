@@ -389,7 +389,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
             let idx = chunk.add_import("wasm:js-string", "length");
             chunk.emit_call(idx, 1, line);
         }
-        let idx = chunk.add_constant(Value::F64(width as f64));
+        let _idx = chunk.add_constant(Value::F64(width as f64));
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "0", line);
@@ -975,7 +975,7 @@ fn emit_am_pm(
 ) {
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
     let chunk = &mut chunks[current];
-    let idx = chunk.add_constant(Value::F64(12.0));
+    let _idx = chunk.add_constant(Value::F64(12.0));
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, if upper { "AM" } else { "am" }, line);
@@ -1413,7 +1413,7 @@ fn default_now_component(
     call_import(chunks, current, "ecma:date", getter, 1, line);
     let chunk = &mut chunks[current];
     if bias != 0.0 {
-        let idx = chunk.add_constant(Value::F64(bias));
+        let _idx = chunk.add_constant(Value::F64(bias));
         chunk.emit_op(Op::F64_ADD, line);
     }
     local_set(chunk, slot, line);

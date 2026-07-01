@@ -164,7 +164,7 @@ fortran_cases! {
         ["48"]
     };
 
-    char_from_code_seventy_two_is_H => {
+    char_from_code_seventy_two_is_h => {
         "program t\ncharacter(len=1) :: c\nc = char(72)\nprint *, c\nend program t\n",
         ["H"]
     };

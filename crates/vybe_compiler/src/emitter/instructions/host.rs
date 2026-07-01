@@ -9,6 +9,7 @@ pub struct FunctionRegistry {
     functions: HashMap<(&'static str, &'static str), FunctionEntry>,
 }
 
+#[allow(dead_code)]
 struct FunctionEntry {
     module: &'static str,
     name: &'static str,

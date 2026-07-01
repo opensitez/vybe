@@ -101,6 +101,7 @@ struct FieldMeta {
 
 #[derive(Debug, Clone)]
 struct ClassMeta {
+    #[allow(dead_code)]
     name: String,
     parent: Option<String>,
     interfaces: Vec<String>,
@@ -111,6 +112,7 @@ struct ClassMeta {
 
 #[derive(Debug, Clone)]
 struct FuncMeta {
+    #[allow(dead_code)]
     name: String,
     param_count: usize,
     required_params: usize,
@@ -7264,7 +7266,7 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
         let mut result = fallback;
         for (conds, body) in cond_arms.into_iter().rev() {
             // OR multiple conditions: cond1 || cond2 || ...
-            let mut combined = conds
+            let combined = conds
                 .into_iter()
                 .reduce(|a, b| {
                     Expression::with_span(
@@ -7427,7 +7429,7 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
     // either spreads or key=>value pairs (not positional non-spread like
     // [$first, ...$rest] which is destructuring).
     let has_spread = elems.iter().any(|e| e.spread);
-    let all_spread = elems.iter().all(|e| e.spread);
+    let _all_spread = elems.iter().all(|e| e.spread);
     let all_spread_or_keyed = elems.iter().all(|e| e.spread || e.key.is_some());
     let has_non_spread_positional = elems.iter().any(|e| !e.spread && e.key.is_none());
     if has_spread && !has_non_spread_positional && all_spread_or_keyed {
@@ -12478,6 +12480,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
     })
 }
 
+#[allow(dead_code)]
 fn merge_echos_in_stmt(stmt: Statement) -> Statement {
     let span = stmt.span.clone();
     let kind = match stmt.kind {
@@ -12584,6 +12587,7 @@ fn merge_echos_in_stmt(stmt: Statement) -> Statement {
 /// Merge consecutive `Echo` statements into a single `Echo` with string
 /// concatenation. PHP `echo` does not append newlines, so `echo "a";
 /// echo "b";` should produce `"ab"` not two separate outputs.
+#[allow(dead_code)]
 fn merge_consecutive_echos(stmts: Vec<Statement>) -> Vec<Statement> {
     let mut result: Vec<Statement> = Vec::with_capacity(stmts.len());
     let mut i = 0;

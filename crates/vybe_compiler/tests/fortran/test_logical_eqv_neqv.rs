@@ -1,7 +1,5 @@
 //! Fortran logical equivalence (.eqv.) and non-equivalence (.neqv.) operators.
 
-use super::helpers;
-
 fortran_cases! {
     eqv_both_true_yields_true => {
         "program t\nprint *, .true. .eqv. .true.\nend program t\n",

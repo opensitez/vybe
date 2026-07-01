@@ -6,7 +6,7 @@
 
 use crate::emitter::instructions::core_wasm;
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 use crate::emitter::collections;
 

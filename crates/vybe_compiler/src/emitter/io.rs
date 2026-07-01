@@ -5,7 +5,6 @@
 //! File I/O uses `wasi:filesystem/*` imports.
 
 use vybe_bytecode::Chunk;
-use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
 
 /// Emit print/log. Stack: [arg1, ..., argN] → []

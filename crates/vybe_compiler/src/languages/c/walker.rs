@@ -9978,6 +9978,7 @@ fn expand_macro_text(
     substituted
 }
 
+#[allow(dead_code)]
 fn strchr_expr(s: Expression, needle: Expression) -> Expression {
     if is_putchar_zero_call(&needle) {
         return expr(ExprKind::Lit(Literal::Int(1)));
@@ -10405,6 +10406,7 @@ fn char_suffix_base_offset(value: &Expression) -> Option<(String, Expression)> {
     }
 }
 
+#[allow(dead_code)]
 fn is_putchar_zero_call(e: &Expression) -> bool {
     let ExprKind::Call { callee, args, .. } = &e.kind else {
         return false;

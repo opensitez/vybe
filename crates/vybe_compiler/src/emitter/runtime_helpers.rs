@@ -4998,6 +4998,7 @@ fn build_newline(_imports: &mut Chunk) -> Chunk {
 }
 
 // ── floor(n) → int — wraps f64_floor opcode ────────────────
+#[allow(dead_code)]
 fn build_floor(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_floor");
     c.arity = 1;
@@ -5051,6 +5052,7 @@ fn build_slice(imports: &mut Chunk) -> Chunk {
 
 // ── keys(obj) → array of string keys ────────────────────────
 // Iterates object properties, collects non-internal keys.
+#[allow(dead_code)]
 fn build_keys(imports: &mut Chunk) -> Chunk {
     // Can't iterate properties in pure bytecode without host support.
     // Use dict_keys host call pattern — but that's what we're trying to avoid.
@@ -5079,6 +5081,7 @@ fn build_has_property(imports: &mut Chunk) -> Chunk {
 }
 
 // ── assign(target, source) → target with source props merged ─
+#[allow(dead_code)]
 fn build_assign(_imports: &mut Chunk) -> Chunk {
     // Can't iterate source properties in pure bytecode.
     // Fallback: return target unchanged.
@@ -5214,6 +5217,7 @@ fn build_js_instance_of(imports: &mut Chunk) -> Chunk {
 }
 
 // ── deleteProperty(obj, key) → bool ─────────────────────────
+#[allow(dead_code)]
 fn build_delete_property(imports: &mut Chunk) -> Chunk {
     // Can't delete properties in pure bytecode. Set to null as fallback.
     let mut c = Chunk::new("__stdlib_deleteproperty");
@@ -5230,6 +5234,7 @@ fn build_delete_property(imports: &mut Chunk) -> Chunk {
 }
 
 // ── from(iterable) → array copy ─────────────────────────────
+#[allow(dead_code)]
 fn build_array_from(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_from");
     c.arity = 1;
@@ -6051,6 +6056,7 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
 }
 
 // ── array_last_index_of(arr, value) → i32 ───────────────────────────────
+#[allow(dead_code)]
 fn build_array_last_index_of(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_last_index_of");
     c.arity = 2; // arr, value

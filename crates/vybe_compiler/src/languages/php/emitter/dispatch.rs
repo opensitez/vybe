@@ -7,7 +7,7 @@
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.

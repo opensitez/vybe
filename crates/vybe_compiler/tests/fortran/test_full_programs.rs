@@ -96,7 +96,7 @@ fn triangle_area() {
 
 #[test]
 fn circle_circumference() {
-    let out = run_prints(
+    let _out = run_prints(
         "program t\nreal, parameter :: PI = 3.14159\nreal :: r, c\nr = 5.0\nc = 2.0 * PI * r\nprint *, c\nend program t\n",
     );
     // 2 * 3.14159 * 5 = 31.4159

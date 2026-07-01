@@ -403,7 +403,7 @@ with          = { emit = "host:ecma:array:with",          min_args = 2, max_args
 # already handles them correctly. Adding generic profile entries here
 # would intercept Map/Set calls at compile time and route them through
 # the wrong storage.
-hasOwnProperty         = { emit = "common:dict.has",                         min_args = 1, max_args = 1 }
+# hasOwnProperty         = { emit = "common:dict.has",                         min_args = 1, max_args = 1 }
 propertyIsEnumerable   = { emit = "invoke:propertyIsEnumerable",              min_args = 1, max_args = 1 }
 
 # Object.keys/values are STATIC calls via module alias (Object.keys(obj)),
@@ -727,8 +727,8 @@ module = "ecma:promise"
 "Number"        = ["ecma:number", "new"]
 "String"        = ["ecma:string", "new"]
 "Array"         = ["ecma:array", "new"]
-"Map"           = ["ecma:map", "new"]
-"Set"           = ["ecma:set", "new"]
+# "Map"           = ["ecma:map", "new"]
+# "Set"           = ["ecma:set", "new"]
 "Error"         = ["ecma:error", "Error"]
 "TypeError"     = ["ecma:error", "TypeError"]
 "RangeError"    = ["ecma:error", "RangeError"]

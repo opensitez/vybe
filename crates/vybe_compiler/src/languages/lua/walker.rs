@@ -492,7 +492,7 @@ fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 }
 
 fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut cond = None;
     let mut then_body = Vec::new();
     let mut elifs = Vec::new();
@@ -530,7 +530,7 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut cond = None;
     let mut body = Vec::new();
     for p in inner {
@@ -550,7 +550,7 @@ fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut body = Vec::new();
     let mut cond = None;
     for p in inner {
@@ -580,7 +580,7 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut inner = pair.into_inner();
+    let inner = pair.into_inner();
     let mut targets = Vec::new();
     let mut values = Vec::new();
     let mut seen_assign = false;

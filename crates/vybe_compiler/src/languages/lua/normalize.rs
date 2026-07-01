@@ -832,7 +832,7 @@ pub(crate) fn build_numeric_for(
     let limit_temp = format!("__lua_for_limit_{index_var}");
     let step_temp = format!("__lua_for_step_{index_var}");
     let ctrl_expr = Expression::new(ExprKind::Ident(ctrl_var.clone()));
-    let index_expr = Expression::new(ExprKind::Ident(index_var.clone()));
+    let _index_expr = Expression::new(ExprKind::Ident(index_var.clone()));
     let compare_op = if lua_step_is_negative(&step) {
         BinOp::GtEq
     } else {
@@ -906,6 +906,7 @@ pub(crate) fn build_numeric_for(
     ])
 }
 
+#[allow(dead_code)]
 fn lua_scoped_body(body: Vec<Statement>) -> Vec<Statement> {
     if body.is_empty() {
         body
@@ -991,6 +992,7 @@ fn call_ident(name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn lua_index(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
@@ -1065,6 +1067,7 @@ fn lua_type_is(expr: Expression, ty: &str) -> Expression {
     })
 }
 
+#[allow(dead_code)]
 fn lua_tonumber(expr: Expression) -> Expression {
     call_ident("tonumber", vec![expr])
 }

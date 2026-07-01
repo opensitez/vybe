@@ -23,7 +23,7 @@ fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
 
         _ => {
-            let idx = chunk.add_constant(value);
+            let _idx = chunk.add_constant(value);
         }
     }
 }

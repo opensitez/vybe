@@ -4038,8 +4038,8 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         let js_this = self.str_const("__js_this");
-        let iterator_key = self.str_const("iterator");
-        let next_key_c = self.str_const("next");
+        let _iterator_key = self.str_const("iterator");
+        let _next_key_c = self.str_const("next");
         let done_key_c = self.str_const("done");
         let value_key_c = self.str_const("value");
 
@@ -5046,7 +5046,7 @@ impl Compiler {
         }
         let line = self.line;
         let return_key = self.str_const("return");
-        let function_str = self.str_const("function");
+        let _function_str = self.str_const("function");
         let js_this = self.str_const("__js_this");
         let return_fn_slot = self.define_local("__iterator_close_return");
 
@@ -10060,7 +10060,6 @@ impl Compiler {
 
             // ── Break ───────────────────────────────────────────────────
             StmtKind::Break(target) => {
-                let line = self.line;
                 match target {
                     // Exit Sub / Exit Function → RETURN (not a loop break)
                     BreakTarget::Kind(ExitKind::Sub) | BreakTarget::Kind(ExitKind::Function) => {

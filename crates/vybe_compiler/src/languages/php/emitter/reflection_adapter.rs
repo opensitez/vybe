@@ -351,7 +351,7 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
-        let pub_s = sconst(chunk, "public");
+        let _pub_s = sconst(chunk, "public");
         chunk.emit_string_const("public", line);
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
     }
@@ -359,19 +359,19 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     chunk.emit_op_u16(Op::LOCAL_SET, class_slot, line);
 
     // Compute boolean visibility flags from the string
-    let pub_str = sconst(chunk, "public");
+    let _pub_str = sconst(chunk, "public");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("public", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_pub_slot, line);
 
-    let prot_str = sconst(chunk, "protected");
+    let _prot_str = sconst(chunk, "protected");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("protected", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_prot_slot, line);
 
-    let priv_str = sconst(chunk, "private");
+    let _priv_str = sconst(chunk, "private");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("private", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);

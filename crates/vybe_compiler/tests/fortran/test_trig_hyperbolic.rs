@@ -1,7 +1,5 @@
 //! Fortran trigonometric and hyperbolic intrinsics with known-value checks.
 
-use super::helpers;
-
 fortran_cases! {
     sin_at_zero_scaled => {
         "program t\nprint *, nint(sin(0.0)*100)\nend program t\n",
