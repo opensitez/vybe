@@ -2,7 +2,6 @@
 //! forwarding chains, and compile-only type/signature forms.
 //! Distinct from `test_variadic_spread.rs` and `test_functions_patterns_extra.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     variadic_empty_call_zero_len => (

@@ -1,7 +1,6 @@
 //! Struct field tags and `reflect` introspection: `TypeOf`, `NumField`, `Field`,
 //! `StructField.Tag`, `Tag.Get`, `FieldByName`, and multi-key tag syntax.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     reflect_numfield_counts_tagged_fields_compile => "package main; import \"reflect\"; type Row struct { ID int `json:\"id\"`; Name string `json:\"name\"` }; func main() { _ = reflect.TypeOf(Row{}).NumField() }",

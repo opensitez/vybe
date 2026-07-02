@@ -1,6 +1,5 @@
 //! mime, html/template, runtime, image — one smoke per distinct API.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     mime_type_by_extension => "package main; import \"mime\"; func main() { _ = mime.TypeByExtension(\".html\") }",

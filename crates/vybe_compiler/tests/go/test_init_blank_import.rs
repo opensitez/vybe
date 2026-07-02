@@ -1,6 +1,5 @@
 //! package init() ordering, side-effect imports, and blank imports (`_ "pkg"`).
 
-use crate::helpers::*;
 
 go_run_cases! {
     init_order_three_sequential_appends => (

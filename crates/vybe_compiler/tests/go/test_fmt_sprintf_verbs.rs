@@ -1,6 +1,5 @@
 //! fmt.Sprintf / fmt.Print formatting verbs — distinct edit-descriptor semantics.
 
-use crate::helpers::*;
 
 go_run_cases! {
     sprintf_decimal_positive => ("package main; import \"fmt\"; func main() { fmt.Println(fmt.Sprintf(\"%d\", 42)) }", vec!["42"]),

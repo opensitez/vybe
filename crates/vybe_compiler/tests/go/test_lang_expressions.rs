@@ -1,6 +1,5 @@
 //! Expressions, operators, and evaluation order — one distinct rule per test.
 
-use crate::helpers::*;
 
 go_run_cases! {
     precedence_mul_before_add => ("package main; import \"fmt\"; func main() { fmt.Println(2 + 3 * 4) }", vec!["14"]),

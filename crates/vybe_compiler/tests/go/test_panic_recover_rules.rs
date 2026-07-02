@@ -1,6 +1,5 @@
 //! Panic and recover rules — defer-only recover, nil returns, nested defers, re-panic compile.
 
-use crate::helpers::*;
 
 go_run_cases! {
     recover_outside_defer_is_always_nil => ("package main; import \"fmt\"; func main() { fmt.Println(recover() == nil); fmt.Println(recover() == nil) }", vec!["true", "true"]),

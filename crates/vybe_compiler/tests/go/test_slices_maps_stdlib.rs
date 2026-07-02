@@ -1,7 +1,6 @@
 //! Go 1.21+ `slices` (Contains, Clone, Compact, Delete, Insert, Grow) and
 //! `maps` (Clone, Copy, DeleteFunc) package functions.
 
-use crate::helpers::*;
 
 go_run_cases! {
     slices_contains_int_found => ("package main; import \"fmt\"; import \"slices\"; func main() { fmt.Println(slices.Contains([]int{1,2,3}, 2)) }", vec!["true"]),

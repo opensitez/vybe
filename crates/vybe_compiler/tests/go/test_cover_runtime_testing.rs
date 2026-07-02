@@ -1,7 +1,6 @@
 //! runtime, runtime/debug, runtime/metrics, runtime/pprof, runtime/trace,
 //! testing, testing/fstest, testing/iotest, testing/quick - one API per compile smoke.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // runtime - core introspection

@@ -2,7 +2,6 @@
 //! `test_slices_maps_stdlib.rs` (Contains/Clone/Compact/Delete/Insert/Grow) and
 //! `test_slices_delete_insert.rs` (basic Delete/Insert/Replace smoke).
 
-use crate::helpers::*;
 
 go_run_cases! {
     slices_sort_ints_ascending => (

@@ -3,7 +3,6 @@
 //! anonymous struct fields.
 //! Distinct from `test_init_blank_import.rs` and `test_declarations_patterns.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     blank_import_side_effect_with_local_init => (

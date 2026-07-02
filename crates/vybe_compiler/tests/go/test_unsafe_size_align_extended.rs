@@ -2,7 +2,6 @@
 //! uintptr conversions, and safe pointer patterns without arithmetic — extended
 //! coverage distinct from `test_embed_unsafe_size.rs` and `test_reflect_unsafe_compile.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     unsafe_sizeof_int8_one => (

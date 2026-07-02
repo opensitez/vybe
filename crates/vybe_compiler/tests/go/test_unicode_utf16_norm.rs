@@ -2,7 +2,6 @@
 //! ToUpper/ToLower, SimpleFold; utf8: Valid, ValidRune, RuneLen, EncodeRune/DecodeRune
 //! — extended coverage distinct from `test_unicode_package.rs` and `test_unicode_utf8.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     utf16_encode_ascii_runes => (

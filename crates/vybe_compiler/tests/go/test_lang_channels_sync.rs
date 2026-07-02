@@ -1,6 +1,5 @@
 //! Channel, select, and concurrency language semantics — one rule per test.
 
-use crate::helpers::*;
 
 go_run_cases! {
     chan_make_unbuffered_zero_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int); fmt.Println(cap(ch)) }", vec!["0"]),

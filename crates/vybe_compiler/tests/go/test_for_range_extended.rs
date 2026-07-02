@@ -3,7 +3,6 @@
 //! Distinct from `test_range_over_int.rs`, `test_range_iteration_extra.rs`,
 //! and `test_channel_close_range.rs` (close/ok idioms).
 
-use crate::helpers::*;
 
 go_run_cases! {
     range_int_print_last_index_seven => (

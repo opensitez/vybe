@@ -1,6 +1,5 @@
 //! hash/maphash and crypto/rand compile coverage.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     maphash_new => "package main; import \"hash/maphash\"; func main() { var h maphash.Hash; h.SetSeed(maphash.MakeSeed()) }",

@@ -1,6 +1,5 @@
 //! Type switch and switch initialization — distinct control-flow shapes.
 
-use crate::helpers::*;
 
 go_run_cases! {
     type_switch_int_branch => ("package main; import \"fmt\"; func describe(v interface{}) { switch v.(type) { case int: fmt.Println(\"int\") default: fmt.Println(\"other\") } }; func main() { describe(3) }", vec!["int"]),

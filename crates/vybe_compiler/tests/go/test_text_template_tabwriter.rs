@@ -1,6 +1,5 @@
 //! text/tabwriter and text/template compile patterns.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     tabwriter_new => "package main; import \"text/tabwriter\"; func main() { w := tabwriter.NewWriter(nil, 0, 0, 1, ' ', 0); _ = w }",

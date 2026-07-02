@@ -4,7 +4,6 @@
 //! Repeat/Compare), and `test_strings_builder.rs` (Builder/Reader/Replacer/
 //! Compare/EqualFold/Map/Repeat).
 
-use crate::helpers::*;
 
 go_run_cases! {
     cut_separator_found => (

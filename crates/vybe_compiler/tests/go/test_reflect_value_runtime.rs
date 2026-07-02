@@ -3,7 +3,6 @@
 //! distinct from `test_reflect_unsafe_compile.rs` (compile smoke) and
 //! `test_struct_tags_reflect.rs` (struct tag introspection).
 
-use crate::helpers::*;
 
 go_run_cases! {
     reflect_typeof_int_kind => (

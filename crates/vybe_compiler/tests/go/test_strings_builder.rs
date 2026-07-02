@@ -1,6 +1,5 @@
 //! strings.Builder, Reader, Replacer, Compare, EqualFold, Map, Repeat.
 
-use crate::helpers::*;
 
 go_run_cases! {
     builder_write_string => (

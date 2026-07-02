@@ -1,6 +1,5 @@
 //! sync package: Mutex, RWMutex, WaitGroup, Once, Pool, Map.
 
-use crate::helpers::*;
 
 go_run_cases! {
     mutex_serial_increment_under_lock => (

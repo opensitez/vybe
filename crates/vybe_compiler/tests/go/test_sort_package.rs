@@ -1,6 +1,5 @@
 //! sort package: Ints, Float64s, Strings, Search, IsSorted.
 
-use crate::helpers::*;
 
 go_run_cases! {
     sort_ints_ascending => ("package main; import \"fmt\"; import \"sort\"; func main() { a := []int{3,1,2}; sort.Ints(a); fmt.Println(a[0]); fmt.Println(a[2]) }", vec!["1", "3"]),

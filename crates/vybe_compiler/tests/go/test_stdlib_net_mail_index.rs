@@ -1,6 +1,5 @@
 //! net/mail, net/smtp, index/suffixarray, expvar, plugin — breadth compile smokes.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     mail_parse_address => "package main; import \"net/mail\"; func main() { _, _ = mail.ParseAddress(\"Go <go@example.com>\") }",

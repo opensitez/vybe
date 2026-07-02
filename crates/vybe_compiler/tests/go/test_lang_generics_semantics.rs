@@ -1,6 +1,5 @@
 //! Generics language semantics — one distinct constraint/syntax behavior per test.
 
-use crate::helpers::*;
 
 go_run_cases! {
     generic_func_identity_int => ("package main; import \"fmt\"; func ID[T any](v T) T { return v }; func main() { fmt.Println(ID(7)) }", vec!["7"]),

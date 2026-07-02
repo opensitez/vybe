@@ -1,6 +1,5 @@
 //! encoding/hex and encoding/base64: Encode, Decode, Dump, and StdEncoding round-trips.
 
-use crate::helpers::*;
 
 go_run_cases! {
     hex_encode_empty_slice => (

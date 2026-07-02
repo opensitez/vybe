@@ -1,6 +1,5 @@
 //! encoding/json: Marshal and Unmarshal — primitives, structs, tags, slices, maps, null, nested.
 
-use crate::helpers::*;
 
 go_run_cases! {
     marshal_bool_true => ("package main; import \"fmt\"; import \"encoding/json\"; func main() { b, _ := json.Marshal(true); fmt.Println(string(b)) }", vec!["true"]),

@@ -1,6 +1,5 @@
 //! Core builtins min/max/clear and distinct language semantics (one behavior per test).
 
-use crate::helpers::*;
 
 go_run_cases! {
     builtin_min_int => ("package main; import \"fmt\"; func main() { fmt.Println(min(9, 4)) }", vec!["4"]),

@@ -1,6 +1,5 @@
 //! net/http subpackages — one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     httptest_new_server => "package main; import \"net/http/httptest\"; func main() { s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})); s.Close() }",

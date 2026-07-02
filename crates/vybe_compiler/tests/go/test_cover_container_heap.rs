@@ -1,6 +1,5 @@
 //! container/heap Push, Pop, Init, Fix, Remove — breadth-only, one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     heap_push_empty_queue => "package main; import \"container/heap\"; type item struct { pri int; label string }; type pq struct { items []item }; func (h pq) Len() int { return len(h.items) }; func (h pq) Less(i, j int) bool { return h.items[i].pri < h.items[j].pri }; func (h pq) Swap(i, j int) { h.items[i], h.items[j] = h.items[j], h.items[i] }; func main() { h := &pq{}; heap.Push(h, item{pri: 1, label: \"a\"}) }",

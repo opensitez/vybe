@@ -1,6 +1,5 @@
 //! cmp and constraints (Go 1.21): Compare, Less, Or, Clamp patterns.
 
-use crate::helpers::*;
 
 go_run_cases! {
     cmp_compare_int_less => ("package main; import \"fmt\"; import \"cmp\"; func main() { fmt.Println(cmp.Compare(1, 2)) }", vec!["-1"]),

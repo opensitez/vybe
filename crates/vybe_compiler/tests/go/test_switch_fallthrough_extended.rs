@@ -1,6 +1,5 @@
 //! Switch fallthrough and expression forms — init, tagless, bool, string, default, empty compile.
 
-use crate::helpers::*;
 
 go_run_cases! {
     fallthrough_to_next_case => ("package main; import \"fmt\"; func main() { x := 1; switch x { case 1: fmt.Println(\"a\"); fallthrough; case 2: fmt.Println(\"b\") } }", vec!["a", "b"]),

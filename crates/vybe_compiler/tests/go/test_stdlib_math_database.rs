@@ -1,6 +1,5 @@
 //! math/big and math/cmplx — one smoke per distinct API.
 
-use crate::helpers::*;
 
 go_run_cases! {
     big_int_add => ("package main; import \"fmt\"; import \"math/big\"; func main() { a := big.NewInt(10); b := big.NewInt(7); fmt.Println(a.Add(a, b).String()) }", vec!["17"]),

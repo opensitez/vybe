@@ -1,6 +1,5 @@
 //! Method values and method expressions — distinct call forms.
 
-use crate::helpers::*;
 
 go_run_cases! {
     method_value_on_literal => ("package main; import \"fmt\"; type counter struct { n int }; func (c counter) twice() int { return c.n * 2 }; func main() { f := counter{n:3}.twice; fmt.Println(f()) }", vec!["6"]),

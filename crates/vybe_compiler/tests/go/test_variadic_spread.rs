@@ -3,7 +3,6 @@
 //! Distinct from `test_variadic.rs` (basic sum/count/join) and
 //! `test_functions_patterns_extra.rs` (single forward/spread smoke tests).
 
-use crate::helpers::*;
 
 go_run_cases! {
     spread_empty_int_slice_variadic_zero_sum => (

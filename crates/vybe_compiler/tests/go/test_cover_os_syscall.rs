@@ -1,6 +1,5 @@
 //! os/signal, os/user, syscall — breadth compile smokes.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // os/signal

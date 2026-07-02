@@ -1,6 +1,5 @@
 //! encoding/binary: BigEndian, LittleEndian, Put/Uint, varint, Size, Read, Write.
 
-use crate::helpers::*;
 
 go_run_cases! {
     binary_big_endian_put_uint16_byte_layout => (

@@ -1,6 +1,5 @@
 //! Channel direction semantics — send-only, receive-only, assignment, params, select compile.
 
-use crate::helpers::*;
 
 go_run_cases! {
     send_only_chan_typed_var => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); var out chan<- int = ch; out <- 7; fmt.Println(<-ch) }", vec!["7"]),

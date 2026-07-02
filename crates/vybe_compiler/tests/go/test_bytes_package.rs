@@ -1,6 +1,5 @@
 //! bytes package: Compare, Contains, Index, Trim, ToUpper, Join.
 
-use crate::helpers::*;
 
 go_run_cases! {
     bytes_compare_equal => ("package main; import \"fmt\"; import \"bytes\"; func main() { fmt.Println(bytes.Compare([]byte(\"a\"), []byte(\"a\"))) }", vec!["0"]),

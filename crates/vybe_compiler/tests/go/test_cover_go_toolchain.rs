@@ -1,6 +1,5 @@
 //! go/build, go/constant, go/doc, go/format, go/importer, go/printer, go/types, go/version — breadth-only, one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     build_default => "package main; import \"go/build\"; func main() { _ = build.Default }",

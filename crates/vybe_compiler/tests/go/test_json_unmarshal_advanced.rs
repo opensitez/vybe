@@ -2,7 +2,6 @@
 //! slice elements, unicode escapes, MarshalIndent, RawMessage, DisallowUnknownFields, UseNumber
 //! — distinct from `test_json_marshal.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     json_unmarshal_embedded_promoted_field => (

@@ -1,7 +1,6 @@
 //! html, html/template, mime/quotedprintable, log/slog, log/syslog
 //! - one distinct API per compile smoke (breadth over depth).
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // html

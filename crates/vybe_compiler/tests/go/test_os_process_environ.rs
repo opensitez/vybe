@@ -1,6 +1,5 @@
 //! os process environment: Getpid, Args, Environ, Getenv helpers, Stat/Lstat, MkdirTemp, UserHomeDir.
 
-use crate::helpers::*;
 
 go_run_cases! {
     os_getpid_positive => (

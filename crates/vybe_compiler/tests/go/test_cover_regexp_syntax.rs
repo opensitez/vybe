@@ -1,6 +1,5 @@
 //! regexp/syntax package APIs — breadth-only, one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     syntax_parse => "package main; import \"regexp/syntax\"; func main() { _, _ = syntax.Parse(\"a\", syntax.Perl) }",

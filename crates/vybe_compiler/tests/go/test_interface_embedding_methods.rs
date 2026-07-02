@@ -2,7 +2,6 @@
 //! interface method calls. Distinct from `test_interfaces_patterns_extra.rs` (general
 //! interface patterns) and `test_struct_embedding_advanced.rs` (struct field/method promotion).
 
-use crate::helpers::*;
 
 go_run_cases! {
     reader_writer_read_promoted_runtime =>

@@ -2,7 +2,6 @@
 //!
 //! Distinct from `test_unicode_utf8.rs`, which covers UTF-8 encoding/decoding only.
 
-use crate::helpers::*;
 
 go_run_cases! {
     unicode_is_letter_ascii_upper => (

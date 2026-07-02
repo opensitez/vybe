@@ -1,6 +1,5 @@
 //! crypto/* beyond hash — one compile smoke per distinct API.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     aes_new_cipher => "package main; import \"crypto/aes\"; func main() { _, _ = aes.NewCipher(make([]byte, 16)) }",

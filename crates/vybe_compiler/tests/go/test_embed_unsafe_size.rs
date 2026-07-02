@@ -1,6 +1,5 @@
 //! embed and unsafe.Sizeof/Alignof compile patterns.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     unsafe_sizeof_int => "package main; import \"unsafe\"; func main() { _ = unsafe.Sizeof(int(0)) }",

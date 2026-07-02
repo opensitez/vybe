@@ -1,7 +1,6 @@
 //! Keyed composite literals: struct field keys, array/slice index keys,
 //! map entry keys, inferred-length `[...]` arrays, and nested combinations.
 
-use crate::helpers::*;
 
 go_run_cases! {
     // --- keyed struct literals ---

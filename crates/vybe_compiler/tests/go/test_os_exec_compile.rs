@@ -1,6 +1,5 @@
 //! os, path/filepath, and os/exec: environment lookup, argv, path helpers, subprocess spawn.
 
-use crate::helpers::*;
 
 go_run_cases! {
     os_args_len_is_zero => (

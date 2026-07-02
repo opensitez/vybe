@@ -2,7 +2,6 @@
 //! Reverse — distinct from `test_sort_package.rs` (basic smoke) and
 //! `test_sort_slice_find.rs` (Find helper, minimal SliceIsSorted).
 
-use crate::helpers::*;
 
 go_run_cases! {
     sort_ints_negative_values => (

@@ -1,6 +1,5 @@
 //! ast and token compile-only (go/parser, go/token) patterns.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     token_file_set => "package main; import \"go/token\"; func main() { fs := token.NewFileSet(); _ = fs }",

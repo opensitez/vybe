@@ -1,6 +1,5 @@
 //! compress/* and archive/* — one compile smoke per distinct API.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     flate_new_writer => "package main; import \"compress/flate\"; import \"bytes\"; func main() { _, _ = flate.NewWriter(bytes.NewBuffer(nil), 6) }",

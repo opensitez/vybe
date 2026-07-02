@@ -1,7 +1,6 @@
 //! Compile coverage for `go` statement forms: closures, method calls, parameterized
 //! anonymous functions, and loop-driven goroutine spawning.
 
-use crate::helpers::*;
 
 compile_cases! {
     // Closure capture

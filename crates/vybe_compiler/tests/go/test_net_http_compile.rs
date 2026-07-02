@@ -1,6 +1,5 @@
 //! net/url and net/http: Parse, query escape, Values encoding, Client Get, status constants.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // net/url — Parse

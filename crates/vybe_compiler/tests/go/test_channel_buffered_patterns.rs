@@ -1,6 +1,5 @@
 //! Buffered channels — one smoke test per distinct API (cap, len, blocking, fan-in).
 
-use crate::helpers::*;
 
 go_run_cases! {
     buffered_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int, 4); fmt.Println(cap(ch)) }", vec!["4"]),

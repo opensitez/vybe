@@ -1,6 +1,5 @@
 //! io/ioutil and io/fs compile coverage (legacy ioutil + fs interfaces).
 
-use crate::helpers::*;
 
 go_compile_cases! {
     ioutil_read_all => "package main; import \"io/ioutil\"; import \"strings\"; func main() { _, _ = ioutil.ReadAll(strings.NewReader(\"hi\")) }",

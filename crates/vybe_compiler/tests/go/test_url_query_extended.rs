@@ -1,6 +1,5 @@
 //! net/url extended: ParseRequestURI, Query mutations, JoinPath, ResolveReference, User credentials.
 
-use crate::helpers::*;
 
 go_run_cases! {
     url_parse_request_uri_path_and_query => (

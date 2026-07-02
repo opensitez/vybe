@@ -2,7 +2,6 @@
 //! `test_slices_maps_stdlib.rs` (Clone/Copy/DeleteFunc) and map iteration in
 //! `test_map_iteration_delete.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     maps_keys_int_map_len => (

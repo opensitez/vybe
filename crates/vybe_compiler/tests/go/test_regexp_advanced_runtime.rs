@@ -1,7 +1,6 @@
 //! regexp advanced runtime: FindAllStringSubmatch, SubexpNames, ReplaceAllString $refs,
 //! LiteralPrefix, NumSubexp, QuoteMeta — distinct from `test_regexp_package.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     regexp_find_all_submatch_two_groups => (

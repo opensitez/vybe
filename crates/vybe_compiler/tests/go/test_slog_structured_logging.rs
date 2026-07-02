@@ -2,7 +2,6 @@
 //! value types, Default logger — extended coverage distinct from
 //! `test_cover_text_html_log.rs` compile smokes.
 
-use crate::helpers::*;
 
 go_run_cases! {
     slog_text_handler_info_message_present => (

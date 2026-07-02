@@ -1,6 +1,5 @@
 //! Iota: distinct enumeration patterns (bitmasks, offsets, typed constants).
 
-use crate::helpers::*;
 
 go_run_cases! {
     iota_simple_three_values => ("package main; import \"fmt\"; const ( A = iota; B; C ); func main() { fmt.Println(A); fmt.Println(B); fmt.Println(C) }", vec!["0", "1", "2"]),

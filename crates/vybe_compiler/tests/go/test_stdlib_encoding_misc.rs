@@ -1,6 +1,5 @@
 //! encoding/* packages — one compile smoke per distinct API (breadth over depth).
 
-use crate::helpers::*;
 
 go_compile_cases! {
     xml_marshal => "package main; import \"encoding/xml\"; type T struct { X int `xml:\"x\"` }; func main() { _, _ = xml.Marshal(T{X: 1}) }",

@@ -1,6 +1,5 @@
 //! Type switch semantics — single/multi cases, nil interface, struct vs pointer, assertions in body.
 
-use crate::helpers::*;
 
 go_run_cases! {
     type_switch_single_int_case_only => ("package main; import \"fmt\"; func tag(v interface{}) { switch v.(type) { case int: fmt.Println(\"int\") } }; func main() { tag(7) }", vec!["int"]),

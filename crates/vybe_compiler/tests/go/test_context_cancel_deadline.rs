@@ -1,6 +1,5 @@
 //! context cancel/deadline: WithCancel, WithDeadline, WithTimeout, WithValue chains, Done, Err sentinels.
 
-use crate::helpers::*;
 
 go_run_cases! {
     context_canceled_not_equal_deadline_exceeded => (

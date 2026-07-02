@@ -3,7 +3,6 @@
 //! type parameters on methods — distinct from `test_generics_functions.rs`,
 //! `test_generics_types.rs`, and `test_lang_generics_semantics.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     generic_comparable_map_lookup_string => (

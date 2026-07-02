@@ -2,7 +2,6 @@
 //! Distinct from `test_sync_package.rs` (basic Mutex/Map/Once/Pool) and
 //! `test_atomic_sync_extended.rs` (sync/atomic primitives).
 
-use crate::helpers::*;
 
 go_run_cases! {
     sync_map_int_key_store_load =>

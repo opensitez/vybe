@@ -1,6 +1,5 @@
 //! strconv: distinct parsing/formatting APIs beyond Itoa/Atoi in test_strings_advanced.
 
-use crate::helpers::*;
 
 go_run_cases! {
     strconv_parse_int_base10 => ("package main; import \"fmt\"; import \"strconv\"; func main() { n, _ := strconv.ParseInt(\"42\", 10, 64); fmt.Println(n) }", vec!["42"]),

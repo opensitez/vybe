@@ -2,7 +2,6 @@
 //! AppendInt/AppendFloat, ParseUint bit sizes, CanBackquote — extended coverage
 //! distinct from `test_strconv_package.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     atoi_positive_decimal => (

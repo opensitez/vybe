@@ -1,7 +1,6 @@
 //! bufio: Scanner split modes, custom SplitFunc, Reader ReadString/ReadBytes,
 //! Peek, UnreadByte/Rune — extended coverage distinct from `test_bufio_io.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     scanner_scan_lines_first_row => (

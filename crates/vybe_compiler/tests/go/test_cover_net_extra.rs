@@ -1,6 +1,5 @@
 //! net/rpc, net/rpc/jsonrpc, net/mail, net/smtp — breadth compile smokes.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // net/rpc — Server

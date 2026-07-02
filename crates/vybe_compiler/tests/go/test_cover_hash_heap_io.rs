@@ -1,6 +1,5 @@
 //! hash/*, container/heap, compress/lzw, regexp/syntax — one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     adler32_new => "package main; import \"hash/adler32\"; func main() { _ = adler32.New() }",

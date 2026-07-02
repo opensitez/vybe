@@ -1,6 +1,5 @@
 //! Channel close, range-over-channel, send/receive on buffered channels.
 
-use crate::helpers::*;
 
 go_run_cases! {
     buffered_channel_len_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int, 3); ch <- 1; ch <- 2; fmt.Println(len(ch)); fmt.Println(cap(ch)) }", vec!["2", "3"]),

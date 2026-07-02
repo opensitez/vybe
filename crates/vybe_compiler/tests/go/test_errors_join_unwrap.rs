@@ -2,7 +2,6 @@
 //! sentinel comparison — distinct from `test_errors_package.rs` (basic chains) and
 //! `test_fmt_errors_print.rs` (Sscanf/Fprint, non-chain Errorf).
 
-use crate::helpers::*;
 
 go_run_cases! {
     errors_join_two_messages => (

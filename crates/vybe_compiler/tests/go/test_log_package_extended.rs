@@ -2,7 +2,6 @@
 //! Output with custom writer via bytes.Buffer — extended coverage distinct
 //! from `test_log_flag_packages.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     log_print_to_custom_buffer => (

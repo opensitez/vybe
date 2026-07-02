@@ -1,6 +1,5 @@
 //! math/bits (OnesCount, LeadingZeros) and math/rand (Intn, Seed).
 
-use crate::helpers::*;
 
 go_run_cases! {
     bits_ones_count_zero => ("package main; import \"fmt\"; import \"math/bits\"; func main() { fmt.Println(bits.OnesCount(0)) }", vec!["0"]),

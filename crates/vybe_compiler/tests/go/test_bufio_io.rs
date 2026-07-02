@@ -1,6 +1,5 @@
 //! bufio and io packages: Scanner, Reader, Writer, ReadString, ReadBytes, ReadAll, Copy.
 
-use crate::helpers::*;
 
 go_run_cases! {
     scanner_default_line_first_token => (

@@ -4,7 +4,6 @@
 //! Covers function-style atomics (`atomic.LoadInt64`, `atomic.AddInt64`, …) and typed
 //! `atomic.Int64` / `atomic.Value` method forms where the frontend accepts them.
 
-use crate::helpers::*;
 
 go_run_cases! {
     // ── Load / Store: int64 ─────────────────────────────────────────────────

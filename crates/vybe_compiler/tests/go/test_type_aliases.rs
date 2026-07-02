@@ -1,7 +1,6 @@
 //! Type aliases (`type T = U`) vs defined types (`type T U`): identity,
 //! struct fields, method sets, and underlying-type conversions.
 
-use crate::helpers::*;
 
 go_run_cases! {
     // --- alias identical to underlying (no conversion) ---

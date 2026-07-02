@@ -1,6 +1,5 @@
 //! sort.Slice, SliceStable, SliceIsSorted and search helpers.
 
-use crate::helpers::*;
 
 go_run_cases! {
     sort_slice_ints => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []int{3,1,2}; sort.Slice(s, func(i,j int) bool { return s[i] < s[j] }); fmt.Println(s) }", vec!["[1 2 3]"]),

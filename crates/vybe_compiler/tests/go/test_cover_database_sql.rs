@@ -1,6 +1,5 @@
 //! database/sql — Open, Query, Exec, Stmt, Tx, Rows breadth compile smokes.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // database/sql — package functions

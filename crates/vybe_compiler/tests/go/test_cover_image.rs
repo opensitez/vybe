@@ -1,6 +1,5 @@
 //! image/* packages — one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     image_new_rgba => "package main; import \"image\"; func main() { _ = image.NewRGBA(image.Rect(0, 0, 2, 2)) }",

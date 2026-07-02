@@ -1,6 +1,5 @@
 //! net/netip: ParseAddr, IPv4/IPv6, Is4/Is6, String roundtrip, Prefix, Contains, Mask, AddrPort.
 
-use crate::helpers::*;
 
 go_run_cases! {
     netip_parse_ipv4_dotted_string => (

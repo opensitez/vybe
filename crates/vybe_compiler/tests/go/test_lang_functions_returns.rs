@@ -1,6 +1,5 @@
 //! Functions, returns, and call semantics — one distinct rule per test.
 
-use crate::helpers::*;
 
 go_run_cases! {
     multi_return_swap => ("package main; import \"fmt\"; func pair() (int, string) { return 1, \"a\" }; func main() { a, b := pair(); fmt.Println(a, b) }", vec!["1 a"]),

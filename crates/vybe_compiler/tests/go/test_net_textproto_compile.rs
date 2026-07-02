@@ -1,6 +1,5 @@
 //! net and net/textproto compile patterns.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     net_lookup_host_compile => "package main; import \"net\"; func main() { _, _ = net.LookupHost(\"localhost\") }",

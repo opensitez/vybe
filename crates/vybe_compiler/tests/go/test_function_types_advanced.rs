@@ -1,7 +1,6 @@
 //! Advanced function types: distinct named signatures, returning functions,
 //! nil comparison, struct fields, and methods with function parameters.
 
-use crate::helpers::*;
 
 go_run_cases! {
     // --- nil comparison on function values ---

@@ -2,7 +2,6 @@
 //! Lookup, CommandLine vs New FlagSet, ContinueOnError — extended coverage
 //! distinct from `test_log_flag_packages.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     flag_int64_default_before_set => (

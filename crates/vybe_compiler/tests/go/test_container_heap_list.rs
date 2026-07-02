@@ -2,7 +2,6 @@
 //! circular buffer — distinct from `test_container_list_ring.rs` (minimal smoke) and
 //! `test_cover_hash_heap_io.rs` (compile-only heap Init/Push/Fix).
 
-use crate::helpers::*;
 
 go_run_cases! {
     heap_push_pop_min_order => (

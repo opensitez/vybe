@@ -1,6 +1,5 @@
 //! errors package: New, fmt.Errorf wrapping, Is, As, Unwrap, Join.
 
-use crate::helpers::*;
 
 go_run_cases! {
     errors_new_error_string => (

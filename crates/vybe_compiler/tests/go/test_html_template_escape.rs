@@ -2,7 +2,6 @@
 //! template JS/URL/CSS typed values, MustParse — distinct from compile smokes in
 //! `test_cover_text_html_log.rs` and `test_stdlib_mime_runtime.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     html_escape_string_angle_brackets => (

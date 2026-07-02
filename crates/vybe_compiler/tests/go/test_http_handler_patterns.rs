@@ -1,6 +1,5 @@
 //! net/http handler patterns: HandlerFunc, ServeMux, StatusText, methods, headers, WithContext.
 
-use crate::helpers::*;
 
 go_run_cases! {
     http_status_text_ok => (

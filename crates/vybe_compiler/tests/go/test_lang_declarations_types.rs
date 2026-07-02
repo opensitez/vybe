@@ -1,6 +1,5 @@
 //! Declarations, types, and zero values — one language rule per test.
 
-use crate::helpers::*;
 
 go_run_cases! {
     zero_value_int => ("package main; import \"fmt\"; func main() { var n int; fmt.Println(n) }", vec!["0"]),

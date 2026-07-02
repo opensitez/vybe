@@ -1,7 +1,6 @@
 //! hash/crc32, hash/adler32, hash/fnv runtime: Checksum, Update, New, Write, Sum —
 //! distinct compile smokes in `test_crypto_hash_compile.rs` and `test_cover_hash_heap_io.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     crc32_checksum_ieee_empty => (

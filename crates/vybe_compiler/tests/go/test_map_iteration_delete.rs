@@ -7,7 +7,6 @@
 //! Runtime `clear(m)` cases document a known VM gap (`clear` compiles but is not
 //! callable at runtime); see also `test_slice_copy_clear.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     map_delete_all_keys_during_single_value_range =>

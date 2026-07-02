@@ -1,6 +1,5 @@
 //! container/list and container/ring compile coverage.
 
-use crate::helpers::*;
 
 go_run_cases! {
     list_push_back_len => ("package main; import \"fmt\"; import \"container/list\"; func main() { l := list.New(); l.PushBack(1); l.PushBack(2); fmt.Println(l.Len()) }", vec!["2"]),

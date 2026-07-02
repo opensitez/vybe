@@ -2,7 +2,6 @@
 //! slices.Values over map values via maps.Values — compile smoke plus runtime
 //! where the VM can execute iterator loops synchronously.
 
-use crate::helpers::*;
 
 go_run_cases! {
     iter_slices_all_index_sum => (

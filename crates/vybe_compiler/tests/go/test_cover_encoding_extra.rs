@@ -1,7 +1,6 @@
 //! encoding/xml, csv, gob, pem, ascii85, base32 - extra APIs not in
 //! test_stdlib_encoding_misc.rs; one distinct API per compile smoke.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // encoding/xml - beyond Marshal/Unmarshal

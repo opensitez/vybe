@@ -1,6 +1,5 @@
 //! debug/* binary formats — one API per test.
 
-use crate::helpers::*;
 
 go_compile_cases! {
     debug_buildinfo_read => "package main; import \"runtime/debug\"; func main() { _, _ = debug.ReadBuildInfo() }",

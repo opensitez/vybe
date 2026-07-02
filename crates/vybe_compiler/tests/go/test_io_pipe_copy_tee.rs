@@ -2,7 +2,6 @@
 //! WriteString via interface, LimitReader, MultiReader — extended runtime and
 //! compile coverage distinct from `test_bufio_io.rs` and `test_io_fs_extended.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     copy_empty_source_writes_nothing => (

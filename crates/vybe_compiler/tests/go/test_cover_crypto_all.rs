@@ -1,7 +1,6 @@
 //! crypto/aes, des, rc4, cipher, hmac, ed25519, rsa, ecdsa, elliptic, x509, tls
 //! - one distinct API per compile smoke (breadth over depth).
 
-use crate::helpers::*;
 
 go_compile_cases! {
     // crypto/aes

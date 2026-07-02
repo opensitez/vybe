@@ -2,7 +2,6 @@
 //!
 //! Distinct from fmt I/O in other test files; focuses on stdlib logging and CLI flags.
 
-use crate::helpers::*;
 
 go_run_cases! {
     log_print_single_string => (

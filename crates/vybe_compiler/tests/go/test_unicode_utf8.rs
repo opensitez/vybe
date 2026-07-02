@@ -1,7 +1,6 @@
 //! unicode/utf8 package: Valid, ValidString, RuneCount, EncodeRune, DecodeRune,
 //! FullRune, and UTF-8 string iteration — plus distinct rune literal semantics.
 
-use crate::helpers::*;
 
 go_run_cases! {
     utf8_valid_ascii_bytes => (

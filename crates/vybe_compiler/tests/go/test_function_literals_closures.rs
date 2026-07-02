@@ -2,7 +2,6 @@
 //! http.HandlerFunc, recursive var bindings. Distinct from `test_closures.rs`
 //! (basic closure forms) and `test_higher_order_functions.rs` (HOF patterns).
 
-use crate::helpers::*;
 
 go_run_cases! {
     literal_capture_outer_int_increment =>

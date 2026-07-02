@@ -2,7 +2,6 @@
 //! typed groups (`int64`, `byte`, `rune`), duplicate values, and arithmetic.
 //! Distinct from `test_iota_enumerations.rs` and `test_constants.rs`.
 
-use crate::helpers::*;
 
 go_run_cases! {
     iota_bit_flags_or_combined => (
