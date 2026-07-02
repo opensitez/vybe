@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn toString_canonicalises_to_tostring() {
+    fn to_string_canonicalises_to_tostring() {
         let nc = normalize_class(
             dummy_span(),
             "Foo",
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn hashCode_maps_to_hash() {
+    fn hash_code_maps_to_hash() {
         let nc = normalize_class(
             dummy_span(),
             "Foo",

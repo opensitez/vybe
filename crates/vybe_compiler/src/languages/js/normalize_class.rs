@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn toString_method_gets_canonical_name_and_special_kind() {
+    fn to_string_method_gets_canonical_name_and_special_kind() {
         use crate::ast::{Modifiers, Statement, StmtKind};
         let method = Statement::new(StmtKind::FunctionDecl {
             name: "toString".into(),

@@ -37,6 +37,7 @@ pub fn run_ruby_one(src: &str) -> String {
 }
 
 /// Parse-only: verify the grammar accepts the source without errors
+#[allow(dead_code)]
 pub fn parse_ok(src: &str) {
     vybe_compiler::languages::ruby::parse(src).expect("Ruby parse failed");
 }
