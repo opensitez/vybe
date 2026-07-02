@@ -73,7 +73,7 @@ crate::js_cases! {
 
     switch_continue_in_loop_skips_remaining_cases => {
         r#"let o=[];for(let i=0;i<3;i++){try{switch(i){case 0:o.push("a");continue;case 1:throw new Error("b");default:o.push("c");}}catch(e){o.push(e.message);}}console.log(o.join(","));"#,
-        ["a,b"]
+        ["a,b,c"]
     };
 
     switch_labeled_break_exits_before_later_throw => {

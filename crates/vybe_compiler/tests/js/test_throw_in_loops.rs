@@ -43,7 +43,7 @@ crate::js_cases! {
 
     labeled_continue_from_catch_resumes_loop => {
         r#"let o=[];outer:for(let i=0;i<3;i++){try{if(i===1)throw "x";o.push(i);}catch{continue outer;}o.push("a");}console.log(o.join(","));"#,
-        ["0,2,a"]
+        ["0,a,2,a"]
     };
 
     nested_loop_inner_throw_caught_by_outer_try => {
@@ -52,7 +52,7 @@ crate::js_cases! {
     };
 
     for_loop_throw_in_update_expression => {
-        r#"let o=[];try{for(let i=0;i<3;throw new Error("upd")){o.push(i);}}catch(e){o.push(e.message);}console.log(o.join(","));"#,
+        r#"let o=[];try{for(let i=0;i<3;(()=>{throw new Error("upd")})()){o.push(i);}}catch(e){o.push(e.message);}console.log(o.join(","));"#,
         ["0,upd"]
     };
 
@@ -78,7 +78,7 @@ crate::js_cases! {
 
     loop_try_finally_runs_after_throw => {
         r#"let o=[];for(let i=0;i<2;i++){try{try{if(i===1)throw "t";o.push(i);}finally{o.push("f");}}catch(e){o.push(String(e));}}console.log(o.join(","));"#,
-        ["0,f,1,f,t"]
+        ["0,f,f,t"]
     };
 
     for_await_throw_from_async_iterator => {
@@ -97,8 +97,8 @@ crate::js_cases! {
     };
 
     for_loop_empty_body_throw_in_condition => {
-        r#"let o=[];for(let i=0;i<3&&(()=>{if(i===2)throw new Error("cond");return true;})();i++){o.push(i);}try{}catch(e){o.push(e.message);}console.log(o.length);"#,
-        ["2"]
+        r#"let o=[];try{for(let i=0;i<3&&(()=>{if(i===2)throw new Error("cond");return true;})();i++){o.push(i);}}catch(e){o.push(e.message);}console.log(o.join(","));"#,
+        ["0,1,cond"]
     };
 
     infinite_while_caught_throw_counter => {

@@ -9951,6 +9951,14 @@ impl Compiler {
                         self.emit_const(Value::Bool(false));
                         self.chunk().emit_end(line);
                         self.chunk().emit_if(line);
+                        // The catch body executes inside this arm-match IF —
+                        // a real WASM control frame the VM pushes onto its
+                        // label_stack. `break`/`continue` inside the catch body
+                        // derive their `br` depth from `label_depth`, so it must
+                        // count this open IF or the branch targets the wrong
+                        // frame and the enclosing loop never exits (hang).
+                        // ECMA-262 §14.2: abrupt completion still exits the loop.
+                        self.label_depth += 1;
 
                         if let Some(ref var) = c.var_name {
                             self.scope_mut().begin_scope();
@@ -9968,6 +9976,9 @@ impl Compiler {
                                 crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                             };
                             self.chunk().emit_if(line);
+                            // The when-clause adds a second open IF around the
+                            // catch body — count it too.
+                            self.label_depth += 1;
                         }
 
                         self.catch_depth += 1;
@@ -9978,9 +9989,11 @@ impl Compiler {
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, handled_slot);
                         if c.when_clause.is_some() {
+                            self.label_depth -= 1;
                             self.chunk().emit_end(line);
                         }
                         self.scope_mut().end_scope();
+                        self.label_depth -= 1;
                         self.chunk().emit_end(line);
                     }
                     // Fallthrough = no arm matched. Re-throw (through finally if any).
