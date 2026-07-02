@@ -143,12 +143,14 @@ fn assign_expr(target: Expression, value: Expression) -> Expression {
     })
 }
 
-/// `printf(fmt, args...)` → `puts(sprintf(fmt, args...))`.
+const C_SPRINTF: &str = "__c_sprintf";
+
+/// `printf(fmt, args...)` → `puts(__c_sprintf(fmt, args...))`.
 /// The caller strips the stream argument first for `fprintf`.
 pub fn printf_to_puts(fmt: Expression, rest: Vec<Expression>) -> Expression {
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
-    let sprintf_call = call(ident("sprintf"), sprintf_args);
+    let sprintf_call = call(ident(C_SPRINTF), sprintf_args);
     call(ident("puts"), vec![sprintf_call])
 }
 
@@ -158,23 +160,23 @@ pub fn fprintf_to_puts(fmt: Expression, rest: Vec<Expression>) -> Expression {
     printf_to_puts(fmt, rest)
 }
 
-/// `sprintf(buf, fmt, args...)` → `buf = sprintf(fmt, args...)`.
+/// `sprintf(buf, fmt, args...)` → `buf = __c_sprintf(fmt, args...)`.
 /// The buffer target is returned as the assign target; the RHS is the call.
 pub fn sprintf_assign(buf: Expression, fmt: Expression, rest: Vec<Expression>) -> Expression {
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
-    let rhs = call(ident("sprintf"), sprintf_args);
+    let rhs = call(ident(C_SPRINTF), sprintf_args);
     e(ExprKind::Assign {
         target: Box::new(buf),
         value: Box::new(rhs),
     })
 }
 
-/// C walker-compatible lowering: `printf(fmt, ...)` -> `__c_fputs_h(sprintf(...), 1)`.
+/// C walker-compatible lowering: `printf(fmt, ...)` -> `__c_fputs_h(__c_sprintf(...), 1)`.
 pub fn printf_to_c_fputs(fmt: Expression, rest: Vec<Expression>) -> Expression {
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
-    let rendered = call(ident("sprintf"), sprintf_args);
+    let rendered = call(ident(C_SPRINTF), sprintf_args);
     call(ident("__c_fputs_h"), vec![rendered, lit_int(1)])
 }
 
@@ -288,11 +290,11 @@ pub fn printf_with_n_to_c_fputs(
     }
 }
 
-/// C walker-compatible lowering: `fprintf(file, fmt, ...)` -> `__c_fputs_h(sprintf(...), file)`.
+/// C walker-compatible lowering: `fprintf(file, fmt, ...)` -> `__c_fputs_h(__c_sprintf(...), file)`.
 pub fn fprintf_to_c_fputs(file: Expression, fmt: Expression, rest: Vec<Expression>) -> Expression {
     let mut sprintf_args = vec![fmt];
     sprintf_args.extend(rest);
-    let rendered = call(ident("sprintf"), sprintf_args);
+    let rendered = call(ident(C_SPRINTF), sprintf_args);
     call(ident("__c_fputs_h"), vec![rendered, file])
 }
 
@@ -328,7 +330,7 @@ fn sprintf_expr(fmt: Expression, rest: &[Expression], start: usize, end: usize) 
     for arg in rest.iter().skip(start).take(end.saturating_sub(start)) {
         args.push(arg.clone());
     }
-    call(ident("sprintf"), args)
+    call(ident(C_SPRINTF), args)
 }
 
 fn pointer_write_target(value: Expression) -> Expression {
@@ -913,7 +915,7 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                             bin(BinOp::Gt, member(stdin_buf(), "length"), lit_int(0)),
                             bin(
                                 BinOp::LtEq,
-                                call_member(stdin_buf(), "charCodeAt", vec![lit_int(0)]),
+                                call(ident("__c_char_code_at"), vec![stdin_buf(), lit_int(0)]),
                                 lit_int(32),
                             ),
                         ),
@@ -955,7 +957,7 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                     bin(BinOp::Lt, ident("i"), member(stdin_buf(), "length")),
                     bin(
                         BinOp::Gt,
-                        call_member(stdin_buf(), "charCodeAt", vec![ident("i")]),
+                        call(ident("__c_char_code_at"), vec![stdin_buf(), ident("i")]),
                         lit_int(32),
                     ),
                 ),

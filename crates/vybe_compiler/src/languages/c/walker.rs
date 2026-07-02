@@ -4566,14 +4566,18 @@ impl Walker {
         let ExprKind::Binary { op, left, right } = e.kind else {
             return e;
         };
+        let left_name = pointer_ident_name(&left);
+        let right_name = pointer_ident_name(&right);
         let left_is_carray_var =
-            matches!(&left.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
+            left_name.map(|n| self.carray_ptr_vars.contains(n)).unwrap_or(false);
         let right_is_carray_var =
-            matches!(&right.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
-        let left_is_array_var =
-            matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n));
-        let right_is_array_var =
-            matches!(&right.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n));
+            right_name.map(|n| self.carray_ptr_vars.contains(n)).unwrap_or(false);
+        let left_is_array_var = left_name
+            .map(|n| self.array_ptr_vars.contains(n) || self.is_fixed_array_var(n))
+            .unwrap_or(false);
+        let right_is_array_var = right_name
+            .map(|n| self.array_ptr_vars.contains(n) || self.is_fixed_array_var(n))
+            .unwrap_or(false);
         let left_is_carray_obj = is_carray_object(&left);
         let right_is_carray_obj = is_carray_object(&right);
 
@@ -4635,11 +4639,14 @@ impl Walker {
                 {
                     return pointers::carray_diff(*left, *right);
                 }
-                if left_is_carray_var {
-                    // p - n → new carray with __idx - n
-                    return carray_retreat(*left, *right);
+                if (left_is_carray_obj || left_is_carray_var) && right_is_array_var {
+                    return expr(ExprKind::Member {
+                        object: left,
+                        field: CARRAY_IDX_KEY.to_string(),
+                        null_safe: false,
+                    });
                 }
-                if left_is_array_var && right_is_carray_var {
+                if left_is_array_var && (right_is_carray_obj || right_is_carray_var) {
                     // arr(as ptr at 0) - p → 0 - p.__idx = -p.__idx
                     return expr(ExprKind::Unary {
                         op: UnaryOp::Neg,
@@ -4650,6 +4657,10 @@ impl Walker {
                         })),
                     });
                 }
+                if left_is_carray_var {
+                    // p - n → new carray with __idx - n
+                    return carray_retreat(*left, *right);
+                }
                 if left_is_carray_obj {
                     return carray_retreat(*left, *right);
                 }
@@ -4659,6 +4670,12 @@ impl Walker {
                     && (right_is_carray_obj || right_is_carray_var)
                 {
                     return carray_ptr_relational(*left, *right, op);
+                }
+                if (left_is_carray_obj || left_is_carray_var) && right_is_array_var {
+                    return carray_ptr_relational_to_array_start(*left, *right, op, true);
+                }
+                if left_is_array_var && (right_is_carray_obj || right_is_carray_var) {
+                    return carray_ptr_relational_to_array_start(*right, *left, op, false);
                 }
             }
             _ => {}
@@ -4980,6 +4997,21 @@ impl Walker {
                 });
             }
             if matches!(op, BinOp::Sub) {
+                if let (ExprKind::Ident(left_name), ExprKind::Ident(right_name)) =
+                    (&left.kind, &right.kind)
+                {
+                    let left_is_char = self.char_pointers.contains(left_name)
+                        || self.is_char_array_var(left_name);
+                    let right_is_char = self.char_pointers.contains(right_name)
+                        || self.is_char_array_var(right_name);
+                    if left_is_char && right_is_char {
+                        return expr(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(member(*right.clone(), "length")),
+                            right: Box::new(member(*left.clone(), "length")),
+                        });
+                    }
+                }
                 if let (ExprKind::Ident(ptr_name), ExprKind::Ident(base_name)) =
                     (&left.kind, &right.kind)
                 {
@@ -5436,6 +5468,8 @@ impl Walker {
         let type_name = it.next().unwrap();
         let tn = type_name.as_str().trim().to_string();
         let operand = self.walk_unary(it.next().unwrap());
+        let operand = self.rewrite_char_ptr_arith(operand);
+        let operand = self.rewrite_carray_ptr_arith(operand);
         if tn.contains('*') {
             if is_zero_int_expr(&operand) || matches!(operand.kind, ExprKind::Lit(Literal::Null)) {
                 return null_lit();
@@ -6176,7 +6210,7 @@ impl Walker {
                         .collect();
                     let sanitized = normalize_snprintf_literal_args(sanitized);
                     let sprintf_call = expr(ExprKind::Call {
-                        callee: Box::new(ident("sprintf")),
+                        callee: Box::new(ident("__c_sprintf")),
                         args: sanitized,
                         optional: false,
                     });
@@ -6271,7 +6305,7 @@ impl Walker {
                         sprintf_args.push(Argument::positional(va_list_next_arg(ap.clone())));
                     }
                     let rendered = expr(ExprKind::Call {
-                        callee: Box::new(ident("sprintf")),
+                        callee: Box::new(ident("__c_sprintf")),
                         args: sprintf_args,
                         optional: false,
                     });
@@ -6291,7 +6325,7 @@ impl Walker {
                         sprintf_args.push(Argument::positional(va_list_next_arg(ap.clone())));
                     }
                     let rendered = expr(ExprKind::Call {
-                        callee: Box::new(ident("sprintf")),
+                        callee: Box::new(ident("__c_sprintf")),
                         args: sprintf_args,
                         optional: false,
                     });
@@ -6312,7 +6346,7 @@ impl Walker {
                         sprintf_args.push(Argument::positional(va_list_next_arg(ap.clone())));
                     }
                     let sprintf_call = expr(ExprKind::Call {
-                        callee: Box::new(ident("sprintf")),
+                        callee: Box::new(ident("__c_sprintf")),
                         args: sprintf_args,
                         optional: false,
                     });
@@ -6398,7 +6432,7 @@ impl Walker {
                         first.value = wchar_adapter::wide_to_string(wfmt);
                     }
                     let sprintf_call = expr(ExprKind::Call {
-                        callee: Box::new(ident("sprintf")),
+                        callee: Box::new(ident("__c_sprintf")),
                         args: sanitized,
                         optional: false,
                     });
@@ -10240,6 +10274,17 @@ fn is_carray_like_expr(e: &Expression) -> bool {
     }
 }
 
+fn pointer_ident_name(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::RefLoad(inner) => match &inner.kind {
+            ExprKind::Ident(name) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn carray_deref_target_name(e: &Expression) -> Option<String> {
     if let ExprKind::Ternary { then, .. } = &e.kind {
         return carray_deref_target_name(then);
@@ -11134,6 +11179,47 @@ fn carray_ptr_relational(left: Expression, right: Expression, op: BinOp) -> Expr
             null_safe: false,
         })),
     });
+    expr(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(base_eq),
+        right: Box::new(idx_cmp),
+    })
+}
+
+fn carray_ptr_relational_to_array_start(
+    ptr: Expression,
+    array: Expression,
+    op: BinOp,
+    ptr_is_left: bool,
+) -> Expression {
+    let base_eq = expr(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(expr(ExprKind::Member {
+            object: Box::new(ptr.clone()),
+            field: CARRAY_BASE_KEY.to_string(),
+            null_safe: false,
+        })),
+        right: Box::new(array),
+    });
+    let idx = expr(ExprKind::Member {
+        object: Box::new(ptr),
+        field: CARRAY_IDX_KEY.to_string(),
+        null_safe: false,
+    });
+    let zero = expr(ExprKind::Lit(Literal::Int(0)));
+    let idx_cmp = if ptr_is_left {
+        expr(ExprKind::Binary {
+            op,
+            left: Box::new(idx),
+            right: Box::new(zero),
+        })
+    } else {
+        expr(ExprKind::Binary {
+            op,
+            left: Box::new(zero),
+            right: Box::new(idx),
+        })
+    };
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),

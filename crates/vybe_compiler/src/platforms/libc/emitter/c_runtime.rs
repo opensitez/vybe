@@ -682,10 +682,12 @@ pub fn prelude() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "ch",
-                call_member(
-                    file_slot(ident("file"), CFILE_CONTENT),
-                    "charCodeAt",
-                    vec![file_slot(ident("file"), CFILE_POS)],
+                call_expr(
+                    ident("__c_char_code_at"),
+                    vec![
+                        file_slot(ident("file"), CFILE_CONTENT),
+                        file_slot(ident("file"), CFILE_POS),
+                    ],
                 ),
             ),
             stmt(StmtKind::Expr(assign_expr(
@@ -1132,7 +1134,7 @@ pub fn prelude() -> Vec<Statement> {
                                 right: Box::new(ident("i")),
                             }),
                         ),
-                        call_expr(member(ident("text"), "charCodeAt"), vec![ident("i")]),
+                        call_expr(ident("__c_char_code_at"), vec![ident("text"), ident("i")]),
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("i"),
@@ -1269,10 +1271,12 @@ pub fn prelude() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "ch",
-                call_member(
-                    index_expr(ident("__c_file_content"), ident("handle")),
-                    "charCodeAt",
-                    vec![index_expr(ident("__c_file_pos"), ident("handle"))],
+                call_expr(
+                    ident("__c_char_code_at"),
+                    vec![
+                        index_expr(ident("__c_file_content"), ident("handle")),
+                        index_expr(ident("__c_file_pos"), ident("handle")),
+                    ],
                 ),
             ),
             stmt(StmtKind::Expr(assign_expr(

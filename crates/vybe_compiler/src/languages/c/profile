@@ -34,6 +34,8 @@ uses_normalize_class = false
 "printf"  = { emit = "common:libc.stdio.printf",  min_args = 1, max_args = 255 }
 # sprintf routes through the libc inline emitter helper (no JS polyfill).
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
+"__c_sprintf" = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
+"__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }
 "putchar"  = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 # Single code point → 1-char string. Used by libc adapters (e.g. decoding a

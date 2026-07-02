@@ -229,7 +229,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
                 expr_stmt(call_member(
                     ident("a"),
                     "push",
-                    vec![call_member(ident("s"), "charCodeAt", vec![ident("i")])],
+                    vec![call(ident("__c_char_code_at"), vec![ident("s"), ident("i")])],
                 )),
                 incr("i"),
             ],

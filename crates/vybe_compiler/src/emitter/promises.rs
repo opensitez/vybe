@@ -148,15 +148,42 @@ pub fn emit_finally(chunks: &mut [Chunk], current: usize, line: u32) {
 
     super::errors::emit_try_end(chunk, line);
 
-    emit_call_if_nonnull(chunk, saved_cb, line);
+    // Fulfilled path: run onFinally, then settle with the ORIGINAL value —
+    // unless onFinally throws, in which case the guard rejects with the thrown
+    // value (ECMA-262 §27.2.5.3, thenFinally).
+    emit_finally_cb_guarded(chunk, saved_cb, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::RETURN, line);
 
+    // Rejected path: run onFinally, then re-reject with the ORIGINAL reason —
+    // unless onFinally throws, in which case the guard rejects with the NEW
+    // thrown value (catchFinally). await() throws on a rejected input, so we
+    // land here with the reason on TOS.
     super::errors::patch_catch(chunk, try_patch);
     chunk.emit_op_u16(Op::LOCAL_SET, err_slot, line);
-    emit_call_if_nonnull(chunk, saved_cb, line);
+    emit_finally_cb_guarded(chunk, saved_cb, line);
     chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
     emit_rejected_promise(chunk, line);
+}
+
+/// Invoke the finally callback (if non-null). If it throws, RETURN a rejected
+/// promise built from the thrown value; on success, fall through so the caller
+/// settles with the original value/reason. WASM-compliant: a TRY_TABLE handler
+/// converts the throw to a rejection, and a structured BLOCK lets the no-throw
+/// path `br` past the handler.
+fn emit_finally_cb_guarded(chunk: &mut Chunk, cb_slot: u16, line: u32) {
+    chunk.emit_block(line);
+    let try_patch = super::errors::emit_try_start(chunk, line);
+    emit_call_if_nonnull(chunk, cb_slot, line);
+    super::errors::emit_try_end(chunk, line);
+    chunk.emit_br(0, line); // no throw → exit block, continue at caller
+    super::errors::patch_catch(chunk, try_patch);
+    let thrown = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, thrown, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, thrown, line);
+    emit_rejected_promise(chunk, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.emit_end(line);
 }
 
 fn emit_call_if_nonnull(chunk: &mut Chunk, slot: u16, line: u32) {

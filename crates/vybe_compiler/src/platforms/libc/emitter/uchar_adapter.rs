@@ -15,6 +15,10 @@ fn lit_int(n: i64) -> Expression {
     e(ExprKind::Lit(Literal::Int(n)))
 }
 
+fn ident(name: &str) -> Expression {
+    e(ExprKind::Ident(name.to_string()))
+}
+
 fn member(object: Expression, field: &str) -> Expression {
     e(ExprKind::Member {
         object: Box::new(object),
@@ -62,7 +66,7 @@ fn byte_at(src: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Eq, member(src.clone(), "length"), lit_int(0))),
         then: Box::new(lit_int(0)),
-        else_: Box::new(call_member(src, "charCodeAt", vec![lit_int(0)])),
+        else_: Box::new(call(ident("__c_char_code_at"), vec![src, lit_int(0)])),
     })
 }
 

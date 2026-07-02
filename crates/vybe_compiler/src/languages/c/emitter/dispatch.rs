@@ -3,6 +3,12 @@ use vybe_bytecode::Chunk;
 use crate::emitter::{collections, strings};
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) -> bool {
+    if name.starts_with("libc.") {
+        return crate::platforms::libc::emitter::dispatch::dispatch(
+            name, chunks, current, _argc, line,
+        );
+    }
+
     match name {
         "c.putchar" => {
             let idx = chunks[current].add_import("wasm:js-string", "fromCharCode");

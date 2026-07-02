@@ -107,7 +107,7 @@ pub fn char_code_to_string(code: Expression) -> Expression {
 
 /// `s.charCodeAt(0)` — first char of string → int char code.
 pub fn string_to_char_code(s: Expression) -> Expression {
-    call(member(s, "charCodeAt"), vec![lit_int(0)])
+    call(ident("__c_char_code_at"), vec![s, lit_int(0)])
 }
 
 /// `strchr(s, c_code)` — find first occurrence, return suffix or null.
