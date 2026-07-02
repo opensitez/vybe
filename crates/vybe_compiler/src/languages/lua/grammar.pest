@@ -38,12 +38,38 @@ nil_literal = { KW_NIL }
 boolean = { KW_TRUE | KW_FALSE }
 hex_digits = @{ ASCII_HEX_DIGIT+ }
 number = @{
-    ("0" ~ ("x" | "X") ~ hex_digits)
-    | (ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)
+    ("0" ~ ("b" | "B") ~ ('0'..'1' | "_")+)                                         // binary: 0b1010, 0B11
+    | ("0" ~ ("x" | "X") ~ (ASCII_HEX_DIGIT | "_")+)                                 // hex: 0xFF, 0x1_0
+    | ("." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)            // leading dot: .5
+    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?)  // 1.5, 1., 1_000.0
+    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+))  // 1e2
+    | (ASCII_DIGIT ~ (ASCII_DIGIT | "_")*)                                            // integer: 42, 1_000
 }
-string_content = { (!("\"" | "\\") ~ ANY)* }
-single_string_content = { (!("'" | "\\") ~ ANY)* }
-string = { "\"" ~ string_content ~ "\"" | "'" ~ single_string_content ~ "'" }
+
+// String escape sequences
+escape_seq = @{
+    "\\" ~ ("n" | "t" | "r" | "a" | "b" | "f" | "v" | "\\" | "'" | "\"" | "\n"   // simple escapes
+    | "x" ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT                                       // \xNN
+    | "u" ~ "{" ~ ASCII_HEX_DIGIT+ ~ "}"                                            // \u{NNNN}
+    | "z" ~ WHITESPACE*                                                               // \z skip whitespace
+    | ASCII_DIGIT ~ ASCII_DIGIT? ~ ASCII_DIGIT?)                                     // \DDD decimal
+}
+dq_str_char = @{ escape_seq | (!"\"" ~ !"\\" ~ ANY) }
+sq_str_char = @{ escape_seq | (!("'") ~ !"\\" ~ ANY) }
+string = { "\"" ~ dq_str_char* ~ "\"" | "'" ~ sq_str_char* ~ "'" }
+
+// Long bracket strings: [[...]], [=[...]=], [==[...]==] etc.
+long_string_open_0  = _{ "[[" }
+long_string_close_0 = _{ "]]" }
+long_string_body_0  = @{ (!"]]" ~ ANY)* }
+long_string_0       =  { "[[" ~ long_string_body_0 ~ "]]" }
+
+long_string_open_1  = _{ "[==[" }
+long_string_body_1  = @{ (!"]==]" ~ ANY)* }
+long_string_eq1     =  { "[=[" ~ (!"]=]" ~ ANY)* ~ "]=]" }
+long_string_eq2     =  { "[==[" ~ (!"]==]" ~ ANY)* ~ "]==]" }
+long_string_eq3     =  { "[===[" ~ (!"]===]" ~ ANY)* ~ "]===]" }
+long_string         =  { long_string_eq3 | long_string_eq2 | long_string_eq1 | long_string_0 }
 
 lparen = { "(" }
 rparen = { ")" }
@@ -101,7 +127,7 @@ func_expr = { KW_FUNCTION ~ lparen ~ param_list? ~ rparen ~ func_body ~ KW_END }
 // JS-shaped precedence chain with Lua 5.3 bitwise operators.
 primary = {
     KW_TRUE | KW_FALSE | KW_NIL
-    | number | string
+    | number | long_string | string
     | table_constructor
     | func_expr
     | ELLIPSIS

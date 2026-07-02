@@ -902,6 +902,113 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(expr.kind)
 }
 
+fn unescape_lua_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            match bytes[i] {
+                b'n'  => { out.push('\n'); i += 1; }
+                b't'  => { out.push('\t'); i += 1; }
+                b'r'  => { out.push('\r'); i += 1; }
+                b'a'  => { out.push('\x07'); i += 1; }
+                b'b'  => { out.push('\x08'); i += 1; }
+                b'f'  => { out.push('\x0C'); i += 1; }
+                b'v'  => { out.push('\x0B'); i += 1; }
+                b'\\' => { out.push('\\'); i += 1; }
+                b'\'' => { out.push('\''); i += 1; }
+                b'"'  => { out.push('"'); i += 1; }
+                b'\n' => { out.push('\n'); i += 1; }
+                b'x'  => {
+                    // \xNN — two hex digits
+                    if i + 2 < bytes.len() {
+                        let hex = &s[i+1..i+3];
+                        if let Ok(n) = u8::from_str_radix(hex, 16) {
+                            out.push(n as char);
+                        }
+                        i += 3;
+                    } else {
+                        out.push('x'); i += 1;
+                    }
+                }
+                b'u'  => {
+                    // \u{NNNN}
+                    if i + 1 < bytes.len() && bytes[i+1] == b'{' {
+                        if let Some(end) = s[i+2..].find('}') {
+                            let hex = &s[i+2..i+2+end];
+                            if let Ok(n) = u32::from_str_radix(hex, 16) {
+                                if let Some(c) = char::from_u32(n) {
+                                    out.push(c);
+                                }
+                            }
+                            i += 2 + end + 1;
+                        } else {
+                            out.push('u'); i += 1;
+                        }
+                    } else {
+                        out.push('u'); i += 1;
+                    }
+                }
+                b'z' => {
+                    // \z — skip following whitespace
+                    i += 1;
+                    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r') {
+                        i += 1;
+                    }
+                }
+                d if d.is_ascii_digit() => {
+                    // \DDD — up to 3 decimal digits
+                    let start = i;
+                    let mut count = 0;
+                    while i < bytes.len() && count < 3 && bytes[i].is_ascii_digit() {
+                        i += 1; count += 1;
+                    }
+                    if let Ok(n) = s[start..i].parse::<u8>() {
+                        out.push(n as char);
+                    }
+                }
+                other => { out.push(other as char); i += 1; }
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn strip_long_brackets(raw: &str) -> &str {
+    // raw is the inner text produced by one of long_string_0/eq1/eq2/eq3 rules.
+    // The outer brackets are already stripped by pest since they're silent rules
+    // for long_string_0, but for eq1/eq2/eq3 the body is an atomic rule that
+    // includes the content. We receive the full text including opening/closing brackets.
+    // Strip [=*[ prefix and ]=*] suffix.
+    let bytes = raw.as_bytes();
+    if bytes.len() < 4 || bytes[0] != b'[' {
+        return raw;
+    }
+    let mut eq_count = 0;
+    let mut i = 1;
+    while i < bytes.len() && bytes[i] == b'=' {
+        eq_count += 1; i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'[' {
+        return raw;
+    }
+    let content_start = i + 1;
+    // find matching close: ]=*]
+    let suffix_len = eq_count + 2; // ]===...=]
+    if raw.len() < content_start + suffix_len {
+        return raw;
+    }
+    let content_end = raw.len() - suffix_len;
+    // Skip optional first newline per Lua spec
+    let content = &raw[content_start..content_end];
+    if content.starts_with('\n') { &content[1..] } else { content }
+}
+
 fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("empty primary")?;
@@ -911,15 +1018,21 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::KW_NIL => Ok(ExprKind::Lit(Literal::Null)),
         Rule::number => {
             let raw = first.as_str();
-            if raw.starts_with("0x") || raw.starts_with("0X") {
-                let v = i64::from_str_radix(&raw[2..], 16).unwrap_or(0);
+            // Remove underscore separators for parsing
+            let clean: String = raw.chars().filter(|&c| c != '_').collect();
+            if clean.starts_with("0b") || clean.starts_with("0B") {
+                let v = i64::from_str_radix(&clean[2..], 2).unwrap_or(0);
                 return Ok(ExprKind::Lit(Literal::Int(v)));
             }
-            let is_float = raw.contains('.') || raw.contains('e') || raw.contains('E');
+            if clean.starts_with("0x") || clean.starts_with("0X") {
+                let v = i64::from_str_radix(&clean[2..], 16).unwrap_or(0);
+                return Ok(ExprKind::Lit(Literal::Int(v)));
+            }
+            let is_float = clean.contains('.') || clean.contains('e') || clean.contains('E');
             if is_float {
-                Ok(ExprKind::Lit(Literal::Float(raw.parse().unwrap_or(0.0))))
+                Ok(ExprKind::Lit(Literal::Float(clean.parse().unwrap_or(0.0))))
             } else {
-                Ok(ExprKind::Lit(Literal::Int(raw.parse().unwrap_or(0))))
+                Ok(ExprKind::Lit(Literal::Int(clean.parse().unwrap_or(0))))
             }
         }
         Rule::string => {
@@ -932,7 +1045,28 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
             } else {
                 raw
             };
-            Ok(ExprKind::Lit(Literal::Str(content.to_string())))
+            Ok(ExprKind::Lit(Literal::Str(unescape_lua_string(content))))
+        }
+        Rule::long_string => {
+            // long_string contains one of long_string_0/eq1/eq2/eq3 as child
+            let child = first.into_inner().next();
+            let content = if let Some(child) = child {
+                let raw = child.as_str();
+                // The atomic body of long_string_0 is already content-only (body_0).
+                // For eq1/eq2/eq3 the rule matched the whole [=..=] including brackets.
+                // strip_long_brackets handles both.
+                match child.as_rule() {
+                    Rule::long_string_0 => {
+                        // body_0 is atomic child inside long_string_0
+                        let body = child.into_inner().next().map(|p| p.as_str()).unwrap_or("");
+                        if body.starts_with('\n') { body[1..].to_string() } else { body.to_string() }
+                    }
+                    _ => strip_long_brackets(raw).to_string(),
+                }
+            } else {
+                String::new()
+            };
+            Ok(ExprKind::Lit(Literal::Str(content)))
         }
         Rule::name => Ok(ExprKind::Ident(first.as_str().to_string())),
         Rule::table_constructor => walk_table_constructor(first),
@@ -947,6 +1081,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         other => Err(format!("Unhandled primary: {other:?}")),
     }
 }
+
 
 fn walk_table_constructor(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut elements = Vec::new();
