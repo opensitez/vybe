@@ -51,6 +51,10 @@ pub fn emit_then(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, fulfilled_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    // Assimilate a returned thenable/promise. This call sits inside the outer
+    // try, so a rejected return throws → the chain rejects (onRejected is null
+    // for the common `.then(onF).catch()` shape, so it rejects the result).
+    functions::emit_await(chunk, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_end(line);
@@ -65,9 +69,8 @@ pub fn emit_then(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, rejected_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    let r = emit_guarded_call_1(chunk, rejected_slot, err_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, r, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
     emit_rejected_promise(chunk, line);
@@ -120,9 +123,8 @@ pub fn emit_catch(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, rejected_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    let r = emit_guarded_call_1(chunk, rejected_slot, err_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, r, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
     chunk.emit_op(Op::THROW, line);
@@ -186,6 +188,36 @@ fn emit_finally_cb_guarded(chunk: &mut Chunk, cb_slot: u16, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Call `cb(arg)` (1 argument). If the callback throws, RETURN a rejected
+/// promise built from the thrown value (ECMA-262: a throw in an onRejected /
+/// onFulfilled reaction rejects the resulting promise). On success the result
+/// is stored in the returned scratch slot for the caller. WASM-compliant: a
+/// TRY_TABLE handler traps the throw, a structured BLOCK lets the no-throw path
+/// `br` past the handler.
+fn emit_guarded_call_1(chunk: &mut Chunk, cb_slot: u16, arg_slot: u16, line: u32) -> u16 {
+    let result = chunk.alloc_scratch(1);
+    chunk.emit_block(line);
+    let try_patch = super::errors::emit_try_start(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cb_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    // Assimilate a returned thenable/promise: await unwraps a fulfilled promise,
+    // throws (→ guard rejects) on a rejected one, and passes plain values
+    // through. Matches the reaction-result handling in ECMA-262 §27.2.1.3.2.
+    functions::emit_await(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+    super::errors::emit_try_end(chunk, line);
+    chunk.emit_br(0, line); // no throw → exit block, result in `result`
+    super::errors::patch_catch(chunk, try_patch);
+    let thrown = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, thrown, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, thrown, line);
+    emit_rejected_promise(chunk, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.emit_end(line);
+    result
+}
+
 fn emit_call_if_nonnull(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -193,6 +225,11 @@ fn emit_call_if_nonnull(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 0, line);
+    // Assimilate a returned thenable/promise (ECMA-262 §27.2.5.3): its value is
+    // ignored, but if it REJECTS the whole `.finally` rejects. await() throws on
+    // a rejected promise (caught by the enclosing guard) and passes plain values
+    // and fulfilled promises straight through, so we can drop the result.
+    functions::emit_await(chunk, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 }

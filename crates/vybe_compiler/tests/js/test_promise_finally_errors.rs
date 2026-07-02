@@ -29,17 +29,17 @@ crate::js_cases! {
 
     finally_return_overrides_resolved_value => {
         r#"Promise.resolve("orig").finally(()=>"fin").then(v=>console.log(v));"#,
-        ["fin"]
+        ["orig"]
     };
 
     finally_return_overrides_rejection => {
-        r#"Promise.reject("rej").finally(()=>"fin").then(v=>console.log(v));"#,
-        ["fin"]
+        r#"Promise.reject("rej").finally(()=>"fin").catch(e=>console.log(e));"#,
+        ["rej"]
     };
 
     finally_return_promise_overrides_reject => {
-        r#"Promise.reject("r").finally(()=>Promise.resolve("fp")).then(v=>console.log(v));"#,
-        ["fp"]
+        r#"Promise.reject("r").finally(()=>Promise.resolve("fp")).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_return_rejected_promise_overrides_resolve => {
@@ -49,7 +49,7 @@ crate::js_cases! {
 
     finally_after_catch_then_finally_return => {
         r#"Promise.reject("e").catch(()=>"c").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c"]
     };
 
     finally_after_catch_then_finally_throw => {
@@ -84,12 +84,12 @@ crate::js_cases! {
 
     finally_return_number_overrides => {
         r#"Promise.resolve("s").finally(()=>42).then(v=>console.log(v));"#,
-        ["42"]
+        ["s"]
     };
 
     finally_return_object_overrides_reject => {
-        r#"Promise.reject("x").finally(()=>({ok:1})).then(v=>console.log(v.ok));"#,
-        ["1"]
+        r#"Promise.reject("x").finally(()=>({ok:1})).catch(e=>console.log(e));"#,
+        ["x"]
     };
 
     chained_finally_first_throws => {
@@ -104,7 +104,7 @@ crate::js_cases! {
 
     chained_finally_both_return_last_wins => {
         r#"Promise.resolve(0).finally(()=>"a").finally(()=>"b").then(v=>console.log(v));"#,
-        ["b"]
+        ["0"]
     };
 
     finally_after_then_throw => {
@@ -119,7 +119,7 @@ crate::js_cases! {
 
     finally_return_undefined_overrides => {
         r#"Promise.resolve(5).finally(()=>{}).then(v=>console.log(v===undefined));"#,
-        ["true"]
+        ["false"]
     };
 
     finally_throw_null_reason => {
@@ -139,7 +139,7 @@ crate::js_cases! {
 
     finally_return_after_catch_on_reject => {
         r#"Promise.reject("err").catch(()=>"rec").finally(()=>"fin").then(v=>console.log(v));"#,
-        ["fin"]
+        ["rec"]
     };
 
     finally_async_callback_throw => {
@@ -148,8 +148,8 @@ crate::js_cases! {
     };
 
     finally_async_callback_return => {
-        r#"Promise.reject("r").finally(async()=>"af").then(v=>console.log(v));"#,
-        ["af"]
+        r#"Promise.reject("r").finally(async()=>"af").catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_return_promise_that_rejects => {
@@ -158,13 +158,13 @@ crate::js_cases! {
     };
 
     finally_return_promise_that_resolves => {
-        r#"Promise.reject("r").finally(()=>Promise.resolve("inner")).then(v=>console.log(v));"#,
-        ["inner"]
+        r#"Promise.reject("r").finally(()=>Promise.resolve("inner")).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_on_already_caught_promise => {
         r#"Promise.reject("x").catch(()=>{}).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["undefined"]
     };
 
     finally_throw_error_with_message => {
@@ -179,7 +179,7 @@ crate::js_cases! {
 
     finally_return_string_on_number_resolve => {
         r#"Promise.resolve(99).finally(()=>"str").then(v=>console.log(typeof v));"#,
-        ["string"]
+        ["number"]
     };
 
     finally_throw_in_nested_function => {
@@ -188,8 +188,8 @@ crate::js_cases! {
     };
 
     finally_return_from_arrow_overrides => {
-        r#"Promise.reject("r").finally(()=>"arr").then(v=>console.log(v));"#,
-        ["arr"]
+        r#"Promise.reject("r").finally(()=>"arr").catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     multiple_finally_on_same_branch => {
@@ -199,7 +199,7 @@ crate::js_cases! {
 
     finally_after_catch_returns_promise => {
         r#"Promise.reject("a").catch(()=>Promise.resolve("c")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c"]
     };
 
     finally_throw_range_error => {
@@ -208,8 +208,8 @@ crate::js_cases! {
     };
 
     finally_return_boolean_on_reject => {
-        r#"Promise.reject("x").finally(()=>false).then(v=>console.log(String(v)));"#,
-        ["false"]
+        r#"Promise.reject("x").finally(()=>false).catch(e=>console.log(e));"#,
+        ["x"]
     };
 
     finally_on_promise_all_rejection => {
@@ -218,8 +218,8 @@ crate::js_cases! {
     };
 
     finally_on_promise_race_rejection => {
-        r#"Promise.race([Promise.reject("a")]).finally(()=>"rf").then(v=>console.log(v));"#,
-        ["rf"]
+        r#"Promise.race([Promise.reject("a")]).finally(()=>"rf").catch(e=>console.log(e));"#,
+        ["a"]
     };
 
     finally_preserves_state_when_no_return_no_throw => {
@@ -239,7 +239,7 @@ crate::js_cases! {
 
     finally_return_overrides_catch_scalar => {
         r#"Promise.reject("a").catch(()=>"c").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c"]
     };
 
     finally_then_finally_throw => {
@@ -258,8 +258,8 @@ crate::js_cases! {
     };
 
     finally_return_thenable_assimilated => {
-        r#"Promise.reject("r").finally(()=>({then(res){res("assim");}})).then(v=>console.log(v));"#,
-        ["assim"]
+        r#"Promise.reject("r").finally(()=>({then(res){res("assim");}})).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_return_thenable_that_rejects => {
@@ -274,7 +274,7 @@ crate::js_cases! {
 
     finally_after_then_catch_finally_return => {
         r#"Promise.resolve(0).then(()=>{throw "t";}).catch(()=>"ok").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["ok"]
     };
 
     finally_on_constructor_reject => {
@@ -284,7 +284,7 @@ crate::js_cases! {
 
     finally_on_constructor_resolve_return => {
         r#"new Promise(res=>res("ctor")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["ctor"]
     };
 
     finally_throw_supersedes_catch_return => {
@@ -294,12 +294,12 @@ crate::js_cases! {
 
     finally_return_supersedes_catch_return => {
         r#"Promise.reject("a").catch(()=>"c").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c"]
     };
 
     finally_second_in_chain_return_wins => {
         r#"Promise.resolve(0).finally(()=>"one").finally(()=>"two").then(v=>console.log(v));"#,
-        ["two"]
+        ["0"]
     };
 
     finally_with_throw_after_catch_on_nested_reject => {
@@ -308,13 +308,13 @@ crate::js_cases! {
     };
 
     finally_return_after_nested_catch_reject => {
-        r#"Promise.reject("n").catch(()=>Promise.reject("c")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.reject("n").catch(()=>Promise.reject("c")).finally(()=>"f").catch(e=>console.log(e));"#,
+        ["c"]
     };
 
     finally_on_identity_resolved_promise => {
         r#"const p=Promise.resolve(3);p.finally(()=>"x").then(v=>console.log(v));"#,
-        ["x"]
+        ["3"]
     };
 
     finally_throw_reference_error => {
@@ -323,13 +323,13 @@ crate::js_cases! {
     };
 
     finally_return_bigint => {
-        r#"Promise.reject("r").finally(()=>9n).then(v=>console.log(String(v)));"#,
-        ["9"]
+        r#"Promise.reject("r").finally(()=>9n).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_throw_after_resolve_with_value => {
-        r#"Promise.resolve({v:1}).finally(o=>{throw o.v;}).catch(e=>console.log(e));"#,
-        ["1"]
+        r#"Promise.resolve({v:1}).finally(v=>{throw v===undefined?"noarg":"got";}).catch(e=>console.log(e));"#,
+        ["noarg"]
     };
 
     finally_no_op_between_catch_and_then => {
@@ -339,17 +339,17 @@ crate::js_cases! {
 
     finally_return_empty_string => {
         r#"Promise.resolve("x").finally(()=>"").then(v=>console.log(v.length));"#,
-        ["0"]
+        ["1"]
     };
 
     finally_throw_in_conditional => {
-        r#"Promise.resolve(true).finally(ok=>{if(ok)throw "cond";}).catch(e=>console.log(e));"#,
-        ["cond"]
+        r#"Promise.resolve(true).finally(ok=>{throw ok?"truthy":"noarg";}).catch(e=>console.log(e));"#,
+        ["noarg"]
     };
 
     finally_return_in_conditional => {
-        r#"Promise.reject("r").finally(()=>{return "yes";}).then(v=>console.log(v));"#,
-        ["yes"]
+        r#"Promise.reject("r").finally(()=>{return "yes";}).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_on_delayed_reject => {
@@ -359,7 +359,7 @@ crate::js_cases! {
 
     finally_on_delayed_resolve_return => {
         r#"new Promise(res=>setTimeout(()=>res("late"),0)).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["late"]
     };
 
     finally_after_multiple_catches => {
@@ -369,7 +369,7 @@ crate::js_cases! {
 
     finally_return_after_multiple_catches => {
         r#"Promise.reject("a").catch(e=>{throw "b:"+e;}).catch(()=>"c").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c"]
     };
 
     finally_throw_custom_error_subclass => {
@@ -378,8 +378,8 @@ crate::js_cases! {
     };
 
     finally_return_promise_resolving_to_object => {
-        r#"Promise.reject("r").finally(()=>Promise.resolve({k:1})).then(v=>console.log(v.k));"#,
-        ["1"]
+        r#"Promise.reject("r").finally(()=>Promise.resolve({k:1})).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_on_chain_with_interleaved_then => {
@@ -389,7 +389,7 @@ crate::js_cases! {
 
     finally_on_chain_with_interleaved_then_return => {
         r#"Promise.resolve(1).then(x=>x+1).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["2"]
     };
 
     finally_after_catch_throws => {
@@ -404,7 +404,7 @@ crate::js_cases! {
 
     finally_return_zero_overrides_truthy_resolve => {
         r#"Promise.resolve(1).finally(()=>0).then(v=>console.log(v));"#,
-        ["0"]
+        ["1"]
     };
 
     finally_throw_false_reason => {
@@ -419,12 +419,12 @@ crate::js_cases! {
 
     finally_on_promise_resolve_thenable_return => {
         r#"Promise.resolve({then(res){res(1);}}).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["1"]
     };
 
     finally_after_then_return_rejected => {
-        r#"Promise.resolve(0).then(()=>Promise.reject("tr")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.resolve(0).then(()=>Promise.reject("tr")).finally(()=>"f").catch(e=>console.log(e));"#,
+        ["tr"]
     };
 
     finally_throw_after_then_return_rejected => {
@@ -434,12 +434,12 @@ crate::js_cases! {
 
     finally_with_explicit_undefined_return => {
         r#"Promise.resolve(5).finally(()=>undefined).then(v=>console.log(v===undefined));"#,
-        ["true"]
+        ["false"]
     };
 
     finally_passes_through_when_callback_missing_behavior => {
         r#"Promise.resolve("p").finally(()=>null).then(v=>console.log(v===null));"#,
-        ["true"]
+        ["false"]
     };
 
     finally_on_reject_catch_finally_order => {
@@ -453,8 +453,8 @@ crate::js_cases! {
     };
 
     finally_return_array => {
-        r#"Promise.reject("r").finally(()=>[1,2]).then(v=>console.log(v.length));"#,
-        ["2"]
+        r#"Promise.reject("r").finally(()=>[1,2]).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_throw_in_loop_inside_callback => {
@@ -463,8 +463,8 @@ crate::js_cases! {
     };
 
     finally_return_from_nested_try => {
-        r#"Promise.reject("r").finally(()=>{try{return "inner";}catch{return "bad";}}).then(v=>console.log(v));"#,
-        ["inner"]
+        r#"Promise.reject("r").finally(()=>{try{return "inner";}catch{return "bad";}}).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_throw_from_nested_try => {
@@ -478,8 +478,8 @@ crate::js_cases! {
     };
 
     finally_return_on_allsettled => {
-        r#"Promise.allSettled([Promise.reject("a")]).finally(()=>"fs").then(v=>console.log(v));"#,
-        ["fs"]
+        r#"Promise.allSettled([Promise.reject("a")]).finally(()=>"fs").then(v=>console.log(v[0].status));"#,
+        ["rejected"]
     };
 
     finally_after_sync_throw_in_then => {
@@ -494,7 +494,7 @@ crate::js_cases! {
 
     finally_return_overrides_finally_side_effect_only => {
         r#"const o=[];Promise.resolve(1).finally(()=>{o.push("s");return "r";}).then(v=>console.log(v+o.join("")));"#,
-        ["rs"]
+        ["1s"]
     };
 
     finally_throw_overrides_pending_resolve_value => {
@@ -503,8 +503,8 @@ crate::js_cases! {
     };
 
     finally_return_symbol => {
-        r#"const s=Symbol("f");Promise.reject("r").finally(()=>s).then(v=>console.log(v===s));"#,
-        ["true"]
+        r#"const s=Symbol("f");Promise.reject("r").finally(()=>s).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_throw_symbol => {
@@ -519,7 +519,7 @@ crate::js_cases! {
 
     finally_return_on_branching_catch => {
         r#"Promise.reject("x").catch(e=>e==="x"?"ok":"no").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["ok"]
     };
 
     finally_after_promise_resolve_nested => {
@@ -529,7 +529,7 @@ crate::js_cases! {
 
     finally_return_after_promise_resolve_nested => {
         r#"Promise.resolve(Promise.resolve(1)).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["1"]
     };
 
     finally_on_reject_wrapped_error => {
@@ -538,8 +538,8 @@ crate::js_cases! {
     };
 
     finally_return_after_reject_wrapped_error => {
-        r#"Promise.reject(new Error("we")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.reject(new Error("we")).finally(()=>"f").catch(e=>console.log(e.message));"#,
+        ["we"]
     };
 
     finally_three_deep_last_throw => {
@@ -549,22 +549,22 @@ crate::js_cases! {
 
     finally_three_deep_last_return => {
         r#"Promise.resolve(0).finally(()=>"a").finally(()=>"b").finally(()=>"c").then(v=>console.log(v));"#,
-        ["c"]
+        ["0"]
     };
 
     finally_catch_on_finally_throw_separate_branch => {
         r#"Promise.resolve(1).finally(()=>{throw "a";}).catch(e=>"c:"+e).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["c:a"]
     };
 
     finally_after_catch_on_finally_throw => {
         r#"Promise.resolve(1).finally(()=>{throw "a";}).catch(e=>e).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["a"]
     };
 
     finally_return_promise_chain_in_callback => {
-        r#"Promise.reject("r").finally(()=>Promise.resolve().then(()=>"chain")).then(v=>console.log(v));"#,
-        ["chain"]
+        r#"Promise.reject("r").finally(()=>Promise.resolve().then(()=>"chain")).catch(e=>console.log(e));"#,
+        ["r"]
     };
 
     finally_throw_after_promise_in_callback => {
@@ -573,8 +573,8 @@ crate::js_cases! {
     };
 
     finally_on_mixed_resolve_reject_chain => {
-        r#"Promise.resolve(1).then(()=>Promise.reject("m")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.resolve(1).then(()=>Promise.reject("m")).finally(()=>"f").catch(e=>console.log(e));"#,
+        ["m"]
     };
 
     finally_throw_on_mixed_resolve_reject_chain => {
@@ -584,12 +584,12 @@ crate::js_cases! {
 
     finally_with_null_return_overrides => {
         r#"Promise.resolve("x").finally(()=>null).then(v=>console.log(v===null));"#,
-        ["true"]
+        ["false"]
     };
 
     finally_callback_receives_no_args => {
         r#"Promise.resolve(99).finally((...a)=>a.length).then(v=>console.log(v));"#,
-        ["0"]
+        ["99"]
     };
 
     finally_on_already_rejected_then_caught => {
@@ -599,7 +599,7 @@ crate::js_cases! {
 
     finally_return_on_already_rejected_then_caught => {
         r#"Promise.reject("a").catch(()=>{}).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["undefined"]
     };
 
     finally_syntax_error_throw => {
@@ -624,7 +624,7 @@ crate::js_cases! {
 
     finally_return_after_thenable_assimilation => {
         r#"Promise.resolve({then(res){res(5);}}).then(v=>v).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["5"]
     };
 
     finally_on_promise_from_async_then => {
@@ -634,7 +634,7 @@ crate::js_cases! {
 
     finally_return_on_promise_from_async_then => {
         r#"Promise.resolve(0).then(async()=>1).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["1"]
     };
 
     finally_rethrows_after_catch_if_finally_throws => {
@@ -644,7 +644,7 @@ crate::js_cases! {
 
     finally_does_not_run_catch_on_return_override => {
         r#"const o=[];Promise.reject("r").catch(e=>o.push("c")).finally(()=>"f").then(v=>o.push("t:"+v)).then(()=>console.log(o.join(",")));"#,
-        ["c,t:f"]
+        ["c,t:1"]
     };
 
     finally_throw_aggregate_error => {
@@ -654,7 +654,7 @@ crate::js_cases! {
 
     finally_return_after_catch_identity => {
         r#"Promise.reject("id").catch(e=>e).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["id"]
     };
 
     finally_on_parallel_branch_isolation => {
@@ -668,13 +668,13 @@ crate::js_cases! {
     };
 
     finally_return_string_on_number_reject => {
-        r#"Promise.reject(404).finally(()=>"nf").then(v=>console.log(v));"#,
-        ["nf"]
+        r#"Promise.reject(404).finally(()=>"nf").catch(e=>console.log(e));"#,
+        ["404"]
     };
 
     finally_after_double_then_reject => {
-        r#"Promise.resolve(0).then(()=>1).then(()=>Promise.reject("d")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.resolve(0).then(()=>1).then(()=>Promise.reject("d")).finally(()=>"f").catch(e=>console.log(e));"#,
+        ["d"]
     };
 
     finally_throw_after_double_then_reject => {
@@ -684,12 +684,12 @@ crate::js_cases! {
 
     finally_with_void_operator_return => {
         r#"Promise.resolve(1).finally(()=>void "ignored").then(v=>console.log(v===undefined));"#,
-        ["true"]
+        ["false"]
     };
 
     finally_return_negates_rejection_message => {
-        r#"Promise.reject("msg").finally(()=>"recovered").then(v=>console.log(v));"#,
-        ["recovered"]
+        r#"Promise.reject("msg").finally(()=>"recovered").catch(e=>console.log(e));"#,
+        ["msg"]
     };
 
     finally_throw_in_finally_after_finally_return => {
@@ -699,7 +699,7 @@ crate::js_cases! {
 
     finally_return_in_finally_after_finally_throw_caught => {
         r#"Promise.resolve(0).finally(()=>{throw "a";}).catch(()=>"b").finally(()=>"c").then(v=>console.log(v));"#,
-        ["c"]
+        ["b"]
     };
 
     finally_on_reject_empty_string_reason => {
@@ -708,8 +708,8 @@ crate::js_cases! {
     };
 
     finally_return_on_reject_empty_string => {
-        r#"Promise.reject("").finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.reject("").finally(()=>"f").catch(e=>console.log(e===""));"#,
+        ["true"]
     };
 
     finally_promise_reject_in_executor_then_finally => {
@@ -719,12 +719,12 @@ crate::js_cases! {
 
     finally_promise_resolve_in_executor_then_finally_return => {
         r#"new Promise(res=>res("ex")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["ex"]
     };
 
     finally_after_catch_returning_rejected_promise => {
-        r#"Promise.reject("a").catch(()=>Promise.reject("c")).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        r#"Promise.reject("a").catch(()=>Promise.reject("c")).finally(()=>"f").catch(e=>console.log(e));"#,
+        ["c"]
     };
 
     finally_throw_after_catch_returning_rejected_promise => {
@@ -739,7 +739,7 @@ crate::js_cases! {
 
     finally_return_on_then_with_onrejected => {
         r#"Promise.reject("r").then(null,e=>"h:"+e).finally(()=>"f").then(v=>console.log(v));"#,
-        ["f"]
+        ["h:r"]
     };
 
     finally_completes_before_catch_on_throw => {
