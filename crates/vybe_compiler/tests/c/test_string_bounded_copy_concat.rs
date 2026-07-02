@@ -1,6 +1,5 @@
 //! strncpy, strncat, strncmp — bounded copy, padding, and truncation.
 
-use crate::helpers::*;
 
 c_run_cases! {
     strncpy_copies_exactly_n_without_auto_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[8]; strncpy(d, \"planet\", 6); printf(\"%c%c%c%c%c%c\\n\", d[0],d[1],d[2],d[3],d[4],d[5]); return 0;", expect: ["p", "l", "a", "n", "e", "t"] },

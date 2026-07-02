@@ -1,6 +1,5 @@
 //! Enum underlying values, gaps, comparisons, switch, and mixed enum/int use.
 
-use crate::helpers::*;
 
 c_run_cases! {
     enum_explicit_start_then_auto_increment => {

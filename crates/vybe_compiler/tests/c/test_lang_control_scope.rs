@@ -1,6 +1,5 @@
 //! Control flow, scope, and linkage — one language rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     switch_fallthrough_behavior => {

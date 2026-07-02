@@ -1,7 +1,6 @@
 //! `volatile` field reads and writes — structural visibility tests via printed counts.
 //! GAP: concurrency primitives.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     volatile_int_write_then_read_count => {

@@ -1,6 +1,5 @@
 //! C11 threads.h and fenv.h — one API per compile smoke.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     thrd_create_join => {

@@ -21,7 +21,7 @@ End Module
     // Form was created — check its text property
     let g = gui.lock().unwrap();
     assert!(
-        g.control_names.len() >= 1 || g.form.control_count() >= 0,
+        g.control_names.len() >= 1 || (g.form.control_count() as i64) >= 0,
         "Expected form to be created"
     );
 }

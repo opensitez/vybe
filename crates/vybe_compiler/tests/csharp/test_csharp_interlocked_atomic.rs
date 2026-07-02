@@ -1,7 +1,6 @@
 //! `Interlocked` atomic operations — `Increment`, `Add`, `CompareExchange`, `Exchange`.
 //! GAP: concurrency primitives.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     interlocked_increment_from_zero_count => {

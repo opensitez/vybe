@@ -1,6 +1,5 @@
 //! Preprocessor and macro semantics — one distinct directive/pattern per test.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     define_object_macro => { includes: ["<stdio.h>"], decls: "#define N 5", body: "return N;" },

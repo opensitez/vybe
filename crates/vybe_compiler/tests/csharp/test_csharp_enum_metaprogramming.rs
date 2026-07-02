@@ -1,7 +1,6 @@
 //! Enum metaprogramming: `Parse`, `TryParse`, `GetNames`, `GetValues`, `HasFlag`, casts.
 //! GAP: reflection-style enum APIs need dedicated structural coverage.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     enum_parse_string_to_member => {

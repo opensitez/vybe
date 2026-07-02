@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_in_main;
 
 #[test]
 fn enum_constants_print_declared_names() {

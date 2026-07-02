@@ -617,7 +617,7 @@ crate::js_cases! {
         ["ok"]
     };
 
-    then_onRejected_recovers_without_catch_method => {
+    then_on_rejected_recovers_without_catch_method => {
         r#"Promise.reject(5).then(null,e=>e*2).then(v=>console.log(v));"#,
         ["10"]
     };

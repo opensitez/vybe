@@ -1,6 +1,5 @@
 //! Nested class/struct/enum access from outer scope and private nested visibility.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     nested_access_outer_instantiates_public_nested_class => {

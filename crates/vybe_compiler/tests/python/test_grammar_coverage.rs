@@ -89,12 +89,12 @@ fn raw_fstring_fr() {
 }
 
 #[test]
-fn raw_fstring_RF() {
+fn raw_fstring_rf_upper() {
     parse_ok("x = RF\"{42}\"");
 }
 
 #[test]
-fn raw_fstring_Fr() {
+fn raw_fstring_fr_mixed() {
     parse_ok("x = Fr\"{42}\"");
 }
 

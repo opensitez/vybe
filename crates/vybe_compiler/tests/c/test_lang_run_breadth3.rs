@@ -1,6 +1,5 @@
 //! Language runtime batch 3 — distinct behaviors.
 
-use crate::helpers::*;
 
 c_run_cases! {
     short_circuit_or_second_skipped => { includes: ["<stdio.h>"], decls: "", body: "int x=0; if(1||(x=1)){} printf(\"%d\\n\", x); return 0;", expect: ["0"] },

@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_in_main;
 
 #[test]
 fn record_components_assigned_via_constructor() {

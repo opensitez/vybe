@@ -1,6 +1,5 @@
 //! Extended slicing: extended syntax, assignment, deletion, step edge cases.
 
-use crate::helpers::*;
 
 crate::runtime_case!(slice_basic, "a = [0, 1, 2, 3]\nprint(a[1:3])\n", "[1, 2]");
 crate::runtime_case!(slice_negative_start, "a = [0, 1, 2, 3]\nprint(a[-3:-1])\n", "[1, 2]");

@@ -6,10 +6,7 @@
 //!
 //! For now these tests verify the binding: yield-containing functions
 //! produce generator objects, not eager values.
-
 use super::helpers::run_python;
-use vybe_bytecode::Value;
-
 #[test]
 fn generator_decorator_returns_continuation_not_value() {
     // `@generator` opts into true lazy generators via the stack-

@@ -1,6 +1,5 @@
 //! Runtime checks for C math.h hyperbolic functions.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sinh_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", sinh(1.0)); return 0;", expect: ["1.175"] },

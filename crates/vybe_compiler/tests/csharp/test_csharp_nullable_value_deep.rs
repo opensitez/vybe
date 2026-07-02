@@ -2,7 +2,6 @@
 //! and lifted operators for `int?`, `decimal?`, and related primitives.
 //! GAP: deep nullable semantics beyond basic smoke tests.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     nullable_int_has_value_true_for_zero => {

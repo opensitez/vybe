@@ -1,6 +1,5 @@
 //! wchar.h — one wide-character API per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     wcslen_counts => { includes: ["<stdio.h>", "<wchar.h>"], decls: "", body: "wchar_t s[] = L\"ab\"; printf(\"%d\\n\", (int)wcslen(s)); return 0;", expect: ["2"] },

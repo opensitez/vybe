@@ -1,6 +1,4 @@
-//! Decorators: functools.wraps, parameterized, class/staticmethod, property, chaining.
 
-use crate::helpers::*;
 
 crate::runtime_case!(
     decorator_plain_wraps,

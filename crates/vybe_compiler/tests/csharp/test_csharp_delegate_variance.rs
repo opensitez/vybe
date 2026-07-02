@@ -1,7 +1,6 @@
 //! Delegate variance: `Func` covariance on return, `Action` contravariance on params.
 //! GAP: structural assignability via invoke prints is thin in the existing suite.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     func_string_to_object_covariant_return_invokes => {

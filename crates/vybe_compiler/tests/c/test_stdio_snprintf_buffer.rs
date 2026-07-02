@@ -1,6 +1,5 @@
 //! snprintf, vsnprintf, and formatted buffer I/O — distinct format/width cases.
 
-use crate::helpers::*;
 
 c_run_cases! {
     snprintf_writes_null_terminated => {
@@ -255,7 +254,7 @@ c_run_cases! {
         body: "char b[8]; snprintf(b,8,\"%x\",255); printf(\"%s\\n\", b); return 0;",
         expect: ["ff"]
     },
-    snprintf_X_uppercase => {
+    snprintf_x_uppercase => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "char b[8]; snprintf(b,8,\"%X\",255); printf(\"%s\\n\", b); return 0;",
@@ -291,7 +290,7 @@ c_run_cases! {
         body: "char b[16]; snprintf(b,16,\"%jd\",(intmax_t)-55); printf(\"%s\\n\", b); return 0;",
         expect: ["-55"]
     },
-    snprintf_long_double_Lf => {
+    snprintf_long_double_lf => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "char b[16]; snprintf(b,16,\"%.1Lf\",3.5L); printf(\"%s\\n\", b); return 0;",

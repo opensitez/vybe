@@ -1,6 +1,5 @@
 //! Preprocessor conditional compilation — #if/#elif/#else with observable int output.
 
-use crate::helpers::*;
 
 c_run_cases! {
     if_true_branch_selects_value => {

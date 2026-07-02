@@ -1,6 +1,5 @@
 //! StringBuilder gap coverage: Append/AppendLine/Insert/Remove/Replace/Clear/Length/Capacity overloads and edge cases.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     stringbuilder_gap_append_char_single => {

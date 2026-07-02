@@ -1,6 +1,5 @@
 //! OOP: MRO, super(), descriptors, __slots__, class/static vars, metaclass basics.
 
-use crate::helpers::*;
 
 crate::runtime_case!(
     class_instance_attr,

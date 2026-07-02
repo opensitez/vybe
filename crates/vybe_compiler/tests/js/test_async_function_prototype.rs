@@ -1,4 +1,4 @@
-/// AsyncFunction.prototype — async function metadata, prototype chain, and instanceof relations.
+// AsyncFunction.prototype — async function metadata, prototype chain, and instanceof relations.
 crate::js_cases! {
     async_declaration_prototype_is_async_function_prototype => {
         r#"async function run() {} console.log(Object.getPrototypeOf(run) === AsyncFunction.prototype);"#,

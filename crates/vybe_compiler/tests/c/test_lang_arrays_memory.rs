@@ -1,6 +1,5 @@
 //! Arrays, VLAs, and memory layout — one language rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     vla_size_runtime => {

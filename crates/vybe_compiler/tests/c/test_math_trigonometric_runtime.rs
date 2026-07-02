@@ -1,6 +1,5 @@
 //! Runtime checks for C math.h trigonometric functions.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sin_pi_over_six => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", sin(M_PI / 6.0)); return 0;", expect: ["0.500"] },

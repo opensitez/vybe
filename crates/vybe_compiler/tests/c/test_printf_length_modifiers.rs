@@ -1,6 +1,5 @@
 //! printf length modifiers — %hd %hhd %ld %lld %zu %td %jd %Lf and related.
 
-use crate::helpers::*;
 
 c_run_cases! {
     printf_hhd_unsigned_char_value => {
@@ -183,7 +182,7 @@ c_run_cases! {
         body: "double d=2.5; printf(\"%lf\\n\", d); return 0;",
         expect: ["2.500000"]
     },
-    printf_Lf_long_double_literal => {
+    printf_lf_long_double_literal => {
         includes: ["<stdio.h>", "<stddef.h>", "<inttypes.h>"],
         decls: "",
         body: "long double ld=1.25L; printf(\"%Lf\\n\", ld); return 0;",
@@ -291,7 +290,7 @@ c_run_cases! {
         body: "double d=1.0/3.0; printf(\"%.3lf\\n\", d); return 0;",
         expect: ["0.333"]
     },
-    printf_Lf_width_ten => {
+    printf_lf_width_ten => {
         includes: ["<stdio.h>", "<stddef.h>", "<inttypes.h>"],
         decls: "",
         body: "long double ld=3.5L; printf(\"%10.1Lf\\n\", ld); return 0;",

@@ -1,7 +1,6 @@
 //! `fixed` pinning via `&arr[0]`, `unsafe` blocks, and pointer dereference prints.
 //! GAP: fixed-buffer pointer coverage is thin beyond whole-array pinning.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     fixed_byte_ptr_from_first_element_reads_value => {

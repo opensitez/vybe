@@ -1,4 +1,4 @@
-/// AsyncGeneratorFunction.prototype — async generator metadata, prototype chain, and instanceof relations.
+// AsyncGeneratorFunction.prototype — async generator metadata, prototype chain, and instanceof relations.
 crate::js_cases! {
     async_generator_declaration_prototype_is_async_generator_function_prototype => {
         r#"async function* run() { yield 1; } console.log(Object.getPrototypeOf(run) === AsyncGeneratorFunction.prototype);"#,

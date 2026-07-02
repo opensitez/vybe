@@ -1,6 +1,5 @@
 //! assert, raise, and debugging statement patterns.
 
-use crate::helpers::*;
 
 crate::runtime_case!(assert_true, "assert True\nprint('ok')\n", "ok");
 crate::runtime_case!(assert_expression, "assert 2 + 2 == 4\nprint('ok')\n", "ok");

@@ -1,6 +1,5 @@
 //! Function types, prototypes, and varargs — one rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     prototype_before_definition => {

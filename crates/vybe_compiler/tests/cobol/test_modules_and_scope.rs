@@ -1,12 +1,4 @@
 use super::helpers::compile_ok;
-
-fn p(data: &str, body: &str) -> String {
-    format!(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n{}\nPROCEDURE DIVISION.\n{}\n    STOP RUN.",
-        data, body
-    )
-}
-
 #[test]
 fn nested_program_scope_compiles() {
     compile_ok(

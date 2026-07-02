@@ -1,9 +1,8 @@
 //! strftime format directives — one conversion specifier per test with fixed struct tm.
 
-use crate::helpers::*;
 
 c_run_cases! {
-    strftime_percent_Y_four_digit_year => {
+    strftime_percent_y_four_digit_year => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15}; char b[8]; strftime(b,sizeof(b),\"%Y\",&t); printf(\"%s\\n\", b); return 0;",
@@ -27,31 +26,31 @@ c_run_cases! {
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=7}; char b[4]; strftime(b,sizeof(b),\"%d\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["07"]
     },
-    strftime_percent_H_twenty_four_hour => {
+    strftime_percent_h_twenty_four_hour => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=9}; char b[4]; strftime(b,sizeof(b),\"%H\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["09"]
     },
-    strftime_percent_M_zero_padded_minute => {
+    strftime_percent_m_zero_padded_minute => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_min=5}; char b[4]; strftime(b,sizeof(b),\"%M\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["05"]
     },
-    strftime_percent_S_zero_padded_second => {
+    strftime_percent_s_zero_padded_second => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_sec=3}; char b[4]; strftime(b,sizeof(b),\"%S\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["03"]
     },
-    strftime_percent_A_full_weekday_name => {
+    strftime_percent_a_full_weekday_name => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[16]; strftime(b,sizeof(b),\"%A\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["Saturday"]
     },
-    strftime_percent_B_full_month_name => {
+    strftime_percent_b_full_month_name => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=1}; char b[16]; strftime(b,sizeof(b),\"%B\",&t); printf(\"%s\\n\", b); return 0;",
@@ -75,7 +74,7 @@ c_run_cases! {
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=14}; char b[4]; strftime(b,sizeof(b),\"%p\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["PM"]
     },
-    strftime_percent_I_twelve_hour_clock => {
+    strftime_percent_i_twelve_hour_clock => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=14}; char b[4]; strftime(b,sizeof(b),\"%I\",&t); printf(\"%s\\n\", b); return 0;",
@@ -99,31 +98,31 @@ c_run_cases! {
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[4]; strftime(b,sizeof(b),\"%u\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["6"]
     },
-    strftime_percent_C_century => {
+    strftime_percent_c_century => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=0,.tm_mday=1}; char b[4]; strftime(b,sizeof(b),\"%C\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["20"]
     },
-    strftime_percent_F_iso_date => {
+    strftime_percent_f_iso_date => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15}; char b[16]; strftime(b,sizeof(b),\"%F\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["2024-06-15"]
     },
-    strftime_percent_D_us_date => {
+    strftime_percent_d_us_date => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15}; char b[16]; strftime(b,sizeof(b),\"%D\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["06/15/24"]
     },
-    strftime_percent_R_hour_minute => {
+    strftime_percent_r_hour_minute => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=14,.tm_min=30}; char b[8]; strftime(b,sizeof(b),\"%R\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["14:30"]
     },
-    strftime_percent_T_hour_minute_second => {
+    strftime_percent_t_hour_minute_second => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_hour=14,.tm_min=30,.tm_sec=45}; char b[16]; strftime(b,sizeof(b),\"%T\",&t); printf(\"%s\\n\", b); return 0;",
@@ -255,13 +254,13 @@ c_run_cases! {
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15}; char b[4]={'X','X','X','X'}; strftime(b,sizeof(b),\"\",&t); printf(\"%d\\n\", b[0]==0); return 0;",
         expect: ["1"]
     },
-    strftime_percent_V_iso_week => {
+    strftime_percent_v_iso_week => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[4]; strftime(b,sizeof(b),\"%V\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["24"]
     },
-    strftime_percent_G_iso_week_year => {
+    strftime_percent_g_iso_week_year => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[8]; strftime(b,sizeof(b),\"%G\",&t); printf(\"%s\\n\", b); return 0;",
@@ -273,13 +272,13 @@ c_run_cases! {
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[4]; strftime(b,sizeof(b),\"%g\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["24"]
     },
-    strftime_percent_U_sunday_week_number => {
+    strftime_percent_u_sunday_week_number => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6,.tm_yday=166}; char b[4]; strftime(b,sizeof(b),\"%U\",&t); printf(\"%s\\n\", b); return 0;",
         expect: ["23"]
     },
-    strftime_percent_W_monday_week_number => {
+    strftime_percent_w_monday_week_number => {
         includes: ["<stdio.h>", "<time.h>"],
         decls: "",
         body: "struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6,.tm_yday=166}; char b[4]; strftime(b,sizeof(b),\"%W\",&t); printf(\"%s\\n\", b); return 0;",

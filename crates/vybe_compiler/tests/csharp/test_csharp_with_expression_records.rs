@@ -1,6 +1,5 @@
 //! With expressions on records: positional/nominal, nested with, derived records, and reference semantics.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     with_positional_single_field => {

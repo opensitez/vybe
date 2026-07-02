@@ -1,6 +1,5 @@
 //! Preprocessor macro expansion — object/function macros, stringify, paste, variadic.
 
-use crate::helpers::*;
 
 c_run_cases! {
     object_macro_integer_substitution_in_printf => {

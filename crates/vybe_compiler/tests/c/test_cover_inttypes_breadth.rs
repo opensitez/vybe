@@ -1,6 +1,5 @@
 //! inttypes printf/scan macros and misc headers — one macro/API per test.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     prid8_macro => { includes: ["<stdio.h>", "<inttypes.h>"], decls: "", body: "int8_t v=1; printf(\"%\" PRId8, v); return 0;" },

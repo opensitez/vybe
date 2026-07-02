@@ -1,6 +1,5 @@
 //! types, typing, inspect, enum, dataclasses compile coverage.
 
-use crate::helpers::*;
 
 crate::compile_case!(typing_list_int, "from typing import List\nx: List[int] = []\n");
 crate::compile_case!(typing_dict_str_int, "from typing import Dict\nx: Dict[str, int] = {}\n");

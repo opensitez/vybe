@@ -1,6 +1,5 @@
 //! Language runtime batch 4 — distinct rules not covered in breadth 1–3.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sizeof_string_literal_includes_nul => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%zu\\n\", sizeof \"ab\"); return 0;", expect: ["3"] },

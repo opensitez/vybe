@@ -1,6 +1,5 @@
 //! Storage duration, linkage, and translation-unit semantics.
 
-use crate::helpers::*;
 
 c_run_cases! {
     extern_global_read => {

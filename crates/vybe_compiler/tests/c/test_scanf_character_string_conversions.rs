@@ -1,6 +1,5 @@
 //! sscanf character/string conversions — %c %s %[] scansets and width limits.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sscanf_c_digit_char => {

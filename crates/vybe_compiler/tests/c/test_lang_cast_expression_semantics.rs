@@ -1,6 +1,5 @@
 //! Explicit cast expressions that change representation or observable values.
 
-use crate::helpers::*;
 
 c_run_cases! {
     int_ninety_seven_to_char_prints_a => {
@@ -9,7 +8,7 @@ c_run_cases! {
         body: "printf(\"%c\\n\", (char)97); return 0;",
         expect: ["a"]
     },
-    int_sixty_five_to_char_prints_A => {
+    int_sixty_five_to_char_prints_a => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%c\\n\", (char)65); return 0;",

@@ -1,6 +1,5 @@
 //! time module extended: sleep, struct_time, strftime, strptime, monotonic.
 
-use crate::helpers::*;
 
 crate::runtime_case!(time_time_positive, "import time\nprint(time.time() > 0)\n", "True");
 crate::runtime_case!(time_monotonic_increases, "import time\na = time.monotonic()\nb = time.monotonic()\nprint(b >= a)\n", "True");

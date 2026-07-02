@@ -1,4 +1,4 @@
-/// Function.prototype metadata — name, length, toString, Symbol.hasInstance, and per-kind naming rules.
+// Function.prototype metadata — name, length, toString, Symbol.hasInstance, and per-kind naming rules.
 crate::js_cases! {
     function_length_stops_at_first_default_parameter => {
         r#"function f(a, b = 1, c) {} console.log(f.length);"#,

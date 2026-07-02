@@ -1,6 +1,5 @@
 //! math.h APIs not covered elsewhere — one function per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sinh_zero => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", sinh(0.0)); return 0;", expect: ["0.000"] },

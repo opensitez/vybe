@@ -11,8 +11,6 @@
 //!   H. MsgBox, Close, Show, dialogs (8 tests)
 
 use super::helpers::{run_vb, run_vb_gui};
-use std::sync::{Arc, Mutex};
-use vybe_host::gui_state::GuiState;
 
 // ============================================================
 // A. FORM CREATION AND LIFECYCLE (10 tests)

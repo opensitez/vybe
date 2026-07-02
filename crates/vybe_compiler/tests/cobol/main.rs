@@ -30,7 +30,6 @@ mod test_coverage_matrix;
 mod test_control_flow;
 mod test_control_flow_matrix;
 mod test_d1_pilot_wasm_js_array;
-mod test_data_division;
 mod test_data_division_extended;
 mod test_data_division_expanded;
 mod test_data_division_matrix;

@@ -1,6 +1,5 @@
 //! sizeof and alignof expression semantics with numeric printed results.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sizeof_short => {

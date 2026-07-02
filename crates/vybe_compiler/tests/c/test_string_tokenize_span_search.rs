@@ -1,6 +1,5 @@
 //! strtok, strspn, strcspn, strpbrk, strstr — tokens, spans, and search offsets.
 
-use crate::helpers::*;
 
 c_run_cases! {
     strtok_splits_colon_delimited => { includes: ["<stdio.h>", "<string.h>"], decls: "char s[] = \"one:two:three\";", body: "char *tok=strtok(s, \":\"); printf(\"%s\\n\", tok); tok=strtok(NULL, \":\"); printf(\"%s\\n\", tok); tok=strtok(NULL, \":\"); printf(\"%s\\n\", tok); return 0;", expect: ["one", "two", "three"] },

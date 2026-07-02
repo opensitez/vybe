@@ -1,4 +1,4 @@
-/// GeneratorFunction.prototype — generator metadata, prototype chain, and instanceof relations.
+// GeneratorFunction.prototype — generator metadata, prototype chain, and instanceof relations.
 crate::js_cases! {
     generator_declaration_prototype_is_generator_function_prototype => {
         r#"function* run() { yield 1; } console.log(Object.getPrototypeOf(run) === GeneratorFunction.prototype);"#,

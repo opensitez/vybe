@@ -1,6 +1,5 @@
 //! stdint types, signals, setjmp, regex compile breadth.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     stdint_int8_t => { includes: ["<stdint.h>"], decls: "", body: "int8_t x=1; return x;" },

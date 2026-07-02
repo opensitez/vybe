@@ -29,98 +29,98 @@ dart_cases! {
         ["true"]
     };
 
-    indexOf_finds_substring_at_start => {
+    index_of_finds_substring_at_start => {
         r#"void main() {
   print('hello'.indexOf('he'));
 }"#,
         ["0"]
     };
 
-    indexOf_finds_substring_in_middle => {
+    index_of_finds_substring_in_middle => {
         r#"void main() {
   print('hello world'.indexOf('world'));
 }"#,
         ["6"]
     };
 
-    indexOf_returns_negative_one_when_missing => {
+    index_of_returns_negative_one_when_missing => {
         r#"void main() {
   print('hello'.indexOf('xyz'));
 }"#,
         ["-1"]
     };
 
-    indexOf_empty_needle_at_start => {
+    index_of_empty_needle_at_start => {
         r#"void main() {
   print('abc'.indexOf(''));
 }"#,
         ["0"]
     };
 
-    indexOf_with_start_position => {
+    index_of_with_start_position => {
         r#"void main() {
   print('banana'.indexOf('na', 2));
 }"#,
         ["3"]
     };
 
-    startsWith_true_for_matching_prefix => {
+    starts_with_true_for_matching_prefix => {
         r#"void main() {
   print('hello'.startsWith('he'));
 }"#,
         ["true"]
     };
 
-    startsWith_false_for_wrong_prefix => {
+    starts_with_false_for_wrong_prefix => {
         r#"void main() {
   print('hello'.startsWith('lo'));
 }"#,
         ["false"]
     };
 
-    startsWith_with_position_offset => {
+    starts_with_with_position_offset => {
         r#"void main() {
   print('hello'.startsWith('ll', 2));
 }"#,
         ["true"]
     };
 
-    endsWith_true_for_matching_suffix => {
+    ends_with_true_for_matching_suffix => {
         r#"void main() {
   print('hello.dart'.endsWith('.dart'));
 }"#,
         ["true"]
     };
 
-    endsWith_false_for_wrong_suffix => {
+    ends_with_false_for_wrong_suffix => {
         r#"void main() {
   print('hello'.endsWith('he'));
 }"#,
         ["false"]
     };
 
-    replaceAll_replaces_every_occurrence => {
+    replace_all_replaces_every_occurrence => {
         r#"void main() {
   print('aaa'.replaceAll('a', 'b'));
 }"#,
         ["bbb"]
     };
 
-    replaceAll_single_character_substitution => {
+    replace_all_single_character_substitution => {
         r#"void main() {
   print('hello'.replaceAll('l', 'r'));
 }"#,
         ["herro"]
     };
 
-    replaceAll_no_match_leaves_string_unchanged => {
+    replace_all_no_match_leaves_string_unchanged => {
         r#"void main() {
   print('hello'.replaceAll('z', 'x'));
 }"#,
         ["hello"]
     };
 
-    replaceAll_empty_replacement_deletes_matches => {
+    replace_all_empty_replacement_deletes_matches => {
         r#"void main() {
   print('a-b-c'.replaceAll('-', ''));
 }"#,
@@ -166,77 +166,77 @@ dart_cases! {
         ["hi"]
     };
 
-    trimLeft_removes_leading_whitespace_only => {
+    trim_left_removes_leading_whitespace_only => {
         r#"void main() {
   print('  hi  '.trimLeft());
 }"#,
         ["hi  "]
     };
 
-    trimRight_removes_trailing_whitespace_only => {
+    trim_right_removes_trailing_whitespace_only => {
         r#"void main() {
   print('  hi  '.trimRight());
 }"#,
         ["  hi"]
     };
 
-    padLeft_pads_with_zeros_to_width => {
+    pad_left_pads_with_zeros_to_width => {
         r#"void main() {
   print('7'.padLeft(3, '0'));
 }"#,
         ["007"]
     };
 
-    padLeft_already_at_width_unchanged => {
+    pad_left_already_at_width_unchanged => {
         r#"void main() {
   print('abc'.padLeft(3, '0'));
 }"#,
         ["abc"]
     };
 
-    padLeft_longer_than_width_unchanged => {
+    pad_left_longer_than_width_unchanged => {
         r#"void main() {
   print('abcd'.padLeft(3, '0'));
 }"#,
         ["abcd"]
     };
 
-    padRight_pads_with_dots_to_width => {
+    pad_right_pads_with_dots_to_width => {
         r#"void main() {
   print('hi'.padRight(5, '.'));
 }"#,
         ["hi..."]
     };
 
-    padRight_default_space_padding => {
+    pad_right_default_space_padding => {
         r#"void main() {
   print('x'.padRight(3));
 }"#,
         ["x  "]
     };
 
-    toUpperCase_converts_lowercase_letters => {
+    to_upper_case_converts_lowercase_letters => {
         r#"void main() {
   print('hello'.toUpperCase());
 }"#,
         ["HELLO"]
     };
 
-    toUpperCase_leaves_digits_unchanged => {
+    to_upper_case_leaves_digits_unchanged => {
         r#"void main() {
   print('ab12'.toUpperCase());
 }"#,
         ["AB12"]
     };
 
-    toLowerCase_converts_uppercase_letters => {
+    to_lower_case_converts_uppercase_letters => {
         r#"void main() {
   print('HELLO'.toLowerCase());
 }"#,
         ["hello"]
     };
 
-    toLowerCase_on_mixed_case_string => {
+    to_lower_case_on_mixed_case_string => {
         r#"void main() {
   print('HeLLo'.toLowerCase());
 }"#,
@@ -264,49 +264,49 @@ dart_cases! {
         ["true"]
     };
 
-    compareTo_equal_strings_returns_zero => {
+    compare_to_equal_strings_returns_zero => {
         r#"void main() {
   print('abc'.compareTo('abc'));
 }"#,
         ["0"]
     };
 
-    compareTo_less_than_returns_negative => {
+    compare_to_less_than_returns_negative => {
         r#"void main() {
   print('apple'.compareTo('banana'));
 }"#,
         ["-1"]
     };
 
-    compareTo_greater_than_returns_positive => {
+    compare_to_greater_than_returns_positive => {
         r#"void main() {
   print('zebra'.compareTo('apple'));
 }"#,
         ["1"]
     };
 
-    isEmpty_true_for_empty_literal => {
+    is_empty_true_for_empty_literal => {
         r#"void main() {
   print(''.isEmpty);
 }"#,
         ["true"]
     };
 
-    isEmpty_false_for_non_empty_string => {
+    is_empty_false_for_non_empty_string => {
         r#"void main() {
   print('x'.isEmpty);
 }"#,
         ["false"]
     };
 
-    isNotEmpty_true_for_non_empty_string => {
+    is_not_empty_true_for_non_empty_string => {
         r#"void main() {
   print('x'.isNotEmpty);
 }"#,
         ["true"]
     };
 
-    isNotEmpty_false_for_empty_string => {
+    is_not_empty_false_for_empty_string => {
         r#"void main() {
   print(''.isNotEmpty);
 }"#,
@@ -360,7 +360,7 @@ dart_cases! {
         ["caf"]
     };
 
-    replaceAll_preserves_unmatched_regions => {
+    replace_all_preserves_unmatched_regions => {
         r#"void main() {
   print('axbxc'.replaceAll('x', 'y'));
 }"#,

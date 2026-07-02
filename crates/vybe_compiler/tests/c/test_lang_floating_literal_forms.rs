@@ -1,6 +1,5 @@
 //! Floating literal lexical forms: decimal, scientific, suffixes, hex floats.
 
-use crate::helpers::*;
 
 c_run_cases! {
     one_point_zero => {
@@ -27,7 +26,7 @@ c_run_cases! {
         body: "float f = 1.f; printf(\"%.0f\\n\", (double)f); return 0;",
         expect: ["1"]
     },
-    one_point_zero_L_suffix => {
+    one_point_zero_l_suffix => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%.1f\\n\", (double)1.0L); return 0;",
@@ -69,7 +68,7 @@ c_run_cases! {
         body: "printf(\"%.0f\\n\", 1e0); return 0;",
         expect: ["1"]
     },
-    two_E_plus_three => {
+    two_e_plus_three => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%.0f\\n\", 2E+3); return 0;",
@@ -87,13 +86,13 @@ c_run_cases! {
         body: "float f = 3.14f; printf(\"%.2f\\n\", (double)f); return 0;",
         expect: ["3.14"]
     },
-    two_dot_five_F => {
+    two_dot_five_f => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "float f = 2.5F; printf(\"%.1f\\n\", (double)f); return 0;",
         expect: ["2.5"]
     },
-    two_dot_zero_L => {
+    two_dot_zero_l => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "long double ld = 2.0L; printf(\"%.1f\\n\", (double)ld); return 0;",
@@ -177,7 +176,7 @@ c_run_cases! {
         body: "printf(\"%.0f\\n\", 1e+10); return 0;",
         expect: ["10000000000"]
     },
-    one_E_minus_four => {
+    one_e_minus_four => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%.4f\\n\", 1E-4); return 0;",
@@ -231,7 +230,7 @@ c_run_cases! {
         body: "float f = 4.0f; printf(\"%.0f\\n\", (double)f); return 0;",
         expect: ["4"]
     },
-    eight_dot_zero_L_suffix => {
+    eight_dot_zero_l_suffix => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%.0f\\n\", (double)8.0L); return 0;",
@@ -305,7 +304,7 @@ c_compile_cases! {
         decls: "",
         body: "float f = 0x1.0p0f; return (int)f;"
     },
-    hexfloat_L_suffix => {
+    hexfloat_l_suffix => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "long double ld = 0x1.0p0L; return (int)ld;"

@@ -156,7 +156,7 @@ crate::runtime_case!(
     "True"
 );
 crate::runtime_case!(
-    logging_lastResort,
+    logging_last_resort,
     "import logging\nprint(hasattr(logging, 'lastResort'))\n",
     "True"
 );
@@ -191,7 +191,7 @@ crate::runtime_case!(
     "True"
 );
 crate::runtime_case!(
-    logging_isEnabledFor,
+    logging_is_enabled_for,
     "import logging\nlog = logging.getLogger('v')\nprint(callable(log.isEnabledFor))\n",
     "True"
 );
@@ -226,12 +226,12 @@ crate::runtime_case!(
     "traceback"
 );
 crate::runtime_case!(
-    logging_addLevelName,
+    logging_add_level_name,
     "import logging\nprint(callable(logging.addLevelName))\n",
     "True"
 );
 crate::runtime_case!(
-    logging_getLevelName,
+    logging_get_level_name,
     "import logging\nprint(logging.getLevelName(logging.INFO))\n",
     "INFO"
 );

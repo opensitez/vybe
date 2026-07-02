@@ -1,6 +1,5 @@
 //! re module extended: compile flags, groups, split, sub, finditer, escape.
 
-use crate::helpers::*;
 
 crate::runtime_case!(
     re_search_group,

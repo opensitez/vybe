@@ -1,6 +1,4 @@
-//! bisect, heapq, array, statistics stdlib modules.
 
-use crate::helpers::*;
 
 crate::runtime_case!(bisect_insort_sorted, "import bisect\na = [1, 3, 5]\nbisect.insort(a, 4)\nprint(a)\n", "[1, 3, 4, 5]");
 crate::runtime_case!(bisect_left, "import bisect\nprint(bisect.bisect_left([1, 2, 2, 3], 2))\n", "1");

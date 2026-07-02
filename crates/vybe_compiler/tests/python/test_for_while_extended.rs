@@ -1,6 +1,4 @@
-//! Extended for/while: else clauses, break/continue, nested, walrus in loops.
 
-use crate::helpers::*;
 
 crate::runtime_case!(for_range_basic, "for i in range(3):\n print(i)\n break\n", "0");
 crate::runtime_case!(for_else_runs, "for i in range(2):\n pass\nelse:\n print('else')\n", "else");

@@ -1,7 +1,6 @@
 //! Local functions, `static` local functions, and outer-variable capture.
 //! GAP: static-local and capture semantics need broader structural coverage.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     local_function_basic_call_returns_square => {

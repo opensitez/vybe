@@ -1,6 +1,5 @@
 //! type(), isinstance, issubclass, id, hash, callable, getattr extended.
 
-use crate::helpers::*;
 
 crate::runtime_case!(type_int_name, "print(type(1).__name__)\n", "int");
 crate::runtime_case!(type_str_name, "print(type('').__name__)\n", "str");
@@ -48,8 +47,8 @@ crate::runtime_case!(type_compare_same, "print(type(1) is int)\n", "True");
 crate::runtime_case!(type_of_type, "print(type(type(1)).__name__)\n", "type");
 crate::runtime_case!(object_is_base, "print(issubclass(int, object))\n", "True");
 crate::runtime_case!(mro_list, "class B: pass\nclass D(B): pass\nprint(D.mro()[0].__name__)\n", "D");
-crate::runtime_case!(class___bases__, "class B: pass\nclass D(B): pass\nprint(D.__bases__[0].__name__)\n", "B");
-crate::runtime_case!(instance___class__, "class C: pass\nprint(C().__class__ is C)\n", "True");
+crate::runtime_case!(class_bases, "class B: pass\nclass D(B): pass\nprint(D.__bases__[0].__name__)\n", "B");
+crate::runtime_case!(instance_class, "class C: pass\nprint(C().__class__ is C)\n", "True");
 crate::runtime_case!(super_type, "print(isinstance(super(), super))\n", "True");
 
 crate::compile_case!(type_annotations, "def f(x: int) -> str:\n return str(x)\n");

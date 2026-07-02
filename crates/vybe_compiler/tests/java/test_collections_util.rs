@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_main;
 
 #[test]
 fn collections_sort_orders_unsorted_integers_ascending() {

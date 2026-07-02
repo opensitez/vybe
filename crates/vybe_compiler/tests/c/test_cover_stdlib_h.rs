@@ -1,6 +1,5 @@
 //! stdlib.h — one distinct API per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     abs_int => { includes: ["<stdio.h>", "<stdlib.h>"], decls: "", body: "printf(\"%d\\n\", abs(-9)); return 0;", expect: ["9"] },

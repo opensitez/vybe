@@ -273,7 +273,7 @@ void main() {
         ["true"]
     };
 
-    enhanced_enum_toString_override => {
+    enhanced_enum_to_string_override => {
         r#"enum Token {
   alpha,
   beta;

@@ -1,6 +1,5 @@
 //! Wide-char and misc compile breadth — one API per test.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     wchar_wcscat => { includes: ["<wchar.h>"], decls: "", body: "wchar_t d[8]=L\"a\"; wcscat(d,L\"b\"); return d[1];" },

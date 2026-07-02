@@ -134,7 +134,7 @@ enum Day {
 }
 
 #[test]
-fn enhanced_enum_toString() {
+fn enhanced_enum_to_string() {
     compile_ok(
         r#"
 enum Color {

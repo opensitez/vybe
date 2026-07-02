@@ -1,6 +1,5 @@
 //! Left/right shift semantics — signed, unsigned, zero shift, bit patterns.
 
-use crate::helpers::*;
 
 c_run_cases! {
     unsigned_left_shift_by_one => { includes: ["<stdio.h>"], decls: "", body: "unsigned u=5; printf(\"%u\\n\", u<<1); return 0;", expect: ["10"] },

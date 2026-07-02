@@ -1,6 +1,5 @@
 //! Extended unpacking: starred, nested, for-loops, function returns, exceptions.
 
-use crate::helpers::*;
 
 crate::runtime_case!(unpack_two, "a, b = 1, 2\nprint(a, b)\n", "1 2");
 crate::runtime_case!(unpack_three, "a, b, c = [1, 2, 3]\nprint(c)\n", "3");

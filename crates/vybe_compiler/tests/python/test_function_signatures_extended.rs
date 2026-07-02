@@ -151,17 +151,17 @@ crate::runtime_case!(
     "3"
 );
 crate::runtime_case!(
-    __defaults__tuple,
+    __defaults_tuple,
     "def f(a, b=1):\n pass\nprint(f.__defaults__)\n",
     "(1,)"
 );
 crate::runtime_case!(
-    __kwdefaults__dict,
+    __kwdefaults_dict,
     "def f(*, a=1):\n pass\nprint(f.__kwdefaults__)\n",
     "{'a': 1}"
 );
 crate::runtime_case!(
-    __annotations__dict,
+    __annotations_dict,
     "def f(x: int) -> str:\n pass\nprint(f.__annotations__['x'].__name__)\n",
     "int"
 );

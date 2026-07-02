@@ -1,6 +1,5 @@
 //! goto forward and backward jumps, labels inside loops and switch.
 
-use crate::helpers::*;
 
 c_run_cases! {
     goto_forward_skips_dead_statement => { includes: ["<stdio.h>"], decls: "", body: "printf(\"a\\n\"); goto end; printf(\"skip\\n\"); end: printf(\"b\\n\"); return 0;", expect: ["a", "b"] },

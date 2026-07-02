@@ -1,6 +1,5 @@
 //! wchar.h string/memory operations — runtime output via narrow printf or wctob.
 
-use crate::helpers::*;
 
 c_run_cases! {
     wcslen_empty_string => { includes: ["<stdio.h>", "<wchar.h>"], decls: "", body: "wchar_t s[] = L\"\"; printf(\"%d\\n\", (int)wcslen(s)); return 0;", expect: ["0"] },

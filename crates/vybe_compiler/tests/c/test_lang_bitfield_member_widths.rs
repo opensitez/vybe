@@ -1,6 +1,5 @@
 //! Bitfield member widths — 1-bit, 3-bit, signed fields, and masked observable values.
 
-use crate::helpers::*;
 
 c_run_cases! {
     bitfield_single_one_bit_set => {

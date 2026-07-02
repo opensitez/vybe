@@ -303,21 +303,21 @@ dart_cases! {
         ["1.5"]
     };
 
-    toInt_truncates_toward_zero => {
+    to_int_truncates_toward_zero => {
         r#"void main() {
   print(3.7.toInt());
 }"#,
         ["3"]
     };
 
-    toInt_on_negative_double => {
+    to_int_on_negative_double => {
         r#"void main() {
   print((-3.7).toInt());
 }"#,
         ["-3"]
     };
 
-    toDouble_from_integer => {
+    to_double_from_integer => {
         r#"void main() {
   print(5.toDouble());
 }"#,
@@ -345,21 +345,21 @@ dart_cases! {
         ["17"]
     };
 
-    isNegative_false_for_positive_number => {
+    is_negative_false_for_positive_number => {
         r#"void main() {
   print(5.isNegative);
 }"#,
         ["false"]
     };
 
-    isNegative_true_for_negative_number => {
+    is_negative_true_for_negative_number => {
         r#"void main() {
   print((-3).isNegative);
 }"#,
         ["true"]
     };
 
-    isNegative_false_for_negative_zero => {
+    is_negative_false_for_negative_zero => {
         r#"void main() {
   print((-0.0).isNegative);
 }"#,

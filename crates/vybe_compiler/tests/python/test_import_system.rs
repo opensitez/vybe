@@ -141,17 +141,17 @@ crate::runtime_case!(
     "True"
 );
 crate::runtime_case!(
-    __name___in_module,
+    __name_in_module,
     "print(__name__)\n",
     "__main__"
 );
 crate::runtime_case!(
-    __doc___optional,
+    __doc_optional,
     "print(isinstance(__doc__, str) or __doc__ is None)\n",
     "True"
 );
 crate::runtime_case!(
-    __package___optional,
+    __package_optional,
     "print(hasattr(globals(), '__package__') or True)\n",
     "True"
 );

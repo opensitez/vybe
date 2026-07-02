@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::compile_ok;
 
 fn p(data: &str, body: &str) -> String {
     format!(

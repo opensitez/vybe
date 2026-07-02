@@ -1,6 +1,5 @@
 //! memchr, memrchr, memmem — byte search positions and found spans.
 
-use crate::helpers::*;
 
 c_run_cases! {
     memchr_finds_first_byte => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char *p=memchr(\"abcd\", 'c', 4); printf(\"%s\\n\", p); return 0;", expect: ["cd"] },

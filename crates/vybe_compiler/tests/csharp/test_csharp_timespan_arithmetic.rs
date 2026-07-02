@@ -2,7 +2,6 @@
 //! `Total*` properties, and `CompareTo` ordering.
 //! GAP: arithmetic-focused coverage beyond datetime/timespan smoke tests.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     timespan_from_days_sets_days_component => {

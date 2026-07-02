@@ -1,4 +1,4 @@
-use crate::helpers::{run_print, run_python_one};
+use crate::helpers::run_python_one;
 
 #[test]
 fn list_iadd_extends_in_place() {

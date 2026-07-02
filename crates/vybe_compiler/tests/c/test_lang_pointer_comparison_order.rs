@@ -1,6 +1,5 @@
 //! Pointer ordering and null comparisons within one array object.
 
-use crate::helpers::*;
 
 c_run_cases! {
     same_array_less_equal_low_index => { includes: ["<stdio.h>"], decls: "", body: "int a[4]={0}; printf(\"%d\\n\", &a[0]<=&a[2]); return 0;", expect: ["1"] },

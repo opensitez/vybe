@@ -1,6 +1,5 @@
 //! More language runtime rules — one behavior per test (batch 2).
 
-use crate::helpers::*;
 
 c_run_cases! {
     init_brace_single => { includes: ["<stdio.h>"], decls: "", body: "int a={7}; printf(\"%d\\n\", a); return 0;", expect: ["7"] },

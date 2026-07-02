@@ -1,15 +1,5 @@
 use super::helpers::*;
 
-macro_rules! c_cases {
-    ($($name:ident => { body: $body:expr, expect: [$($expected:expr),* $(,)?] }),* $(,)?) => {
-        $(
-            #[test]
-            fn $name() {
-                assert_program(&["<stdio.h>"], "", $body, &[$($expected),*]);
-            }
-        )*
-    };
-}
 
 // Stringize operator (#)
 #[test]

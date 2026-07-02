@@ -1,6 +1,5 @@
 //! struct, copy, pickle (compile), base64, hashlib compile patterns.
 
-use crate::helpers::*;
 
 crate::runtime_case!(struct_pack_unpack, "import struct\nprint(struct.unpack('i', struct.pack('i', 42))[0])\n", "42");
 crate::runtime_case!(struct_pack_short, "import struct\nprint(struct.unpack('h', struct.pack('h', -1))[0])\n", "-1");

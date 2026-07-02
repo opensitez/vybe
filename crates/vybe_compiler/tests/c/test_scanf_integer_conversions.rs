@@ -1,6 +1,5 @@
 //! sscanf integer conversions — %d %i %u %o %x %X with distinct inputs.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sscanf_d_zero => {

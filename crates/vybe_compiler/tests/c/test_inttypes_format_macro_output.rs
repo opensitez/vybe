@@ -1,6 +1,5 @@
 //! inttypes.h PRI* macros — fixed values with asserted printf output.
 
-use crate::helpers::*;
 
 c_run_cases! {
     prid8_negative_ten => { includes: ["<stdio.h>", "<inttypes.h>"], decls: "", body: "int8_t v=-10; printf(\"%\" PRId8 \"\\n\", v); return 0;", expect: ["-10"] },

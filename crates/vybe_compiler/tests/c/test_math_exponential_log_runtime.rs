@@ -1,6 +1,5 @@
 //! Runtime checks for C math.h exponential and logarithmic functions.
 
-use crate::helpers::*;
 
 c_run_cases! {
     exp_negative_one => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.3f\\n\", exp(-1.0)); return 0;", expect: ["0.368"] },

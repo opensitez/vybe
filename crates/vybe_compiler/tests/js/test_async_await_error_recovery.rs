@@ -307,7 +307,7 @@ crate::js_cases! {
         ["after:1"]
     };
 
-    async_parallel_map_allSettled_errors => {
+    async_parallel_map_all_settled_errors => {
         r#"async function main(){const r=await Promise.allSettled([1,2].map(async x=>{if(x===2)throw "m"+x;return x;}));console.log(r[1].status+":"+r[1].reason);}main();"#,
         ["rejected:m2"]
     };

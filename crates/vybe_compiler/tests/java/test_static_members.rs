@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_in_main;
 
 #[test]
 fn static_int_field_defaults_to_zero() {

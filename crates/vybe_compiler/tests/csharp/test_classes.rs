@@ -1,4 +1,4 @@
-use super::helpers::{run_csharp, run_csharp_one};
+use super::helpers::run_csharp;
 
 #[test]
 fn class_with_constructor() {

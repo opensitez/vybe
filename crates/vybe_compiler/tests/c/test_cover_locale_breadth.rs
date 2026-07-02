@@ -1,6 +1,5 @@
 //! locale.h — one distinct API or constant per test.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     locale_setlocale_c => { includes: ["<locale.h>"], decls: "", body: "setlocale(LC_ALL, \"C\"); return 0;" },

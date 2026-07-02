@@ -1,6 +1,5 @@
 //! stdio.h file/stream APIs — one API per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     fopen_fclose_mode => {

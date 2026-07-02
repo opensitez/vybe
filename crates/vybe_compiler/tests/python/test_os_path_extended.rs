@@ -1,6 +1,5 @@
 //! os.path extended: normpath, split, join variants, exists, isfile, isdir.
 
-use crate::helpers::*;
 
 crate::runtime_case!(os_path_join_varargs, "import os\nprint(os.path.join('a', 'b', 'c'))\n", "a/b/c");
 crate::runtime_case!(os_path_join_absolute_tail, "import os\nprint(os.path.join('/tmp', 'file.txt'))\n", "/tmp/file.txt");

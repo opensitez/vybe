@@ -1,6 +1,5 @@
 //! string.h — one distinct API per test (breadth, not variants).
 
-use crate::helpers::*;
 
 c_run_cases! {
     memccpy_copies_until_char => {

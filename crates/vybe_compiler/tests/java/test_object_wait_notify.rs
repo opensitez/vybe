@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_in_main;
 
 #[test]
 fn object_wait_notify_single_producer_consumer() {

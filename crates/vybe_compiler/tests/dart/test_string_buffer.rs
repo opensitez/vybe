@@ -530,7 +530,7 @@ dart_cases! {
         ["true", "false"]
     };
 
-    string_buffer_write_then_toString_does_not_consume => {
+    string_buffer_write_then_to_string_does_not_consume => {
         r#"void main() {
   var buf = StringBuffer();
   buf.write('persist');

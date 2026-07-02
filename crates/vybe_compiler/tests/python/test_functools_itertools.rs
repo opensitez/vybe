@@ -1,6 +1,4 @@
-//! functools, operator, itertools compile/runtime patterns.
 
-use crate::helpers::*;
 
 crate::runtime_case!(functools_partial, "from functools import partial\nadd2 = partial(lambda x, y: x + y, 1)\nprint(add2(2))\n", "3");
 crate::runtime_case!(functools_reduce, "from functools import reduce\nprint(reduce(lambda a, b: a + b, [1, 2, 3]))\n", "6");

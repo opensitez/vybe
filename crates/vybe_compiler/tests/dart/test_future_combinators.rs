@@ -218,7 +218,7 @@ Future<void> main() async {
         ["cleanup"]
     };
 
-    future_then_catchError_whenComplete_execution_order => {
+    future_then_catch_error_when_complete_execution_order => {
         r#"Future<void> main() async {
   var log = <String>[];
   await Future.value(1)
@@ -236,7 +236,7 @@ Future<void> main() async {
         ["then,complete"]
     };
 
-    future_error_then_skipped_catchError_runs => {
+    future_error_then_skipped_catch_error_runs => {
         r#"Future<void> main() async {
   var log = <String>[];
   var v = await Future<int>.error('oops')
@@ -505,7 +505,7 @@ Future<void> main() async {
         ["2"]
     };
 
-    future_catch_error_with_onError_callback_style => {
+    future_catch_error_with_on_error_callback_style => {
         r#"Future<void> main() async {
   var v = await Future<int>.error('msg').catchError((e, st) => 42);
   print(v);
@@ -527,7 +527,7 @@ Future<void> main() async {
         ["6"]
     };
 
-    future_value_then_whenComplete_order_on_error_path => {
+    future_value_then_when_complete_order_on_error_path => {
         r#"Future<void> main() async {
   var log = <String>[];
   try {

@@ -621,7 +621,7 @@ void main() {
         ["proxy-2"]
     };
 
-    no_such_method_isMethod_false_for_getter => {
+    no_such_method_is_method_false_for_getter => {
         r#"class Check {
   @override
   dynamic noSuchMethod(Invocation inv) {
@@ -636,7 +636,7 @@ void main() {
         ["false", "0"]
     };
 
-    no_such_method_isGetter_false_for_method => {
+    no_such_method_is_getter_false_for_method => {
         r#"class Check {
   @override
   dynamic noSuchMethod(Invocation inv) {

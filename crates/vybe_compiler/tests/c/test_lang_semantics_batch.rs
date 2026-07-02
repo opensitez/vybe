@@ -1,6 +1,5 @@
 //! Core C language semantics batch — one distinct rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     struct_return_by_value => {

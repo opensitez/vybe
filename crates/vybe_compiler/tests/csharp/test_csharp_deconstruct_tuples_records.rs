@@ -1,6 +1,5 @@
 //! Deconstruction: tuples, positional records, custom Deconstruct methods, var (x,y)= syntax.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     tuple_deconstruct_two => {

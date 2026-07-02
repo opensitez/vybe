@@ -1,6 +1,5 @@
 //! Operators, promotions, and casts — one rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     integer_promotion_in_add => { includes: ["<stdio.h>"], decls: "", body: "char a=1,b=2; printf(\"%d\\n\", a+b); return 0;", expect: ["3"] },
@@ -32,6 +31,6 @@ c_run_cases! {
 
 c_compile_cases! {
     cast_incomplete_array => { includes: ["<stdio.h>"], decls: "", body: "int *p = (int*)(void*)0; return 0;" },
-    _Generic_selection => { includes: ["<stdio.h>"], decls: "#define TYPE(x) _Generic((x), int: 1, default: 0)", body: "return TYPE(0);" },
+    generic_selection => { includes: ["<stdio.h>"], decls: "#define TYPE(x) _Generic((x), int: 1, default: 0)", body: "return TYPE(0);" },
     typeof_unary_compile => { includes: ["<stdio.h>"], decls: "", body: "int x=1; typeof(x) y=2; return y;" },
 }

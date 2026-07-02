@@ -16,9 +16,6 @@
 //!   K. Tab control (3 tests)
 
 use super::helpers::{run_vb, run_vb_gui};
-use std::sync::{Arc, Mutex};
-use vybe_host::gui_state::GuiState;
-
 // ============================================================
 // A. CROSS-CONTROL INTERACTION IN HANDLERS (6 tests)
 // ============================================================

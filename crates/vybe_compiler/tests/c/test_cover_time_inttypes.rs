@@ -1,6 +1,5 @@
 //! time.h and inttypes.h — one API per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     time_returns_seconds => { includes: ["<stdio.h>", "<time.h>"], decls: "", body: "time_t t = time(0); printf(\"%d\\n\", t > 0); return 0;", expect: ["1"] },

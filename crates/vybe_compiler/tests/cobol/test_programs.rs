@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, compile_ok_check, parse_ok};
+use super::helpers::compile_ok;
 
 #[test]
 fn hello_world() {

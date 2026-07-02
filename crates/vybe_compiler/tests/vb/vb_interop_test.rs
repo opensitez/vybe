@@ -11,8 +11,8 @@
 //!   H. Conversions and edge cases (8 tests)
 
 use super::helpers::{run_vb, run_vb_gui, run_vb_vm};
-use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value};
+use std::sync::Arc;
+use vybe_bytecode::Value;
 
 // ============================================================
 // A. CLASS METHOD RESOLUTION (10 tests)

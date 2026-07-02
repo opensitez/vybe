@@ -1,6 +1,5 @@
 //! Array decay in parameters, multidimensional forms, and sizeof caller vs callee.
 
-use crate::helpers::*;
 
 c_run_cases! {
     sizeof_array_in_caller_counts_elements => { includes: ["<stdio.h>"], decls: "", body: "int a[6]={0}; printf(\"%zu\\n\", sizeof a / sizeof a[0]); return 0;", expect: ["6"] },

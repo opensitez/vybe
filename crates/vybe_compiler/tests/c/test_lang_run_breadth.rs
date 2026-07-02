@@ -1,6 +1,5 @@
 //! Additional language runtime semantics — one rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     add_assign_int => { includes: ["<stdio.h>"], decls: "", body: "int n=1; n+=4; printf(\"%d\\n\", n); return 0;", expect: ["5"] },

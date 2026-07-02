@@ -1,6 +1,5 @@
 //! Language compile breadth batch 2 — one syntax/semantic shape per test.
 
-use crate::helpers::*;
 
 c_compile_cases! {
     lang_for_decl_in_init => { includes: ["<stdio.h>"], decls: "", body: "for(int i=0;i<1;i++){} return 0;" },

@@ -1,7 +1,6 @@
 //! `stackalloc`, `Span<T>`, slicing, and stackalloc initializers.
 //! GAP: memory/span coverage is thin in the existing suite.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     stackalloc_int_zero_length_span_has_zero_length => {

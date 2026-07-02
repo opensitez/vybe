@@ -1,6 +1,5 @@
 //! Decimal financial precision: arithmetic, Round, Truncate, Floor, Ceiling, CompareTo.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     decimal_financial_add_currency_line_items => {

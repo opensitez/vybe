@@ -40,7 +40,7 @@ c_cases! {
         body: "bool b = 0;\nprintf(\"%d\\n\", b);\nreturn 0;",
         expect: ["0"]
     },
-    _Bool_without_header => {
+    bool_without_header => {
         body: "printf(\"%d %d\\n\", (_Bool)1, (_Bool)0);\nreturn 0;",
         expect: ["1 0"]
     },

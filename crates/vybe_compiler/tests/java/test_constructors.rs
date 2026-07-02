@@ -1,4 +1,4 @@
-use crate::helpers::{run_in_main, run_main};
+use crate::helpers::run_in_main;
 
 #[test]
 fn default_constructor_zeroes_int_field() {

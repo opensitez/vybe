@@ -1,6 +1,5 @@
 //! Integer literal lexical forms: bases, suffixes, leading zeros.
 
-use crate::helpers::*;
 
 c_run_cases! {
     decimal_zero => {
@@ -141,7 +140,7 @@ c_run_cases! {
         body: "printf(\"%u\\n\", 18u); return 0;",
         expect: ["18"]
     },
-    suffix_uppercase_U => {
+    suffix_uppercase_u => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%u\\n\", 19U); return 0;",
@@ -153,7 +152,7 @@ c_run_cases! {
         body: "printf(\"%ld\\n\", 20l); return 0;",
         expect: ["20"]
     },
-    suffix_uppercase_L => {
+    suffix_uppercase_l => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%ld\\n\", 21L); return 0;",
@@ -165,7 +164,7 @@ c_run_cases! {
         body: "printf(\"%lld\\n\", 22LL); return 0;",
         expect: ["22"]
     },
-    suffix_uppercase_LL => {
+    suffix_uppercase_ll => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%lld\\n\", 23LL); return 0;",
@@ -177,7 +176,7 @@ c_run_cases! {
         body: "printf(\"%u\\n\", 24ul); return 0;",
         expect: ["24"]
     },
-    suffix_UL_uppercase => {
+    suffix_ul_uppercase => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%u\\n\", 25UL); return 0;",
@@ -189,7 +188,7 @@ c_run_cases! {
         body: "printf(\"%u\\n\", 26lu); return 0;",
         expect: ["26"]
     },
-    suffix_LU_reversed => {
+    suffix_lu_reversed_upper => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "printf(\"%u\\n\", 27LU); return 0;",

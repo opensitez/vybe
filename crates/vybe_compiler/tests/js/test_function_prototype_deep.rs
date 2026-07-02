@@ -1,4 +1,4 @@
-/// Function.prototype — call, apply, bind semantics and arrow vs function vs method prototype differences.
+// Function.prototype — call, apply, bind semantics and arrow vs function vs method prototype differences.
 crate::js_cases! {
     call_with_object_receiver_reads_property => {
         r#"function greet() { return this.name; } console.log(greet.call({ name: "Ada" }));"#,

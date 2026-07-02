@@ -1,4 +1,4 @@
-use crate::helpers::{run_print, run_python_one};
+use crate::helpers::run_python_one;
 
 #[test]
 fn ordered_dict_preserves_insertion_order_keys() {

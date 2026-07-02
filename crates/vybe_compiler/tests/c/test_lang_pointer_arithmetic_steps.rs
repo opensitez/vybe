@@ -1,6 +1,5 @@
 //! Pointer +, -, ++, -- step semantics on arrays; one-past-end only in subtraction.
 
-use crate::helpers::*;
 
 c_run_cases! {
     short_array_plus_two_steps => { includes: ["<stdio.h>"], decls: "", body: "short a[4]={10,20,30,40}; short *p=a; printf(\"%d\\n\", *(p+2)); return 0;", expect: ["30"] },

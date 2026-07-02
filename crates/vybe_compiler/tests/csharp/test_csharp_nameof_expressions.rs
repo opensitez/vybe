@@ -1,7 +1,6 @@
 //! `nameof` expressions on types, variables, methods, and members.
 //! GAP: nameof coverage is thin in the existing suite.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     nameof_local_int_variable_returns_identifier => {

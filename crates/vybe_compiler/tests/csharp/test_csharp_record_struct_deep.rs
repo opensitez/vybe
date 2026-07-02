@@ -1,6 +1,5 @@
 //! Record struct deep coverage: value equality, IEquatable, GetHashCode, with expressions, readonly/nominal forms.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     record_struct_readonly_positional_equality => {

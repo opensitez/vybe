@@ -1,6 +1,5 @@
 //! errno.h — distinct named error constants and strerror output checks.
 
-use crate::helpers::*;
 
 c_run_cases! {
     errno_starts_at_zero => { includes: ["<stdio.h>", "<errno.h>"], decls: "", body: "errno=0; printf(\"%d\\n\", errno); return 0;", expect: ["0"] },

@@ -1,6 +1,5 @@
 //! Attribute usage patterns: Obsolete still callable, Flags enum, Serializable marker, Conditional via prints.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     attribute_obsolete_method_still_invokes => {

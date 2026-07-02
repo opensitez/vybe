@@ -1,6 +1,5 @@
 //! Extended match/case: guards, class patterns, mapping patterns, or-patterns, as-names.
 
-use crate::helpers::*;
 
 crate::runtime_case!(
     match_int_literal,

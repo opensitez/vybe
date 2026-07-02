@@ -1,6 +1,5 @@
 //! Relational and equality operators — ints, unsigned wrap, pointers.
 
-use crate::helpers::*;
 
 c_run_cases! {
     int_equality_true => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", 7==7); return 0;", expect: ["1"] },

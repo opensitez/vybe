@@ -1,6 +1,5 @@
 //! Custom event add/remove accessors with backing fields and explicit raise methods.
 
-use crate::csharp_cases;
 
 csharp_cases! {
     custom_event_invoke_via_backing => {

@@ -1,6 +1,5 @@
 //! Pointer, array decay, and qualifier semantics — one language rule per test.
 
-use crate::helpers::*;
 
 c_run_cases! {
     array_decays_to_pointer_in_call => {
