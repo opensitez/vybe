@@ -123,8 +123,8 @@ type_specifier = {
 // We ban a typedef_name from following a strict specifier to prevent greedily
 // consuming the declarator name.
 declaration_specifiers = {
-    (type_qualifier | alignment_specifier | "typedef")+ ~ typedef_name
-    | (type_qualifier | alignment_specifier | "typedef")* ~ type_specifier_strict ~ (type_qualifier | alignment_specifier | type_specifier_strict)*
+    (type_qualifier | alignment_specifier | gcc_attribute | "typedef")+ ~ typedef_name
+    | (type_qualifier | alignment_specifier | gcc_attribute | "typedef")* ~ type_specifier_strict ~ (type_qualifier | alignment_specifier | gcc_attribute | type_specifier_strict)*
     | typedef_name
 }
 
@@ -228,7 +228,7 @@ labeled_statement = {
     | default_label
     | goto_label
 }
-case_label    = { "case" ~ conditional_expression ~ ":" ~ statement? }
+case_label    = { "case" ~ conditional_expression ~ ("..." ~ conditional_expression)? ~ ":" ~ statement? }
 default_label = { "default" ~ ":" ~ statement? }
 goto_label    = { ident_name ~ ":" ~ !("=") ~ statement? }
 
@@ -299,10 +299,12 @@ unary_expression = {
     | offsetof_expression
     | generic_expression
     | prefix_op ~ unary_expression
+    | statement_expression
     | compound_literal
     | cast_expression
     | postfix_expression
 }
+statement_expression = { "(" ~ compound_statement ~ ")" }
 va_arg_expression = {
     "va_arg" ~ "(" ~ assignment_expression ~ "," ~ type_name ~ ")"
 }
