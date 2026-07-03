@@ -62,8 +62,15 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             // call_import: u16 fn_index, u8 arg_count
             let fn_idx = chunk.read_u16(operand_start);
             let argc = chunk.code.get(operand_start + 2).copied().unwrap_or(0);
+            // Resolve the import name from this chunk's own table — mismatched
+            // per-chunk import indices are a recurring bug class and invisible
+            // without the name.
+            let label = match chunk.imports.get(fn_idx as usize) {
+                Some(imp) => format!(" ({}:{})", imp.module, imp.name),
+                None => " (OUT-OF-RANGE)".to_string(),
+            };
             (
-                format!("CallHost fn={} argc={}", fn_idx, argc),
+                format!("CallHost fn={} argc={}{}", fn_idx, argc, label),
                 operand_start + 3,
             )
         }

@@ -39,6 +39,16 @@ pub struct Fiber {
     /// and restored on resume so a nested `execute_until`'s `min_depth` boundary
     /// is only honoured on the fiber it was entered on (see `VM::cur_fiber_id`).
     pub(crate) fiber_id: u64,
+    /// JSPI promising boundary (async function call): the pending result
+    /// Promise handed to the async fn's caller when this fiber suspended at an
+    /// `await`. When the fiber finally runs to completion, the VM settles this
+    /// promise with the body's outcome (fulfil on return, reject on throw).
+    pub(crate) result_promise: Option<Value>,
+    /// Frame-depth floors of async-function calls active on THIS fiber's frame
+    /// stack (see `VM::async_floors`). Fiber-local: stack switches swap it with
+    /// the rest of the execution state so floors never index another fiber's
+    /// frames.
+    pub(crate) async_floors: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +76,8 @@ impl Fiber {
             resume_value: None,
             resume_exception: None,
             fiber_id: 0,
+            result_promise: None,
+            async_floors: Vec::new(),
         }
     }
     pub fn with_labels(mut self, labels: Vec<crate::vm::LabelEntry>) -> Self {

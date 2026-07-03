@@ -157,6 +157,20 @@ impl VM {
             let f = self.frame_mut();
             f.ip = handler.catch_ip;
             Ok(())
+        } else if let Some(ac) = self.active_continuations.pop() {
+            // Stack-switching proposal: an exception not handled inside a
+            // resumed continuation propagates to the PARENT at the `resume`
+            // site — the continuation completes exceptionally. Mark it Done,
+            // restore the caller fiber (saved by RESUME/GEN_NEXT), and
+            // re-raise there so the caller's try/catch handlers fire.
+            if let Value::Object(ref obj) = ac.cont {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::Continuation(cs) = &o.kind {
+                    *cs.state.lock().unwrap() = crate::value::ContinuationPhase::Done;
+                }
+            }
+            self.resume_fiber_with(ac.caller_fiber, None)?;
+            self.raise_exception_value(val)
         } else {
             self.last_exception = Some(val.clone());
             let stack = self.capture_call_stack();
@@ -350,6 +364,15 @@ impl VM {
         }
 
         let chunk_index = func.chunk_index;
+        // JSPI promising boundary: calling an async function is delimited at
+        // this call. The body runs inline until it returns (result Promise on
+        // the stack) or suspends at an `await`, in which case only the async
+        // frames are captured, the caller receives a pending Promise and
+        // KEEPS RUNNING — resumption comes off the event queue (microtask).
+        if !bypass_generator && self.chunks[chunk_index].is_async {
+            let func = func.clone();
+            return self.call_async(&func, argc);
+        }
         // Generator intercept: if the target chunk is flagged as a
         // generator, calling it doesn't enter the body — we build a
         // `Continuation` bound to a reified Function value and the

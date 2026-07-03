@@ -527,6 +527,24 @@ pub struct VM {
     pub(crate) cur_fiber_id: u64,
     /// Monotonic source of fresh fiber ids for newly-started continuations.
     pub(crate) next_fiber_id: u64,
+    /// JSPI promising boundary of the fiber currently running: the pending
+    /// result Promise handed out when an async-function call suspended. Settled
+    /// with the body's outcome when the fiber runs to completion. Travels with
+    /// the fiber across save/resume (`Fiber::result_promise`).
+    pub(crate) cur_fiber_result_promise: Option<Value>,
+    /// Frame-depth floors of async-function calls currently on THIS fiber's
+    /// stack (JSPI promising boundaries). While non-empty, a pending `await`
+    /// suspends only the innermost async call's frames (bounded capture in
+    /// `call_async`) instead of the whole program — the caller keeps running
+    /// with a pending Promise, per JSPI `WebAssembly.promising` semantics.
+    pub(crate) async_floors: Vec<usize>,
+    /// `await` on an ALREADY-SETTLED promise inside an async boundary: JSPI
+    /// resumes "by the event queue task runner" even when the promise is
+    /// resolved, so the suspension still happens (bounded) and the resume is
+    /// queued as an immediate microtask. This side-channel carries the settled
+    /// (id, value, is_exception) from `do_await` to `call_async`, which wakes
+    /// the just-registered fiber via the microtask queue.
+    pub(crate) pending_settled_await: Option<(u64, Value, bool)>,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
     /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
@@ -684,6 +702,9 @@ impl VM {
             type_recorder: None,
             active_continuations: Vec::new(),
             cur_fiber_id: 0,
+            cur_fiber_result_promise: None,
+            async_floors: Vec::new(),
+            pending_settled_await: None,
             next_fiber_id: 1,
             label_stack: Vec::new(),
             block_tables: HashMap::new(),

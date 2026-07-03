@@ -289,8 +289,17 @@ impl VM {
             // flatten iteration without a borrow conflict.
             let arc = match &val {
                 Value::Object(o) => o.clone(),
-                // Primitive — pass through as-is.
+                // Primitive: ECMA-262 §6.2.3.1 Await performs
+                // PromiseResolve(v) and ALWAYS resumes as a job — one
+                // microtask tick even for plain values. Inside an async
+                // boundary, suspend and schedule the immediate resume; at
+                // top level (no boundary) keep the direct return.
                 _ => {
+                    if !self.async_floors.is_empty() {
+                        let id = self.event_loop.borrow_mut().next_promise_id();
+                        self.pending_settled_await = Some((id, val, false));
+                        return Err(VMError::new(format!("__jspi__:{}", id)));
+                    }
                     self.push(val)?;
                     return Ok(());
                 }
@@ -302,8 +311,43 @@ impl VM {
                 .map(|v| format!("{}", v))
                 .unwrap_or_default();
             if ty != "Promise" {
+                // Raw thenable (callable `then`): §27.2.1.3.2 PromiseResolve
+                // adopts its eventual state. The host promise engine already
+                // implements assimilation — wrap through ecma:promise.resolve
+                // and re-enter the loop on the resulting Promise.
+                let then_callable = matches!(
+                    o.properties.get("then"),
+                    Some(Value::Object(f)) if matches!(
+                        f.lock().unwrap().kind,
+                        crate::value::ObjectKind::Function(_)
+                            | crate::value::ObjectKind::HostFunction(_)
+                    )
+                );
                 drop(o);
-                // Non-promise object — pass through as-is.
+                if then_callable {
+                    let idx = self
+                        .host_registry
+                        .get(&("ecma:promise".to_string(), "resolve".to_string()))
+                        .copied();
+                    if let Some(idx) = idx {
+                        let host_fn = self.host_fns[idx].clone();
+                        let arg = [val.clone()];
+                        let resolved = {
+                            let mut ctx = self.make_host_context();
+                            host_fn(&mut ctx, &arg)
+                        };
+                        val = resolved;
+                        continue;
+                    }
+                    // No host engine registered — fall through to the
+                    // non-thenable handling below (passthrough/tick).
+                }
+                // Non-thenable object: same one-tick rule as primitives.
+                if !self.async_floors.is_empty() {
+                    let id = self.event_loop.borrow_mut().next_promise_id();
+                    self.pending_settled_await = Some((id, val, false));
+                    return Err(VMError::new(format!("__jspi__:{}", id)));
+                }
                 self.push(val)?;
                 return Ok(());
             }
@@ -319,53 +363,35 @@ impl VM {
                     .map(|v| v.as_f64() as u64)
                     .unwrap_or(0);
                 drop(o);
+                if !self.async_floors.is_empty() {
+                    // Inside a JSPI promising boundary: the innermost
+                    // `call_async` performs the delimited capture — do NOT
+                    // save the whole program here.
+                    return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                }
                 return Err(self.suspend_for_pending_promise(promise_id));
             }
             let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
             if state == "rejected" {
-                // await on a rejected promise throws the rejection reason. Walk
-                // the exception handler stack exactly like THROW so an enclosing
-                // try/catch in the async wrapper fires.
+                // JSPI: even a settled promise resumes "by the event queue
+                // task runner" — inside an async boundary, suspend (bounded)
+                // and schedule the rejection to be thrown into the resumed
+                // fiber as a microtask (its captured try/catch handlers fire
+                // there). No synchronous shortcut.
+                if !self.async_floors.is_empty() {
+                    drop(o);
+                    let id = self.event_loop.borrow_mut().next_promise_id();
+                    self.pending_settled_await = Some((id, value, true));
+                    return Err(VMError::new(format!("__jspi__:{}", id)));
+                }
+                // await on a rejected promise throws the rejection reason —
+                // exactly like THROW. raise_exception_value handles handler
+                // matching, frame/stack unwinding AND label-stack truncation
+                // (the previous inline walk skipped labels, so a `br` in the
+                // catch body of a loop mis-targeted after the unwind) plus
+                // propagation across continuation boundaries.
                 drop(o);
-                let mut matched_idx = None;
-                for i in (0..self.exception_handlers.len()).rev() {
-                    let handler = &self.exception_handlers[i];
-                    if handler.tag == 0 {
-                        matched_idx = Some(i);
-                        break;
-                    }
-                    let tag_idx = handler.tag as usize;
-                    let tag_name = self
-                        .chunks
-                        .get(0)
-                        .and_then(|c| c.exception_tags.get(tag_idx))
-                        .cloned()
-                        .unwrap_or_default();
-                    if !tag_name.is_empty()
-                        && (self.test_type(&value, &tag_name.to_lowercase())
-                            || self.exception_value_matches(&value, &tag_name))
-                    {
-                        matched_idx = Some(i);
-                        break;
-                    }
-                }
-                if let Some(idx) = matched_idx {
-                    let handler = self.exception_handlers[idx].clone();
-                    self.exception_handlers.truncate(idx);
-                    while self.frames.len() > handler.frame_depth {
-                        let base = self.frames.last().unwrap().base;
-                        self.close_upvalues(base);
-                        self.frames.pop();
-                    }
-                    self.stack.truncate(handler.stack_depth);
-                    self.push(value)?;
-                    let f = self.frame_mut();
-                    f.ip = handler.catch_ip;
-                    return Ok(());
-                }
-                self.last_exception = Some(value.clone());
-                let stack = self.capture_call_stack();
-                return Err(VMError::new(format!("{}", value)).with_stack(stack));
+                return self.raise_exception_value(value);
             }
             // fulfilled — flatten if the resolved value is itself a promise,
             // otherwise unwrap and continue.
@@ -376,6 +402,15 @@ impl VM {
             {
                 val = value;
                 continue;
+            }
+            // JSPI: a resolved promise still resumes via the event queue task
+            // runner. Inside an async boundary, suspend (bounded) and schedule
+            // an immediate microtask resume with the fulfilled value — the
+            // spec "await always yields one tick" ordering, no sync shortcut.
+            if !self.async_floors.is_empty() {
+                let id = self.event_loop.borrow_mut().next_promise_id();
+                self.pending_settled_await = Some((id, value, false));
+                return Err(VMError::new(format!("__jspi__:{}", id)));
             }
             self.push(value)?;
             return Ok(());
