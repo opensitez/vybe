@@ -234,13 +234,13 @@ c_run_cases! {
         includes: ["<stdio.h>"],
         decls: "",
         body: "int n=3; int a[n]; a[0]=1;a[1]=3;a[2]=2; int c=0; for(int i=0;i<n-1;i++) if(a[i]<a[i+1]) c++; printf(\"%d\\n\", c); return 0;",
-        expect: ["2"]
+        expect: ["1"]
     },
     vla_multidim_column_sum => {
         includes: ["<stdio.h>"],
         decls: "",
         body: "int r=2,c=3; int m[r][c]; for(int i=0;i<r;i++) for(int j=0;j<c;j++) m[i][j]=i+j; int col=0; for(int i=0;i<r;i++) col+=m[i][1]; printf(\"%d\\n\", col); return 0;",
-        expect: ["1"]
+        expect: ["3"]
     },
     vla_reuse_name_inner_shadow => {
         includes: ["<stdio.h>"],

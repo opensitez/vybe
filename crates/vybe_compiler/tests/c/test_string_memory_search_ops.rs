@@ -24,7 +24,7 @@ c_run_cases! {
     memrchr_last_is_only => { includes: ["<stdio.h>", "<string.h>"], decls: "char h[]=\"zzz\";", body: "printf(\"%d\\n\", (int)(memrchr(h, 'z', 3) - h)); return 0;", expect: ["2"] },
     memrchr_digit_last => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memrchr(\"ab12\", '2', 4)); return 0;", expect: ["2"] },
     memrchr_space_last => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memrchr(\"a b c\", ' ', 5)); return 0;", expect: [" c"] },
-    memrchr_partial_range => { includes: ["<stdio.h>", "<string.h>"], decls: "char h[]=\"aabaa\";", body: "printf(\"%d\\n\", memrchr(h, 'a', 3)==h+2); return 0;", expect: ["1"] },
+    memrchr_partial_range => { includes: ["<stdio.h>", "<string.h>"], decls: "char h[]=\"aabaa\";", body: "printf(\"%d\\n\", memrchr(h, 'a', 3)==h+1); return 0;", expect: ["1"] },
     memrchr_in_char_array => { includes: ["<stdio.h>", "<string.h>"], decls: "unsigned char b[5]={1,2,3,2,1};", body: "unsigned char *p=memrchr(b, 2, 5); printf(\"%d\\n\", (int)(p-b)); return 0;", expect: ["3"] },
     memrchr_null_byte => { includes: ["<stdio.h>", "<string.h>"], decls: "char b[3]={'a',0,'b'};", body: "char *p=memrchr(b, 0, 3); printf(\"%d\\n\", (int)(p-b)); return 0;", expect: ["1"] },
     memrchr_unique_char_position => { includes: ["<stdio.h>", "<string.h>"], decls: "char h[]=\"q\";", body: "printf(\"%d\\n\", (int)(memrchr(h, 'q', 1) - h)); return 0;", expect: ["0"] },
