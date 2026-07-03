@@ -11,6 +11,30 @@ pub(crate) struct JsParser;
 /// Parse JavaScript source into the common AST.
 pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
     let prelude = r#"
+// Function-kind intrinsics (ECMA-262 %AsyncFunction% §27.7.1,
+// %GeneratorFunction% §27.3.1, %AsyncGeneratorFunction% §27.4.1). These
+// declarations MUST be top-level (unguarded): user function declarations
+// hoist above the guarded prelude body, and their metadata stamps read
+// these globals — a guarded declaration would not exist yet at that point.
+// The declaration-created `.prototype` objects are mutated in place
+// (setPrototypeOf inside the guard), never replaced, so hoisted stamps
+// keep identity. Each prototype inherits from %Function.prototype%, so
+// `asyncFn instanceof Function` stays true through the chain.
+function AsyncFunction() { throw new TypeError("AsyncFunction constructor is not supported"); }
+function GeneratorFunction() { throw new TypeError("GeneratorFunction constructor is not supported"); }
+function AsyncGeneratorFunction() { throw new TypeError("AsyncGeneratorFunction constructor is not supported"); }
+
+// These link fresh PER-VM objects (the hoisted declarations above), so they
+// must run on every VM — NOT inside the prelude-done guard, whose flag rides
+// the process-global shared prototypes and stays set across VMs in one
+// process (test harness). All three statements are idempotent.
+Object.setPrototypeOf(AsyncFunction.prototype, Function.prototype);
+globalThis.AsyncFunction = AsyncFunction;
+Object.setPrototypeOf(GeneratorFunction.prototype, Function.prototype);
+globalThis.GeneratorFunction = GeneratorFunction;
+Object.setPrototypeOf(AsyncGeneratorFunction.prototype, Function.prototype);
+globalThis.AsyncGeneratorFunction = AsyncGeneratorFunction;
+
 if (!globalThis.__vybe_js_prelude_done) {
     globalThis.__vybe_js_prelude_done = true;
 

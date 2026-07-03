@@ -142,16 +142,17 @@ impl VM {
             }
             Ok(ExecResult::Suspended { .. }) => Ok(Value::Null), // re-suspended, event loop will handle
             Err(e) => {
-                // Uncaught throw out of a resumed async body → reject the
+                // Uncaught JS throw out of a resumed async body → reject the
                 // pending result Promise (§27.7: async throws become
-                // rejections) instead of tearing down the event loop.
-                if let Some(result_promise) = self.cur_fiber_result_promise.take() {
-                    let reason = self
-                        .last_exception
-                        .take()
-                        .unwrap_or_else(|| Value::String(Arc::from(e.message.as_str())));
-                    self.settle_promise_via_host(&result_promise, "rejected", reason);
-                    return Ok(Value::Null);
+                // rejections). Only a genuine thrown JS value qualifies —
+                // an internal VM fault (no last_exception) must PROPAGATE,
+                // not be laundered into a rejection.
+                if let Some(exc) = self.last_exception.take() {
+                    if let Some(result_promise) = self.cur_fiber_result_promise.take() {
+                        self.settle_promise_via_host(&result_promise, "rejected", exc);
+                        return Ok(Value::Null);
+                    }
+                    self.last_exception = Some(exc);
                 }
                 Err(e)
             }

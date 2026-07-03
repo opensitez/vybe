@@ -264,6 +264,35 @@ impl VM {
         VMError::new(format!("__jspi__:{}", promise_id))
     }
 
+    /// Top-level settled/plain-value await (no promising boundary, not inside
+    /// a driven continuation): ECMA-262 §6.2.3.1 still requires one job tick.
+    /// Save the whole fiber exactly like a pending top-level await and wake it
+    /// immediately off the microtask queue with the value (or rejection).
+    fn tick_top_level_await(&mut self, value: Value, is_exception: bool) -> VMError {
+        let id = self.event_loop.borrow_mut().next_promise_id();
+        let err = self.suspend_for_pending_promise(id);
+        let mut el = self.event_loop.borrow_mut();
+        let woken = if is_exception {
+            el.reject_promise(id, value)
+        } else {
+            el.resolve_promise(id, value)
+        };
+        if let Some(fiber) = woken {
+            el.microtasks
+                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+        }
+        err
+    }
+
+    /// True when an `await` here should take the one-tick event-queue path at
+    /// TOP LEVEL. Inside a RESUME-driven continuation (generator body) the
+    /// fiber must NOT be whole-saved mid-drive — the enclosing driver's Rust
+    /// frame would then capture a drained fiber (see call_async). Those keep
+    /// the direct path until continuation-aware suspension lands.
+    fn top_level_await_ticks(&self) -> bool {
+        self.async_floors.is_empty() && self.active_continuations.is_empty()
+    }
+
     /// `await val` — the JSPI suspend behaviour, reached via a `call` to the
     /// `jspi.await` suspending import (WebAssembly.Suspending; see `emit_await`).
     ///
@@ -299,6 +328,9 @@ impl VM {
                         let id = self.event_loop.borrow_mut().next_promise_id();
                         self.pending_settled_await = Some((id, val, false));
                         return Err(VMError::new(format!("__jspi__:{}", id)));
+                    }
+                    if self.top_level_await_ticks() {
+                        return Err(self.tick_top_level_await(val, false));
                     }
                     self.push(val)?;
                     return Ok(());
@@ -348,6 +380,9 @@ impl VM {
                     self.pending_settled_await = Some((id, val, false));
                     return Err(VMError::new(format!("__jspi__:{}", id)));
                 }
+                if self.top_level_await_ticks() {
+                    return Err(self.tick_top_level_await(val, false));
+                }
                 self.push(val)?;
                 return Ok(());
             }
@@ -385,12 +420,16 @@ impl VM {
                     return Err(VMError::new(format!("__jspi__:{}", id)));
                 }
                 // await on a rejected promise throws the rejection reason —
-                // exactly like THROW. raise_exception_value handles handler
-                // matching, frame/stack unwinding AND label-stack truncation
-                // (the previous inline walk skipped labels, so a `br` in the
-                // catch body of a loop mis-targeted after the unwind) plus
-                // propagation across continuation boundaries.
+                // exactly like THROW. At the genuine top level this still
+                // takes the one-tick path (rejection thrown into the resumed
+                // fiber). Inside driven continuations, raise directly:
+                // raise_exception_value handles handler matching, frame/stack
+                // unwinding AND label-stack truncation plus propagation
+                // across continuation boundaries.
                 drop(o);
+                if self.top_level_await_ticks() {
+                    return Err(self.tick_top_level_await(value, true));
+                }
                 return self.raise_exception_value(value);
             }
             // fulfilled — flatten if the resolved value is itself a promise,
@@ -411,6 +450,9 @@ impl VM {
                 let id = self.event_loop.borrow_mut().next_promise_id();
                 self.pending_settled_await = Some((id, value, false));
                 return Err(VMError::new(format!("__jspi__:{}", id)));
+            }
+            if self.top_level_await_ticks() {
+                return Err(self.tick_top_level_await(value, false));
             }
             self.push(value)?;
             return Ok(());

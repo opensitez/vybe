@@ -10881,7 +10881,14 @@ impl Compiler {
             self.emit(Op::DROP);
 
             inst!(self, core_wasm::dup);
-            self.emit_var_get("Function");
+            // Function-kind intrinsic per ECMA-262 (see compile_function_decl).
+            let fn_intrinsic = match (is_async, is_generator) {
+                (true, false) => "AsyncFunction",
+                (false, true) => "GeneratorFunction",
+                (true, true) => "AsyncGeneratorFunction",
+                (false, false) => "Function",
+            };
+            self.emit_var_get(fn_intrinsic);
             let function_proto_key = self.str_const("prototype");
             self.emit_u16(Op::STRUCT_GET, function_proto_key);
             let proto_link_key = self.str_const("__proto__");
