@@ -40,16 +40,31 @@ pub fn run_wast(src: &str) -> Vec<String> {
         .compile(&module)
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
 
+    for (i, c) in chunks.iter().enumerate() {
+        println!("Chunk {i}:\n{}", vybe_bytecode::debug::disassemble(c));
+    }
+
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
+    let out_cloned = out.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
+            out_cloned.lock().unwrap().push(parts.join(" "));
+            Value::Null
+        }),
+    );
+    let out_cloned2 = out.clone();
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+            out_cloned2.lock().unwrap().push(parts.join(" "));
             Value::Null
         }),
     );

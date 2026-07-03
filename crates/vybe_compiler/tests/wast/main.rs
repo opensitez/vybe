@@ -7,3 +7,6 @@ mod test_wat_folded;
 mod test_wat_instructions;
 mod test_wat_module;
 mod test_wat_programs;
+mod test_wat_lexical;
+mod test_wat_types;
+mod test_wat_execution_extended;
