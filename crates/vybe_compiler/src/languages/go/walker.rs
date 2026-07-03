@@ -38,12 +38,42 @@ use std::collections::{HashMap, HashSet};
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    let (package_name, mut body, imports) = walk_go_source(source)?;
+
+    // Inject the `errors`/`fmt.Errorf` runtime prelude (a small Go-source
+    // library of error-value helpers) when the program uses it. The prelude
+    // is plain Go that compiles through the same pipeline — no adapter
+    // bytecode, no host fns. See GO_ERRORS_PRELUDE.
+    if go_uses_errors_runtime(source) {
+        let (_, prelude_body, _) = walk_go_source(GO_ERRORS_PRELUDE)?;
+        let mut combined = prelude_body;
+        combined.append(&mut body);
+        body = combined;
+    }
+
+    Ok(normalize_go_module(Module {
+        name: package_name,
+        language: Lang::Go,
+        body,
+        imports,
+    }))
+}
+
+/// Whether the source references the errors/Errorf runtime surface handled by
+/// the injected prelude. Cheap textual gate so ordinary programs don't pay for
+/// the helper functions.
+fn go_uses_errors_runtime(source: &str) -> bool {
+    source.contains("errors.") || source.contains("Errorf")
+}
+
+/// Walk a Go source string into its raw (pre-normalization) parts.
+fn walk_go_source(source: &str) -> Result<(String, Vec<Statement>, Vec<Import>), String> {
     let pairs =
         GoParser::parse(Rule::program, source).map_err(|e| format!("Go parse error: {}", e))?;
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
-    let mut _package_name = String::new();
+    let mut package_name = String::new();
 
     for top in pairs {
         if top.as_rule() == Rule::EOI {
@@ -62,7 +92,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             match pair.as_rule() {
                 Rule::EOI => continue,
                 Rule::package_clause => {
-                    _package_name = walk_package_clause(pair)?;
+                    package_name = walk_package_clause(pair)?;
                 }
                 Rule::import_declarations => {
                     for imp in pair.into_inner() {
@@ -80,13 +110,116 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
-    Ok(normalize_go_module(Module {
-        name: _package_name,
-        language: Lang::Go,
-        body,
-        imports,
-    }))
+    Ok((package_name, body, imports))
 }
+
+/// Go-source runtime prelude for the `errors` package + `fmt.Errorf`.
+///
+/// Errors are modeled as a value struct `__goError{message, wrap, errs}` with
+/// `Error()`/`Unwrap()` methods — a plain Go value, so distinct literals stay
+/// `!=` (matching Go's pointer-based `errors.New` distinctness under the VM's
+/// object-identity `==`) while value type assertions still resolve. The
+/// package functions (`errors.New/Is/Unwrap/Join`, `fmt.Errorf`) are rewritten
+/// in the walker to call these helpers; `errors.As` is rewritten with
+/// type-assertion closures at the call site (it is generic over the target
+/// type).
+const GO_ERRORS_PRELUDE: &str = r#"package main
+
+type __goError struct {
+	message string
+	wrap    error
+	errs    []error
+}
+
+func (e __goError) Error() string { return e.message }
+func (e __goError) Unwrap() error { return e.wrap }
+
+func __go_new_error(message string, wrap error, errs []error) error {
+	return __goError{message: message, wrap: wrap, errs: errs}
+}
+
+func __go_errors_unwrap(err error) error {
+	if err == nil {
+		return nil
+	}
+	if ge, ok := err.(__goError); ok {
+		return ge.wrap
+	}
+	return nil
+}
+
+func __go_errors_is(err error, target error) bool {
+	if target == nil {
+		return false
+	}
+	worklist := []error{err}
+	for len(worklist) > 0 {
+		cur := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+		if cur == nil {
+			continue
+		}
+		if cur == target {
+			return true
+		}
+		if ge, ok := cur.(__goError); ok {
+			if ge.errs != nil {
+				worklist = append(worklist, ge.errs...)
+			}
+			if ge.wrap != nil {
+				worklist = append(worklist, ge.wrap)
+			}
+		}
+	}
+	return false
+}
+
+func __go_errors_join(errs []error) error {
+	filtered := []error{}
+	for _, e := range errs {
+		if e != nil {
+			filtered = append(filtered, e)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	msg := ""
+	for i, e := range filtered {
+		if i > 0 {
+			msg = msg + "\n"
+		}
+		msg = msg + e.Error()
+	}
+	return __go_new_error(msg, nil, filtered)
+}
+
+func __go_errors_as(err error, match func(error) bool, assign func(error)) bool {
+	worklist := []error{err}
+	for len(worklist) > 0 {
+		cur := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+		if cur == nil {
+			continue
+		}
+		if match(cur) {
+			assign(cur)
+			return true
+		}
+		if ge, ok := cur.(__goError); ok {
+			if ge.errs != nil {
+				worklist = append(worklist, ge.errs...)
+			}
+			if ge.wrap != nil {
+				worklist = append(worklist, ge.wrap)
+			}
+		}
+	}
+	return false
+}
+
+func main() {}
+"#;
 
 #[derive(Clone, Default)]
 struct GoFunctionSignature {

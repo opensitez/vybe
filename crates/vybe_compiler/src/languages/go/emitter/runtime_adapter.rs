@@ -16,6 +16,12 @@ pub fn emit_helper(
         "go.fmt_println" => emit_fmt_joined(chunks, current, argc, line, " "),
         "go.fmt_print" => emit_fmt_joined(chunks, current, argc, line, ""),
         "go.fmt_printf" => emit_fmt_printf(chunks, current, argc, line),
+        // fmt.Sprintf / __go_sprintf — format to a string (no output). Same
+        // runtime formatter as Printf but leaves the result on the stack
+        // instead of logging it.
+        "go.fmt_sprintf" => {
+            crate::emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+        }
         "go.regex_split_pat_first" => {
             collections::emit_runtime_helper_call(
                 chunks,
