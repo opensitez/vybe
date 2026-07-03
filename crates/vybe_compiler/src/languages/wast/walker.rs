@@ -30,6 +30,13 @@ use super::{Rule, WastParser};
 use crate::ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    static FUNC_INDEX_ARITIES: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static FUNC_NAME_ARITIES: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+}
 
 // ── Label context ─────────────────────────────────────────────────────────────
 // `br $label` targets a block (Break) or a loop (Continue).  We track which
@@ -158,6 +165,80 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut pre_stmts: Vec<Statement> = Vec::new(); // before class (globals)
     let mut post_stmts: Vec<Statement> = Vec::new(); // after class (start, exports, imports)
 
+    let mut index_arities = Vec::new();
+    let mut name_arities = HashMap::new();
+
+    // 1. Pre-scan imports
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::import_field {
+                    let mut name: Option<String> = None;
+                    let mut params_count = 0;
+                    for sub in inner.into_inner() {
+                        match sub.as_rule() {
+                            Rule::id => name = Some(sub.as_str()[1..].to_string()),
+                            Rule::param => {
+                                let mut has_id = false;
+                                let mut types_count = 0;
+                                for p in sub.into_inner() {
+                                    if p.as_rule() == Rule::id {
+                                        has_id = true;
+                                    } else if p.as_rule() == Rule::val_type {
+                                        types_count += 1;
+                                    }
+                                }
+                                params_count += if has_id { 1 } else { types_count };
+                            }
+                            _ => {}
+                        }
+                    }
+                    index_arities.push(params_count);
+                    if let Some(n) = name {
+                        name_arities.insert(n, params_count);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Pre-scan defined functions
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::func_field {
+                    let mut name: Option<String> = None;
+                    let mut params_count = 0;
+                    for sub in inner.into_inner() {
+                        match sub.as_rule() {
+                            Rule::id => name = Some(sub.as_str()[1..].to_string()),
+                            Rule::param => {
+                                let mut has_id = false;
+                                let mut types_count = 0;
+                                for p in sub.into_inner() {
+                                    if p.as_rule() == Rule::id {
+                                        has_id = true;
+                                    } else if p.as_rule() == Rule::val_type {
+                                        types_count += 1;
+                                    }
+                                }
+                                params_count += if has_id { 1 } else { types_count };
+                            }
+                            _ => {}
+                        }
+                    }
+                    index_arities.push(params_count);
+                    if let Some(n) = name {
+                        name_arities.insert(n, params_count);
+                    }
+                }
+            }
+        }
+    }
+
+    FUNC_INDEX_ARITIES.with(|f| *f.borrow_mut() = index_arities);
+    FUNC_NAME_ARITIES.with(|f| *f.borrow_mut() = name_arities);
+
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => {
@@ -227,6 +308,8 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut export_names: Vec<String> = Vec::new();
     let mut labels = LabelStack::new();
 
+    let mut instr_pairs = Vec::new();
+
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => {
@@ -245,11 +328,13 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
                 body.extend(walk_local(child)?);
             }
             Rule::instr => {
-                body.extend(walk_instr_as_stmts(child, &mut labels)?);
+                instr_pairs.push(child);
             }
             _ => {}
         }
     }
+
+    body.extend(fold_instructions(instr_pairs, &mut labels)?);
 
     if func_name.is_empty() {
         func_name = export_names
@@ -398,80 +483,10 @@ fn walk_instr_as_expr(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expre
 
 fn walk_plain_instr_as_stmts(
     pair: Pair<Rule>,
-    span: Span,
+    _span: Span,
     labels: &mut LabelStack,
 ) -> Result<Vec<Statement>, String> {
-    let mut name = String::new();
-    let mut raw_args: Vec<Pair<Rule>> = Vec::new();
-
-    for child in pair.into_inner() {
-        match child.as_rule() {
-            Rule::instr_name => name = child.as_str().to_string(),
-            Rule::instr_arg => raw_args.push(child),
-            _ => {}
-        }
-    }
-
-    match name.as_str() {
-        // ── return ───────────────────────────────────────────────────────
-        "return" => Ok(vec![Statement::with_span(StmtKind::Return(None), span)]),
-
-        // ── unreachable = WASM trap ───────────────────────────────────────
-        "unreachable" => Ok(vec![Statement::with_span(
-            StmtKind::Throw {
-                expr: None,
-                cause: None,
-            },
-            span,
-        )]),
-
-        // ── br $label ─────────────────────────────────────────────────────
-        "br" => {
-            let lbl = raw_args
-                .first()
-                .and_then(|a| a.clone().into_inner().next())
-                .filter(|c| c.as_rule() == Rule::id)
-                .map(|c| c.as_str()[1..].to_string());
-            Ok(vec![make_br_stmt_opt(lbl.as_deref(), labels, span)])
-        }
-
-        // ── br_if $label [cond] ───────────────────────────────────────────
-        "br_if" => {
-            let mut lbl: Option<String> = None;
-            let mut cond: Option<Expression> = None;
-            for raw in raw_args {
-                let inner = raw.into_inner().next();
-                if let Some(inner) = inner {
-                    if inner.as_rule() == Rule::id && lbl.is_none() {
-                        lbl = Some(inner.as_str()[1..].to_string());
-                    } else {
-                        cond = Some(instr_arg_inner_to_expr(inner));
-                    }
-                }
-            }
-            let cond_expr = cond.unwrap_or(Expression::int(0));
-            let branch = make_br_stmt_opt(lbl.as_deref(), labels, span);
-            Ok(vec![Statement::with_span(
-                StmtKind::If {
-                    cond: cond_expr,
-                    then_body: vec![branch],
-                    else_body: None,
-                    elifs: Vec::new(),
-                },
-                span,
-            )])
-        }
-
-        // ── everything else → expression statement ────────────────────────
-        _ => {
-            let mut args = Vec::new();
-            for raw in raw_args {
-                args.push(walk_instr_arg_pair(raw, labels)?);
-            }
-            let expr = map_instr_to_ast(name, args, span)?;
-            Ok(vec![Statement::with_span(StmtKind::Expr(expr), span)])
-        }
-    }
+    fold_instructions(vec![pair], labels)
 }
 
 fn walk_plain_instr_as_expr(
@@ -525,10 +540,7 @@ fn walk_folded_instr_as_stmts(
                 }
             }
             labels.push(label.clone(), LabelKind::Block);
-            let mut body: Vec<Statement> = Vec::new();
-            for instr in instr_pairs {
-                body.extend(walk_instr_as_stmts(instr, labels)?);
-            }
+            let body = fold_instructions(instr_pairs, labels)?;
             labels.pop();
             let block_stmt = Statement::with_span(StmtKind::Block(body), span);
             if let Some(lbl) = label {
@@ -557,10 +569,7 @@ fn walk_folded_instr_as_stmts(
                 }
             }
             labels.push(label.clone(), LabelKind::Loop);
-            let mut body: Vec<Statement> = Vec::new();
-            for instr in instr_pairs {
-                body.extend(walk_instr_as_stmts(instr, labels)?);
-            }
+            let body = fold_instructions(instr_pairs, labels)?;
             labels.pop();
             let while_stmt = Statement::with_span(
                 StmtKind::While {
@@ -693,40 +702,42 @@ fn walk_folded_core(
             LabelKind::Loop
         };
         let mut label: Option<String> = None;
-        let mut exprs: Vec<Expression> = Vec::new();
+        let mut instr_pairs: Vec<Pair<Rule>> = Vec::new();
         for child in children {
             match child.as_rule() {
                 Rule::id => label = Some(child.as_str()[1..].to_string()),
-                Rule::instr => {
-                    labels.push(label.clone(), kind.clone());
-                    let e = walk_instr_as_expr(child, labels)?;
-                    labels.pop();
-                    exprs.push(e);
-                    labels.push(label.clone(), kind.clone());
-                }
+                Rule::instr => instr_pairs.push(child),
                 _ => {}
             }
         }
-        // pop the extra pushes
-        for _ in 0..exprs.len().saturating_sub(0) {
-            labels.pop();
-        }
-        return Ok(exprs.into_iter().last().unwrap_or(Expression::null()));
+        labels.push(label.clone(), kind.clone());
+        let body = fold_instructions(instr_pairs, labels)?;
+        labels.pop();
+        let last_expr = if let Some(last) = body.last() {
+            if let StmtKind::Expr(e) = &last.kind {
+                e.clone()
+            } else {
+                Expression::null()
+            }
+        } else {
+            Expression::null()
+        };
+        return Ok(last_expr);
     }
 
     // ── (try instr* (catch ...)*) ─────────────────────────────────────────
     if name == "try" {
         let mut args: Vec<Expression> = Vec::new();
+        let mut instr_pairs = Vec::new();
         for child in children {
-            if child.as_rule() == Rule::instr
-                || child.as_rule() == Rule::catch_block
-                || child.as_rule() == Rule::catch_all_block
-            {
-                for sub in child.into_inner() {
-                    if sub.as_rule() == Rule::instr {
-                        args.push(walk_instr_as_expr(sub, labels)?);
-                    }
-                }
+            if child.as_rule() == Rule::instr {
+                instr_pairs.push(child);
+            }
+        }
+        let body = fold_instructions(instr_pairs, labels)?;
+        for stmt in body {
+            if let StmtKind::Expr(e) = stmt.kind {
+                args.push(e);
             }
         }
         return Ok(make_call("__wasm_try", args, span));
@@ -747,23 +758,54 @@ fn walk_folded_core(
             Rule::instr => args.push(walk_instr_as_expr(child, labels)?),
             Rule::then_block => {
                 has_then = true;
+                let mut instr_pairs = Vec::new();
                 for sub in child.into_inner() {
                     if sub.as_rule() == Rule::instr {
-                        then_exprs.push(walk_instr_as_expr(sub, labels)?);
+                        instr_pairs.push(sub);
                     }
                 }
+                let body = fold_instructions(instr_pairs, labels)?;
+                let last_expr = if let Some(last) = body.last() {
+                    if let StmtKind::Expr(e) = &last.kind {
+                        e.clone()
+                    } else {
+                        Expression::null()
+                    }
+                } else {
+                    Expression::null()
+                };
+                then_exprs.push(last_expr);
             }
             Rule::else_block => {
+                let mut instr_pairs = Vec::new();
                 for sub in child.into_inner() {
                     if sub.as_rule() == Rule::instr {
-                        else_exprs.push(walk_instr_as_expr(sub, labels)?);
+                        instr_pairs.push(sub);
                     }
                 }
+                let body = fold_instructions(instr_pairs, labels)?;
+                let last_expr = if let Some(last) = body.last() {
+                    if let StmtKind::Expr(e) = &last.kind {
+                        e.clone()
+                    } else {
+                        Expression::null()
+                    }
+                } else {
+                    Expression::null()
+                };
+                else_exprs.push(last_expr);
             }
             Rule::catch_block | Rule::catch_all_block => {
+                let mut instr_pairs = Vec::new();
                 for sub in child.into_inner() {
                     if sub.as_rule() == Rule::instr {
-                        args.push(walk_instr_as_expr(sub, labels)?);
+                        instr_pairs.push(sub);
+                    }
+                }
+                let body = fold_instructions(instr_pairs, labels)?;
+                for stmt in body {
+                    if let StmtKind::Expr(e) = stmt.kind {
+                        args.push(e);
                     }
                 }
             }
@@ -1329,5 +1371,206 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_col: start.1 as u32,
         end_line: end.0 as u32,
         end_col: end.1 as u32,
+    }
+}
+
+fn fold_instructions(
+    pairs: Vec<Pair<Rule>>,
+    labels: &mut LabelStack,
+) -> Result<Vec<Statement>, String> {
+    let mut stack: Vec<Expression> = Vec::new();
+    let mut statements: Vec<Statement> = Vec::new();
+
+    for pair in pairs {
+        let span = to_span(&pair);
+        let inner = if pair.as_rule() == Rule::instr {
+            pair.into_inner().next().ok_or("Empty instr")?
+        } else {
+            pair
+        };
+
+        match inner.as_rule() {
+            Rule::folded_instr => {
+                let expr = walk_folded_instr_as_expr(inner, span, labels)?;
+                stack.push(expr);
+            }
+            Rule::plain_instr => {
+                let mut name = String::new();
+                let mut raw_args = Vec::new();
+                for child in inner.clone().into_inner() {
+                    match child.as_rule() {
+                        Rule::instr_name => name = child.as_str().to_string(),
+                        Rule::instr_arg => raw_args.push(child),
+                        _ => {}
+                    }
+                }
+
+                // Parse inline arguments
+                let mut args = Vec::new();
+                for raw in raw_args {
+                    args.push(walk_instr_arg_pair(raw, labels)?);
+                }
+
+                // Determine stack arity
+                let arity = get_instruction_arity(&name, &args);
+                let pop_count = usize::min(arity, stack.len());
+                let drain_start = stack.len() - pop_count;
+                let popped: Vec<Expression> = stack.drain(drain_start..).collect();
+
+                // Append popped operands to args
+                args.extend(popped);
+
+                // Handle control flow instructions that are statements
+                match name.as_str() {
+                    "nop" => {
+                        // Nop does nothing, ignore
+                    }
+                    "unreachable" => {
+                        statements.push(Statement::with_span(
+                            StmtKind::Throw { expr: None, cause: None },
+                            span,
+                        ));
+                    }
+                    "return" => {
+                        let val = stack.pop();
+                        statements.push(Statement::with_span(StmtKind::Return(val), span));
+                    }
+                    "br" => {
+                        let lbl = args.first().and_then(|a| match &a.kind {
+                            ExprKind::Ident(n) => Some(n.as_str()),
+                            _ => None,
+                        });
+                        statements.push(make_br_stmt_opt(lbl, labels, span));
+                    }
+                    "br_if" => {
+                        let mut lbl = None;
+                        let mut cond = None;
+                        if args.len() >= 2 {
+                            if let ExprKind::Ident(ref n) = args[0].kind {
+                                lbl = Some(n.clone());
+                            }
+                            cond = Some(args[1].clone());
+                        } else if args.len() == 1 {
+                            cond = Some(args[0].clone());
+                        }
+                        let cond_expr = cond.unwrap_or(Expression::int(0));
+                        let branch = make_br_stmt_opt(lbl.as_deref(), labels, span);
+                        statements.push(Statement::with_span(
+                            StmtKind::If {
+                                cond: cond_expr,
+                                then_body: vec![branch],
+                                else_body: None,
+                                elifs: Vec::new(),
+                            },
+                            span,
+                        ));
+                    }
+                    _ => {
+                        // Value-producing or standard instruction.
+                        let expr = map_instr_to_ast(name.clone(), args, span)?;
+                        let pushes = get_instruction_push_count(&name);
+                        if pushes > 0 {
+                            stack.push(expr);
+                        } else {
+                            statements.push(Statement::with_span(StmtKind::Expr(expr), span));
+                        }
+                    }
+                }
+            }
+            _ => return Err(format!("Unexpected instr rule: {:?}", inner.as_rule())),
+        }
+    }
+
+    // Flush remaining stack values as statements
+    for expr in stack {
+        statements.push(Statement::new(StmtKind::Expr(expr)));
+    }
+
+    Ok(statements)
+}
+
+fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
+    match name {
+        // Binary ops
+        "i32.add" | "i32.sub" | "i32.mul" | "i32.div_s" | "i32.div_u" | "i32.rem_s" | "i32.rem_u" |
+        "i32.and" | "i32.or" | "i32.xor" | "i32.shl" | "i32.shr_s" | "i32.shr_u" | "i32.rotl" | "i32.rotr" |
+        "i64.add" | "i64.sub" | "i64.mul" | "i64.div_s" | "i64.div_u" | "i64.rem_s" | "i64.rem_u" |
+        "i64.and" | "i64.or" | "i64.xor" | "i64.shl" | "i64.shr_s" | "i64.shr_u" | "i64.rotl" | "i64.rotr" |
+        "f32.add" | "f32.sub" | "f32.mul" | "f32.div" | "f32.min" | "f32.max" | "f32.copysign" |
+        "f64.add" | "f64.sub" | "f64.mul" | "f64.div" | "f64.min" | "f64.max" | "f64.copysign" |
+        "i32.eq" | "i32.ne" | "i32.lt_s" | "i32.lt_u" | "i32.le_s" | "i32.le_u" | "i32.gt_s" | "i32.gt_u" | "i32.ge_s" | "i32.ge_u" |
+        "i64.eq" | "i64.ne" | "i64.lt_s" | "i64.lt_u" | "i64.le_s" | "i64.le_u" | "i64.gt_s" | "i64.gt_u" | "i64.ge_s" | "i64.ge_u" |
+        "f32.eq" | "f32.ne" | "f32.lt" | "f32.le" | "f32.gt" | "f32.ge" |
+        "f64.eq" | "f64.ne" | "f64.lt" | "f64.le" | "f64.gt" | "f64.ge" => 2,
+
+        // Unary / Conversion ops
+        "i32.clz" | "i32.ctz" | "i32.popcnt" | "i32.eqz" |
+        "i64.clz" | "i64.ctz" | "i64.popcnt" | "i64.eqz" |
+        "f32.abs" | "f32.neg" | "f32.ceil" | "f32.floor" | "f32.trunc" | "f32.nearest" | "f32.sqrt" |
+        "f64.abs" | "f64.neg" | "f64.ceil" | "f64.floor" | "f64.trunc" | "f64.nearest" | "f64.sqrt" |
+        "i32.wrap_i64" | "i64.extend_i32_s" | "i64.extend_i32_u" |
+        "i32.trunc_f32_s" | "i32.trunc_f32_u" | "i32.trunc_f64_s" | "i32.trunc_f64_u" |
+        "i64.trunc_f32_s" | "i64.trunc_f32_u" | "i64.trunc_f64_s" | "i64.trunc_f64_u" |
+        "f32.convert_i32_s" | "f32.convert_i32_u" | "f32.convert_i64_s" | "f32.convert_i64_u" |
+        "f64.convert_i32_s" | "f64.convert_i32_u" | "f64.convert_i64_s" | "f64.convert_i64_u" |
+        "f32.demote_f64" | "f64.promote_f32" |
+        "i32.reinterpret_f32" | "i64.reinterpret_f64" | "f32.reinterpret_i32" | "f64.reinterpret_i64" |
+        "i32.extend8_s" | "i32.extend16_s" | "i64.extend8_s" | "i64.extend16_s" | "i64.extend32_s" |
+        "i32.trunc_sat_f32_s" | "i32.trunc_sat_f32_u" | "i32.trunc_sat_f64_s" | "i32.trunc_sat_f64_u" |
+        "i64.trunc_sat_f32_s" | "i64.trunc_sat_f32_u" | "i64.trunc_sat_f64_s" | "i64.trunc_sat_f64_u" => 1,
+
+        // Variable set / tee
+        "local.set" | "global.set" | "local.tee" => 1,
+
+        // Select
+        "select" => 3,
+
+        // Drop
+        "drop" => 1,
+
+        // Memory load/store
+        "i32.load" | "i64.load" | "f32.load" | "f64.load" |
+        "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u" |
+        "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s" | "i64.load32_u" => 1, // address
+
+        "i32.store" | "i64.store" | "f32.store" | "f64.store" |
+        "i32.store8" | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 2, // address, value
+
+        // Memory size / grow
+        "memory.size" => 0,
+        "memory.grow" => 1,
+
+        // br_if
+        "br_if" => 1,
+
+        // Call
+        "call" => {
+            if let Some(first) = args.first() {
+                match &first.kind {
+                    ExprKind::Ident(n) => {
+                        FUNC_NAME_ARITIES.with(|f| *f.borrow().get(n).unwrap_or(&1))
+                    }
+                    ExprKind::Lit(Literal::Int(idx)) => {
+                        FUNC_INDEX_ARITIES.with(|f| *f.borrow().get(*idx as usize).unwrap_or(&1))
+                    }
+                    _ => 1,
+                }
+            } else {
+                1
+            }
+        }
+        
+        "call_indirect" => 2,
+
+        _ => 0,
+    }
+}
+
+fn get_instruction_push_count(name: &str) -> usize {
+    match name {
+        "local.set" | "global.set" | "drop" | "br_if" | "br" | "unreachable" | "nop" |
+        "i32.store" | "i64.store" | "f32.store" | "f64.store" |
+        "i32.store8" | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 0,
+        _ => 1,
     }
 }

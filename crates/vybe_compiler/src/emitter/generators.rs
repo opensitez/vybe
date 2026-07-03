@@ -536,6 +536,77 @@ pub fn emit_resume_dispatch(
 ///
 /// Stack before: [iterable]
 /// Stack after:  [array_of_values]
+/// §7.4.2 GetIterator(obj, ASYNC) for `for await`: if the object in
+/// `iter_slot` is not already an iterator (no `next`), resolve its
+/// `[Symbol.asyncIterator]` method (walker fallback key `asyncIterator`)
+/// and CALL it with the object as receiver, storing the returned async
+/// iterator back into `iter_slot`. An async-generator method returns a
+/// generator continuation, so the for-of runtime-generator gate then
+/// drives it lazily via WASM stack-switching. Leaves `iter_slot`
+/// untouched when no async-iterator method exists (later gates handle
+/// sync iterables / array-likes).
+pub fn emit_resolve_async_iterator(
+    chunks: &mut [Chunk],
+    current: usize,
+    iter_slot: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let fn_slot = chunk.alloc_scratch(1);
+
+    // Already an iterator (`next` present) → leave as-is (§25.1.2 fast path).
+    let next_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+
+    // fn = obj[Symbol(@@asyncIterator)] ?? obj.asyncIterator
+    let async_sym = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(
+        "Symbol(@@asyncIterator)",
+    )));
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, async_sym, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    let async_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunk.emit_op(Op::END, line);
+
+    // fn non-null → call it; ADOPT the result only when it is a generator
+    // continuation (async-generator method), which the runtime-generator
+    // gate drives lazily with per-step await. A plain `{ async next() }`
+    // iterator object stays on the original iterable — the host iterForOf
+    // fallback drives that shape (replacing it here would strand it).
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let js_this_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    let result_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    let is_gen_idx = chunk.add_import("ecma:value", "isGenerator");
+    chunk.emit_call(is_gen_idx, 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iter_slot, line);
+    chunk.emit_op(Op::END, line);
+    chunk.emit_op(Op::END, line);
+
+    chunk.emit_op(Op::END, line);
+}
+
 pub fn emit_drain_custom_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_drain_iterable_inner(chunks, current, line, false);
 }

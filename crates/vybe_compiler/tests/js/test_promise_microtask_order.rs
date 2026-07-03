@@ -3,42 +3,42 @@
 crate::js_cases! {
     promise_then_runs_as_microtask_after_sync => {
         r#"const o=[]; Promise.resolve().then(()=>o.push("m")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "m"]
+        ["s"]
     };
 
     queue_microtask_before_promise_then => {
         r#"const o=[]; queueMicrotask(()=>o.push("q")); Promise.resolve().then(()=>o.push("p")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "q,p"]
+        ["s"]
     };
 
     nested_promise_then_order_fifo => {
         r#"const o=[]; Promise.resolve().then(()=>o.push("a")).then(()=>o.push("b")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "a,b"]
+        ["s"]
     };
 
     catch_runs_after_rejected_then => {
         r#"const o=[]; Promise.reject("e").catch(()=>o.push("c")).then(()=>o.push("t")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "c,t"]
+        ["s"]
     };
 
     finally_runs_after_fulfilled_then => {
         r#"const o=[]; Promise.resolve(1).then(()=>o.push("t")).finally(()=>o.push("f")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "t,f"]
+        ["s"]
     };
 
     finally_runs_after_rejection_catch => {
         r#"const o=[]; Promise.reject(1).catch(()=>o.push("c")).finally(()=>o.push("f")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "c,f"]
+        ["s"]
     };
 
     then_throw_schedules_rejection_handler => {
         r#"const o=[]; Promise.resolve().then(()=>{throw "x";}).catch(()=>o.push("c")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "c"]
+        ["s"]
     };
 
     promise_resolve_thenable_calls_then_async => {
         r#"const o=[]; Promise.resolve({then(cb){queueMicrotask(()=>cb(1));}}).then(v=>o.push(v)); o.push("s"); console.log(o.join(","));"#,
-        ["s", "1"]
+        ["s"]
     };
 
     promise_all_waits_for_all_fulfilled => {
@@ -68,17 +68,17 @@ crate::js_cases! {
 
     async_await_schedules_continuation_microtask => {
         r#"const o=[]; (async()=>{o.push("a"); await Promise.resolve(); o.push("b");})(); o.push("s"); console.log(o.join(","));"#,
-        ["s", "a,b"]
+        ["a,s"]
     };
 
     multiple_queue_microtask_fifo => {
         r#"const o=[]; queueMicrotask(()=>o.push("1")); queueMicrotask(()=>o.push("2")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "1,2"]
+        ["s"]
     };
 
     promise_chain_interleaved_with_sync => {
         r#"const o=[]; Promise.resolve().then(()=>o.push(1)).then(()=>o.push(2)); Promise.resolve().then(()=>o.push(3)); o.push(0); console.log(o.join(","));"#,
-        ["0", "1,3,2"]
+        ["0"]
     };
 
     catch_return_value_becomes_fulfillment => {
@@ -133,7 +133,7 @@ crate::js_cases! {
 
     microtask_from_promise_constructor_executor => {
         r#"const o=[]; new Promise(r=>{o.push("ex"); r();}).then(()=>o.push("th")); o.push("s"); console.log(o.join(","));"#,
-        ["ex,s", "th"]
+        ["ex,s"]
     };
 
     promise_all_empty_array_fulfills => {
@@ -158,22 +158,22 @@ crate::js_cases! {
 
     then_catch_finally_order_on_rejection => {
         r#"const o=[]; Promise.reject(1).catch(()=>o.push("c")).then(()=>o.push("t")).finally(()=>o.push("f")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "c,t,f"]
+        ["s"]
     };
 
     nested_async_await_order => {
         r#"const o=[]; (async()=>{await Promise.resolve(); o.push("a"); await Promise.resolve(); o.push("b");})(); o.push("s"); console.log(o.join(","));"#,
-        ["s", "a,b"]
+        ["s"]
     };
 
     promise_then_on_already_resolved_runs_microtask => {
         r#"const p=Promise.resolve(1); const o=[]; p.then(()=>o.push("t")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "t"]
+        ["s"]
     };
 
     catch_on_already_rejected_runs_microtask => {
         r#"const p=Promise.reject(1); const o=[]; p.catch(()=>o.push("c")); o.push("s"); console.log(o.join(","));"#,
-        ["s", "c"]
+        ["s"]
     };
 
     promise_finally_on_rejected_runs_before_catch => {
@@ -188,7 +188,7 @@ crate::js_cases! {
 
     queue_microtask_throw_caught_by_global_handler_pattern => {
         r#"const o=[]; queueMicrotask(()=>{try{throw "m";}catch(e){o.push(e);}}); o.push("s"); console.log(o.join(","));"#,
-        ["s", "m"]
+        ["s"]
     };
 
     promise_all_settled_fulfilled_value_shape => {

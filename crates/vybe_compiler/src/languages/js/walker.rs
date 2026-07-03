@@ -1678,7 +1678,10 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
 }
 
 fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let is_async = pair.as_rule() == Rule::async_function_declaration;
+    let is_async = matches!(
+        pair.as_rule(),
+        Rule::async_function_declaration | Rule::async_function_expression
+    );
     let inner = pair.into_inner();
     let mut name = String::new();
     let mut params = Vec::new();

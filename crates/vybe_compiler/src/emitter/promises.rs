@@ -38,39 +38,41 @@ pub fn emit_then(chunks: &mut [Chunk], current: usize, line: u32) {
     let result_slot = chunk.alloc_scratch(1);
     let err_slot = chunk.alloc_scratch(1);
 
+    // The input-await try traps ONLY the input's rejection. onFulfilled is run
+    // afterwards, outside this try, so that a throw from onFulfilled rejects the
+    // chain directly and does NOT invoke onRejected (ECMA-262 §27.2.5.4.1:
+    // onRejected handles the input's rejection only).
     let try_patch = super::errors::emit_try_start(chunk, line);
-
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
     functions::emit_await(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    super::errors::emit_try_end(chunk, line);
 
+    // Fulfilled path: if onFulfilled != null, call it guarded (its throw or a
+    // returned rejecting thenable rejects the chain); else pass the value
+    // through. Both branches RETURN, so control never falls into the catch.
     chunk.emit_op_u16(Op::LOCAL_GET, fulfilled_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, fulfilled_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    // Assimilate a returned thenable/promise. This call sits inside the outer
-    // try, so a rejected return throws → the chain rejects (onRejected is null
-    // for the common `.then(onF).catch()` shape, so it rejects the result).
-    functions::emit_await(chunk, line);
+    chunk.emit_if(line);
+    let rf = emit_guarded_call_1(chunk, fulfilled_slot, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, rf, line);
+    chunk.emit_op(Op::RETURN, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op(Op::RETURN, line);
     chunk.emit_end(line);
 
-    super::errors::emit_try_end(chunk, line);
-    chunk.emit_op(Op::RETURN, line);
-
+    // Rejected path (input rejected): onRejected handles it (its throw rejects);
+    // with no onRejected the rejection propagates unchanged.
     super::errors::patch_catch(chunk, try_patch);
     chunk.emit_op_u16(Op::LOCAL_SET, err_slot, line);
-
     chunk.emit_op_u16(Op::LOCAL_GET, rejected_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
-    let r = emit_guarded_call_1(chunk, rejected_slot, err_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, r, line);
+    let rr = emit_guarded_call_1(chunk, rejected_slot, err_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, rr, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
     emit_rejected_promise(chunk, line);

@@ -245,7 +245,7 @@ setTimeout           = { emit = "common:set_timer",              min_args = 1, m
 setInterval          = { emit = "common:set_timer",              min_args = 1, max_args = 2 }
 clearTimeout         = { emit = "noop",                          min_args = 1, max_args = 1 }
 clearInterval        = { emit = "noop",                          min_args = 1, max_args = 1 }
-queueMicrotask       = { emit = "noop",                          min_args = 1, max_args = 1 }
+queueMicrotask       = { emit = "host:ecma:promise:queueMicrotask", min_args = 1, max_args = 1 }
 
 # ── Atomics ──────────────────────────────────────────────────────────────────
 # Route through host functions: TypedArrays are object-based (ObjectKind::TypedArray),

@@ -1796,40 +1796,37 @@ impl Compiler {
         field: &str,
         arg_exprs: &[&Expression],
     ) -> Result<bool, String> {
-        // Promise.prototype.then/catch/finally must enqueue PromiseJobs.
-        // The previous async-wrapper fast path used JSPI await internally,
-        // which is correct for `await` but eager for already-settled promises:
+        // Promise.prototype.then/catch/finally route to the ECMA host promise
+        // engine (`ecma:promise.{then,catch,finally}` → then_impl/finally_impl),
+        // which registers reactions and schedules them as microtasks per
+        // ECMA-262 §27.2 (settled → enqueue, pending → reaction list), and
+        // shares the same settle path that resumes JSPI-awaiting fibers. This is
+        // the single spec-correct engine; the old eager JSPI-await wrappers ran
+        // reactions synchronously at the call site (wrong ordering) and are gone.
         let is_promise_like = self.expr_is_known_js_promise_like(object);
         if !is_promise_like {
             return Ok(false);
         }
 
-        let (arity, emit_fn): (u8, fn(&mut [Chunk], usize, u32)) = match field {
-            "then" => (3, common::promises::emit_then),
-            "catch" => (2, common::promises::emit_catch),
-            "finally" => (2, common::promises::emit_finally),
+        // Callback params the host fn reads after the receiver promise:
+        //   then(promise, onFulfilled, onRejected) — 2
+        //   catch(promise, onRejected)             — 1
+        //   finally(promise, onFinally)            — 1
+        let callback_count: usize = match field {
+            "then" => 2,
+            "catch" | "finally" => 1,
             _ => return Ok(false),
         };
 
-        let wrapper_idx = self.chunks.len();
-        let chunk =
-            common::functions::create_function_chunk(&format!("<promise_{}>", field), arity);
-        self.chunks.push(chunk);
-        emit_fn(&mut self.chunks, wrapper_idx, self.line);
-        let line = self.line;
-        self.chunks[wrapper_idx].emit_op(Op::RETURN, line);
-        self.chunks[wrapper_idx].finalize_local_count(arity as u16);
-
-        self.emit_u16(Op::REF_FUNC, wrapper_idx as u16);
-        self.chunk().emit(0, line);
-        self.compile_expr(object)?;
-        for arg in arg_exprs {
+        self.compile_expr(object)?; // receiver promise = args[0]
+        for arg in arg_exprs.iter().take(callback_count) {
             self.compile_expr(arg)?;
         }
-        for _ in arg_exprs.len()..(arity as usize - 1) {
-            self.emit(Op::NULL);
+        for _ in arg_exprs.len().min(callback_count)..callback_count {
+            self.emit(Op::NULL); // pad omitted callbacks (e.g. `.then(onF)`)
         }
-        self.emit_u8(Op::CALL_REF, arity);
+        let idx = self.import("ecma:promise", field);
+        self.emit_host_call(idx, (1 + callback_count) as u8);
         Ok(true)
     }
 
@@ -10588,6 +10585,12 @@ impl Compiler {
         self.scopes.push(Scope::new_function());
         let saved = self.current;
         self.current = ci;
+        // Runtime TRY_END counts are per-FRAME: a nested chunk must not
+        // inherit the enclosing async body's try depth, or its returns pop the
+        // CALLER's handlers off the shared runtime handler stack (a lambda
+        // compiled inline inside an async fn emitted TRY_END × 2, silently
+        // removing the user's enclosing try/catch).
+        let saved_async_try_depth = std::mem::take(&mut self.active_async_try_depth);
         let saved_fn = self.current_func_name.replace("<lambda>".into());
         let saved_env_names = std::mem::take(&mut self.closure_env_names);
         let saved_capture_locals = std::mem::take(&mut self.capture_locals);
@@ -10799,6 +10802,7 @@ impl Compiler {
             .collect();
         self.scopes.pop();
         self.current = saved;
+        self.active_async_try_depth = saved_async_try_depth;
         self.current_closure_captured_locals = saved_closure_captured;
         self.closure_env_names = saved_env_names;
         self.capture_locals = saved_capture_locals;

@@ -70,7 +70,7 @@ pub fn all() -> Vec<Language> {
             name: "lua",
             parse: lua::parse,
             profile_source: lua::profile_source,
-            emit_dispatch: None,
+            emit_dispatch: Some(lua::emitter::dispatch::dispatch),
         },
         Language {
             name: "pascal",

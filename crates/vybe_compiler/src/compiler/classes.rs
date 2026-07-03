@@ -453,6 +453,10 @@ impl Compiler {
         }
         let saved = self.current;
         self.current = func_idx;
+        // Runtime TRY_END counts are per-FRAME: a nested chunk must not
+        // inherit the enclosing async body's try depth, or its returns pop
+        // the caller's handlers off the shared runtime handler stack.
+        let saved_async_try_depth = std::mem::take(&mut self.active_async_try_depth);
         // Function body opens fresh wrt the runtime label_stack —
         // emit_return drains back to this base. Save+restore so nested
         // function decls compose.
@@ -833,6 +837,7 @@ impl Compiler {
             self.php_function_globals.pop();
         }
         self.current = saved;
+        self.active_async_try_depth = saved_async_try_depth;
         self.function_label_base = saved_label_base;
 
         let line = self.line;

@@ -2761,6 +2761,18 @@ impl Compiler {
                         .get(old_idx as usize)
                         .copied()
                         .or_else(|| script_remap.get(old_idx as usize).copied());
+                    if local_remap.get(old_idx as usize).is_none()
+                        && std::env::var("VYBE_DEBUG_IMPORTS").is_ok()
+                    {
+                        eprintln!(
+                            "[import-remap] chunk {} ip {}: CALL_IMPORT idx {} out of local table (len {}) — script fallback → {:?}",
+                            chunk_idx,
+                            ip,
+                            old_idx,
+                            local_remap.len(),
+                            script_remap.get(old_idx as usize).copied()
+                        );
+                    }
                     if let Some(new_idx) = remapped {
                         let bytes = new_idx.to_be_bytes();
                         code[operand_start] = bytes[0];
@@ -9218,6 +9230,19 @@ impl Compiler {
                     self.compile_expr(iter)?;
                     let iter_slot = self.define_local("__forin_iter");
                     self.emit_u16(Op::LOCAL_SET, iter_slot);
+
+                    // `for await`: resolve [Symbol.asyncIterator] up front
+                    // (§7.4.2 GetIterator ASYNC) — an async-generator method
+                    // returns a generator continuation, which the runtime-
+                    // generator gate below then drives lazily.
+                    if *is_async && *of && key.is_none() && self.is_js_profile() {
+                        common::generators::emit_resolve_async_iterator(
+                            &mut self.chunks,
+                            self.current,
+                            iter_slot,
+                            line,
+                        );
+                    }
 
                     let runtime_generator_done = if *of && key.is_none() {
                         // Large PHP foreach bodies can exceed the i16 reach of

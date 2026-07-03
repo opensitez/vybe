@@ -84,7 +84,12 @@ pub fn emit_common(
         // via TypeRegistry, so no parallel vybe:types/dict* host fns are
         // consulted.
         "object.new" => {
-            let idx = chunks[0].add_import("ecma:object", "new");
+            // Import MUST be registered on the chunk that emits the call —
+            // registering on chunks[0] gives an index that is out of range of
+            // the current chunk's table, and the normalize pass's script-table
+            // fallback maps it correctly only by luck (mis-resolved to
+            // js-string.concat in nested function-expression contexts).
+            let idx = chunks[current].add_import("ecma:object", "new");
             chunks[current].emit_call(idx, 0, line);
         }
 
