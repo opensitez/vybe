@@ -133,32 +133,59 @@ impl VM {
             self.push(val)?;
         }
 
-        // Continue execution
-        match self.execute_with_async() {
-            Ok(ExecResult::Done(val)) => {
-                // JSPI promising boundary: an async body that suspended earlier
-                // has now run to completion — settle the pending result Promise
-                // its caller holds (fulfil/reject with the body's outcome).
-                if let Some(result_promise) = self.cur_fiber_result_promise.take() {
-                    self.settle_async_result_promise(&result_promise, &val);
-                }
-                Ok(val)
-            }
-            Ok(ExecResult::Suspended { .. }) => Ok(Value::Null), // re-suspended, event loop will handle
-            Err(e) => {
-                // Uncaught JS throw out of a resumed async body → reject the
-                // pending result Promise (§27.7: async throws become
-                // rejections). Only a genuine thrown JS value qualifies —
-                // an internal VM fault (no last_exception) must PROPAGATE,
-                // not be laundered into a rejection.
-                if let Some(exc) = self.last_exception.take() {
+        // Continue execution. A resumed fiber can contain async-call
+        // boundaries whose original `call_async` Rust frames unwound during
+        // a whole-fiber save — when an await suspends at such a boundary
+        // (floors non-empty, frames still above the floor), perform the
+        // delimited capture HERE and keep executing the caller in-fiber.
+        loop {
+            match self.execute_with_async() {
+                Ok(ExecResult::Done(val)) => {
+                    // JSPI promising boundary: an async body that suspended
+                    // earlier has now run to completion — settle the pending
+                    // result Promise its caller holds.
                     if let Some(result_promise) = self.cur_fiber_result_promise.take() {
-                        self.settle_promise_via_host(&result_promise, "rejected", exc);
-                        return Ok(Value::Null);
+                        self.settle_async_result_promise(&result_promise, &val);
                     }
-                    self.last_exception = Some(exc);
+                    return Ok(val);
                 }
-                Err(e)
+                Ok(ExecResult::Suspended {
+                    kind: crate::vm::SuspensionKind::Jspi,
+                    id,
+                }) => {
+                    if let Some(&floor) = self.async_floors.last() {
+                        if self.frames.len() > floor {
+                            // Unsaved bounded suspension at an in-fiber async
+                            // boundary — capture exactly as call_async would.
+                            self.async_floors.pop();
+                            let call_base = self.frames[floor].base;
+                            let label_floor = self.frames[floor].label_base;
+                            let result_promise =
+                                self.suspend_async_call(floor, call_base, label_floor, id);
+                            self.wake_pending_settled(id);
+                            self.push(result_promise)?;
+                            continue; // caller keeps running in this fiber
+                        }
+                    }
+                    // Whole-save already happened — event loop takes over.
+                    return Ok(Value::Null);
+                }
+                Ok(ExecResult::Suspended { .. }) => return Ok(Value::Null),
+                Err(e) => {
+                    // Uncaught JS throw out of a resumed async body → reject
+                    // the pending result Promise (§27.7: async throws become
+                    // rejections). Only a genuine thrown JS value qualifies —
+                    // an internal VM fault (no last_exception) must PROPAGATE,
+                    // not be laundered into a rejection.
+                    if let Some(exc) = self.last_exception.take() {
+                        if let Some(result_promise) = self.cur_fiber_result_promise.take() {
+                            self.settle_promise_via_host(&result_promise, "rejected", exc);
+                            return Ok(Value::Null);
+                        }
+                        self.last_exception = Some(exc);
+                    }
+                    return Err(e);
+                }
             }
         }
     }
@@ -225,6 +252,7 @@ impl VM {
         argc: usize,
     ) -> Result<(), VMError> {
         let floor = self.frames.len();
+        let entry_fiber_id = self.cur_fiber_id;
         self.async_floors.push(floor);
         if let Err(e) = self.call_function_direct(func, argc) {
             self.async_floors.pop();
@@ -246,7 +274,19 @@ impl VM {
                 self.push(val)?;
                 Ok(())
             }
-            Err(e) if e.message.starts_with("__jspi__:") => {
+            Err(e)
+                if e.message.starts_with("__jspi__:")
+                    && self.cur_fiber_id == entry_fiber_id
+                    && self.frames.len() > floor =>
+            {
+                // OUR fiber suspended at an await inside this call — perform
+                // the delimited capture. A "__jspi__" arriving on a DIFFERENT
+                // fiber (a driven continuation whole-saved itself mid-drive,
+                // draining this boundary's state into its caller fiber) must
+                // NOT be claimed here: the frames no longer belong to this
+                // call. It falls through below and propagates to the event
+                // loop, which resumes the saved fiber; this boundary's state
+                // travels inside that fiber's AC caller chain.
                 self.async_floors.pop();
                 let promise_id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
                 let result_promise =
@@ -254,24 +294,19 @@ impl VM {
                 // Await on an ALREADY-SETTLED promise: JSPI still resumes via
                 // the event queue — wake the just-registered fiber with an
                 // immediate microtask carrying the settled value/rejection.
-                if let Some((id, value, is_exception)) = self.pending_settled_await.take() {
-                    if id == promise_id {
-                        let mut el = self.event_loop.borrow_mut();
-                        let woken = if is_exception {
-                            el.reject_promise(id, value)
-                        } else {
-                            el.resolve_promise(id, value)
-                        };
-                        if let Some(fiber) = woken {
-                            el.microtasks.push_back(Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
+                self.wake_pending_settled(promise_id);
                 self.push(result_promise)?;
                 Ok(())
             }
             Err(e) => {
-                self.async_floors.pop();
+                // Foreign-fiber suspensions pass through untouched — this
+                // boundary's floor entry already travelled with the drained
+                // caller state (don't pop another fiber's, likely empty, vec).
+                let foreign_suspension =
+                    e.message.starts_with("__jspi__:") && self.cur_fiber_id != entry_fiber_id;
+                if !foreign_suspension {
+                    self.async_floors.pop();
+                }
                 Err(e)
             }
         }
@@ -337,6 +372,27 @@ impl VM {
 
         self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
         result_promise
+    }
+
+    /// If `do_await` parked a settled value for `promise_id` (await of an
+    /// already-settled promise / plain value), wake the just-registered fiber
+    /// with an immediate microtask carrying that value or rejection.
+    fn wake_pending_settled(&mut self, promise_id: u64) {
+        if let Some((id, value, is_exception)) = self.pending_settled_await.take() {
+            if id == promise_id {
+                let mut el = self.event_loop.borrow_mut();
+                let woken = if is_exception {
+                    el.reject_promise(id, value)
+                } else {
+                    el.resolve_promise(id, value)
+                };
+                if let Some(fiber) = woken {
+                    el.microtasks.push_back(Task::ResumeFiber(fiber));
+                }
+            } else {
+                self.pending_settled_await = Some((id, value, is_exception));
+            }
+        }
     }
 
     /// Build a bare pending Promise object (`__type`/`__state`/`__id`) — the

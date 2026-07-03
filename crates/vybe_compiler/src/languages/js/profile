@@ -404,7 +404,10 @@ with          = { emit = "host:ecma:array:with",          min_args = 2, max_args
 # would intercept Map/Set calls at compile time and route them through
 # the wrong storage.
 # hasOwnProperty         = { emit = "common:dict.has",                         min_args = 1, max_args = 1 }
-propertyIsEnumerable   = { emit = "invoke:propertyIsEnumerable",              min_args = 1, max_args = 1 }
+propertyIsEnumerable   = { emit = "host:ecma:object:propertyIsEnumerable",    min_args = 1, max_args = 1 }
+# §20.1.3.7 default valueOf: returns the receiver itself (host fn is
+# __primitive-aware so wrapper objects unwrap correctly).
+# BISECT-OFF valueOf
 
 # Object.keys/values are STATIC calls via module alias (Object.keys(obj)),
 # NOT instance methods. Map.keys/values go through the type registry.

@@ -2478,6 +2478,16 @@ fn register_prototype_methods(vm: &mut VM) {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
+                // §20.1.3.4: array index elements are own enumerable
+                // properties (they live in ObjectKind::Array, not the
+                // property map).
+                if let ObjectKind::Array(ref elems) = o.kind {
+                    if let Ok(idx) = key.parse::<usize>() {
+                        if idx < elems.len() {
+                            return Value::Bool(true);
+                        }
+                    }
+                }
                 return Value::Bool(
                     o.properties.contains_key(&key)
                         && !key.starts_with("__")

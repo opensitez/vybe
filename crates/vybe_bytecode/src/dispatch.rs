@@ -284,13 +284,14 @@ impl VM {
         err
     }
 
-    /// True when an `await` here should take the one-tick event-queue path at
-    /// TOP LEVEL. Inside a RESUME-driven continuation (generator body) the
-    /// fiber must NOT be whole-saved mid-drive — the enclosing driver's Rust
-    /// frame would then capture a drained fiber (see call_async). Those keep
-    /// the direct path until continuation-aware suspension lands.
+    /// True when an `await` here should take the one-tick event-queue path
+    /// via whole-fiber save: no async-call boundary on THIS fiber. Applies at
+    /// top level AND inside RESUME-driven continuations — the driver's state
+    /// travels in the fiber's active-continuation chain, and `call_async`
+    /// ignores suspensions arriving on foreign fibers, so the whole-save
+    /// composes (§6.2.3.1: await always yields one job tick).
     fn top_level_await_ticks(&self) -> bool {
-        self.async_floors.is_empty() && self.active_continuations.is_empty()
+        self.async_floors.is_empty()
     }
 
     /// `await val` — the JSPI suspend behaviour, reached via a `call` to the
