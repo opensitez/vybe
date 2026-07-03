@@ -42,7 +42,7 @@ c_run_cases! {
         includes: ["<stdio.h>"],
         decls: "",
         body: "int s=0; for(int i=0;i<3;i++){ if(i==1) continue; s+=i; } printf(\"%d\\n\", s); return 0;",
-        expect: ["3"]
+        expect: ["2"]
     },
     goto_forward_jump => {
         includes: ["<stdio.h>"],

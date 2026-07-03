@@ -114,7 +114,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>", "<inttypes.h>"],
         decls: "",
         body: "printf(\"%zu\\n\", sizeof(void*)); return 0;",
-        expect: ["4"]
+        expect: ["8"]
     },
     printf_zu_array_total_bytes => {
         includes: ["<stdio.h>", "<stddef.h>", "<inttypes.h>"],

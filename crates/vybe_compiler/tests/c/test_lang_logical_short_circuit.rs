@@ -21,7 +21,7 @@ c_run_cases! {
     and_pointer_nonnull_short_circuit => { includes: ["<stdio.h>"], decls: "", body: "int x=4; int *p=&x; printf(\"%d\\n\", p && *p==4); return 0;", expect: ["1"] },
     or_null_coalesce_pattern => { includes: ["<stdio.h>"], decls: "", body: "int *p=0; int *q=&(int){9}; int v = p ? *p : *q; printf(\"%d\\n\", v); return 0;", expect: ["9"] },
     logical_in_while_condition => { includes: ["<stdio.h>"], decls: "int i=0,s=0;", body: "while(i<2 && (s+=1)) i++; printf(\"%d\\n\", s); return 0;", expect: ["2"] },
-    logical_in_for_condition => { includes: ["<stdio.h>"], decls: "int s=0;", body: "for(int i=0; i<3 && (s+=i); i++){} printf(\"%d\\n\", s); return 0;", expect: ["3"] },
+    logical_in_for_condition => { includes: ["<stdio.h>"], decls: "int s=0;", body: "for(int i=0; i<3 && (s+=i); i++){} printf(\"%d\\n\", s); return 0;", expect: ["0"] },
     logical_in_ternary_guard => { includes: ["<stdio.h>"], decls: "", body: "int x=0; int v = 1 && (x=5) ? x : 0; printf(\"%d\\n\", v); return 0;", expect: ["5"] },
     and_with_assign_side_effect_once => { includes: ["<stdio.h>"], decls: "int n=0;", body: "int r = (n=1) && (n=2); printf(\"%d %d\\n\", r, n); return 0;", expect: ["1 2"] },
     or_with_assign_side_effect_once => { includes: ["<stdio.h>"], decls: "int n=0;", body: "int r = (n=1) || (n=2); printf(\"%d %d\\n\", r, n); return 0;", expect: ["1 1"] },
@@ -35,7 +35,7 @@ c_run_cases! {
     or_float_zero_falsy => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", 0.0 || 3.0); return 0;", expect: ["1"] },
     and_negative_int_truthy => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", -1 && 2); return 0;", expect: ["1"] },
     or_negative_int_truthy => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", -1 || 0); return 0;", expect: ["1"] },
-    and_in_switch_condition => { includes: ["<stdio.h>"], decls: "", body: "switch(1 && 2){case 1: printf(\"no\\n\"); break; default: printf(\"yes\\n\");} return 0;", expect: ["yes"] },
+    and_in_switch_condition => { includes: ["<stdio.h>"], decls: "", body: "switch(1 && 2){case 1: printf(\"no\\n\"); break; default: printf(\"yes\\n\");} return 0;", expect: ["no"] },
     or_in_if_else_chain => { includes: ["<stdio.h>"], decls: "", body: "if(0 || 0) printf(\"a\\n\"); else printf(\"b\\n\"); return 0;", expect: ["b"] },
     and_rhs_function_call_counted => {
         includes: ["<stdio.h>"],

@@ -48,7 +48,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stdarg.h>"],
         decls: "int first(int n,...){ va_list ap,ap2; va_start(ap,n); va_copy(ap2,ap); int a=va_arg(ap,int); int b=va_arg(ap2,int); va_end(ap); va_end(ap2); return a+b; }",
         body: "printf(\"%d\\n\", first(2,4,5)); return 0;",
-        expect: ["9"]
+        expect: ["8"]
     },
     noreturn_attribute_compile_use => {
         includes: ["<stdio.h>", "<stdnoreturn.h>"],
