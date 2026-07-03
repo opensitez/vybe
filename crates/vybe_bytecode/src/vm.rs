@@ -545,6 +545,11 @@ pub struct VM {
     /// (id, value, is_exception) from `do_await` to `call_async`, which wakes
     /// the just-registered fiber via the microtask queue.
     pub(crate) pending_settled_await: Option<(u64, Value, bool)>,
+    /// Completion value of the most recent fiber the event loop resumed.
+    /// A top-level await suspends the script fiber; its eventual RETURN
+    /// happens inside `run_event_loop`, and `run()`'s Suspended path
+    /// returns this so the program's final value isn't dropped.
+    pub(crate) last_fiber_completion: Option<Value>,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
     /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
@@ -705,6 +710,7 @@ impl VM {
             cur_fiber_result_promise: None,
             async_floors: Vec::new(),
             pending_settled_await: None,
+            last_fiber_completion: None,
             next_fiber_id: 1,
             label_stack: Vec::new(),
             block_tables: HashMap::new(),
@@ -1895,12 +1901,14 @@ impl VM {
                 if self.has_pending_jspi() {
                     Err(VMError::new(format!("__jspi__:{}", id)))
                 } else {
-                    Ok(Value::Null)
+                    // The suspended script fiber completed inside the event
+                    // loop — surface its final value (top-level await).
+                    Ok(self.last_fiber_completion.take().unwrap_or(Value::Null))
                 }
             }
             ExecResult::Suspended { .. } => {
                 self.run_event_loop()?;
-                Ok(Value::Null)
+                Ok(self.last_fiber_completion.take().unwrap_or(Value::Null))
             }
         }
     }

@@ -167,6 +167,20 @@ pub fn emit_common(
             crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line)
         }
         "math.clamp" => crate::emitter::math::emit_clamp(&mut chunks[current], line),
+        "math.copysign" => crate::emitter::math::emit_copysign(&mut chunks[current], line),
+        "math.signbit" => crate::emitter::math::emit_signbit(&mut chunks[current], line),
+        "math.dim" => crate::emitter::math::emit_dim(&mut chunks[current], line),
+        "math.nan" => crate::emitter::math::emit_nan(&mut chunks[current], line),
+        "math.inf" => crate::emitter::math::emit_inf(&mut chunks[current], line),
+        "math.is_inf" => crate::emitter::math::emit_is_inf(&mut chunks[current], line),
+        "math.f64_bits" => crate::emitter::math::emit_f64_bits(&mut chunks[current], line),
+        "math.f64_from_bits" => {
+            crate::emitter::math::emit_f64_from_bits(&mut chunks[current], line)
+        }
+        "math.f32_bits" => crate::emitter::math::emit_f32_bits(&mut chunks[current], line),
+        "math.f32_from_bits" => {
+            crate::emitter::math::emit_f32_from_bits(&mut chunks[current], line)
+        }
         "expressions.bool_not" => {
             crate::emitter::expressions::emit_bool_not(&mut chunks[current], line)
         }

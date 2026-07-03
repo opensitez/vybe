@@ -454,9 +454,47 @@ pub fn emit_attach_static_method(
     rest_fixed_count: Option<u8>,
     line: u32,
 ) {
+    emit_attach_static_method_kinded(
+        chunk,
+        ctor_local,
+        method_name,
+        method_chunk_idx,
+        receiver_slot,
+        rest_fixed_count,
+        false,
+        false,
+        line,
+    )
+}
+
+/// `emit_attach_static_method` + ECMA-262 function-kind prototype stamp:
+/// async/generator methods get `__proto__` = the matching intrinsic's
+/// prototype (§27.7.1/§27.3.1/§27.4.1) so `getPrototypeOf(C.m)` and
+/// `C.m instanceof AsyncFunction` hold.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_attach_static_method_kinded(
+    chunk: &mut Chunk,
+    ctor_local: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    receiver_slot: Option<u16>,
+    rest_fixed_count: Option<u8>,
+    is_async: bool,
+    is_generator: bool,
+    line: u32,
+) {
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_local, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line);
+    if is_async || is_generator {
+        chunk.emit_dup(line);
+        crate::emitter::prototypes::emit_stamp_function_kind_proto(
+            chunk,
+            is_async,
+            is_generator,
+            line,
+        );
+    }
     if let Some(receiver_slot) = receiver_slot {
         chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);

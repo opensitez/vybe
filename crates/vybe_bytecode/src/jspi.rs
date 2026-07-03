@@ -36,7 +36,11 @@ impl VM {
                         self.invoke(&callback, &[value])?;
                     }
                     Task::ResumeFiber(fiber) => {
-                        self.resume_fiber(fiber)?;
+                        let completion = self.resume_fiber(fiber)?;
+                        // Keep the most recent fiber completion so `run()`'s
+                        // Suspended path can surface the program's final
+                        // value (top-level await suspends the script fiber).
+                        self.last_fiber_completion = Some(completion);
                     }
                     _ => {}
                 }

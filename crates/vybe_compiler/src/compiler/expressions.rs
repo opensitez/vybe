@@ -1501,6 +1501,22 @@ impl Compiler {
                     self.emit_js_private_access_denied(field)?;
                     return Ok(());
                 }
+                // §19.3 global-object semantics: `globalThis.X` reads resolve
+                // the global X — the twin of the write special-case (Assign:
+                // `globalThis.X = v` also GLOBAL_SETs X). The shared globalThis
+                // singleton object does not carry host-installed builtins, so a
+                // plain property read would yield undefined for e.g.
+                // `globalThis.Map` — which silently disabled the prelude's
+                // Map/Set/Boolean/Number wrappers.
+                // BISECT: temporarily disabled — see below.
+                if false
+                    && self.is_js_profile()
+                    && !*null_safe
+                    && matches!(&object.kind, ExprKind::Ident(n) if n == "globalThis")
+                {
+                    self.emit_var_get(field);
+                    return Ok(());
+                }
                 let reflection_field = field.split('<').next().unwrap_or(field.as_str()).trim();
                 if let Some(binding) = self.resolve_reflection_binding_expr(object) {
                     match (binding, reflection_field) {

@@ -376,6 +376,11 @@ pub struct Compiler {
     /// deliberately excluded; they route through the async iterator
     /// path so await points stay JSPI-compliant.
     generator_functions: HashSet<String>,
+    /// Source-level (is_async, is_generator) per method chunk index. Walker
+    /// lowering (wrap_generator) can leave the CHUNK flags false while the
+    /// source method was a generator — prototype-kind stamping at the class
+    /// attach sites reads this instead (§27.3/§27.4/§27.7 intrinsic stamps).
+    pub(crate) method_fn_kinds: HashMap<usize, (bool, bool)>,
     /// Number of user-visible parameters (excluding the hidden control
     /// slot) for each synchronous generator function. Used at call
     /// sites to pad missing optional args with `undefined` so the
@@ -1986,6 +1991,7 @@ impl Compiler {
 
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
+            method_fn_kinds: HashMap::new(),
             generator_param_counts: HashMap::new(),
             host_import_bindings: HashMap::new(),
             host_const_bindings: HashMap::new(),

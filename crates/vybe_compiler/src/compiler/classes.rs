@@ -345,6 +345,37 @@ impl Compiler {
     // Function declaration compilation
     // ════════════════════════════════════════════════════════════════════════
 
+    /// Detect the JS walker's `wrap_generator` lowering: a plain outer
+    /// function whose body binds `__gen_fn` to a generator function
+    /// expression. Returns the SOURCE function's `(is_async, is_generator)`
+    /// so prototype stamping reflects the original kind (§27.3/§27.4).
+    pub(super) fn wrapped_generator_kind(body: &[Statement]) -> Option<(bool, bool)> {
+        for stmt in body {
+            if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+                for d in declarations {
+                    if matches!(&d.pattern, crate::ast::BindingPattern::Ident(n) if n == "__gen_fn")
+                    {
+                        if let Some(init) = &d.init {
+                            if let crate::ast::ExprKind::FunctionExpr(inner) = &init.kind {
+                                if let StmtKind::FunctionDecl {
+                                    is_async,
+                                    is_generator,
+                                    ..
+                                } = &inner.kind
+                                {
+                                    if *is_generator {
+                                        return Some((*is_async, true));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub(super) fn compile_function_decl(
         &mut self,
         name: &str,
@@ -910,23 +941,22 @@ impl Compiler {
             self.emit(Op::DROP);
 
             self.emit_var_get(name);
-            // Function-kind intrinsic per ECMA-262: async → %AsyncFunction%,
-            // generator → %GeneratorFunction%, async generator →
-            // %AsyncGeneratorFunction% (prelude-defined; each prototype
-            // inherits from %Function.prototype%, so `instanceof Function`
-            // still holds through the chain).
-            let fn_intrinsic = match (is_async, is_generator) {
-                (true, false) => "AsyncFunction",
-                (false, true) => "GeneratorFunction",
-                (true, true) => "AsyncGeneratorFunction",
-                (false, false) => "Function",
-            };
-            self.emit_var_get(fn_intrinsic);
-            let function_proto_key = self.str_const("prototype");
-            self.emit_u16(Op::STRUCT_GET, function_proto_key);
-            let proto_link_key = self.str_const("__proto__");
-            self.emit_u16(Op::STRUCT_SET, proto_link_key);
-            self.emit(Op::DROP);
+            {
+                // The JS walker's wrap_generator lowers `function*` /
+                // `async function*` to a PLAIN outer function holding
+                // `const __gen_fn = function*(){...}` — recover the source
+                // kind from that contract so the §27.3/§27.4 intrinsic
+                // stamp survives the lowering.
+                let (eff_async, eff_generator) =
+                    Self::wrapped_generator_kind(body).unwrap_or((is_async, is_generator));
+                let line = self.line;
+                crate::emitter::prototypes::emit_stamp_function_kind_proto(
+                    self.chunk(),
+                    eff_async,
+                    eff_generator,
+                    line,
+                );
+            }
 
             self.emit_u16(Op::LOCAL_GET, proto_slot);
             self.emit_var_get(name);
@@ -1374,6 +1404,13 @@ impl Compiler {
             let mut chunk = common::functions::create_function_chunk(mname, arity);
             chunk.is_async = m.is_async;
             chunk.is_generator = m.is_generator;
+            // Source-level kind for prototype stamping at the attach sites —
+            // survives walker lowerings that clear the outer flags. Generator
+            // methods are lowered to a plain wrapper holding `__gen_fn`;
+            // recover the source kind from that contract.
+            let (src_async, src_gen) =
+                Self::wrapped_generator_kind(&m.body).unwrap_or((m.is_async, m.is_generator));
+            cc.method_fn_kinds.insert(ci, (src_async, src_gen));
             if m.is_generator && !m.is_async {
                 let cname_canon = cc.canon(mname);
                 cc.generator_functions.insert(cname_canon);
@@ -2737,8 +2774,26 @@ impl Compiler {
                 if has_captures {
                     continue;
                 }
+                let (m_async, m_gen) = self
+                    .method_fn_kinds
+                    .get(mci)
+                    .copied()
+                    .unwrap_or((self.chunks[*mci].is_async, self.chunks[*mci].is_generator));
                 self.emit_u16(Op::LOCAL_GET, proto_local);
                 self.emit_ref_func_with_captures(*mci, &[])?;
+                // ECMA-262 function-kind stamp: async/generator methods'
+                // __proto__ is the matching intrinsic prototype (§27.7.1 /
+                // §27.3.1 / §27.4.1) — `getPrototypeOf(C.prototype.m)`.
+                if m_async || m_gen {
+                    inst!(self, core_wasm::dup);
+                    let line = self.line;
+                    crate::emitter::prototypes::emit_stamp_function_kind_proto(
+                        self.chunk(),
+                        m_async,
+                        m_gen,
+                        line,
+                    );
+                }
                 let key = self.str_const(mname);
                 self.emit_u16(Op::STRUCT_SET, key);
                 self.emit(Op::DROP);
@@ -2859,13 +2914,20 @@ impl Compiler {
             None
         };
         for (mname, mci, _, _) in &static_methods {
-            common::classes::emit_attach_static_method(
+            let (m_async, m_gen) = self
+                .method_fn_kinds
+                .get(mci)
+                .copied()
+                .unwrap_or((self.chunks[*mci].is_async, self.chunks[*mci].is_generator));
+            common::classes::emit_attach_static_method_kinded(
                 self.chunk(),
                 ctor_local,
                 mname,
                 *mci,
                 php_static_receiver,
                 method_rest_fixed_count(*mci),
+                m_async,
+                m_gen,
                 line,
             );
             all_statics.push((mname.clone(), *mci));

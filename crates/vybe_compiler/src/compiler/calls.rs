@@ -10881,19 +10881,23 @@ impl Compiler {
             self.emit(Op::DROP);
 
             inst!(self, core_wasm::dup);
-            // Function-kind intrinsic per ECMA-262 (see compile_function_decl).
-            let fn_intrinsic = match (is_async, is_generator) {
-                (true, false) => "AsyncFunction",
-                (false, true) => "GeneratorFunction",
-                (true, true) => "AsyncGeneratorFunction",
-                (false, false) => "Function",
-            };
-            self.emit_var_get(fn_intrinsic);
-            let function_proto_key = self.str_const("prototype");
-            self.emit_u16(Op::STRUCT_GET, function_proto_key);
-            let proto_link_key = self.str_const("__proto__");
-            self.emit_u16(Op::STRUCT_SET, proto_link_key);
-            self.emit(Op::DROP);
+            {
+                // Recover the source kind when the walker lowered a generator
+                // into a plain wrapper holding `__gen_fn` (obj-literal
+                // `*m(){}` methods and generator expressions).
+                let (eff_async, eff_generator) = match body {
+                    LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts)
+                        .unwrap_or((is_async, is_generator)),
+                    _ => (is_async, is_generator),
+                };
+                let line = self.line;
+                crate::emitter::prototypes::emit_stamp_function_kind_proto(
+                    self.chunk(),
+                    eff_async,
+                    eff_generator,
+                    line,
+                );
+            }
         }
         if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));

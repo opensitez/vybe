@@ -34,6 +34,7 @@ pub mod loops;
 pub mod math;
 pub mod ops;
 pub mod promises;
+pub mod prototypes;
 pub mod references;
 pub mod runtime_helpers;
 pub mod sprintf;
