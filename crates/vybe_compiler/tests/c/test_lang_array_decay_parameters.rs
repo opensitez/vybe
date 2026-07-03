@@ -222,7 +222,7 @@ c_run_cases! {
     nested_multidim_param_inner_value => {
         includes: ["<stdio.h>"],
         decls: "int deep(int a[][2][2]){ return a[0][1][0]; }",
-        body: "int m[1][2][2]={{{{1,2},{3,4}}}}; printf(\"%d\\n\", deep(m)); return 0;",
+        body: "int m[1][2][2]={{{1,2},{3,4}}}; printf(\"%d\\n\", deep(m)); return 0;",
         expect: ["3"]
     },
     caller_element_size_matches_int => {

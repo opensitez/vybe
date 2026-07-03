@@ -36,6 +36,9 @@ uses_normalize_class = false
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_sprintf" = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
+"__c_str_index_of" = { emit = "common:str_index_of", min_args = 2, max_args = 2 }
+"__c_str_last_index_of" = { emit = "common:str_last_index_of", min_args = 2, max_args = 2 }
+"__c_str_concat" = { emit = "common:str_concat", min_args = 2, max_args = 2 }
 "puts"     = { emit = "print",          min_args = 1, max_args = 1 }
 "putchar"  = { emit = "common:c.putchar", min_args = 1, max_args = 1 }
 # Single code point → 1-char string. Used by libc adapters (e.g. decoding a
@@ -176,6 +179,9 @@ uses_normalize_class = false
 "NULL"   = 0
 "EXIT_SUCCESS" = 0
 "EXIT_FAILURE" = 1
+"EDOM" = 33
+"ERANGE" = 34
+"EINVAL" = 22
 "SEEK_SET" = 0
 "SEEK_CUR" = 1
 "SEEK_END" = 2

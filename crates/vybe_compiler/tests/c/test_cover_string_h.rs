@@ -36,7 +36,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<string.h>"],
         decls: "",
         body: "char s[] = \"abcde\"; memmove(s+1, s, 4); printf(\"%s\\n\", s); return 0;",
-        expect: ["aabbc"]
+        expect: ["aabcd"]
     },
     memset_fills => {
         includes: ["<stdio.h>", "<string.h>"],

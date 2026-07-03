@@ -378,6 +378,16 @@ pub fn prelude() -> Vec<Statement> {
     ];
 
     out.push(function_stmt(
+        "__c_char_ptr_add",
+        vec!["s", "n"],
+        vec![stmt(StmtKind::Return(Some(call_member(
+            ident("s"),
+            "substring",
+            vec![ident("n")],
+        ))))],
+    ));
+
+    out.push(function_stmt(
         "__c_stdout_append",
         vec!["piece"],
         vec![

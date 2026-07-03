@@ -2,16 +2,16 @@
 
 
 c_run_cases! {
-    strncpy_copies_exactly_n_without_auto_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[8]; strncpy(d, \"planet\", 6); printf(\"%c%c%c%c%c%c\\n\", d[0],d[1],d[2],d[3],d[4],d[5]); return 0;", expect: ["p", "l", "a", "n", "e", "t"] },
-    strncpy_truncates_long_source_at_n => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[5]; strncpy(d, \"galaxy\", 4); printf(\"%c%c%c%c\\n\", d[0],d[1],d[2],d[3]); return 0;", expect: ["g", "a", "l", "a"] },
-    strncpy_n_zero_leaves_dest_bytes => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[4] = {'p','q','r','s'};", body: "strncpy(d, \"zzz\", 0); printf(\"%c%c\\n\", d[0], d[1]); return 0;", expect: ["p", "q"] },
+    strncpy_copies_exactly_n_without_auto_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[8]; strncpy(d, \"planet\", 6); printf(\"%c%c%c%c%c%c\\n\", d[0],d[1],d[2],d[3],d[4],d[5]); return 0;", expect: ["planet"] },
+    strncpy_truncates_long_source_at_n => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[5]; strncpy(d, \"galaxy\", 4); printf(\"%c%c%c%c\\n\", d[0],d[1],d[2],d[3]); return 0;", expect: ["gala"] },
+    strncpy_n_zero_leaves_dest_bytes => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[4] = {'p','q','r','s'};", body: "strncpy(d, \"zzz\", 0); printf(\"%c%c\\n\", d[0], d[1]); return 0;", expect: ["pq"] },
     strncpy_pads_short_source_with_nulls => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[6]; memset(d, 'X', 6); strncpy(d, \"go\", 5); printf(\"%d %d %d\\n\", d[2]==0, d[3]==0, d[4]==0); return 0;", expect: ["1 1 1"] },
     strncpy_padding_byte_after_short_copy => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[5]; memset(d, '#', 5); strncpy(d, \"a\", 4); printf(\"%d\\n\", d[3]==0); return 0;", expect: ["1"] },
     strncpy_overwrites_prior_dest_contents => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[8] = \"rubbish\";", body: "strncpy(d, \"vy\", 3); d[2]='\\0'; printf(\"%s\\n\", d); return 0;", expect: ["vy"] },
     strncpy_from_empty_source_zeroes_first_n => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[4]; memset(d, '9', 4); strncpy(d, \"\", 3); printf(\"%d %d\\n\", d[0]==0, d[1]==0); return 0;", expect: ["1 1"] },
     strncpy_single_byte_copy => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[4] = \"old\";", body: "strncpy(d, \"newday\", 1); d[1]='\\0'; printf(\"%s\\n\", d); return 0;", expect: ["n"] },
     strncpy_return_value_points_to_dest => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[6]; char *r = strncpy(d, \"abc\", 3); printf(\"%d\\n\", r==d); return 0;", expect: ["1"] },
-    strncpy_exact_length_source_no_extra_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[4]; strncpy(d, \"abc\", 3); printf(\"%c%c%c\\n\", d[0],d[1],d[2]); return 0;", expect: ["a", "b", "c"] },
+    strncpy_exact_length_source_no_extra_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[4]; strncpy(d, \"abc\", 3); printf(\"%c%c%c\\n\", d[0],d[1],d[2]); return 0;", expect: ["abc"] },
     strncpy_n_one_from_multi_char => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[3]; strncpy(d, \"zebra\", 1); d[1]='\\0'; printf(\"%s\\n\", d); return 0;", expect: ["z"] },
     strncpy_preserves_trailing_dest_when_n_shorter => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[6] = \"abcdef\";", body: "strncpy(d, \"12\", 2); printf(\"%c\\n\", d[5]); return 0;", expect: ["f"] },
     strncpy_two_char_source_into_five_slot => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[6]; memset(d, '?', 6); strncpy(d, \"xy\", 5); d[5]='\\0'; printf(\"%s\\n\", d); return 0;", expect: ["xy"] },

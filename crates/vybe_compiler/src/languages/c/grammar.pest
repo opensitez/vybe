@@ -79,8 +79,12 @@ typeof_specifier = {
     ("__typeof__" | "typeof") ~ "(" ~ assignment_expression ~ ")"
 }
 
+gcc_attribute = {
+    "__attribute__" ~ "(" ~ "(" ~ (!(")" ~ ")") ~ ANY)* ~ ")" ~ ")"
+}
+
 struct_or_union_spec = {
-    ("struct" | "union") ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
+    ("struct" | "union") ~ gcc_attribute* ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
 }
 
 struct_member = { declaration_specifiers ~ struct_declarator_list? ~ ";" }
@@ -156,7 +160,7 @@ declarator_suffix = _{
     array_suffix
     | param_suffix
 }
-array_suffix = { "[" ~ assignment_expression? ~ "]" }
+array_suffix = { "[" ~ ("static" ~ declaration_specifiers?)? ~ assignment_expression? ~ "]" }
 param_suffix = { "(" ~ parameter_list? ~ ")" }
 
 parameter_list = {
@@ -168,7 +172,9 @@ parameter_decl = {
     declaration_specifiers ~ (declarator | abstract_declarator)?
 }
 abstract_declarator = { pointer ~ direct_abstract_declarator? | direct_abstract_declarator }
-direct_abstract_declarator = { (array_suffix | param_suffix)+ }
+direct_abstract_declarator = {
+    ("(" ~ abstract_declarator ~ ")" | array_suffix | param_suffix) ~ (array_suffix | param_suffix)*
+}
 
 // ── Initializers ──────────────────────────────────────────────────────────
 
@@ -178,7 +184,7 @@ initializer = {
 }
 initializer_list = { "{" ~ (designated_init ~ ("," ~ designated_init)* ~ ","?)? ~ "}" }
 designated_init = {
-    ("." ~ ident_name ~ "=" ~ initializer)
+    ("." ~ ident_name)+ ~ "=" ~ initializer
     | ("[" ~ assignment_expression ~ "]" ~ "=" ~ initializer)
     | initializer
 }
@@ -186,7 +192,7 @@ designated_init = {
 // ── Functions ─────────────────────────────────────────────────────────────
 
 function_definition = {
-    declaration_specifiers ~ declarator ~ compound_statement
+    declaration_specifiers ~ declarator ~ normal_declaration* ~ compound_statement
 }
 
 // ── Statements ────────────────────────────────────────────────────────────
@@ -253,7 +259,7 @@ for_update = { expression }
 
 return_statement   = { "return" ~ expression? ~ ";" }
 break_statement    = { "break" ~ ";" }
-continue_statement = { "continue" ~ ";" }
+continue_statement = { "continue" ~ ident_name? ~ ";" }
 goto_statement     = { "goto" ~ ident_name ~ ";" }
 
 // ── Expressions ───────────────────────────────────────────────────────────
@@ -359,6 +365,7 @@ primary_expression = {
 literal = {
     float_literal
     | int_literal
+    | utf8_char_literal
     | wide_char_literal
     | wide_string_literal
     | char_literal
@@ -397,6 +404,7 @@ c_escape = @{
     | ANY)
 }
 char_literal = @{ "'" ~ (c_escape | (!"'" ~ ANY))+ ~ "'" }
+utf8_char_literal = @{ "u8" ~ char_literal }
 wide_char_literal = @{ "L" ~ char_literal }
 
 // Adjacent string literals concatenate in C; the walker joins them.

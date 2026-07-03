@@ -69,7 +69,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
                         left: Box::new(call_member(
                             ident("accept"),
                             "indexOf",
-                            vec![index_expr(ident("s"), ident("i"))],
+                            vec![call_member(ident("s"), "charAt", vec![ident("i")])],
                         )),
                         right: Box::new(int_lit(0)),
                     })),
@@ -119,7 +119,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
                         left: Box::new(call_member(
                             ident("accept"),
                             "indexOf",
-                            vec![index_expr(ident("s"), ident("i"))],
+                            vec![call_member(ident("s"), "charAt", vec![ident("i")])],
                         )),
                         right: Box::new(int_lit(0)),
                     })),
@@ -156,7 +156,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
                         left: Box::new(call_member(
                             ident("reject"),
                             "indexOf",
-                            vec![index_expr(ident("s"), ident("i"))],
+                            vec![call_member(ident("s"), "charAt", vec![ident("i")])],
                         )),
                         right: Box::new(int_lit(0)),
                     })),
