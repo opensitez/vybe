@@ -11,7 +11,7 @@ go_run_cases! {
     math_sin_zero => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Sin(0)) }", vec!["0"]),
     math_cos_zero => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Cos(0)) }", vec!["1"]),
     math_hypot_three_four => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Hypot(3, 4)) }", vec!["5"]),
-    math_dim_returns_two => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Dim(5, 3)) }", vec!["3"]),
+    math_dim_returns_two => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Dim(5, 3)) }", vec!["2"]),
 }
 
 go_compile_cases! {

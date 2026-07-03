@@ -60,6 +60,9 @@ materialize_bool_results = true
 "strings.Compare" = { emit = "common:str_compare",             min_args = 2, max_args = 2 }
 "strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
 "strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
+"strings.ReplaceAll" = { emit = "host:ecma:string:replaceAll",  min_args = 3, max_args = 3 }
+"strings.LastIndex"  = { emit = "host:ecma:string:lastIndexOf", min_args = 2, max_args = 2 }
+"strings.Title"      = { emit = "host:ecma:string:toUpperCase", min_args = 1, max_args = 1 }
 "__go_regex_split_pat_first" = { emit = "common:go.regex_split_pat_first", min_args = 2, max_args = 2 }
 
 # ── Math functions ───────────────────────────────────────────────────────────

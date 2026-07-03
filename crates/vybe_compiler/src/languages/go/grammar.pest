@@ -553,6 +553,7 @@ type_annotation = {
     | channel_type
     | struct_type
     | interface_type
+    | ident_name ~ "." ~ ident_name ~ type_arguments?
     | ident_name ~ type_arguments
     | ident_name
 }

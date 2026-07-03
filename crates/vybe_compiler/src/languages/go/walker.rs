@@ -50,6 +50,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("sort.") {
         prelude.extend(go_prelude_body(GO_SORT_PRELUDE)?);
     }
+    if source.contains("strings.") {
+        prelude.extend(go_prelude_body(GO_STRINGS_PRELUDE)?);
+    }
     if !prelude.is_empty() {
         prelude.append(&mut body);
         body = prelude;
@@ -115,6 +118,251 @@ func __go_sort_is_sorted(n int, less func(int, int) bool) bool {
 		}
 	}
 	return true
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for composite `strings` helpers that compose the
+/// already-wired primitives (`Contains`, `Index`, `HasPrefix`, slicing, `range`).
+/// Rewritten from `strings.<Name>` in the walker (see `go_rewrite_strings_call`).
+const GO_STRINGS_PRELUDE: &str = r#"package main
+
+import "strings"
+
+func __go_strings_TrimPrefix(s, prefix string) string {
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):]
+	}
+	return s
+}
+
+func __go_strings_TrimSuffix(s, suffix string) string {
+	if strings.HasSuffix(s, suffix) {
+		return s[:len(s)-len(suffix)]
+	}
+	return s
+}
+
+func __go_strings_CutPrefix(s, prefix string) (string, bool) {
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):], true
+	}
+	return s, false
+}
+
+func __go_strings_CutSuffix(s, suffix string) (string, bool) {
+	if strings.HasSuffix(s, suffix) {
+		return s[:len(s)-len(suffix)], true
+	}
+	return s, false
+}
+
+func __go_strings_Cut(s, sep string) (string, string, bool) {
+	i := strings.Index(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+len(sep):], true
+}
+
+func __go_strings_ContainsRune(s string, r rune) bool {
+	return strings.Contains(s, string(r))
+}
+
+func __go_strings_ContainsAny(s, chars string) bool {
+	for _, c := range s {
+		if strings.Contains(chars, string(c)) {
+			return true
+		}
+	}
+	return false
+}
+
+func __go_strings_ContainsFunc(s string, f func(rune) bool) bool {
+	for _, c := range s {
+		if f(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func __go_strings_IndexByte(s string, b byte) int {
+	return strings.Index(s, string(rune(b)))
+}
+
+func __go_strings_IndexRune(s string, r rune) int {
+	return strings.Index(s, string(r))
+}
+
+func __go_strings_IndexAny(s, chars string) int {
+	for i, c := range s {
+		if strings.Contains(chars, string(c)) {
+			return i
+		}
+	}
+	return -1
+}
+
+func __go_strings_IndexFunc(s string, f func(rune) bool) int {
+	for i, c := range s {
+		if f(c) {
+			return i
+		}
+	}
+	return -1
+}
+
+func __go_strings_LastIndexByte(s string, b byte) int {
+	return strings.LastIndex(s, string(rune(b)))
+}
+
+func __go_strings_LastIndexAny(s, chars string) int {
+	res := -1
+	for i, c := range s {
+		if strings.Contains(chars, string(c)) {
+			res = i
+		}
+	}
+	return res
+}
+
+func __go_strings_LastIndexFunc(s string, f func(rune) bool) int {
+	res := -1
+	for i, c := range s {
+		if f(c) {
+			res = i
+		}
+	}
+	return res
+}
+
+func __go_strings_TrimLeft(s, cutset string) string {
+	for len(s) > 0 && strings.Contains(cutset, string(rune(s[0]))) {
+		s = s[1:]
+	}
+	return s
+}
+
+func __go_strings_TrimRight(s, cutset string) string {
+	for len(s) > 0 && strings.Contains(cutset, string(rune(s[len(s)-1]))) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func __go_strings_TrimCutset(s, cutset string) string {
+	return __go_strings_TrimRight(__go_strings_TrimLeft(s, cutset), cutset)
+}
+
+func __go_strings_EqualFold(s, t string) bool {
+	return strings.ToLower(s) == strings.ToLower(t)
+}
+
+func __go_strings_Map(f func(rune) rune, s string) string {
+	res := ""
+	for _, c := range s {
+		m := f(c)
+		if m >= 0 {
+			res += string(m)
+		}
+	}
+	return res
+}
+
+func __go_strings_Fields(s string) []string {
+	res := []string{}
+	cur := ""
+	for _, c := range s {
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			if len(cur) > 0 {
+				res = append(res, cur)
+				cur = ""
+			}
+		} else {
+			cur += string(c)
+		}
+	}
+	if len(cur) > 0 {
+		res = append(res, cur)
+	}
+	return res
+}
+
+func __go_strings_FieldsFunc(s string, f func(rune) bool) []string {
+	res := []string{}
+	cur := ""
+	for _, c := range s {
+		if f(c) {
+			if len(cur) > 0 {
+				res = append(res, cur)
+				cur = ""
+			}
+		} else {
+			cur += string(c)
+		}
+	}
+	if len(cur) > 0 {
+		res = append(res, cur)
+	}
+	return res
+}
+
+func __go_strings_SplitN(s, sep string, n int) []string {
+	if n == 0 {
+		return []string{}
+	}
+	if n < 0 {
+		return strings.Split(s, sep)
+	}
+	res := []string{}
+	for n > 1 {
+		i := strings.Index(s, sep)
+		if i < 0 {
+			break
+		}
+		res = append(res, s[:i])
+		s = s[i+len(sep):]
+		n--
+	}
+	res = append(res, s)
+	return res
+}
+
+func __go_strings_SplitAfter(s, sep string) []string {
+	res := []string{}
+	for len(sep) > 0 {
+		i := strings.Index(s, sep)
+		if i < 0 {
+			break
+		}
+		res = append(res, s[:i+len(sep)])
+		s = s[i+len(sep):]
+	}
+	res = append(res, s)
+	return res
+}
+
+func __go_strings_SplitAfterN(s, sep string, n int) []string {
+	if n == 0 {
+		return []string{}
+	}
+	if n < 0 {
+		return __go_strings_SplitAfter(s, sep)
+	}
+	res := []string{}
+	for n > 1 {
+		i := strings.Index(s, sep)
+		if i < 0 {
+			break
+		}
+		res = append(res, s[:i+len(sep)])
+		s = s[i+len(sep):]
+		n--
+	}
+	res = append(res, s)
+	return res
 }
 
 func main() {}
@@ -3244,6 +3492,12 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_sort_call(name, &next_args) {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_cmp_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_strings_call(name, &next_args) {
+                    return rewritten;
+                }
             }
 
             if call_name.as_deref() == Some("recover") && next_args.is_empty() {
@@ -3987,6 +4241,73 @@ fn go_rewrite_errors_as(
     });
 
     go_builtin_call("__go_errors_as", vec![err, match_closure, assign_closure])
+}
+
+/// Rewrite composite `strings.*` calls to the injected strings-prelude helpers.
+fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let mapped = match call_name {
+        "strings.TrimPrefix" => "__go_strings_TrimPrefix",
+        "strings.TrimSuffix" => "__go_strings_TrimSuffix",
+        "strings.CutPrefix" => "__go_strings_CutPrefix",
+        "strings.CutSuffix" => "__go_strings_CutSuffix",
+        "strings.Cut" => "__go_strings_Cut",
+        "strings.ContainsRune" => "__go_strings_ContainsRune",
+        "strings.ContainsAny" => "__go_strings_ContainsAny",
+        "strings.ContainsFunc" => "__go_strings_ContainsFunc",
+        "strings.IndexByte" => "__go_strings_IndexByte",
+        "strings.IndexRune" => "__go_strings_IndexRune",
+        "strings.IndexAny" => "__go_strings_IndexAny",
+        "strings.IndexFunc" => "__go_strings_IndexFunc",
+        "strings.LastIndexByte" => "__go_strings_LastIndexByte",
+        "strings.LastIndexAny" => "__go_strings_LastIndexAny",
+        "strings.LastIndexFunc" => "__go_strings_LastIndexFunc",
+        "strings.TrimLeft" => "__go_strings_TrimLeft",
+        "strings.TrimRight" => "__go_strings_TrimRight",
+        "strings.Trim" => "__go_strings_TrimCutset",
+        "strings.EqualFold" => "__go_strings_EqualFold",
+        "strings.Map" => "__go_strings_Map",
+        "strings.Fields" => "__go_strings_Fields",
+        "strings.FieldsFunc" => "__go_strings_FieldsFunc",
+        "strings.SplitN" => "__go_strings_SplitN",
+        "strings.SplitAfter" => "__go_strings_SplitAfter",
+        "strings.SplitAfterN" => "__go_strings_SplitAfterN",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        mapped,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
+}
+
+/// Rewrite `cmp` package ordering helpers to plain comparisons.
+fn go_rewrite_cmp_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let bin = |op: BinOp, l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    match call_name {
+        // cmp.Less(a, b) → a < b
+        "cmp.Less" => Some(bin(BinOp::Lt, go_arg_value(args, 0), go_arg_value(args, 1))),
+        // cmp.Compare(a, b) → a < b ? -1 : (a > b ? 1 : 0)
+        "cmp.Compare" => {
+            let a = go_arg_value(args, 0);
+            let b = go_arg_value(args, 1);
+            let gt = Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin(BinOp::Gt, a.clone(), b.clone())),
+                then: Box::new(Expression::int(1)),
+                else_: Box::new(Expression::int(0)),
+            });
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin(BinOp::Lt, a, b)),
+                then: Box::new(Expression::int(-1)),
+                else_: Box::new(gt),
+            }))
+        }
+        _ => None,
+    }
 }
 
 /// Rewrite closure-based `sort.*` calls to the injected sort prelude helpers.
@@ -5959,6 +6280,9 @@ fn go_embedded_field_name(type_name: &str) -> Option<String> {
 
 fn go_named_receiver_type(type_name: &str) -> Option<String> {
     let trimmed = type_name.trim().trim_start_matches('*').trim();
+    // Strip generic receiver type parameters: `Cell[T]` → `Cell`. A method
+    // receiver is always a named type, so any `[...]` is a type-param list.
+    let trimmed = trimmed.split('[').next().unwrap_or(trimmed).trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -5998,9 +6322,21 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::select_statement => walk_select(pair)?,
         Rule::for_statement => walk_for(pair)?,
         Rule::return_statement => walk_return(pair)?,
-        Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
-        Rule::continue_statement => StmtKind::Continue(ContinueTarget::Implicit),
-        Rule::fallthrough_statement => StmtKind::Empty,
+        Rule::break_statement => {
+            match pair.into_inner().find(|p| p.as_rule() == Rule::ident_name) {
+                Some(lbl) => StmtKind::Break(BreakTarget::Label(lbl.as_str().to_string())),
+                None => StmtKind::Break(BreakTarget::Implicit),
+            }
+        }
+        Rule::continue_statement => {
+            match pair.into_inner().find(|p| p.as_rule() == Rule::ident_name) {
+                Some(lbl) => StmtKind::Continue(ContinueTarget::Label(lbl.as_str().to_string())),
+                None => StmtKind::Continue(ContinueTarget::Implicit),
+            }
+        }
+        Rule::fallthrough_statement => {
+            StmtKind::Expr(Expression::ident(GO_FALLTHROUGH_MARKER))
+        }
         Rule::goto_statement => StmtKind::GoTo(walk_goto(pair)?),
         Rule::labeled_statement => walk_labeled(pair)?,
         Rule::defer_statement => walk_defer_stmt(pair)?,
@@ -6373,6 +6709,17 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 }
 
+/// Sentinel identifier a `fallthrough` statement is walked to, so `walk_switch`
+/// can desugar it by inlining the following clause's body.
+const GO_FALLTHROUGH_MARKER: &str = "__go_fallthrough__";
+
+fn go_body_ends_with_fallthrough(body: &[Statement]) -> bool {
+    matches!(
+        body.last().map(|s| &s.kind),
+        Some(StmtKind::Expr(Expression { kind: ExprKind::Ident(name), .. })) if name == GO_FALLTHROUGH_MARKER
+    )
+}
+
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     match pair.as_rule() {
         Rule::switch_statement => {
@@ -6390,6 +6737,8 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut cases = Vec::new();
     let mut default: Option<Vec<Statement>> = None;
     let mut pre_stmt: Option<Box<Statement>> = None;
+    // Clauses in source order, so `fallthrough` can inline the next clause.
+    let mut ordered: Vec<(Vec<CaseCondition>, Vec<Statement>)> = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -6434,13 +6783,27 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
 
-                if conditions.is_empty() {
-                    default = Some(body);
-                } else {
-                    cases.push(SwitchCase { conditions, body });
-                }
+                ordered.push((conditions, body));
             }
             _ => {}
+        }
+    }
+
+    // Desugar `fallthrough`: a clause ending in the marker continues into the
+    // next clause's (already-resolved) body.
+    for i in (0..ordered.len()).rev() {
+        if go_body_ends_with_fallthrough(&ordered[i].1) {
+            let next_body = ordered.get(i + 1).map(|c| c.1.clone()).unwrap_or_default();
+            let body = &mut ordered[i].1;
+            body.pop(); // drop the marker
+            body.extend(next_body);
+        }
+    }
+    for (conditions, body) in ordered {
+        if conditions.is_empty() {
+            default = Some(body);
+        } else {
+            cases.push(SwitchCase { conditions, body });
         }
     }
 
@@ -7077,10 +7440,12 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if let Some(s) = stmt {
-        Ok(StmtKind::Block(vec![
-            Statement::new(StmtKind::Label(label)),
-            s,
-        ]))
+        // Wrap the labeled statement so the compiler can route
+        // `break <label>` / `continue <label>` to it.
+        Ok(StmtKind::Labeled {
+            label,
+            body: Box::new(s),
+        })
     } else {
         Ok(StmtKind::Label(label))
     }
@@ -8038,9 +8403,24 @@ fn go_build_is_type(expr: Expression, type_name: &str) -> Expression {
         });
     }
 
+    // Map Go composite types to the canonical IsType categories the shared
+    // compiler recognizes (array→isArray, function, map→object-kind).
+    let trimmed = type_name.trim();
+    let canon = if trimmed.starts_with("[]")
+        || (trimmed.starts_with('[') && trimmed.contains(']'))
+    {
+        "array"
+    } else if trimmed.starts_with("func") {
+        "function"
+    } else if trimmed.starts_with("map[") {
+        "map"
+    } else {
+        trimmed
+    };
+
     Expression::new(ExprKind::IsType {
         expr: Box::new(expr),
-        type_name: type_name.to_string(),
+        type_name: canon.to_string(),
     })
 }
 
