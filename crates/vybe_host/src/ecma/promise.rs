@@ -25,6 +25,14 @@ use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
 static PROMISE_REACTION_HOST_IDX: OnceLock<usize> = OnceLock::new();
+// Host-fn indices for the settle thunks, so free functions (resolve_promise_with_value)
+// can build bound settlers to adopt a returned promise/thenable's eventual state.
+static SETTLE_FULFILLED_IDX: OnceLock<usize> = OnceLock::new();
+static SETTLE_REJECTED_IDX: OnceLock<usize> = OnceLock::new();
+// Settles a promise with a *forced* (state, value), ignoring the awaited value.
+// Used by `.finally` to preserve the original settlement after awaiting a
+// thenable the finally callback returned.
+static PRESERVE_IDX: OnceLock<usize> = OnceLock::new();
 
 pub fn register(vm: &mut VM) {
     // Internal settle helpers — never called directly from user code.
@@ -99,6 +107,38 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // Adopt: resolve `target` with `source` per §27.2.1.3.2 — if `source` is a
+    // (possibly pending) promise/thenable, target adopts its eventual state.
+    // Used by the VM's JSPI promising boundary when an async body returns a
+    // still-pending promise. args = [target, source].
+    vm.register_host_fn(
+        "ecma:promise",
+        "__adopt",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let source = args.get(1).cloned().unwrap_or(Value::Undefined);
+            resolve_promise_with_value(ctx, &target, source);
+            Value::Undefined
+        }),
+    );
+
+    // Force-settle a promise with a bound (state, value), ignoring the runtime
+    // (awaited) value. bound-args = [promise, state, forced_value].
+    vm.register_host_fn(
+        "ecma:promise",
+        "__preserve",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let state = args
+                .get(1)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| "fulfilled".to_string());
+            let forced = args.get(2).cloned().unwrap_or(Value::Undefined);
+            mutate_promise_state(ctx, &promise, &state, forced);
+            Value::Undefined
+        }),
+    );
+
     let resolve_idx = vm
         .host_registry
         .get(&("ecma:promise".to_string(), "__settle_fulfilled".to_string()))
@@ -125,6 +165,14 @@ pub fn register(vm: &mut VM) {
         .copied()
         .expect("__reaction just registered");
     let _ = PROMISE_REACTION_HOST_IDX.set(reaction_idx);
+    let _ = SETTLE_FULFILLED_IDX.set(resolve_idx);
+    let _ = SETTLE_REJECTED_IDX.set(reject_idx);
+    if let Some(&preserve_idx) = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__preserve".to_string()))
+    {
+        let _ = PRESERVE_IDX.set(preserve_idx);
+    }
 
     vm.register_host_fn(
         "ecma:promise",
@@ -501,6 +549,21 @@ pub fn register(vm: &mut VM) {
             finally_impl(ctx, p, on_finally)
         }),
     );
+
+    // queueMicrotask(callback) — HTML global exposing the ECMA microtask queue
+    // (§9.5 HostEnqueuePromiseJob checkpoint). Enqueues the callback to run
+    // after the current synchronous run-to-completion, alongside promise jobs.
+    vm.register_host_fn(
+        "ecma:promise",
+        "queueMicrotask",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let cb = args.first().cloned().unwrap_or(Value::Undefined);
+            if is_callable(&cb) {
+                ctx.queue_microtask(cb, Value::Undefined);
+            }
+            Value::Undefined
+        }),
+    );
 }
 
 /// Shared implementation for `dispatch_promise_method` and registered host fns.
@@ -569,7 +632,17 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
             ctx.queue_microtask(reaction, value);
             result_promise
         }
-        _ => p,
+        // Pending: register a reaction so onFinally runs (and can override with a
+        // throw) once the promise settles — mirrors then_impl's pending branch.
+        // The forwarders make run_reaction invoke onFinally and preserve the
+        // original settlement unless onFinally throws (§27.2.5.3).
+        _ => {
+            let result_promise = pending_promise_with_id(ctx);
+            let on_f = finalizer_forwarder(on_finally.clone(), "fulfilled");
+            let on_r = finalizer_forwarder(on_finally, "rejected");
+            add_reaction(&p, on_f, on_r, result_promise.clone());
+            result_promise
+        }
     }
 }
 
@@ -689,22 +762,47 @@ fn run_reaction(
         if let Some(on_finally) = maybe_finally {
             match ctx.try_invoke(&on_finally, &[]) {
                 Err(exc) => mutate_promise_state(ctx, &result_promise, "rejected", exc),
+                Ok(ret) if is_promise(&ret) || get_then_method(&ret).is_some() => {
+                    // §27.2.5.3: onFinally's return value is normally ignored,
+                    // but a returned thenable is awaited — if it REJECTS the
+                    // chain rejects with that reason; if it fulfills the original
+                    // settlement is preserved.
+                    let temp = pending_promise_with_id(ctx);
+                    resolve_promise_with_value(ctx, &temp, ret);
+                    let preserve = PRESERVE_IDX
+                        .get()
+                        .map(|&i| {
+                            bound_settler3(
+                                i,
+                                result_promise.clone(),
+                                Value::String(Arc::from(state)),
+                                value.clone(),
+                            )
+                        })
+                        .unwrap_or(Value::Undefined);
+                    let reject_fwd = SETTLE_REJECTED_IDX
+                        .get()
+                        .map(|&i| bound_settler(i, result_promise.clone()))
+                        .unwrap_or(Value::Undefined);
+                    let (ts, tv) = read_promise_state(&temp);
+                    match ts.as_str() {
+                        "fulfilled" => ctx.queue_microtask(preserve, tv),
+                        "rejected" => ctx.queue_microtask(reject_fwd, tv),
+                        _ => add_reaction(
+                            &temp,
+                            preserve,
+                            reject_fwd,
+                            pending_promise_with_id(ctx),
+                        ),
+                    }
+                }
                 Ok(_) => mutate_promise_state(ctx, &result_promise, state, value),
             }
             return;
         }
     }
 
-    let (settled_state, settled_value) = settle_callback_result(ctx, cb, value, state);
-    mutate_promise_state(ctx, &result_promise, &settled_state, settled_value);
-}
-
-fn settle_callback_result(
-    ctx: &mut HostContext,
-    cb: Value,
-    value: Value,
-    fallback_state: &str,
-) -> (String, Value) {
+    // Synthetic Promise-internal handlers.
     if let Value::Object(obj) = &cb {
         let o = obj.lock().unwrap();
         if let Some(Value::I32(n)) = o.properties.get("__map_add") {
@@ -715,26 +813,68 @@ fn settle_callback_result(
             } else {
                 value
             };
-            return ("fulfilled".to_string(), result);
+            mutate_promise_state(ctx, &result_promise, "fulfilled", result);
+            return;
         }
         if let Some(ret) = o.properties.get("__catch_return").cloned() {
             drop(o);
-            return ("fulfilled".to_string(), ret);
+            mutate_promise_state(ctx, &result_promise, "fulfilled", ret);
+            return;
         }
     }
+
     if !is_callable(&cb) {
-        return (fallback_state.to_string(), value);
+        // No handler for this state — pass the settlement through unchanged.
+        mutate_promise_state(ctx, &result_promise, state, value);
+        return;
     }
+
     match ctx.try_invoke(&cb, &[value]) {
-        Err(exc) => ("rejected".to_string(), exc),
-        Ok(result) => {
-            if is_promise(&result) {
-                read_promise_state(&result)
-            } else {
-                ("fulfilled".to_string(), result)
+        // A throw in the handler rejects the derived promise.
+        Err(exc) => mutate_promise_state(ctx, &result_promise, "rejected", exc),
+        // Otherwise resolve the derived promise WITH the handler's return value,
+        // assimilating a returned promise/thenable (adopt its eventual state).
+        Ok(result) => resolve_promise_with_value(ctx, &result_promise, result),
+    }
+}
+
+/// ECMA-262 §27.2.1.3.2 Promise Resolve Functions — settle `promise` with
+/// `value`, adopting a returned native promise or raw thenable's *eventual*
+/// state (register a reaction when pending) rather than fulfilling with the
+/// object itself. This is what makes a handler that returns a still-pending,
+/// later-rejecting promise correctly reject the chain.
+fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Value) {
+    if is_promise(&value) {
+        let (state, inner) = read_promise_state(&value);
+        match state.as_str() {
+            "fulfilled" => resolve_promise_with_value(ctx, promise, inner),
+            "rejected" => mutate_promise_state(ctx, promise, "rejected", inner),
+            _ => {
+                // Pending: forward `value`'s settlement onto `promise`.
+                if let (Some(&fi), Some(&ri)) =
+                    (SETTLE_FULFILLED_IDX.get(), SETTLE_REJECTED_IDX.get())
+                {
+                    let on_f = bound_settler(fi, promise.clone());
+                    let on_r = bound_settler(ri, promise.clone());
+                    add_reaction(&value, on_f, on_r, pending_promise_with_id(ctx));
+                }
             }
         }
+        return;
     }
+    // Raw thenable (non-Promise object with a callable `.then`): drive it with
+    // this promise's settle thunks (§27.2.1.3.2 step 12 — the ThenableJob).
+    if let Some(then_fn) = get_then_method(&value) {
+        if let (Some(&fi), Some(&ri)) = (SETTLE_FULFILLED_IDX.get(), SETTLE_REJECTED_IDX.get()) {
+            let on_f = bound_settler(fi, promise.clone());
+            let on_r = bound_settler(ri, promise.clone());
+            if let Err(exc) = ctx.try_invoke(&then_fn, &[on_f, on_r]) {
+                mutate_promise_state(ctx, promise, "rejected", exc);
+            }
+            return;
+        }
+    }
+    mutate_promise_state(ctx, promise, "fulfilled", value);
 }
 
 /// Settle a promise and drain its pending reactions.
@@ -938,6 +1078,17 @@ fn bound_settler(idx: usize, promise: Value) -> Value {
     obj.properties.insert(
         "__bound_args".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![promise])))),
+    );
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+/// Host-fn ref bound to three args (e.g. `__preserve`'s `[promise, state, value]`).
+fn bound_settler3(idx: usize, a: Value, b: Value, c: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![a, b, c])))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(Arc::new(Mutex::new(obj)))
