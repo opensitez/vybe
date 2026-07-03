@@ -83,6 +83,33 @@ materialize_bool_results = true
 "math.Exp"        = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 "math.Pi"         = { emit = "host:ecma:math:PI",              min_args = 0, max_args = 0 }
 
+# ── Float semantics (IEEE-754) ───────────────────────────────────────────────
+"math.NaN"        = { emit = "common:math.nan",               min_args = 0, max_args = 0 }
+"math.Inf"        = { emit = "common:math.inf",               min_args = 1, max_args = 1 }
+"math.IsNaN"      = { emit = "host:ecma:number:isNaN",        min_args = 1, max_args = 1 }
+"math.IsInf"      = { emit = "common:math.is_inf",            min_args = 2, max_args = 2 }
+"math.Copysign"   = { emit = "common:math.copysign",          min_args = 2, max_args = 2 }
+"math.Signbit"    = { emit = "common:math.signbit",           min_args = 1, max_args = 1 }
+"math.Dim"        = { emit = "common:math.dim",               min_args = 2, max_args = 2 }
+"math.Float64bits"     = { emit = "common:math.f64_bits",      min_args = 1, max_args = 1 }
+"math.Float64frombits" = { emit = "common:math.f64_from_bits", min_args = 1, max_args = 1 }
+"math.Float32bits"     = { emit = "common:math.f32_bits",      min_args = 1, max_args = 1 }
+"math.Float32frombits" = { emit = "common:math.f32_from_bits", min_args = 1, max_args = 1 }
+"math.Mod"        = { emit = "common:expressions.f64_mod",     min_args = 2, max_args = 2 }
+"math.Remainder"  = { emit = "common:go.math_remainder",       min_args = 2, max_args = 2 }
+
+# ── math/bits ────────────────────────────────────────────────────────────────
+"bits.OnesCount"      = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
+"bits.OnesCount8"     = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
+"bits.OnesCount16"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
+"bits.OnesCount32"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
+"bits.OnesCount64"    = { emit = "common:go.bits_ones_count",    min_args = 1, max_args = 1 }
+"bits.LeadingZeros"   = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
+"bits.LeadingZeros8"  = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
+"bits.LeadingZeros16" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
+"bits.LeadingZeros32" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
+"bits.LeadingZeros64" = { emit = "common:go.bits_leading_zeros", min_args = 1, max_args = 1 }
+
 # ── Array/Slice builtins ─────────────────────────────────────────────────────
 
 "len"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
@@ -102,6 +129,15 @@ materialize_bool_results = true
 # ── Error handling ───────────────────────────────────────────────────────────
 
 "panic"           = { emit = "host:ecma:error:throw",          min_args = 1, max_args = 1 }
+
+# ── sort package ─────────────────────────────────────────────────────────────
+# Ints/Float64s/Strings sort in place; sort_in_place compares with dynamic `>`
+# (numeric for numbers, lexical for strings), matching Go's ordering.
+"sort.Ints"          = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
+"sort.Float64s"      = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
+"sort.Strings"       = { emit = "common:collections.sort",     min_args = 1, max_args = 1 }
+# sort.Search*/Slice*/*AreSorted are rewritten in the walker to the injected
+# sort prelude helpers (they need closures over the target slice).
 
 # ── Time ─────────────────────────────────────────────────────────────────────
 

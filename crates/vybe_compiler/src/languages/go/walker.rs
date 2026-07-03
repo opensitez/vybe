@@ -40,15 +40,19 @@ use std::collections::{HashMap, HashSet};
 pub fn parse(source: &str) -> Result<Module, String> {
     let (package_name, mut body, imports) = walk_go_source(source)?;
 
-    // Inject the `errors`/`fmt.Errorf` runtime prelude (a small Go-source
-    // library of error-value helpers) when the program uses it. The prelude
-    // is plain Go that compiles through the same pipeline — no adapter
-    // bytecode, no host fns. See GO_ERRORS_PRELUDE.
+    // Inject Go-source runtime preludes (small plain-Go helper libraries that
+    // compile through the same pipeline — no adapter bytecode, no host fns)
+    // when the program uses them.
+    let mut prelude: Vec<Statement> = Vec::new();
     if go_uses_errors_runtime(source) {
-        let (_, prelude_body, _) = walk_go_source(GO_ERRORS_PRELUDE)?;
-        let mut combined = prelude_body;
-        combined.append(&mut body);
-        body = combined;
+        prelude.extend(go_prelude_body(GO_ERRORS_PRELUDE)?);
+    }
+    if source.contains("sort.") {
+        prelude.extend(go_prelude_body(GO_SORT_PRELUDE)?);
+    }
+    if !prelude.is_empty() {
+        prelude.append(&mut body);
+        body = prelude;
     }
 
     Ok(normalize_go_module(Module {
@@ -65,6 +69,56 @@ pub fn parse(source: &str) -> Result<Module, String> {
 fn go_uses_errors_runtime(source: &str) -> bool {
     source.contains("errors.") || source.contains("Errorf")
 }
+
+/// Walk a prelude source and return its top-level statements, dropping the
+/// placeholder `main` used to keep the snippet a complete program.
+fn go_prelude_body(source: &str) -> Result<Vec<Statement>, String> {
+    let (_, body, _) = walk_go_source(source)?;
+    Ok(body
+        .into_iter()
+        .filter(|stmt| !matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "main"))
+        .collect())
+}
+
+/// Go-source runtime prelude for the closure-based `sort` package helpers.
+/// `sort.Search`, `sort.Slice`/`SliceStable`, `sort.SliceIsSorted`, and the
+/// `*AreSorted` helpers are rewritten in the walker to call these (they need a
+/// closure over the target slice, so the type-specific part is synthesized at
+/// the call site). Insertion sort keeps `SliceStable` stable.
+const GO_SORT_PRELUDE: &str = r#"package main
+
+func __go_sort_search(n int, f func(int) bool) int {
+	lo, hi := 0, n
+	for lo < hi {
+		mid := (lo + hi) >> 1
+		if f(mid) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}
+
+func __go_sort_slice(n int, less func(int, int) bool, swap func(int, int)) {
+	for i := 1; i < n; i++ {
+		for j := i; j > 0 && less(j, j-1); j-- {
+			swap(j, j-1)
+		}
+	}
+}
+
+func __go_sort_is_sorted(n int, less func(int, int) bool) bool {
+	for i := 1; i < n; i++ {
+		if less(i, i-1) {
+			return false
+		}
+	}
+	return true
+}
+
+func main() {}
+"#;
 
 /// Walk a Go source string into its raw (pre-normalization) parts.
 fn walk_go_source(source: &str) -> Result<(String, Vec<Statement>, Vec<Import>), String> {
@@ -217,8 +271,6 @@ func __go_errors_as(err error, match func(error) bool, assign func(error)) bool 
 	}
 	return false
 }
-
-func main() {}
 "#;
 
 #[derive(Clone, Default)]
@@ -3182,6 +3234,18 @@ fn normalize_go_expr(
 
             let call_name = go_expr_call_name(&next_callee);
 
+            if let Some(name) = call_name.as_deref() {
+                if name == "errors.As" {
+                    return go_rewrite_errors_as(&next_args, env, signatures);
+                }
+                if let Some(rewritten) = go_rewrite_errors_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_sort_call(name, &next_args) {
+                    return rewritten;
+                }
+            }
+
             if call_name.as_deref() == Some("recover") && next_args.is_empty() {
                 return go_recover_iife_expr(env);
             }
@@ -3750,6 +3814,396 @@ fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
             .collect(),
         optional: false,
     })
+}
+
+/// Build a slice/array literal AST node from a list of element expressions.
+fn go_array_of(elems: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        elems
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn go_arg_value(args: &[Argument], idx: usize) -> Expression {
+    args.get(idx)
+        .map(|a| a.value.clone())
+        .unwrap_or_else(Expression::null)
+}
+
+/// Rewrite `errors.*` / `fmt.Errorf` package calls into calls to the injected
+/// runtime prelude helpers. `errors.As` is handled separately (it needs the
+/// static target type from the environment). Returns None for anything else.
+fn go_rewrite_errors_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "errors.New" => Some(go_builtin_call(
+            "__go_new_error",
+            vec![go_arg_value(args, 0), Expression::null(), Expression::null()],
+        )),
+        "errors.Unwrap" => Some(go_builtin_call(
+            "__go_errors_unwrap",
+            vec![go_arg_value(args, 0)],
+        )),
+        "errors.Is" => Some(go_builtin_call(
+            "__go_errors_is",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "errors.Join" => {
+            // `errors.Join(a, b, ...)` collects its variadic args into a slice.
+            // `errors.Join(errs...)` already passes a slice — forward it.
+            if args.len() == 1 && args[0].spread {
+                Some(go_builtin_call("__go_errors_join", vec![args[0].value.clone()]))
+            } else {
+                let elems: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
+                Some(go_builtin_call("__go_errors_join", vec![go_array_of(elems)]))
+            }
+        }
+        "fmt.Errorf" => go_rewrite_errorf(args),
+        _ => None,
+    }
+}
+
+/// Rewrite `fmt.Errorf(format, args...)` into a `__go_new_error(msg, wrap, errs)`
+/// construction. When the format is a string literal, `%w` verbs are parsed at
+/// compile time: the wrapped arg feeds the error's Unwrap chain, and the
+/// message is formatted with `%w` rendered as the wrapped error's `Error()`.
+fn go_rewrite_errorf(args: &[Argument]) -> Option<Expression> {
+    let fmt_arg = args.first()?;
+    let format_args: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
+
+    let ExprKind::Lit(Literal::Str(fmt)) = &fmt_arg.value.kind else {
+        // Non-literal format: format everything, no wrap tracking.
+        let mut sprintf_args = vec![fmt_arg.value.clone()];
+        sprintf_args.extend(format_args);
+        let msg = go_builtin_call("__go_sprintf", sprintf_args);
+        return Some(go_builtin_call(
+            "__go_new_error",
+            vec![msg, Expression::null(), Expression::null()],
+        ));
+    };
+
+    let (newfmt, wrap_positions) = go_parse_errorf_format(fmt);
+
+    // Build the sprintf argument list; render each `%w` arg via its Error().
+    let mut sprintf_args = vec![Expression::string(&newfmt)];
+    for (i, a) in format_args.iter().enumerate() {
+        if wrap_positions.contains(&i) {
+            if matches!(a.kind, ExprKind::Lit(Literal::Null)) {
+                sprintf_args.push(Expression::string(""));
+            } else {
+                sprintf_args.push(go_member_call(a.clone(), "Error", vec![]));
+            }
+        } else {
+            sprintf_args.push(a.clone());
+        }
+    }
+    let msg = go_builtin_call("__go_sprintf", sprintf_args);
+
+    let non_nil_wraps: Vec<Expression> = wrap_positions
+        .iter()
+        .filter_map(|&p| format_args.get(p).cloned())
+        .filter(|e| !matches!(e.kind, ExprKind::Lit(Literal::Null)))
+        .collect();
+
+    let (wrap, errs) = match non_nil_wraps.len() {
+        0 => (Expression::null(), Expression::null()),
+        1 => (non_nil_wraps.into_iter().next().unwrap(), Expression::null()),
+        _ => (Expression::null(), go_array_of(non_nil_wraps)),
+    };
+
+    Some(go_builtin_call("__go_new_error", vec![msg, wrap, errs]))
+}
+
+/// Rewrite `errors.As(err, &target)` into a call to the `__go_errors_as`
+/// prelude helper with a type-match predicate and an assignment closure built
+/// from the static target type. `errors.As` is reflection-shaped (generic over
+/// the target type), so the type-specific part is synthesized here rather than
+/// in the generic helper.
+fn go_rewrite_errors_as(
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let err = go_arg_value(args, 0);
+    let target_arg = go_arg_value(args, 1);
+
+    // errors.As(err, nil) is always false.
+    if matches!(target_arg.kind, ExprKind::Lit(Literal::Null)) {
+        return Expression::bool(false);
+    }
+
+    // Extract the pointed-to target lvalue and its static type from `&target`.
+    let (target_expr, target_type) = match &target_arg.kind {
+        ExprKind::RefOf(place) => {
+            let expr = go_place_expr(place);
+            let ty = go_expr_type_hint(&expr, env, signatures);
+            (expr, ty)
+        }
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => {
+            let ty = go_expr_type_hint(expr, env, signatures);
+            ((**expr).clone(), ty)
+        }
+        _ => return Expression::bool(false),
+    };
+
+    let Some(target_type) = target_type else {
+        return Expression::bool(false);
+    };
+    let target_type = target_type
+        .trim()
+        .trim_start_matches('*')
+        .trim()
+        .to_string();
+
+    let x = "__go_as_x";
+    let match_closure = Expression::new(ExprKind::Lambda {
+        params: vec![go_error_param(x)],
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(Expression::new(
+            ExprKind::IsType {
+                expr: Box::new(Expression::ident(x)),
+                type_name: target_type.clone(),
+            },
+        ))))]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    let assign_closure = Expression::new(ExprKind::Lambda {
+        params: vec![go_error_param(x)],
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::Assign {
+            targets: vec![target_expr],
+            value: go_type_assert_value_expr(Expression::ident(x), &target_type),
+        })]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+
+    go_builtin_call("__go_errors_as", vec![err, match_closure, assign_closure])
+}
+
+/// Rewrite closure-based `sort.*` calls to the injected sort prelude helpers.
+/// The index-relative comparator/swap closures are synthesized here because
+/// they capture the target slice.
+fn go_rewrite_sort_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let ii = "__go_sort_i";
+    let jj = "__go_sort_j";
+    match call_name {
+        // sort.Search(n, f) — pass straight through.
+        "sort.Search" => Some(go_builtin_call(
+            "__go_sort_search",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        // sort.SearchInts/Strings/Float64s(a, x) — lower-bound: first i with a[i] >= x.
+        "sort.SearchInts" | "sort.SearchStrings" | "sort.SearchFloat64s" => {
+            let a = go_arg_value(args, 0);
+            let x = go_arg_value(args, 1);
+            let pred = go_lambda(
+                vec![go_int_param(ii)],
+                vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::GtEq,
+                        left: Box::new(go_index(a.clone(), Expression::ident(ii))),
+                        right: Box::new(x),
+                    },
+                ))))],
+            );
+            Some(go_builtin_call(
+                "__go_sort_search",
+                vec![go_builtin_call("len", vec![a]), pred],
+            ))
+        }
+        // sort.Slice/SliceStable(a, less) — insertion sort via index comparator
+        // and a swap closure over the slice.
+        "sort.Slice" | "sort.SliceStable" => {
+            let a = go_arg_value(args, 0);
+            let less = go_arg_value(args, 1);
+            // Swap via a temp: `t := a[i]; a[i] = a[j]; a[j] = t`. A tuple
+            // multi-assign to two index targets does not mutate a captured
+            // slice, so keep it to single-target assignments.
+            let tmp = "__go_sort_t";
+            let swap = go_lambda(
+                vec![go_int_param(ii), go_int_param(jj)],
+                vec![
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(tmp.to_string()),
+                            type_hint: None,
+                            init: Some(go_index(a.clone(), Expression::ident(ii))),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_index(a.clone(), Expression::ident(ii))],
+                        value: go_index(a.clone(), Expression::ident(jj)),
+                    }),
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_index(a.clone(), Expression::ident(jj))],
+                        value: Expression::ident(tmp),
+                    }),
+                ],
+            );
+            Some(go_builtin_call(
+                "__go_sort_slice",
+                vec![go_builtin_call("len", vec![a]), less, swap],
+            ))
+        }
+        // sort.SliceIsSorted(a, less) — direct.
+        "sort.SliceIsSorted" => {
+            let a = go_arg_value(args, 0);
+            let less = go_arg_value(args, 1);
+            Some(go_builtin_call(
+                "__go_sort_is_sorted",
+                vec![go_builtin_call("len", vec![a]), less],
+            ))
+        }
+        // sort.IntsAreSorted/Float64sAreSorted/StringsAreSorted(a) — ascending order.
+        "sort.IntsAreSorted" | "sort.Float64sAreSorted" | "sort.StringsAreSorted" => {
+            let a = go_arg_value(args, 0);
+            let less = go_lambda(
+                vec![go_int_param(ii), go_int_param(jj)],
+                vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(go_index(a.clone(), Expression::ident(ii))),
+                        right: Box::new(go_index(a.clone(), Expression::ident(jj))),
+                    },
+                ))))],
+            );
+            Some(go_builtin_call(
+                "__go_sort_is_sorted",
+                vec![go_builtin_call("len", vec![a]), less],
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// A single `int`-typed lambda parameter named `name`.
+fn go_int_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: Some("int".to_string()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+/// `obj[idx]` index expression.
+fn go_index(obj: Expression, idx: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(obj),
+        index: Box::new(idx),
+        null_safe: false,
+    })
+}
+
+/// A block-bodied closure with the given params.
+fn go_lambda(params: Vec<Param>, body: Vec<Statement>) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params,
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+/// A single `error`-typed lambda parameter named `name`.
+fn go_error_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: Some("error".to_string()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+/// Reconstruct an lvalue `Expression` from a `PlaceExpr`.
+fn go_place_expr(place: &PlaceExpr) -> Expression {
+    match place {
+        PlaceExpr::Ident(name) => Expression::ident(name),
+        PlaceExpr::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
+            object: object.clone(),
+            field: field.clone(),
+            null_safe: *null_safe,
+        }),
+        PlaceExpr::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: object.clone(),
+            index: index.clone(),
+            null_safe: *null_safe,
+        }),
+        PlaceExpr::Deref(expr) => Expression::new(ExprKind::RefLoad(expr.clone())),
+    }
+}
+
+/// Parse a Go `fmt` format string, returning the format with each `%w` verb
+/// rewritten to `%s` (so the wrapped error renders via `Error()`), plus the
+/// zero-based argument positions consumed by `%w` verbs.
+fn go_parse_errorf_format(fmt: &str) -> (String, Vec<usize>) {
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut out = String::new();
+    let mut wraps = Vec::new();
+    let mut arg_index = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '%' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // `%%` is a literal percent — consumes no arg.
+        if i + 1 < chars.len() && chars[i + 1] == '%' {
+            out.push_str("%%");
+            i += 2;
+            continue;
+        }
+        // Copy the verb spec (flags/width/precision) up to the verb letter.
+        out.push('%');
+        i += 1;
+        while i < chars.len() {
+            let vc = chars[i];
+            if vc.is_ascii_alphabetic() {
+                if vc == 'w' {
+                    wraps.push(arg_index);
+                    out.push('s');
+                } else {
+                    out.push(vc);
+                }
+                arg_index += 1;
+                i += 1;
+                break;
+            }
+            out.push(vc);
+            i += 1;
+        }
+    }
+    (out, wraps)
 }
 
 fn go_recover_iife_expr(env: &GoNormalizeEnv) -> Expression {
@@ -5005,6 +5459,18 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 }
 
 fn walk_type(pair: Pair<Rule>) -> String {
+    // Erase generic type arguments: a `Name[args]` instantiation becomes the
+    // bare `Name` (Vybe is dynamically typed, so generics are type-erased).
+    let mut inners = pair.clone().into_inner();
+    if let Some(first) = inners.next() {
+        if first.as_rule() == Rule::ident_name {
+            if let Some(second) = inners.next() {
+                if second.as_rule() == Rule::type_arguments {
+                    return first.as_str().to_string();
+                }
+            }
+        }
+    }
     pair.as_str().to_string()
 }
 
@@ -6983,7 +7449,7 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::literal_type => {
-                type_name = inner.as_str().to_string();
+                type_name = go_literal_type_name(inner);
             }
             Rule::literal_value => {
                 for lv_inner in inner.into_inner() {
@@ -7026,7 +7492,7 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                     values.resize_with(index + 1, Expression::null);
                 }
             }
-            values[index] = value;
+            values[index] = go_retype_elided_element(value, elem_type.as_deref());
             next_index = index + 1;
         }
         let arr_elems: Vec<ArrayElement> = values
@@ -7078,6 +7544,36 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             &type_name,
         ))
     }
+}
+
+/// Apply the composite's element type to an elided element literal. In
+/// `[]tagged{{1, 10}}` the inner `{1, 10}` is walked as an untyped composite
+/// (a bare `Array`/`Object`); tagging it with the element type lets the
+/// normalize pass expand it to the proper struct/slice/map value. Scalars and
+/// already-typed elements pass through unchanged.
+fn go_retype_elided_element(value: Expression, elem_type: Option<&str>) -> Expression {
+    match (elem_type, &value.kind) {
+        (Some(elem_type), ExprKind::Array(_) | ExprKind::Object(_)) if !elem_type.is_empty() => {
+            go_typed_composite_expr(value, elem_type)
+        }
+        _ => value,
+    }
+}
+
+/// Type name of a composite `literal_type`, erasing generic type arguments
+/// (`Pair[int]` → `Pair`).
+fn go_literal_type_name(pair: Pair<Rule>) -> String {
+    let mut inners = pair.clone().into_inner();
+    if let Some(first) = inners.next() {
+        if first.as_rule() == Rule::ident_name {
+            if let Some(second) = inners.next() {
+                if second.as_rule() == Rule::type_arguments {
+                    return first.as_str().to_string();
+                }
+            }
+        }
+    }
+    pair.as_str().to_string()
 }
 
 fn go_composite_literal_index_key(expr: &Expression) -> Option<usize> {
