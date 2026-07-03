@@ -334,13 +334,22 @@ fn normalize_stmt(kind: &mut StmtKind) {
                     *kind = StmtKind::Expr(Expression::new(expr));
                     return;
                 }
+            } else {
+                *kind = desugar_lua_destructure_assign(targets.clone(), value.clone());
+                normalize_stmt(kind);
+                return;
             }
             for t in targets.iter_mut() {
                 normalize_expr_ctx(t, LuaExprCtx::Write);
             }
             normalize_expr(value);
         }
-        StmtKind::VarDecl { declarations, .. } => {
+        StmtKind::VarDecl { declarations, kind: decl_kind } => {
+            if let Some(new_stmt) = try_desugar_multi_var_decl(declarations.clone(), decl_kind.clone()) {
+                *kind = new_stmt;
+                normalize_stmt(kind);
+                return;
+            }
             for d in declarations.iter_mut() {
                 if let Some(init) = &mut d.init {
                     normalize_expr(init);
@@ -1015,6 +1024,19 @@ fn lua_iife(stmts: Vec<Statement>) -> ExprKind {
             captures: vec![],
         })),
         args: vec![],
+        optional: false,
+    }
+}
+
+fn lua_iife_with_params(params: Vec<Param>, args: Vec<Expression>, stmts: Vec<Statement>) -> ExprKind {
+    ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params,
+            body: LambdaBody::Block(stmts),
+            is_async: false,
+            captures: vec![],
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
         optional: false,
     }
 }
@@ -2591,30 +2613,42 @@ fn wrap_lua_proto_set(object: Expression, index: Expression, value: Expression) 
         Expression::new(ExprKind::Ident(o.to_string())),
         Expression::new(ExprKind::Ident(k.to_string())),
     );
-    lua_iife(vec![
+    let params = vec![
+        Param {
+            name: o.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+        Param {
+            name: k.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+        Param {
+            name: v.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+    ];
+    let args = vec![object, index, value];
+    lua_iife_with_params(params, args, vec![
         Statement::new(StmtKind::VarDecl {
             declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(o.to_string()),
-                    type_hint: None,
-                    init: Some(object),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(k.to_string()),
-                    type_hint: None,
-                    init: Some(index),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(v.to_string()),
-                    type_hint: None,
-                    init: Some(value),
-                    array_bounds: None,
-                    with_events: false,
-                },
                 VarDeclarator {
                     pattern: BindingPattern::Ident(mt.to_string()),
                     type_hint: None,
@@ -2923,23 +2957,32 @@ fn wrap_lua_proto_get(object: Expression, index: Expression) -> ExprKind {
     let idx = "__lua_get_idx";
     let direct = "__lua_get_direct";
     let chain = "__lua_get_chain";
-    lua_iife(vec![
+    let params = vec![
+        Param {
+            name: o.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+        Param {
+            name: k.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+    ];
+    let args = vec![object, index];
+    lua_iife_with_params(params, args, vec![
         Statement::new(StmtKind::VarDecl {
             declarations: vec![
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(o.to_string()),
-                    type_hint: None,
-                    init: Some(object),
-                    array_bounds: None,
-                    with_events: false,
-                },
-                VarDeclarator {
-                    pattern: BindingPattern::Ident(k.to_string()),
-                    type_hint: None,
-                    init: Some(index),
-                    array_bounds: None,
-                    with_events: false,
-                },
                 VarDeclarator {
                     pattern: BindingPattern::Ident(direct.to_string()),
                     type_hint: None,
@@ -3806,6 +3849,9 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 if field == "byte" && is_lua_profile_namespace(object) {
                     return desugar_string_byte_call(args);
                 }
+                if field == "gmatch" && is_lua_profile_namespace(object) {
+                    return desugar_string_gmatch_call(args);
+                }
             }
             let callee_expr = Expression::new(normalize_expr_kind(callee.kind, read));
             let mut args: Vec<Argument> = args
@@ -3829,7 +3875,7 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                     return desugar_lua_type_call(arg);
                 }
             }
-            let callee_is_profile_member = matches!(
+                        let callee_is_profile_member = matches!(
                 &callee_expr.kind,
                 ExprKind::Member { object, .. } if is_lua_profile_namespace(object)
             );
@@ -3837,9 +3883,11 @@ fn normalize_expr_kind(kind: ExprKind, ctx: LuaExprCtx) -> ExprKind {
                 &callee_expr.kind,
                 ExprKind::Ident(name) if is_lua_global_builtin(name) || name == "type"
             );
+            let callee_is_lambda = matches!(&callee_expr.kind, ExprKind::Lambda { .. });
             if !args.iter().any(|a| a.spread)
                 && !callee_is_profile_member
                 && !callee_is_known_builtin
+                && !callee_is_lambda
             {
                 return desugar_lua_value_call(callee_expr, args);
             }
@@ -3951,4 +3999,244 @@ fn is_lua_profile_namespace(object: &Expression) -> bool {
             | "utf8"
             | "Object"
     )
+}
+
+fn desugar_lua_destructure_assign(targets: Vec<Expression>, value: Expression) -> StmtKind {
+    let temp_name = "__lua_temp_assign";
+    let temp_ident = Expression::new(ExprKind::Ident(temp_name.to_string()));
+    
+    let mut block = Vec::with_capacity(targets.len() + 1);
+    block.push(Statement::new(StmtKind::Assign {
+        targets: vec![temp_ident.clone()],
+        value,
+    }));
+    
+    for (i, t) in targets.into_iter().enumerate() {
+        let idx_expr = Expression::new(ExprKind::Index {
+            object: Box::new(temp_ident.clone()),
+            index: Box::new(Expression::new(ExprKind::Lit(Literal::Int((i + 1) as i64)))),
+            null_safe: false,
+        });
+        
+        block.push(Statement::new(StmtKind::Assign {
+            targets: vec![t],
+            value: Expression::new(normalize_expr_kind(idx_expr.kind, LuaExprCtx::Read)),
+        }));
+    }
+    
+    StmtKind::Block(block)
+}
+
+fn try_desugar_multi_var_decl(declarations: Vec<VarDeclarator>, kind: VarDeclKind) -> Option<StmtKind> {
+    if declarations.len() <= 1 {
+        return None;
+    }
+    let last_none_idx = declarations.iter().rposition(|d| d.init.is_none())?;
+    let init_idx = declarations.iter().take(last_none_idx).rposition(|d| d.init.is_some())?;
+    
+    let temp_name = "__lua_temp_decl";
+    let temp_ident = Expression::new(ExprKind::Ident(temp_name.to_string()));
+    
+    let mut block = Vec::new();
+    
+    let mut prefix_decls = Vec::new();
+    for d in declarations.iter().take(init_idx) {
+        prefix_decls.push(d.clone());
+    }
+    if !prefix_decls.is_empty() {
+        block.push(Statement::new(StmtKind::VarDecl {
+            declarations: prefix_decls,
+            kind: kind.clone(),
+        }));
+    }
+    
+    let init_expr = declarations[init_idx].init.clone().unwrap();
+    block.push(Statement::new(StmtKind::Assign {
+        targets: vec![temp_ident.clone()],
+        value: init_expr,
+    }));
+    
+    let mut destructure_decls = Vec::new();
+    for (offset, d) in declarations.iter().enumerate().skip(init_idx) {
+        let idx = offset - init_idx + 1;
+        let idx_expr = Expression::new(ExprKind::Index {
+            object: Box::new(temp_ident.clone()),
+            index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(idx as i64)))),
+            null_safe: false,
+        });
+        
+        destructure_decls.push(VarDeclarator {
+            pattern: d.pattern.clone(),
+            type_hint: d.type_hint.clone(),
+            init: Some(Expression::new(normalize_expr_kind(idx_expr.kind, LuaExprCtx::Read))),
+            array_bounds: d.array_bounds.clone(),
+            with_events: d.with_events,
+        });
+    }
+    block.push(Statement::new(StmtKind::VarDecl {
+        declarations: destructure_decls,
+        kind,
+    }));
+    
+    Some(StmtKind::Block(block))
+}
+
+fn desugar_string_gmatch_call(args: Vec<Argument>) -> ExprKind {
+    let s_arg = args.get(0).cloned().unwrap_or_else(|| Argument::positional(Expression::new(ExprKind::Lit(Literal::Null)))).value;
+    let pat_arg = args.get(1).cloned().unwrap_or_else(|| Argument::positional(Expression::new(ExprKind::Lit(Literal::Null)))).value;
+
+    let matches_ident = Expression::new(ExprKind::Ident("matches".to_string()));
+    let idx_ident = Expression::new(ExprKind::Ident("idx".to_string()));
+    let m_ident = Expression::new(ExprKind::Ident("m".to_string()));
+
+    let len_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__lua_len".to_string()))),
+        args: vec![Argument::positional(matches_ident.clone())],
+        optional: false,
+    });
+    let cond = Expression::new(ExprKind::Binary {
+        op: BinOp::LtEq,
+        left: Box::new(idx_ident.clone()),
+        right: Box::new(len_call),
+    });
+
+    let m_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("m".to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Index {
+                object: Box::new(matches_ident.clone()),
+                index: Box::new(idx_ident.clone()),
+                null_safe: false,
+            })),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let idx_inc = Statement::new(StmtKind::Assign {
+        targets: vec![idx_ident.clone()],
+        value: Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(idx_ident.clone()),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Float(1.0)))),
+        }),
+    });
+
+    let m_len = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__lua_len".to_string()))),
+        args: vec![Argument::positional(m_ident.clone())],
+        optional: false,
+    });
+    let m_len_cond = Expression::new(ExprKind::Binary {
+        op: BinOp::Gt,
+        left: Box::new(m_len),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Float(1.0)))),
+    });
+
+    let mut array_elems = Vec::new();
+    for i in 2..=8 {
+        array_elems.push(ArrayElement {
+            key: None,
+            value: Expression::new(ExprKind::Index {
+                object: Box::new(m_ident.clone()),
+                index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i)))),
+                null_safe: false,
+            }),
+            spread: false,
+            by_ref: false,
+        });
+    }
+    let captures_array = Expression::new(ExprKind::Array(array_elems));
+
+    let m_first = Expression::new(ExprKind::Index {
+        object: Box::new(m_ident.clone()),
+        index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+        null_safe: false,
+    });
+    let return_stmt = Statement::new(StmtKind::If {
+        cond: m_len_cond,
+        then_body: vec![Statement::new(StmtKind::Return(Some(captures_array)))],
+        elifs: Vec::new(),
+        else_body: Some(vec![Statement::new(StmtKind::Return(Some(m_first)))]),
+    });
+
+    let if_stmt = Statement::new(StmtKind::If {
+        cond,
+        then_body: vec![m_decl, idx_inc, return_stmt],
+        elifs: Vec::new(),
+        else_body: None,
+    });
+    let return_nil = Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Lit(Literal::Null)))));
+
+    let iter_lambda = Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Block(vec![if_stmt, return_nil]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+
+    let matches_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("matches".to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident("__lua_gmatch_match_all".to_string()))),
+                args: vec![
+                    Argument::positional(Expression::new(ExprKind::Ident("s".to_string()))),
+                    Argument::positional(Expression::new(ExprKind::Ident("pat".to_string()))),
+                ],
+                optional: false,
+            })),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    let idx_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("idx".to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Lit(Literal::Float(1.0)))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    let return_lambda = Statement::new(StmtKind::Return(Some(iter_lambda)));
+
+    let outer_lambda = Expression::new(ExprKind::Lambda {
+        params: vec![
+            Param {
+                name: "s".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            },
+            Param {
+                name: "pat".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            },
+        ],
+        body: LambdaBody::Block(vec![matches_decl, idx_decl, return_lambda]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+
+    ExprKind::Call {
+        callee: Box::new(outer_lambda),
+        args: vec![Argument::positional(s_arg), Argument::positional(pat_arg)],
+        optional: false,
+    }
 }

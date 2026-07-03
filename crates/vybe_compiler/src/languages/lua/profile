@@ -81,9 +81,10 @@ tostring = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 "string.char" = { emit = "common:str_from_char_code", min_args = 1, max_args = 255 }
 "string.byte" = { emit = "common:str_char_code_at", min_args = 1, max_args = 3 }
 "string.format" = { emit = "common:sprintf.format", min_args = 1, max_args = 255 }
-"string.find" = { emit = "common:str_index_of", min_args = 2, max_args = 4 }
-"string.gsub" = { emit = "common:strings.replace", min_args = 3, max_args = 4 }
-"string.match" = { emit = "host:ecma:regexp:match", min_args = 2, max_args = 2 }
+"string.find" = { emit = "common:lua.string_find", min_args = 2, max_args = 4 }
+"string.gsub" = { emit = "common:lua.string_gsub", min_args = 3, max_args = 4 }
+"string.match" = { emit = "common:lua.string_match", min_args = 2, max_args = 3 }
+"__lua_gmatch_match_all" = { emit = "common:lua.string_gmatch_match_all", min_args = 2, max_args = 2 }
 
 # ── table library — same emits as JS Array.prototype ───────────────────────
 "table.insert" = { emit = "common:collections.push", min_args = 2, max_args = 3 }

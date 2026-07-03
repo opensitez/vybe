@@ -576,7 +576,17 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             values.push(walk_expression(p)?);
         }
     }
-    Ok(StmtKind::Return(values.into_iter().next()))
+    if values.len() > 1 {
+        let elems = values.into_iter().map(|v| ArrayElement {
+            key: None,
+            value: v,
+            spread: false,
+            by_ref: false,
+        }).collect();
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(elems)))))
+    } else {
+        Ok(StmtKind::Return(values.into_iter().next()))
+    }
 }
 
 fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -609,7 +619,13 @@ fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let value = if values.len() == 1 {
         values.remove(0)
     } else {
-        Expression::new(ExprKind::Sequence(values))
+        let elems = values.into_iter().map(|v| ArrayElement {
+            key: None,
+            value: v,
+            spread: false,
+            by_ref: false,
+        }).collect();
+        Expression::new(ExprKind::Array(elems))
     };
     Ok(StmtKind::Assign { targets, value })
 }
