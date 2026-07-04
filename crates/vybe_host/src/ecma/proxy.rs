@@ -308,6 +308,32 @@ pub(crate) fn construct_dispatch(
         }
     }
 
+    // §7.2.4 IsConstructor: arrows / shorthand methods / generator
+    // expressions carry no [[Construct]] — the compiler marks them with
+    // `__vybe_non_ctor`. `new` on them is a TypeError.
+    if let Value::Object(target_obj) = constructor {
+        let (non_ctor, fn_name) = {
+            let locked = target_obj.lock().unwrap();
+            (
+                matches!(
+                    locked.properties.get("__vybe_non_ctor"),
+                    Some(Value::Bool(true))
+                ),
+                match locked.properties.get("name") {
+                    Some(Value::String(n)) if !n.is_empty() => n.to_string(),
+                    _ => "anonymous".to_string(),
+                },
+            )
+        };
+        if non_ctor {
+            ctx.throw_value(make_type_error(&format!(
+                "{} is not a constructor",
+                fn_name
+            )));
+            return Value::Undefined;
+        }
+    }
+
     let mut this_value = Object::new();
     if let Value::Object(target_obj) = constructor {
         if let Some(proto) = target_obj

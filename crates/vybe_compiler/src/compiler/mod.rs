@@ -381,6 +381,12 @@ pub struct Compiler {
     /// source method was a generator — prototype-kind stamping at the class
     /// attach sites reads this instead (§27.3/§27.4/§27.7 intrinsic stamps).
     pub(crate) method_fn_kinds: HashMap<usize, (bool, bool)>,
+    /// §9.1.1.3.4 (JS only): set to `(chunk_idx, this_slot)` while the body
+    /// of a DERIVED class constructor is being compiled. `this` reads and
+    /// `super()` calls in that chunk emit TDZ guards against this_slot
+    /// (null until super() initializes it). Chunk index is checked so
+    /// nested functions/classes compiled mid-body don't inherit the guard.
+    pub(crate) js_derived_ctor_ctx: Option<(usize, u16)>,
     /// Number of user-visible parameters (excluding the hidden control
     /// slot) for each synchronous generator function. Used at call
     /// sites to pad missing optional args with `undefined` so the
@@ -1992,6 +1998,7 @@ impl Compiler {
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
             method_fn_kinds: HashMap::new(),
+            js_derived_ctor_ctx: None,
             generator_param_counts: HashMap::new(),
             host_import_bindings: HashMap::new(),
             host_const_bindings: HashMap::new(),
@@ -5250,6 +5257,22 @@ impl Compiler {
         } else {
             name.to_lowercase()
         }
+    }
+
+    /// True if `name` is a class the program actually declares. A real class
+    /// of a built-in exception name (e.g. PHP's prelude `LogicException`,
+    /// `RuntimeException`, …) must go through the ordinary class emitter, NOT
+    /// the `is_exception_type` intrinsic shortcut — otherwise the intrinsic
+    /// shape (canonicalized `__type`, no `__types` chain) shadows the real
+    /// class and subclass identity is lost.
+    pub(crate) fn shadows_builtin_type(&self, name: &str) -> bool {
+        self.defined_classes.contains(name)
+            || self.defined_classes.contains(&self.canon(name))
+            || (!self.case_sensitive
+                && self
+                    .defined_classes
+                    .iter()
+                    .any(|g| g.eq_ignore_ascii_case(name)))
     }
 
     fn normalize_type_hint(type_hint: &str) -> String {
@@ -9846,13 +9869,34 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                     self.emit_u16(Op::LOCAL_SET, handled_slot);
                     for c in catches {
+                        // When the language models its exceptions as real
+                        // classes (`throwable_is_root`), catch types must match
+                        // the real class names in the `__type`/`__types` chain —
+                        // do NOT canonicalize, which conflates `Error` and
+                        // `Exception` (both map to "Exception") and would erase
+                        // PHP's two distinct branches.
                         let types: Vec<&str> = c
                             .types
                             .iter()
-                            .map(|t| common::errors::canonical_exception_name(t))
+                            .map(|t| {
+                                if self.profile.throwable_is_root {
+                                    t.trim()
+                                } else {
+                                    common::errors::canonical_exception_name(t)
+                                }
+                            })
                             .collect();
-                        let is_catch_all =
-                            types.is_empty() || types.iter().any(|t| *t == "Exception");
+                        // `Throwable` is the universal root everywhere. In
+                        // PHP/Java (`throwable_is_root`), `Exception` is only a
+                        // branch — the `Error` branch is a sibling — so
+                        // `catch (Exception)` matches via the `__types` chain
+                        // below, not as a catch-all. In Python/.NET/Ruby,
+                        // `Exception` is the root and catches everything.
+                        let exception_catches_all = !self.profile.throwable_is_root;
+                        let is_catch_all = types.is_empty()
+                            || types.iter().any(|t| {
+                                *t == "Throwable" || (exception_catches_all && *t == "Exception")
+                            });
 
                         let arm_match_slot = self.define_local("__catch_arm_match");
                         self.emit_const(Value::Bool(is_catch_all));
@@ -15691,8 +15735,24 @@ impl Compiler {
             if self.is_js_profile() && matches!(canonical_op, common::canonical::CanonicalOp::Len) {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
+                    let obj_slot = self.define_local("__js_len_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
                     let length_key = self.str_const("length");
                     self.emit_u16(Op::STRUCT_GET, length_key);
+                    // §10.1.8.1 OrdinaryGet: a missing own `length` walks
+                    // the prototype chain like any other key (e.g.
+                    // AsyncFunction.prototype.length inherits
+                    // %Function.prototype%'s 0).
+                    let val_slot = self.define_local("__js_len_val");
+                    self.emit_u16(Op::LOCAL_SET, val_slot);
+                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    self.chunk().emit_if_value(line);
+                    self.emit_js_member_fallback_get(obj_slot, "length");
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    self.chunk().emit_end(line);
                     return Ok(true);
                 }
             }
@@ -17924,55 +17984,10 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
-            "php_strpos" => {
-                if args.len() >= 2 {
-                    let haystack_slot = self.define_local("__php_strpos_haystack");
-                    let needle_slot = self.define_local("__php_strpos_needle");
-                    let offset_slot = self.define_local("__php_strpos_offset");
-                    let idx_slot = self.define_local("__php_strpos_idx");
-
-                    self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, haystack_slot);
-
-                    self.compile_expr(args[1])?;
-                    self.emit_u16(Op::LOCAL_SET, needle_slot);
-
-                    if args.len() >= 3 {
-                        self.compile_expr(args[2])?;
-                        common::convert::emit_to_int(self.chunk(), line);
-                    } else {
-                        inst!(self, core_wasm::i32_const, 0);
-                    }
-                    self.emit_u16(Op::LOCAL_SET, offset_slot);
-
-                    self.emit_u16(Op::LOCAL_GET, haystack_slot);
-                    self.emit_u16(Op::LOCAL_GET, offset_slot);
-                    self.emit_const(Value::I32(i32::MAX));
-                    common::strings::emit_substring(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_GET, needle_slot);
-                    common::strings::emit_index_of(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, idx_slot);
-
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    inst!(self, core_wasm::i32_const, 0);
-                    {
-                        let line = self.line;
-                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
-                    };
-                    let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                    self.emit(Op::I32_EQZ);
-                    self.chunk().emit_if_value(line);
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    self.emit_u16(Op::LOCAL_GET, offset_slot);
-                    self.emit(Op::I32_ADD);
-                    self.chunk().emit_else(line);
-                    inst!(self, core_wasm::bool_const, false);
-                    self.chunk().emit_end(line);
-                } else {
-                    inst!(self, core_wasm::bool_const, false);
-                }
-            }
+            // `php_strpos` / `strtr` relocated to the PHP string adapter
+            // (`languages/php/emitter/string_adapter.rs`, routed via
+            // `common:php.strpos` / `common:php.strtr`). PHP-specific runtime
+            // semantics do not belong in the shared compiler.
             "php_str_contains" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;
@@ -19067,150 +19082,6 @@ impl Compiler {
                 }
             }
 
-            "strtr" => {
-                // PHP strtr two-arg form: strtr($str, $array) replaces every
-                // occurrence of each array key with its value, applied in
-                // insertion order. Implemented as a real loop:
-                //
-                //   entries = ecma:object.entries(array)
-                //   str_slot  = $str
-                //   for [k, v] in entries:
-                //       str_slot = STR_REPLACE(str_slot, k, v)
-                //   push str_slot
-                //
-                // Three-arg form `strtr($str, $from, $to)` (single-char swap
-                // by position) is not yet covered — falls through to NULL
-                // until a test demands it.
-                if args.len() == 2 {
-                    self.compile_expr(args[0])?;
-                    let str_slot = self.define_local("__strtr_str");
-                    self.emit_u16(Op::LOCAL_SET, str_slot);
-
-                    // If the map is a literal array, sort entries by key length
-                    // (longest first) so longer keys take priority over shorter ones.
-                    use crate::ast::{ExprKind, Literal};
-                    let sorted_arg: Option<crate::ast::Expression> =
-                        if let ExprKind::Array(ref items) = args[1].kind {
-                            let mut sorted = items.clone();
-                            sorted.sort_by(|a, b| {
-                                let la = match a.key.as_ref().map(|k| &k.kind) {
-                                    Some(ExprKind::Lit(Literal::Str(s))) => s.len(),
-                                    _ => 0,
-                                };
-                                let lb = match b.key.as_ref().map(|k| &k.kind) {
-                                    Some(ExprKind::Lit(Literal::Str(s))) => s.len(),
-                                    _ => 0,
-                                };
-                                lb.cmp(&la) // descending
-                            });
-                            Some(crate::ast::Expression {
-                                kind: ExprKind::Array(sorted),
-                                span: args[1].span.clone(),
-                            })
-                        } else {
-                            None
-                        };
-                    let map_arg = sorted_arg.as_ref().unwrap_or(&args[1]);
-                    self.compile_expr(map_arg)?;
-                    common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
-                    let entries_slot = self.define_local("__strtr_entries");
-                    self.emit_u16(Op::LOCAL_SET, entries_slot);
-
-                    let idx_slot = self.define_local("__strtr_idx");
-                    let state = common::loops::emit_for_in_start(
-                        &mut self.chunks,
-                        self.current,
-                        entries_slot,
-                        idx_slot,
-                        line,
-                    );
-                    // `emit_for_in_start` leaves the current entry on the
-                    // stack — drop it; we re-fetch `[k, v]` via the index
-                    // so we can pull both fields without a swap.
-                    self.emit(Op::DROP);
-
-                    // str_slot = STR_REPLACE(str_slot, entry[0], entry[1])
-                    self.emit_u16(Op::LOCAL_GET, str_slot);
-                    self.emit_u16(Op::LOCAL_GET, entries_slot);
-                    self.emit_u16(Op::LOCAL_GET, idx_slot);
-                    common::collections::emit_get(&mut self.chunks, self.current, line);
-                    let pair_slot = self.define_local("__strtr_pair");
-                    self.emit_u16(Op::LOCAL_SET, pair_slot);
-                    self.emit_u16(Op::LOCAL_GET, pair_slot);
-                    self.emit_const(Value::I32(0));
-                    common::collections::emit_get(&mut self.chunks, self.current, line);
-                    self.emit_u16(Op::LOCAL_GET, pair_slot);
-                    self.emit_const(Value::I32(1));
-                    common::collections::emit_get(&mut self.chunks, self.current, line);
-                    fn_call!(self, "ecma:string", "replace", 3);
-                    self.emit_u16(Op::LOCAL_SET, str_slot);
-
-                    common::loops::emit_for_in_end(
-                        &mut self.chunks,
-                        self.current,
-                        idx_slot,
-                        state,
-                        line,
-                    );
-
-                    self.emit_u16(Op::LOCAL_GET, str_slot);
-                } else if args.len() == 3 {
-                    // strtr($str, $from, $to): replace each char $from[i] with $to[i]
-                    self.compile_expr(args[0])?;
-                    let str_slot = self.define_local("__strtr3_str");
-                    self.emit_u16(Op::LOCAL_SET, str_slot);
-                    self.compile_expr(args[1])?;
-                    let from_slot = self.define_local("__strtr3_from");
-                    self.emit_u16(Op::LOCAL_SET, from_slot);
-                    self.compile_expr(args[2])?;
-                    let to_slot = self.define_local("__strtr3_to");
-                    self.emit_u16(Op::LOCAL_SET, to_slot);
-
-                    // Loop: for i in 0..min(len(from), len(to))
-                    let i_slot = self.define_local("__strtr3_i");
-                    let flen_slot = self.define_local("__strtr3_flen");
-                    self.emit_const(Value::F64(0.0));
-                    self.emit_u16(Op::LOCAL_SET, i_slot);
-                    self.emit_u16(Op::LOCAL_GET, from_slot);
-                    fn_call!(self, "wasm:js-string", "length", 1);
-                    self.emit_u16(Op::LOCAL_SET, flen_slot);
-
-                    let loop_state =
-                        common::loops::emit_loop_start(&mut self.chunks, self.current, line);
-                    self.emit_u16(Op::LOCAL_GET, i_slot);
-                    self.emit_u16(Op::LOCAL_GET, flen_slot);
-                    common::ops::emit_dyn_lt(&mut self.chunks[self.current], line);
-                    common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
-
-                    // from_char = from.charAt(i); to_char = to.charAt(i)
-                    let from_char_slot = self.define_local("__strtr3_fc");
-                    let to_char_slot = self.define_local("__strtr3_tc");
-                    self.emit_u16(Op::LOCAL_GET, from_slot);
-                    self.emit_u16(Op::LOCAL_GET, i_slot);
-                    fn_call!(self, "ecma:string", "charAt", 2);
-                    self.emit_u16(Op::LOCAL_SET, from_char_slot);
-                    self.emit_u16(Op::LOCAL_GET, to_slot);
-                    self.emit_u16(Op::LOCAL_GET, i_slot);
-                    fn_call!(self, "ecma:string", "charAt", 2);
-                    self.emit_u16(Op::LOCAL_SET, to_char_slot);
-
-                    // str_slot = STR_REPLACE(str_slot, from_char, to_char)
-                    self.emit_u16(Op::LOCAL_GET, str_slot);
-                    self.emit_u16(Op::LOCAL_GET, from_char_slot);
-                    self.emit_u16(Op::LOCAL_GET, to_char_slot);
-                    fn_call!(self, "ecma:string", "replace", 3);
-                    self.emit_u16(Op::LOCAL_SET, str_slot);
-
-                    self.emit_u16(Op::LOCAL_GET, i_slot);
-                    self.emit_const(Value::F64(1.0));
-                    self.emit(Op::F64_ADD);
-                    self.emit_u16(Op::LOCAL_SET, i_slot);
-                    common::loops::emit_loop_end(&mut self.chunks, self.current, loop_state, line);
-                    self.emit_u16(Op::LOCAL_GET, str_slot);
-                } else {
-                    self.emit(Op::NULL);
-                }
-            }
 
             // ── String compositions of ecma:string primitives ──────────
             //

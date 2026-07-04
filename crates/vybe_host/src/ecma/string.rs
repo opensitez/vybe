@@ -678,16 +678,29 @@ fn register_search_ops(vm: &mut VM) {
         "ecma:string",
         "indexOf",
         Box::new(|_ctx, args| {
+            // ECMA-262 §22.1.3.9: positions are UTF-16 code-unit indices,
+            // consistent with `length` and `includes`. (Previously used
+            // Rust `str::find`, which returns UTF-8 *byte* offsets — this
+            // mis-indexed any non-ASCII string and could panic when `pos`
+            // landed inside a multi-byte sequence.)
             let s = s_arg(args, 0);
             let needle = s_arg(args, 1);
+            let hay = utf16_units(&s);
+            let ndl = utf16_units(&needle);
             let pos = i32_arg(args, 2, 0).max(0) as usize;
-            if pos > s.len() {
+            let start = pos.min(hay.len());
+            if ndl.is_empty() {
+                return Value::F64(start as f64);
+            }
+            if ndl.len() > hay.len() {
                 return Value::F64(-1.0);
             }
-            match s[pos..].find(&needle) {
-                Some(idx) => Value::F64((pos + idx) as f64),
-                None => Value::F64(-1.0),
+            for i in start..=(hay.len() - ndl.len()) {
+                if hay[i..i + ndl.len()] == ndl[..] {
+                    return Value::F64(i as f64);
+                }
             }
+            Value::F64(-1.0)
         }),
     );
 
@@ -695,12 +708,23 @@ fn register_search_ops(vm: &mut VM) {
         "ecma:string",
         "lastIndexOf",
         Box::new(|_ctx, args| {
+            // ECMA-262 §22.1.3.10: UTF-16 code-unit index of the last match.
             let s = s_arg(args, 0);
             let needle = s_arg(args, 1);
-            match s.rfind(&needle) {
-                Some(idx) => Value::F64(idx as f64),
-                None => Value::F64(-1.0),
+            let hay = utf16_units(&s);
+            let ndl = utf16_units(&needle);
+            if ndl.is_empty() {
+                return Value::F64(hay.len() as f64);
             }
+            if ndl.len() > hay.len() {
+                return Value::F64(-1.0);
+            }
+            for i in (0..=(hay.len() - ndl.len())).rev() {
+                if hay[i..i + ndl.len()] == ndl[..] {
+                    return Value::F64(i as f64);
+                }
+            }
+            Value::F64(-1.0)
         }),
     );
 
@@ -708,13 +732,16 @@ fn register_search_ops(vm: &mut VM) {
         "ecma:string",
         "startsWith",
         Box::new(|_ctx, args| {
+            // ECMA-262 §22.1.3.23: `position` is a UTF-16 code-unit index.
             let s = s_arg(args, 0);
             let needle = s_arg(args, 1);
-            let pos = i32_arg(args, 2, 0).max(0) as usize;
-            if pos > s.len() {
+            let hay = utf16_units(&s);
+            let ndl = utf16_units(&needle);
+            let start = (i32_arg(args, 2, 0).max(0) as usize).min(hay.len());
+            if start + ndl.len() > hay.len() {
                 return Value::Bool(false);
             }
-            Value::Bool(s[pos..].starts_with(&needle))
+            Value::Bool(hay[start..start + ndl.len()] == ndl[..])
         }),
     );
 
@@ -722,14 +749,20 @@ fn register_search_ops(vm: &mut VM) {
         "ecma:string",
         "endsWith",
         Box::new(|_ctx, args| {
+            // ECMA-262 §22.1.3.6: `endPosition` is a UTF-16 code-unit index.
             let s = s_arg(args, 0);
             let needle = s_arg(args, 1);
-            let end_pos = if args.len() >= 3 {
-                (i32_arg(args, 2, s.len() as i32).max(0) as usize).min(s.len())
+            let hay = utf16_units(&s);
+            let ndl = utf16_units(&needle);
+            let end = if args.len() >= 3 {
+                (i32_arg(args, 2, hay.len() as i32).max(0) as usize).min(hay.len())
             } else {
-                s.len()
+                hay.len()
             };
-            Value::Bool(s[..end_pos].ends_with(&needle))
+            if ndl.len() > end {
+                return Value::Bool(false);
+            }
+            Value::Bool(hay[end - ndl.len()..end] == ndl[..])
         }),
     );
 }

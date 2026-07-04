@@ -13,6 +13,7 @@ mod js_missing_features_test;
 mod js_objects_collections_test;
 mod js_stdlib_test;
 mod js_wasi_test;
+mod test_arrow_functions;
 mod test_array_algorithms;
 mod test_array_copy_search_methods;
 mod test_array_es2023;

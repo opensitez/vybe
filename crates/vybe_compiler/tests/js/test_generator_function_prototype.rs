@@ -145,14 +145,19 @@ crate::js_cases! {
         ["true"]
     };
 
+    // §27.3: generator functions DO have an own `prototype` (the object
+    // their instances inherit from) — node-verified true. The old
+    // expectation (false) confused generators with async functions.
     generator_function_has_no_own_prototype_property => {
         r#"function* f() { yield 1; } console.log(f.hasOwnProperty("prototype"));"#,
-        ["false"]
+        ["true"]
     };
 
+    // §27.3: a generator expression's `prototype` is an ordinary object,
+    // not undefined (node-verified false).
     generator_expression_prototype_property_is_undefined => {
         r#"const f = function* () { yield 1; }; console.log(f.prototype === undefined);"#,
-        ["true"]
+        ["false"]
     };
 
     generator_function_constructor_is_generator_function => {
@@ -250,9 +255,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // §27.3.3: %GeneratorFunction.prototype% is an ordinary object, not a
+    // function (node-verified "object").
     generator_function_prototype_typeof_is_function => {
         r#"console.log(typeof GeneratorFunction.prototype);"#,
-        ["function"]
+        ["object"]
     };
 
     generator_function_prototype_constructor_is_generator_function => {
@@ -410,14 +417,20 @@ crate::js_cases! {
         ["9"]
     };
 
+    // §10.2.10 SetFunctionLength: a destructured pattern counts as ONE
+    // formal parameter — node-verified 2. The old expectation (1) treated
+    // the pattern as if it reduced length.
     generator_function_with_destructured_param_reduces_length => {
         r#"function* f({ a }, b) { yield a + b; } console.log(f.length);"#,
-        ["1"]
+        ["2"]
     };
 
+    // §10.2.10 SetFunctionLength: a destructured pattern counts as ONE
+    // formal parameter — node-verified 2. The old expectation (1) treated
+    // the pattern as if it reduced length.
     generator_function_with_destructured_array_param_length => {
         r#"function* f([a], b) { yield a + b; } console.log(f.length);"#,
-        ["1"]
+        ["2"]
     };
 
     generator_function_strict_mode_preserves_prototype => {
@@ -480,8 +493,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // §10.4.1.3: the bound generator carries (1, 2); the third parameter
+    // comes from the call — `partial()` alone yields NaN in node since
+    // `c` is undefined. Pass the remaining argument.
     generator_function_prototype_bind_partial_application => {
-        r#"function* sum(a, b, c) { yield a + b + c; } const partial = GeneratorFunction.prototype.bind.call(sum, null, 1, 2); console.log(partial().next().value);"#,
+        r#"function* sum(a, b, c) { yield a + b + c; } const partial = GeneratorFunction.prototype.bind.call(sum, null, 1, 2); console.log(partial(3).next().value);"#,
         ["6"]
     };
 

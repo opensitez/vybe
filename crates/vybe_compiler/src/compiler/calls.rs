@@ -2743,7 +2743,18 @@ impl Compiler {
                     .get(class_name.as_str())
                     .and_then(|pc| pc.parent.clone())
                 {
-                    if common::errors::is_exception_type(&parent_name) {
+                    // §13.3.7.2 (JS): super() may only run once — a second
+                    // call sees this_slot already initialized and throws a
+                    // ReferenceError.
+                    if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
+                        if ctx_chunk == self.current {
+                            let l = self.line;
+                            common::classes::emit_super_once_guard(self.chunk(), ctx_slot, l);
+                        }
+                    }
+                    if !self.shadows_builtin_type(&parent_name)
+                        && common::errors::is_exception_type(&parent_name)
+                    {
                         self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
                         let self_kw = self.profile.self_keyword.clone();
                         if let Some(slot) = self
@@ -3298,6 +3309,24 @@ impl Compiler {
                             && self.lookup_var_type_hint(short_name).is_none()
                         {
                             early_static_class_canon = Some(short_canon);
+                        }
+                    }
+                }
+
+                // §20.2.3 (JS): bind/call/apply on a class object resolve
+                // through %Function.prototype% unless shadowed by an own
+                // static — skip static dispatch so the generic
+                // Function.prototype route handles them.
+                if self.is_js_profile()
+                    && matches!(method_name.as_str(), "bind" | "call" | "apply")
+                {
+                    if let Some(class_canon) = early_static_class_canon.as_ref() {
+                        let canon_field = self.canon(&method_name);
+                        let shadowed = self.pending_classes.get(class_canon.as_str()).is_some_and(
+                            |pc| pc.static_method_overloads.contains_key(&canon_field),
+                        );
+                        if !shadowed {
+                            early_static_class_canon = None;
                         }
                     }
                 }
@@ -3965,6 +3994,26 @@ impl Compiler {
                             && self.lookup_var_type_hint(short_name).is_none()
                         {
                             static_class_canon = Some(short_canon);
+                        }
+                    }
+                }
+
+                // §20.2.3 (JS): bind/call/apply on a class object resolve
+                // through %Function.prototype% unless the class defines an
+                // own static with that name — clear the static-dispatch
+                // route so the generic Function.prototype path below
+                // handles them (class constructors are function objects).
+                if self.is_js_profile() && matches!(field.as_str(), "bind" | "call" | "apply") {
+                    if let Some(canon) = static_class_canon.as_ref() {
+                        let canon_field = self.canon(field);
+                        let shadowed = self
+                            .pending_classes
+                            .get(canon.as_str())
+                            .is_some_and(|pc| {
+                                pc.static_method_overloads.contains_key(&canon_field)
+                            });
+                        if !shadowed {
+                            static_class_canon = None;
                         }
                     }
                 }
@@ -10426,7 +10475,7 @@ impl Compiler {
         body: &LambdaBody,
         captures: &[String],
     ) -> Result<(), String> {
-        self.compile_lambda_with_flags(params, body, captures, false, false)
+        self.compile_lambda_with_flags(params, body, captures, false, false, false)
     }
 
     pub(super) fn compile_lambda_with_flags(
@@ -10436,6 +10485,7 @@ impl Compiler {
         captures: &[String],
         is_async: bool,
         is_generator: bool,
+        is_arrow: bool,
     ) -> Result<(), String> {
         let normalized_captures: Vec<String> = captures
             .iter()
@@ -10455,7 +10505,7 @@ impl Compiler {
             );
         }
 
-        self.compile_lambda_direct(params, body, is_async, is_generator)
+        self.compile_lambda_direct(params, body, is_async, is_generator, is_arrow)
     }
 
     fn compile_lambda_with_explicit_captures(
@@ -10499,7 +10549,8 @@ impl Compiler {
         // upvalue-captures the factory's locals (the by-value captures, including
         // __js_this). compile_lambda_direct emits REF_FUNC into the factory chunk,
         // leaving the function reference on the factory's operand stack.
-        self.compile_lambda_direct(params, body, is_async, is_generator)?;
+        // PHP `use` closures — never arrows.
+        self.compile_lambda_direct(params, body, is_async, is_generator, false)?;
 
         // Emit RETURN so the factory returns the function reference it just built.
         let line = self.line;
@@ -10567,11 +10618,51 @@ impl Compiler {
         body: &LambdaBody,
         is_async: bool,
         is_generator: bool,
+        is_arrow: bool,
     ) -> Result<(), String> {
+        // Walker-lowered generator/async-generator expressions arrive as
+        // Lambdas holding the `__gen_fn` contract — they are NOT arrows.
+        let is_arrow = is_arrow
+            && match body {
+                LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts).is_none(),
+                _ => true,
+            };
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         if has_rest {
             self.rest_fixed_arities
                 .insert(params.len().saturating_sub(1) as u8);
+        }
+        // §10.2.11 / §15.3: arrows bind `this` and `new.target` LEXICALLY —
+        // captured at CREATION, never read from the ambient call-time
+        // globals (member calls set __js_this to the receiver, plain calls
+        // null __js_new_target; both are [[Call]]-time bindings arrows must
+        // not observe). When the enclosing scope already provides a lexical
+        // `this` (method/ctor local, or an outer arrow's capture) the
+        // existing upvalue resolution is the capture; otherwise snapshot
+        // the current globals into enclosing locals the arrow body's
+        // upvalue resolution will find by name.
+        if self.is_js_profile() && is_arrow {
+            let self_kw = self.profile.self_keyword.clone();
+            let scope_idx = self.scopes.len() - 1;
+            let this_reachable = self.scope().resolve(&self_kw).is_some()
+                || self.scope().resolve("__js_this").is_some()
+                || (scope_idx > 0
+                    && (self.resolve_upvalue(scope_idx, &self_kw).is_some()
+                        || self.resolve_upvalue(scope_idx, "__js_this").is_some()));
+            if !this_reachable {
+                let slot = self.define_local("__js_this");
+                let js_this = self.str_const("__js_this");
+                self.emit_u16(Op::GLOBAL_GET, js_this);
+                self.emit_u16(Op::LOCAL_SET, slot);
+            }
+            let nt_reachable = self.scope().resolve("__js_new_target").is_some()
+                || (scope_idx > 0 && self.resolve_upvalue(scope_idx, "__js_new_target").is_some());
+            if !nt_reachable {
+                let slot = self.define_local("__js_new_target");
+                let js_nt = self.str_const("__js_new_target");
+                self.emit_u16(Op::GLOBAL_GET, js_nt);
+                self.emit_u16(Op::LOCAL_SET, slot);
+            }
         }
         // Capture parent's shared env info before switching scope
         let parent_shared_env_slot = self.shared_env_slot;
@@ -10897,6 +10988,35 @@ impl Compiler {
                     eff_generator,
                     line,
                 );
+            }
+
+            // §7.2.4 IsConstructor: arrows (and the other Lambda-lowered
+            // forms — shorthand methods, generator expressions) have no
+            // [[Construct]]. `new` on them must TypeError; the host
+            // construct path checks this marker.
+            inst!(self, core_wasm::dup);
+            self.emit_const(Value::Bool(true));
+            let non_ctor_key = self.str_const("__vybe_non_ctor");
+            self.emit_u16(Op::STRUCT_SET, non_ctor_key);
+            self.emit(Op::DROP);
+
+            // §10.2.9/§10.2.10: name/length are non-enumerable.
+            inst!(self, core_wasm::dup);
+            {
+                let line = self.line;
+                crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+            }
+
+            // §10.2.11: arrows carry a marker — the host uses it for
+            // lexical-this (call/apply ignore thisArg) and toString's
+            // `=>` form. Threaded from the ExprKind::Lambda compile arm;
+            // object-literal shorthand methods pass false.
+            if is_arrow {
+                inst!(self, core_wasm::dup);
+                self.emit_const(Value::Bool(true));
+                let arrow_key = self.str_const("__fn_arrow");
+                self.emit_u16(Op::STRUCT_SET, arrow_key);
+                self.emit(Op::DROP);
             }
         }
         if has_rest {

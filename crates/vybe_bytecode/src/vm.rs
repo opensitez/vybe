@@ -550,6 +550,14 @@ pub struct VM {
     /// happens inside `run_event_loop`, and `run()`'s Suspended path
     /// returns this so the program's final value isn't dropped.
     pub(crate) last_fiber_completion: Option<Value>,
+    /// TEMP diagnostics (VYBE_DEBUG_AC): last host import invoked.
+    pub(crate) dbg_last_import: Option<String>,
+    /// Frame-depth floors of the active (nested) `execute_until` loops.
+    /// Exception unwinding must NOT cross a floor: a handler in a frame
+    /// below the innermost floor belongs to an OUTER dispatch loop, so the
+    /// raise defers (last_exception + Err) and re-raises at the outer
+    /// loop's host-call site with clean stack discipline.
+    pub(crate) exec_floors: Vec<usize>,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
     /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
@@ -711,6 +719,8 @@ impl VM {
             async_floors: Vec::new(),
             pending_settled_await: None,
             last_fiber_completion: None,
+            dbg_last_import: None,
+            exec_floors: Vec::new(),
             next_fiber_id: 1,
             label_stack: Vec::new(),
             block_tables: HashMap::new(),

@@ -111,6 +111,13 @@ pub struct LanguageProfile {
     /// an explicit `break`. VB/Pascal/Python: each case is independent.
     pub switch_fallthrough: bool,
 
+    /// PHP/Java: `Throwable` is the universal exception root; `Exception`
+    /// is only one branch (the `Error` branch is a sibling), so
+    /// `catch (Exception)` must NOT be a catch-all — it matches via the
+    /// `__types` inheritance chain instead. When false (Python/.NET/Ruby),
+    /// `Exception` is the root and `catch (Exception)` catches everything.
+    pub throwable_is_root: bool,
+
     /// PHP: relational operators (`<`/`>`/`<=`/`>=`/`<=>`) compare two
     /// strings lexicographically and otherwise fall back to numeric/dynamic
     /// comparison (DateTime operands are unboxed first). When false, the
@@ -565,6 +572,10 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("switch_fallthrough")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let throwable_is_root = compiler
+        .get("throwable_is_root")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let string_aware_relational = compiler
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
@@ -948,6 +959,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         new_from_initializer,
         linq_queries,
         switch_fallthrough,
+        throwable_is_root,
         string_aware_relational,
         lexical_block_scope,
         unresolved_reference_throws,

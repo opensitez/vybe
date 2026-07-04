@@ -145,14 +145,18 @@ crate::js_cases! {
         ["true"]
     };
 
+    // §27.4: async generator functions DO have an own `prototype` (the
+    // object their instances inherit from) — node-verified true.
     async_generator_function_has_no_own_prototype_property => {
         r#"async function* f() { yield 1; } console.log(f.hasOwnProperty("prototype"));"#,
-        ["false"]
+        ["true"]
     };
 
+    // §27.4: an async generator expression's `prototype` is an ordinary
+    // object, not undefined (node-verified false).
     async_generator_expression_prototype_property_is_undefined => {
         r#"const f = async function* () { yield 1; }; console.log(f.prototype === undefined);"#,
-        ["true"]
+        ["false"]
     };
 
     async_generator_function_constructor_is_async_generator_function => {
@@ -245,9 +249,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // §27.4.3: %AsyncGeneratorFunction.prototype% is an ordinary object,
+    // not a function (node-verified "object").
     async_generator_function_prototype_typeof_is_function => {
         r#"console.log(typeof AsyncGeneratorFunction.prototype);"#,
-        ["function"]
+        ["object"]
     };
 
     async_generator_function_prototype_constructor_is_async_generator_function => {
@@ -415,14 +421,20 @@ crate::js_cases! {
         ["function"]
     };
 
+    // §10.2.10 SetFunctionLength: a destructured pattern counts as ONE
+    // formal parameter — node-verified 2. The old expectation (1) treated
+    // the pattern as if it reduced length.
     async_generator_function_with_destructured_param_reduces_length => {
         r#"async function* f({ a }, b) { yield a + b; } console.log(f.length);"#,
-        ["1"]
+        ["2"]
     };
 
+    // §10.2.10 SetFunctionLength: a destructured pattern counts as ONE
+    // formal parameter — node-verified 2. The old expectation (1) treated
+    // the pattern as if it reduced length.
     async_generator_function_with_destructured_array_param_length => {
         r#"async function* f([a], b) { yield a + b; } console.log(f.length);"#,
-        ["1"]
+        ["2"]
     };
 
     async_generator_function_strict_mode_preserves_prototype => {

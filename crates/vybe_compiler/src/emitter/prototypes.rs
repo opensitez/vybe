@@ -41,11 +41,40 @@ pub fn emit_stamp_function_kind_proto(
     line: u32,
 ) {
     let intrinsic = fn_kind_intrinsic(is_async, is_generator);
+    // §20.2.3.5 Function.prototype.toString reads this classifier to
+    // synthesize the async/generator tokens (source text isn't retained).
+    if is_async || is_generator {
+        let kind = match (is_async, is_generator) {
+            (true, false) => "async",
+            (false, true) => "generator",
+            _ => "async_generator",
+        };
+        crate::emitter::instructions::core_wasm::dup(chunk, line); // [fn, fn]
+        chunk.emit_string_const(kind, line); // [fn, fn, kind]
+        let kind_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__fn_kind")));
+        chunk.emit_op_u16(Op::STRUCT_SET, kind_key, line); // [fn, fn]
+        chunk.emit_op(Op::DROP, line); // [fn]
+    }
     let ctor_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(intrinsic)));
     chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [fn, ctor]
     let proto_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("prototype")));
     chunk.emit_op_u16(Op::STRUCT_GET, proto_key, line); // [fn, proto]
     let proto_link_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__proto__")));
     chunk.emit_op_u16(Op::STRUCT_SET, proto_link_key, line); // [fn]
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// §10.2.9 SetFunctionName / §10.2.10 SetFunctionLength: `name` and
+/// `length` are non-enumerable data properties. Registers both in the
+/// object's `__nonenum` set (the host convention `propertyIsEnumerable` /
+/// `Object.keys` filter against).
+///
+/// Stack before: [fn]   Stack after: [] (consumed)
+pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
+    chunk.emit_string_const("name", line);
+    chunk.emit_string_const("length", line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line); // [fn, ["name","length"]]
+    let key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__nonenum")));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line); // [fn]
     chunk.emit_op(Op::DROP, line);
 }

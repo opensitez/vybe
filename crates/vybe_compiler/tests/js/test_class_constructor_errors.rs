@@ -46,8 +46,11 @@ crate::js_cases! {
         ["6"]
     };
 
+    // §Spec note: `class D extends null {}` is LEGAL at definition time
+    // (node-verified) — the TypeError surfaces when constructing. The old
+    // source expected a definition-time throw, which never happens.
     class_extends_non_object_throws => {
-        r#"try{class D extends null{}} catch(e){console.log(e instanceof TypeError);}"#,
+        r#"try{class D extends null{} new D();}catch(e){console.log(e instanceof TypeError);}"#,
         ["true"]
     };
 
@@ -61,8 +64,11 @@ crate::js_cases! {
         ["D"]
     };
 
+    // §15.7.14: a class constructor invoked without `new` throws BEFORE the
+    // body runs (node-verified) — new.target is only observable on plain
+    // functions. The direct call must TypeError.
     new_target_undefined_on_direct_call => {
-        r#"class C{constructor(){console.log(new.target===undefined);}} C();"#,
+        r#"class C{constructor(){console.log(new.target===undefined);}} try{C();}catch(e){console.log(e instanceof TypeError);}"#,
         ["true"]
     };
 
@@ -92,7 +98,8 @@ crate::js_cases! {
     };
 
     finally_in_constructor_runs_before_throw_escapes => {
-        r#"let o=[];try{class C{constructor(){try{throw 1;}finally{o.push("f");}}}} new C();}catch{o.push("c");}console.log(o.join(","));"#,
+        // (source was previously malformed — extra `}` made it a SyntaxError)
+        r#"let o=[];try{class C{constructor(){try{throw 1;}finally{o.push("f");}}} new C();}catch{o.push("c");}console.log(o.join(","));"#,
         ["f,c"]
     };
 
@@ -107,12 +114,14 @@ crate::js_cases! {
     };
 
     field_initializer_throw_prevents_instance => {
-        r#"try{class C{x=(()=>{throw new Error("init");})();}} new C();}catch(e){console.log(e.message);}"#,
+        // (source was previously malformed — extra `}` made it a SyntaxError)
+        r#"try{class C{x=(()=>{throw new Error("init");})();} new C();}catch(e){console.log(e.message);}"#,
         ["init"]
     };
 
     private_field_initializer_throw => {
-        r#"try{class C{#x=(()=>{throw new Error("priv");})();}} new C();}catch(e){console.log(e.message);}"#,
+        // (source was previously malformed — extra `}` made it a SyntaxError)
+        r#"try{class C{#x=(()=>{throw new Error("priv");})();} new C();}catch(e){console.log(e.message);}"#,
         ["priv"]
     };
 
@@ -142,13 +151,19 @@ crate::js_cases! {
     };
 
     constructor_parameter_default_throw_on_eval => {
-        r#"try{class C{constructor(x=(()=>{throw new Error("def");})()){}}} new C();}catch(e){console.log(e.message);}"#,
+        // (source was previously malformed — extra `}` made it a SyntaxError)
+        r#"try{class C{constructor(x=(()=>{throw new Error("def");})()){}} new C();}catch(e){console.log(e.message);}"#,
         ["def"]
     };
 
+    // §Spec note (node-verified): catching super()'s throw leaves `this`
+    // uninitialized, so the old source's `this.recovered=` itself threw an
+    // uncaught ReferenceError. The observable spec behavior: the catch sees
+    // the base error, and returning with `this` uninitialized throws
+    // ReferenceError out of `new D()`.
     super_call_in_try_catch_in_derived => {
-        r#"class B{constructor(){throw new Error("b");}} class D extends B{constructor(){try{super();}catch(e){this.recovered=e.message;}}} const d=new D();console.log(d.recovered);"#,
-        ["b"]
+        r#"class B{constructor(){throw new Error("b");}} class D extends B{constructor(){try{super();}catch(e){console.log(e.message);}}} try{new D();}catch(e){console.log(e instanceof ReferenceError);}"#,
+        ["b", "true"]
     };
 
     new_on_bound_class_constructor => {
@@ -176,9 +191,12 @@ crate::js_cases! {
         ["true"]
     };
 
+    // §Spec note: duplicate public field declarations are LEGAL (node-verified,
+    // "ok" — second initializer wins). Previously this test wrongly expected a
+    // SyntaxError.
     duplicate_instance_field_declarations_syntax_error => {
         r#"try{eval("class C { x = 1; x = 2; }"); console.log("ok");}catch(e){console.log(e instanceof SyntaxError);}"#,
-        ["true"]
+        ["ok"]
     };
 
     constructor_with_rest_param_receives_args => {

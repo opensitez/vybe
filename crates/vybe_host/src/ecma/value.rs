@@ -2636,7 +2636,56 @@ fn dispatch_plain_object(
         ctx.set_js_this(saved_this);
         return result;
     }
-    dispatch_tagged_object(ctx, obj, method, args).unwrap_or(Value::Undefined)
+    if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
+        return tagged;
+    }
+    // §20.1.3 Object.prototype defaults — reached when neither the object,
+    // its prototype chain, nor a type tag supplied the method.
+    match method {
+        // §20.1.3.7: default valueOf returns the receiver itself (boxed
+        // primitives unwrap via __primitive).
+        "valueOf" => {
+            let primitive = obj.lock().unwrap().properties.get("__primitive").cloned();
+            primitive.unwrap_or_else(|| Value::Object(obj))
+        }
+        // §20.1.3.6: "[object <@@toStringTag or Object>]".
+        "toString" | "toLocaleString" => {
+            let tag = {
+                let o = obj.lock().unwrap();
+                match o.properties.get("Symbol(toStringTag)") {
+                    Some(Value::String(s)) => s.to_string(),
+                    _ => "Object".to_string(),
+                }
+            };
+            Value::String(Arc::from(format!("[object {}]", tag).as_str()))
+        }
+        // §20.1.3.3: walk the ARGUMENT's prototype chain looking for the
+        // receiver.
+        "isPrototypeOf" => {
+            let mut current = match args.first() {
+                Some(Value::Object(v)) => {
+                    let link = v.lock().unwrap().properties.get("__proto__").cloned();
+                    link
+                }
+                _ => None,
+            };
+            let mut found = false;
+            let mut guard = 0;
+            while let Some(Value::Object(p)) = current {
+                guard += 1;
+                if guard > 10_000 {
+                    break;
+                }
+                if Arc::ptr_eq(&p, &obj) {
+                    found = true;
+                    break;
+                }
+                current = p.lock().unwrap().properties.get("__proto__").cloned();
+            }
+            Value::Bool(found)
+        }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_tagged_object(

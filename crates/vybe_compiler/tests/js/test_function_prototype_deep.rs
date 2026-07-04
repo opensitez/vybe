@@ -165,8 +165,11 @@ crate::js_cases! {
         ["x,y"]
     };
 
+    // §20.1.2.17: Object.keys takes the object as its ARGUMENT — the old
+    // source passed it as thisArg with an empty args array, which throws
+    // a TypeError in node. Borrow via apply with the object in the list.
     apply_borrowed_object_keys_on_plain_object => {
-        r#"const obj = { a: 1, b: 2 }; console.log(Object.keys.apply(obj, []).sort().join(","));"#,
+        r#"const obj = { a: 1, b: 2 }; console.log(Object.keys.apply(null, [obj]).sort().join(","));"#,
         ["a,b"]
     };
 

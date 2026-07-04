@@ -467,6 +467,41 @@ pub fn emit_class_requires_new_guard(chunk: &mut Chunk, class_name: &str, line: 
     chunk.emit_end(line);
 }
 
+/// §9.1.1.3.4 GetThisBinding (JS only): in a derived constructor `this` is
+/// in TDZ until `super()` runs. this_slot holds null until then — reading
+/// `this`, or returning with it still null (missing/failed super), throws
+/// a ReferenceError.
+/// Stack: [] → [] (throws when this_slot is null)
+pub fn emit_this_initialized_guard(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const(
+        "Must call super constructor in derived class before accessing 'this' \
+         or returning from derived constructor",
+        line,
+    );
+    let re_idx = chunk.add_import("ecma:error", "ReferenceError");
+    chunk.emit_call(re_idx, 1, line);
+    crate::emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+}
+
+/// §13.3.7.2 SuperCall step 6 (JS only): calling `super()` when `this` is
+/// already initialized throws a ReferenceError.
+/// Stack: [] → [] (throws when this_slot is non-null)
+pub fn emit_super_once_guard(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("Super constructor may only be called once", line);
+    let re_idx = chunk.add_import("ecma:error", "ReferenceError");
+    chunk.emit_call(re_idx, 1, line);
+    crate::emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+}
+
 pub fn emit_attach_static_method(
     chunk: &mut Chunk,
     ctor_local: u16,
@@ -527,6 +562,13 @@ pub fn emit_attach_static_method_kinded(
     if let Some(fixed_count) = rest_fixed_count {
         emit_stamp_rest_metadata(chunk, fixed_count, line);
     }
+    // §10.2.9 SetFunctionName: a static method's `name` is its property
+    // key (non-enumerable, like all function metadata).
+    chunk.emit_dup(line);
+    chunk.emit_string_const(method_name, line);
+    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
+    chunk.emit_op_u16(Op::STRUCT_SET, name_key, line);
+    crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(chunk, line);
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);

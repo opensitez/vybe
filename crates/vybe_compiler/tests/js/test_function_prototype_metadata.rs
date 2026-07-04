@@ -80,9 +80,12 @@ crate::js_cases! {
         ["true"]
     };
 
+    // §20.2.3.5: bound function exotic objects stringify as the
+    // NativeFunction form, NOT their target's source — node-verified
+    // unequal ("function () { [native code] }" vs the target's text).
     bound_function_to_string_delegates_to_target => {
         r#"function orig() { return 0; } const b = orig.bind(null); console.log(Function.prototype.toString.call(b) === Function.prototype.toString.call(orig));"#,
-        ["true"]
+        ["false"]
     };
 
     function_prototype_to_string_on_itself_is_native => {
@@ -173,9 +176,12 @@ console.log(new Sentinel() instanceof Sentinel);
         ["fn"]
     };
 
+    // §10.2.9 SetFunctionName: a symbol-keyed method's name is
+    // "[<description>]" — node-verified "[m]" (the old expectation used
+    // the variable name, not the description).
     shorthand_method_named_symbol_key_has_empty_name => {
         r#"const s = Symbol("m"); const obj = { [s]() {} }; console.log(obj[s].name);"#,
-        ["[s]"]
+        ["[m]"]
     };
 
     length_of_function_with_only_rest_is_zero => {

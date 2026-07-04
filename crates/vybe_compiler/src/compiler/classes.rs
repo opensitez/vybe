@@ -173,6 +173,101 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
+    /// Instance identity + member stamps a derived constructor applies to
+    /// the `this` produced by `super()`: __type / type-id, __super link,
+    /// base-method saves, field initializers, instance-method binds, form
+    /// identity and auto-init calls. Emitted right after a TOP-LEVEL
+    /// `super()` statement, or (JS, when `super()` is nested — e.g.
+    /// `try{super();}catch{}`) after the whole body guarded by
+    /// `this != null`, since a nested super's completion point isn't
+    /// statically known.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_derived_ctor_stamps(
+        &mut self,
+        name: &str,
+        this_slot: u16,
+        parent: &Option<String>,
+        instance_method_names: &[String],
+        field_inits: &[(
+            String,
+            Option<String>,
+            Option<Expression>,
+            Option<Vec<Expression>>,
+        )],
+        instance_methods: &[&(String, usize, bool, bool)],
+        method_capture_name_map: &HashMap<usize, Vec<String>>,
+        method_rest_fixed_counts: &HashMap<usize, u8>,
+        is_value_type: bool,
+        should_stamp_form_identity: bool,
+        body_stmts: &[Statement],
+        user_body: &[Statement],
+        auto_init_methods: &[String],
+        line: u32,
+    ) -> Result<(), String> {
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        self.emit_const(Value::String(Arc::from(name)));
+        let type_key = self.str_const("__type");
+        self.emit_u16(Op::STRUCT_SET, type_key);
+        self.emit(Op::DROP);
+        let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        self.emit_u16(Op::GLOBAL_GET, tid_key);
+        self.emit(Op::SET_TYPE_ID);
+        self.emit(Op::DROP);
+        if let Some(parent_name) = parent {
+            let pname = self.canon(parent_name);
+            for method_name in instance_method_names {
+                common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+            }
+            self.emit_store_super_ref(this_slot, &pname);
+        }
+        for (fname, type_hint, init, array_bounds) in field_inits {
+            self.emit_class_field_initializer(
+                this_slot,
+                fname,
+                type_hint.as_deref(),
+                init.as_ref(),
+                array_bounds.as_deref(),
+                is_value_type,
+                line,
+            )?;
+        }
+        for (mname, mci, _, _) in instance_methods {
+            if mname.starts_with("__get_") {
+                let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+            } else if mname.starts_with("__set_") {
+                let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+            } else {
+                let capture_names = method_capture_name_map
+                    .get(mci)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                self.emit_bind_instance_method_with_aliases(
+                    this_slot,
+                    mname,
+                    *mci,
+                    capture_names,
+                    method_rest_fixed_counts.get(mci).copied(),
+                    !self.is_js_profile(),
+                )?;
+            }
+        }
+        if should_stamp_form_identity && !body_has_identity_stamp(body_stmts) {
+            self.emit_form_identity_stamp(this_slot, name, line);
+        }
+        for aim in auto_init_methods {
+            let has_method = instance_methods
+                .iter()
+                .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+            if has_method && !body_calls_method(user_body, aim) {
+                common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn captured_name_for_upvalue(
         &self,
         scope_idx: usize,
@@ -940,15 +1035,15 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_SET, length_key);
             self.emit(Op::DROP);
 
+            // The JS walker's wrap_generator lowers `function*` /
+            // `async function*` to a PLAIN outer function holding
+            // `const __gen_fn = function*(){...}` — recover the source
+            // kind from that contract so the §27.3/§27.4 intrinsic
+            // stamp survives the lowering.
+            let (eff_async, eff_generator) =
+                Self::wrapped_generator_kind(body).unwrap_or((is_async, is_generator));
             self.emit_var_get(name);
             {
-                // The JS walker's wrap_generator lowers `function*` /
-                // `async function*` to a PLAIN outer function holding
-                // `const __gen_fn = function*(){...}` — recover the source
-                // kind from that contract so the §27.3/§27.4 intrinsic
-                // stamp survives the lowering.
-                let (eff_async, eff_generator) =
-                    Self::wrapped_generator_kind(body).unwrap_or((is_async, is_generator));
                 let line = self.line;
                 crate::emitter::prototypes::emit_stamp_function_kind_proto(
                     self.chunk(),
@@ -958,17 +1053,43 @@ impl Compiler {
                 );
             }
 
-            self.emit_u16(Op::LOCAL_GET, proto_slot);
+            // §10.2.9/§10.2.10: name/length are non-enumerable.
             self.emit_var_get(name);
-            let ctor_key = self.str_const("constructor");
-            self.emit_u16(Op::STRUCT_SET, ctor_key);
-            self.emit(Op::DROP);
+            {
+                let line = self.line;
+                crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+            }
 
-            self.emit_var_get(name);
-            self.emit_u16(Op::LOCAL_GET, proto_slot);
-            let proto_key = self.str_const("prototype");
-            self.emit_u16(Op::STRUCT_SET, proto_key);
-            self.emit(Op::DROP);
+            // §27.3 / §27.7: generator and async function declarations
+            // have no [[Construct]] — `new` on them must TypeError (the
+            // host construct path checks this marker).
+            if eff_async || eff_generator {
+                self.emit_var_get(name);
+                self.emit_const(Value::Bool(true));
+                let non_ctor_key = self.str_const("__vybe_non_ctor");
+                self.emit_u16(Op::STRUCT_SET, non_ctor_key);
+                self.emit(Op::DROP);
+            }
+
+            // §27.7 / §27.3 (node-verified): async (non-generator)
+            // functions have NO own `prototype` property; generator
+            // functions have one WITHOUT a `constructor` property; plain
+            // functions get the classic prototype/constructor pair.
+            if !eff_async || eff_generator {
+                if !eff_generator {
+                    self.emit_u16(Op::LOCAL_GET, proto_slot);
+                    self.emit_var_get(name);
+                    let ctor_key = self.str_const("constructor");
+                    self.emit_u16(Op::STRUCT_SET, ctor_key);
+                    self.emit(Op::DROP);
+                }
+
+                self.emit_var_get(name);
+                self.emit_u16(Op::LOCAL_GET, proto_slot);
+                let proto_key = self.str_const("prototype");
+                self.emit_u16(Op::STRUCT_SET, proto_key);
+                self.emit(Op::DROP);
+            }
         }
 
         // VB `Handles ctrl.Event` clause on a top-level Sub: register the
@@ -2044,6 +2165,15 @@ impl Compiler {
                 self.emit_u16(Op::GLOBAL_GET, js_this);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
             }
+            // §9.1.1.3.4 (JS): derived-constructor `this` TDZ context.
+            // While this chunk's body compiles, `this` reads and `super()`
+            // calls emit runtime guards against this_slot (null until
+            // super() initializes it). Saved/restored so nested classes
+            // compiled mid-body don't leak the context.
+            let saved_derived_ctx = self.js_derived_ctor_ctx.take();
+            if self.is_js_profile() && parent.is_some() && ctor_body.is_some() {
+                self.js_derived_ctor_ctx = Some((self.current, this_slot));
+            }
 
             let line = self.line;
             if let Some(this_args) = ctor_this_args {
@@ -2373,92 +2503,58 @@ impl Compiler {
                         for stmt in &body_stmts[..preamble_end] {
                             self.compile_stmt(stmt)?;
                         }
-                        self.emit_u16(Op::LOCAL_GET, this_slot);
-                        self.emit_const(Value::String(Arc::from(name)));
-                        let type_key2 = self.str_const("__type");
-                        self.emit_u16(Op::STRUCT_SET, type_key2);
-                        self.emit(Op::DROP);
-                        let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
-                        self.emit_u16(Op::LOCAL_GET, this_slot);
-                        self.emit_u16(Op::GLOBAL_GET, tid_key);
-                        self.emit(Op::SET_TYPE_ID);
-                        self.emit(Op::DROP);
-                        if let Some(parent_name) = parent {
-                            let pname = self.canon(parent_name);
-                            for method_name in &instance_method_names {
-                                common::classes::emit_save_base_method(
-                                    self.chunk(),
-                                    this_slot,
-                                    method_name,
-                                    line,
-                                );
-                            }
-                            self.emit_store_super_ref(this_slot, &pname);
-                        }
-                        for (fname, type_hint, init, array_bounds) in &field_inits {
-                            self.emit_class_field_initializer(
+                        let user_body = &body_stmts[preamble_end..];
+                        // JS: when super() isn't a top-level statement
+                        // (e.g. `try{super();}catch{}`), its completion
+                        // point isn't statically known — defer the
+                        // instance stamps until after the body, guarded by
+                        // `this != null` (§9.1.1.3.4: this_slot stays null
+                        // when super() never ran; the constructor-return
+                        // TDZ guard throws the ReferenceError then).
+                        let stamps_deferred = super_idx.is_none() && self.is_js_profile();
+                        if !stamps_deferred {
+                            self.emit_derived_ctor_stamps(
+                                name,
                                 this_slot,
-                                fname,
-                                type_hint.as_deref(),
-                                init.as_ref(),
-                                array_bounds.as_deref(),
+                                parent,
+                                &instance_method_names,
+                                &field_inits,
+                                &instance_methods,
+                                &method_capture_name_map,
+                                &method_rest_fixed_counts,
                                 class.is_value_type,
+                                should_stamp_form_identity,
+                                body_stmts,
+                                user_body,
+                                &class.auto_init_methods,
                                 line,
                             )?;
                         }
-                        for (mname, mci, _, _) in &instance_methods {
-                            if mname.starts_with("__get_") {
-                                let prop = mname.strip_prefix("__get_").unwrap_or(mname);
-                                common::classes::emit_bind_getter(
-                                    self.chunk(),
-                                    this_slot,
-                                    prop,
-                                    *mci,
-                                    line,
-                                );
-                            } else if mname.starts_with("__set_") {
-                                let prop = mname.strip_prefix("__set_").unwrap_or(mname);
-                                common::classes::emit_bind_setter(
-                                    self.chunk(),
-                                    this_slot,
-                                    prop,
-                                    *mci,
-                                    line,
-                                );
-                            } else {
-                                let capture_names = method_capture_name_map
-                                    .get(mci)
-                                    .map(Vec::as_slice)
-                                    .unwrap_or(&[]);
-                                self.emit_bind_instance_method_with_aliases(
-                                    this_slot,
-                                    mname,
-                                    *mci,
-                                    capture_names,
-                                    method_rest_fixed_count(*mci),
-                                    !self.is_js_profile(),
-                                )?;
-                            }
-                        }
-                        let user_body = &body_stmts[preamble_end..];
-                        if should_stamp_form_identity && !body_has_identity_stamp(body_stmts) {
-                            self.emit_form_identity_stamp(this_slot, name, line);
-                        }
-                        for aim in &class.auto_init_methods {
-                            let has_method = instance_methods
-                                .iter()
-                                .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
-                            if has_method && !body_calls_method(user_body, aim) {
-                                common::classes::emit_auto_init_call(
-                                    self.chunk(),
-                                    this_slot,
-                                    aim,
-                                    line,
-                                );
-                            }
-                        }
                         for stmt in user_body {
                             self.compile_stmt(stmt)?;
+                        }
+                        if stamps_deferred {
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            self.emit(Op::I32_EQZ);
+                            self.chunks[self.current].emit_if(line);
+                            self.emit_derived_ctor_stamps(
+                                name,
+                                this_slot,
+                                parent,
+                                &instance_method_names,
+                                &field_inits,
+                                &instance_methods,
+                                &method_capture_name_map,
+                                &method_rest_fixed_counts,
+                                class.is_value_type,
+                                should_stamp_form_identity,
+                                body_stmts,
+                                user_body,
+                                &class.auto_init_methods,
+                                line,
+                            )?;
+                            self.chunks[self.current].emit_end(line);
                         }
                     }
                 } else {
@@ -2615,6 +2711,12 @@ impl Compiler {
                     self.emit(Op::DROP);
                     self.chunks[self.current].emit_end(line);
                 }
+                // §9.1.1.3.4 (JS): returning from a derived constructor
+                // with `this` still uninitialized (super() missing, or its
+                // throw was caught) is a ReferenceError.
+                if self.js_derived_ctor_ctx == Some((self.current, this_slot)) {
+                    common::classes::emit_this_initialized_guard(self.chunk(), this_slot, line);
+                }
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
 
@@ -2627,6 +2729,7 @@ impl Compiler {
             self.current = saved_cur;
             self.current_class = saved_class2;
             self.current_class_implicit_self = saved_implicit2;
+            self.js_derived_ctor_ctx = saved_derived_ctx;
             ctor_helpers.push((
                 user_arity as usize,
                 ctor_min_arity,
@@ -2779,6 +2882,29 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_SET, name_key);
             self.emit(Op::DROP);
 
+            // §15.7.5 step 7 (JS): the class constructor's own
+            // [[Prototype]] — the parent constructor for derived classes
+            // (static inheritance walks it), %Function.prototype% for
+            // base classes (C.bind / C.call / C.apply resolve through it).
+            if self.is_js_profile() {
+                if let Some(parent_name) = parent {
+                    let pname = self.canon(parent_name);
+                    self.emit_u16(Op::LOCAL_GET, ctor_local);
+                    self.emit_var_get(&pname);
+                    let proto_link_key = self.str_const("__proto__");
+                    self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                    self.emit(Op::DROP);
+                } else {
+                    self.emit_u16(Op::LOCAL_GET, ctor_local);
+                    crate::emitter::prototypes::emit_stamp_function_kind_proto(
+                        self.chunk(),
+                        false,
+                        false,
+                        line,
+                    );
+                }
+            }
+
             // The prototype is the class's open method table: every
             // instance method lands on it, so `C.prototype.m` resolves
             // and reassignment has a real target. Capture-carrying
@@ -2813,6 +2939,16 @@ impl Compiler {
                         m_gen,
                         line,
                     );
+                }
+                // §10.2.9 SetFunctionName: a class method's `name` is its
+                // property key (non-enumerable, like all fn metadata).
+                inst!(self, core_wasm::dup);
+                self.emit_const(Value::String(Arc::from(mname.as_str())));
+                let name_key = self.str_const("name");
+                self.emit_u16(Op::STRUCT_SET, name_key);
+                {
+                    let line = self.line;
+                    crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
                 }
                 let key = self.str_const(mname);
                 self.emit_u16(Op::STRUCT_SET, key);

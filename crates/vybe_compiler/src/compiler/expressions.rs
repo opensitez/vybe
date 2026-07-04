@@ -49,7 +49,7 @@ impl Compiler {
         }
     }
 
-    fn emit_js_member_fallback_get(&mut self, obj_slot: u16, field_name: &str) {
+    pub(super) fn emit_js_member_fallback_get(&mut self, obj_slot: u16, field_name: &str) {
         let lookup = self.str_const("__vybe_js_get_method");
         let getter_slot = self.define_local("__js_member_getter");
         let accessor_name = format!("__get_{}", field_name);
@@ -694,6 +694,13 @@ impl Compiler {
                     .or_else(|| self.scope().resolve("self"))
                     .or_else(|| self.scope().resolve("this"))
                 {
+                    // §9.1.1.3.4 (JS): inside a derived constructor `this`
+                    // is in TDZ until super() runs — reading it while
+                    // this_slot is still null throws a ReferenceError.
+                    if self.js_derived_ctor_ctx == Some((self.current, slot)) {
+                        let l = self.line;
+                        common::classes::emit_this_initialized_guard(self.chunk(), slot, l);
+                    }
                     self.emit_u16(Op::LOCAL_GET, slot);
                 } else if self.scopes.len() > 1 {
                     // Arrow function: capture `this` from enclosing scope via upvalue
@@ -1949,6 +1956,20 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             let prop = self.str_const("length");
                             self.emit_u16(Op::STRUCT_GET, prop);
+                            // §10.1.8.1 OrdinaryGet: a missing own
+                            // `length` walks the prototype chain like any
+                            // other key (e.g. AsyncFunction.prototype
+                            // .length inherits %Function.prototype%'s 0).
+                            let val_slot = self.define_local("__js_member_len");
+                            self.emit_u16(Op::LOCAL_SET, val_slot);
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
+                            let lookup_line = self.line;
+                            self.chunk().emit_if_value(lookup_line);
+                            self.emit_js_member_fallback_get(obj_slot, "length");
+                            self.chunk().emit_else(lookup_line);
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            self.chunk().emit_end(lookup_line);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.restore_js_this(saved_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -3289,7 +3310,29 @@ impl Compiler {
                         return Ok(());
                     }
                     if self.defined_classes.contains(&canon_type) {
-                        let overload_global = format!("{}$arity{}", canon_type, args.len());
+                        // §14.1.13 (JS): rest parameter in a constructor —
+                        // pack surplus positional args into an Array so the
+                        // ctor's rest slot receives a proper Array (no
+                        // surplus ⇒ empty array). Static packing; spread
+                        // args keep the plain path.
+                        let js_ctor_rest_fixed: Option<usize> = if self.is_js_profile()
+                            && !args
+                                .iter()
+                                .any(|a| matches!(a.value.kind, ExprKind::Spread(_)))
+                        {
+                            self.constructor_signatures
+                                .get(&canon_type)
+                                .and_then(|sigs| sigs.iter().find(|s| s.has_rest))
+                                .map(|s| s.param_names.len().saturating_sub(1))
+                                .filter(|fixed| args.len() >= *fixed)
+                        } else {
+                            None
+                        };
+                        let effective_len = match js_ctor_rest_fixed {
+                            Some(fixed) => fixed + 1,
+                            None => args.len(),
+                        };
+                        let overload_global = format!("{}$arity{}", canon_type, effective_len);
                         let ctor_global = if self.defined_globals.contains(&overload_global) {
                             overload_global
                         } else {
@@ -3303,8 +3346,24 @@ impl Compiler {
                         // class global. Type names always come from globals.
                         let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
                         self.emit_constructor_global_ref(&ctor_global, autoload_name);
-                        for a in args {
-                            self.compile_expr(&a.value)?;
+                        if let Some(fixed) = js_ctor_rest_fixed {
+                            for a in &args[..fixed] {
+                                self.compile_expr(&a.value)?;
+                            }
+                            for a in &args[fixed..] {
+                                self.compile_expr(&a.value)?;
+                            }
+                            let l = self.line;
+                            common::collections::emit_array_new(
+                                &mut self.chunks,
+                                self.current,
+                                (args.len() - fixed) as u16,
+                                l,
+                            );
+                        } else {
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
                         }
                         // §13.3.5: new.target is the invoked constructor for
                         // the whole construction chain (parent ctor bodies
@@ -3323,7 +3382,7 @@ impl Compiler {
                             "__js_prev_this_new_{}",
                             self.chunks[self.current].local_count
                         ));
-                        self.emit_u8(Op::CALL_REF, args.len() as u8);
+                        self.emit_u8(Op::CALL_REF, effective_len as u8);
                         self.restore_js_this(saved_this);
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
@@ -3428,12 +3487,24 @@ impl Compiler {
                         _ => {}
                     }
 
-                    // Built-in exception types — route through compiler_common
-                    // so that every language produces the canonical 4-field
-                    // shape and the type name is normalized. PHP `RuntimeException`,
-                    // Python `RuntimeError`, JS `Error`, etc. all produce identical
-                    // bytecode and can catch each other cross-language.
-                    if common::errors::is_exception_type(bare_str) {
+                    // Built-in exception types with NO backing class definition —
+                    // route through compiler_common so a language that treats its
+                    // exceptions as intrinsics (JS `new Error()`, Python
+                    // `RuntimeError`, …) still produces the canonical shape.
+                    //
+                    // The predicate is deliberately "built-in name AND not a
+                    // defined class": once a language models its exceptions as
+                    // real classes (PHP defines the whole Throwable/Error/
+                    // Exception hierarchy), the name is user-visible and MUST go
+                    // through the ordinary class emitter instead — that's what
+                    // keeps `get_class` and the `__types` inheritance chain
+                    // language-faithful. Not a special case: an intrinsic name
+                    // shadowed by a real class is no longer an intrinsic.
+                    let is_intrinsic_exception = common::errors::is_exception_type(bare_str)
+                        && !self.defined_classes.contains(type_name)
+                        && !self.defined_classes.contains(&self.canon(type_name))
+                        && !self.defined_classes.contains(bare_str);
+                    if is_intrinsic_exception {
                         let ctor_args: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
                         self.emit_js_exception_ctor_value(type_name, &ctor_args)?;
                         return Ok(());
@@ -3675,7 +3746,10 @@ impl Compiler {
                 captures,
                 is_async,
             } => {
-                self.compile_lambda_with_flags(params, body, captures, *is_async, false)?;
+                // ExprKind::Lambda in JS IS the arrow form (function
+                // expressions arrive as FunctionExpr, shorthand methods
+                // via the object-literal path below).
+                self.compile_lambda_with_flags(params, body, captures, *is_async, false, true)?;
             }
 
             // ── Array literal ───────────────────────────────────────────
@@ -3953,7 +4027,10 @@ impl Compiler {
                                     let should_infer_name = match &value.kind {
                                         ExprKind::Lambda { .. } => true,
                                         ExprKind::FunctionExpr(stmt) => {
-                                            matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty())
+                                            // Walker-synthesized `__anon_fn_N`
+                                            // names are anonymous for §10.2.9
+                                            // SetFunctionName purposes.
+                                            matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty() || name.starts_with("__anon_fn_"))
                                         }
                                         ExprKind::ClassExpr { name, .. } => name.is_none(),
                                         _ => false,
@@ -4069,6 +4146,7 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
+                                        false,
                                     )?;
                                 } else {
                                     // Object methods receive `this` as implicit first arg
@@ -4089,6 +4167,8 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
+                                    
+                                        false,
                                     )?;
                                 }
                             } else {
@@ -4123,6 +4203,7 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
+                                        false,
                                     )?;
                                 } else {
                                     // Accessors receive `this` as first arg
@@ -4143,6 +4224,8 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
+                                    
+                                        false,
                                     )?;
                                 }
                             } else {
@@ -4173,6 +4256,21 @@ impl Compiler {
                             let key_tmp = self.define_local("__obj_comp_key");
                             self.emit_u16(Op::LOCAL_SET, key_tmp);
                             self.compile_expr(value)?;
+                            // §10.2.9 SetFunctionName: an anonymous fn under
+                            // a computed key is named from the runtime key
+                            // (symbols → "[<description>]").
+                            if self.is_js_profile()
+                                && matches!(
+                                    &value.kind,
+                                    ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
+                                )
+                            {
+                                inst!(self, core_wasm::dup);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                let sfn = self.import("ecma:function", "setFunctionName");
+                                self.emit_host_call(sfn, 2);
+                                self.emit(Op::DROP);
+                            }
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
@@ -5223,7 +5321,9 @@ impl Compiler {
                             .get(class_name.as_str())
                             .and_then(|c| c.parent.clone())
                         {
-                            if common::errors::is_exception_type(&parent_name) {
+                            if !self.shadows_builtin_type(&parent_name)
+                                && common::errors::is_exception_type(&parent_name)
+                            {
                                 let arg_exprs: Vec<&Expression> =
                                     args.iter().map(|arg| &arg.value).collect();
                                 self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
@@ -5236,6 +5336,19 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_SET, slot);
                                 }
                                 return Ok(());
+                            }
+                            // §13.3.7.2 (JS): super() may only run once —
+                            // a second call sees this_slot already
+                            // initialized and throws a ReferenceError.
+                            if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
+                                if ctx_chunk == self.current {
+                                    let l = self.line;
+                                    common::classes::emit_super_once_guard(
+                                        self.chunk(),
+                                        ctx_slot,
+                                        l,
+                                    );
+                                }
                             }
                             self.emit_var_get(&parent_name);
                             for a in args {

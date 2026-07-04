@@ -205,8 +205,11 @@ crate::js_cases! {
         ["worker"]
     };
 
+    // §27.7: an async function returns a FRESH promise per call, so the
+    // two results can never be `===` even though the lexical `this` is
+    // identical (node-verified false). Await the values to compare them.
     async_function_call_with_this_ignores_this_in_arrow => {
-        r#"const f = async () => this; console.log(f.call({ x: 1 }) === f.call({ x: 2 }));"#,
+        r#"const f = async () => this; (async () => { console.log((await f.call({ x: 1 })) === (await f.call({ x: 2 }))); })();"#,
         ["true"]
     };
 
@@ -240,9 +243,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // §27.7.2: %AsyncFunction.prototype% is an ordinary object, not a
+    // function (node-verified "object").
     async_function_prototype_is_object => {
         r#"console.log(typeof AsyncFunction.prototype);"#,
-        ["function"]
+        ["object"]
     };
 
     async_function_prototype_constructor_is_async_function => {
@@ -320,8 +325,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // §27.7.1: %AsyncFunction.prototype%'s [[Prototype]] is
+    // %Function.prototype%, and isPrototypeOf walks the whole chain —
+    // node-verified true.
     function_prototype_is_not_prototype_of_async_function_directly => {
         r#"async function f() {} console.log(Function.prototype.isPrototypeOf(f));"#,
-        ["false"]
+        ["true"]
     };
 }

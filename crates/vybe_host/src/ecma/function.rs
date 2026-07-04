@@ -19,7 +19,25 @@ static FUNCTION_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_function_prototype() -> Value {
     Value::Object(
         FUNCTION_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| {
+                // §20.2.3: %Function.prototype% has own non-enumerable
+                // `length: 0` and `name: ""` data properties — the
+                // intrinsic kind prototypes (%AsyncFunction.prototype% …)
+                // inherit them through their [[Prototype]] link.
+                let mut proto = Object::new();
+                proto.properties.insert("length".into(), Value::F64(0.0));
+                proto
+                    .properties
+                    .insert("name".into(), Value::String(Arc::from("")));
+                proto.properties.insert(
+                    "__nonenum".into(),
+                    Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                        Value::String(Arc::from("length")),
+                        Value::String(Arc::from("name")),
+                    ])))),
+                );
+                Arc::new(Mutex::new(proto))
+            })
             .clone(),
     )
 }
@@ -215,6 +233,121 @@ pub fn register(vm: &mut VM) {
             invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
         }),
     );
+
+    // §10.2.9 SetFunctionName for runtime-computed property keys:
+    // anonymous functions assigned under a computed key take the key's
+    // string form; symbol keys become "[<description>]" (or "" when the
+    // symbol has none). Already-named functions keep their name.
+    vm.register_host_fn(
+        "ecma:function",
+        "setFunctionName",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(Value::Object(f)) = args.first() {
+                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let mut o = f.lock().unwrap();
+                let anonymous = match o.properties.get("name") {
+                    Some(Value::String(n)) => n.is_empty() || n.starts_with("__anon_fn_"),
+                    _ => true,
+                };
+                if anonymous {
+                    let name = match &key {
+                        Value::Symbol(s) => {
+                            if crate::ecma::symbol::has_description(s) {
+                                format!("[{}]", s)
+                            } else {
+                                String::new()
+                            }
+                        }
+                        other => format!("{}", other),
+                    };
+                    o.properties
+                        .insert("name".into(), Value::String(Arc::from(name.as_str())));
+                }
+            }
+            Value::Undefined
+        }),
+    );
+
+    // §20.2.3.5 Function.prototype.toString. Source text isn't retained,
+    // so every form uses the spec's NativeFunction fallback shape with the
+    // function's kind classifier tokens (async / * / =>) and name.
+    vm.register_host_fn(
+        "ecma:function",
+        "toString",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            Value::String(Arc::from(function_to_string(&target).as_str()))
+        }),
+    );
+    let to_string_idx = *vm
+        .host_registry
+        .get(&("ecma:function".to_string(), "toString".to_string()))
+        .expect("ecma:function.toString just registered");
+    if let Value::Object(proto) = shared_function_prototype() {
+        let mut p = proto.lock().unwrap();
+        if !p.properties.contains_key("toString") {
+            let mut ts = Object::new();
+            ts.kind = ObjectKind::HostFunction(to_string_idx);
+            ts.properties
+                .insert("name".into(), Value::String(Arc::from("toString")));
+            ts.properties.insert("length".into(), Value::F64(0.0));
+            ts.properties
+                .insert("__vybe_method_receiver".into(), Value::Bool(true));
+            p.properties
+                .insert("toString".into(), Value::Object(Arc::new(Mutex::new(ts))));
+            // toString is non-enumerable on %Function.prototype%.
+            if let Some(Value::Object(ne)) = p.properties.get("__nonenum") {
+                let mut a = ne.lock().unwrap();
+                if let ObjectKind::Array(ref mut elems) = a.kind {
+                    elems.push(Value::String(Arc::from("toString")));
+                }
+            }
+        }
+    }
+}
+
+/// §20.2.3.5 — synthesized function string. Bound and native functions use
+/// the NativeFunction form; compiled functions add the kind tokens the
+/// compiler stamped (`__fn_kind`, `__fn_arrow`).
+fn function_to_string(target: &Value) -> String {
+    let Value::Object(obj) = target else {
+        return "function () { [native code] }".to_string();
+    };
+    let o = obj.lock().unwrap();
+    // §20.2.3.5 step 2 note: bound function exotic objects stringify as
+    // native — they never expose their target's source.
+    if o.properties.contains_key("__bound_args") {
+        return "function () { [native code] }".to_string();
+    }
+    let name = match o.properties.get("name") {
+        Some(Value::String(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    if matches!(o.kind, ObjectKind::HostFunction(_)) {
+        return format!("function {}() {{ [native code] }}", name);
+    }
+    if matches!(o.properties.get("__fn_arrow"), Some(Value::Bool(true))) {
+        let is_async = matches!(
+            o.properties.get("__fn_kind"),
+            Some(Value::String(k)) if k.as_ref() == "async"
+        );
+        return format!(
+            "{}() => {{ [native code] }}",
+            if is_async { "async " } else { "" }
+        );
+    }
+    match o.properties.get("__fn_kind") {
+        Some(Value::String(k)) if k.as_ref() == "async" => {
+            format!("async function {}() {{ [native code] }}", name)
+        }
+        Some(Value::String(k)) if k.as_ref() == "generator" => {
+            format!("function* {}() {{ [native code] }}", name)
+        }
+        Some(Value::String(k)) if k.as_ref() == "async_generator" => {
+            format!("async function* {}() {{ [native code] }}", name)
+        }
+        _ => format!("function {}() {{ [native code] }}", name),
+    }
 }
 
 pub(crate) fn invoke_bound_callback_if_needed(
@@ -335,6 +468,9 @@ pub(crate) fn invoke_with_explicit_this(
             result
         }
         Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
+            // Arrows need no special case here: they capture lexical
+            // `this` at creation (compiler-emitted upvalue) and never read
+            // the ambient binding this sets (§10.2.11).
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = invoke_compiled_function(ctx, target, args);
@@ -583,7 +719,15 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         return target.clone();
     };
 
-    let (target_kind, existing_bound, target_name, target_length, target_proto) = {
+    let (
+        target_kind,
+        existing_bound,
+        target_name,
+        target_length,
+        target_proto,
+        target_proto_link,
+        target_non_ctor,
+    ) = {
         let o = obj.lock().unwrap();
         let prev_bound = match o.properties.get("__bound_args") {
             Some(Value::Object(ba)) => {
@@ -621,7 +765,20 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             .get("prototype")
             .cloned()
             .unwrap_or(Value::Undefined);
-        (o.kind.clone(), prev_bound, name, length, prototype)
+        let proto_link = o.properties.get("__proto__").cloned();
+        let non_ctor = matches!(
+            o.properties.get("__vybe_non_ctor"),
+            Some(Value::Bool(true))
+        );
+        (
+            o.kind.clone(),
+            prev_bound,
+            name,
+            length,
+            prototype,
+            proto_link,
+            non_ctor,
+        )
     };
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
@@ -648,9 +805,22 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         "__bound_args".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(stored_bound)))),
     );
-    wrapper
-        .properties
-        .insert("__proto__".into(), shared_function_prototype());
+    // §10.4.1.3 BoundFunctionCreate step 1: the bound function's
+    // [[Prototype]] is the TARGET's [[Prototype]] — a bound async fn
+    // stays `instanceof AsyncFunction`, a bound generator fn stays
+    // `instanceof GeneratorFunction`. Fall back to %Function.prototype%.
+    wrapper.properties.insert(
+        "__proto__".into(),
+        match target_proto_link {
+            Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
+            _ => shared_function_prototype(),
+        },
+    );
+    if target_non_ctor {
+        wrapper
+            .properties
+            .insert("__vybe_non_ctor".into(), Value::Bool(true));
+    }
     wrapper.properties.insert(
         "name".into(),
         Value::String(Arc::from(format!("bound {}", target_name).as_str())),
@@ -673,7 +843,15 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         return target.clone();
     };
 
-    let (target_kind, existing_bound, target_name, target_length, target_proto) = {
+    let (
+        target_kind,
+        existing_bound,
+        target_name,
+        target_length,
+        target_proto,
+        target_proto_link,
+        target_non_ctor,
+    ) = {
         let o = obj.lock().unwrap();
         let prev_bound = match o.properties.get("__bound_args") {
             Some(Value::Object(ba)) => {
@@ -711,7 +889,20 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             .get("prototype")
             .cloned()
             .unwrap_or(Value::Undefined);
-        (o.kind.clone(), prev_bound, name, length, prototype)
+        let proto_link = o.properties.get("__proto__").cloned();
+        let non_ctor = matches!(
+            o.properties.get("__vybe_non_ctor"),
+            Some(Value::Bool(true))
+        );
+        (
+            o.kind.clone(),
+            prev_bound,
+            name,
+            length,
+            prototype,
+            proto_link,
+            non_ctor,
+        )
     };
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
@@ -738,9 +929,22 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         "__bound_args".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(stored_bound)))),
     );
-    wrapper
-        .properties
-        .insert("__proto__".into(), shared_function_prototype());
+    // §10.4.1.3 BoundFunctionCreate step 1: the bound function's
+    // [[Prototype]] is the TARGET's [[Prototype]] — a bound async fn
+    // stays `instanceof AsyncFunction`, a bound generator fn stays
+    // `instanceof GeneratorFunction`. Fall back to %Function.prototype%.
+    wrapper.properties.insert(
+        "__proto__".into(),
+        match target_proto_link {
+            Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
+            _ => shared_function_prototype(),
+        },
+    );
+    if target_non_ctor {
+        wrapper
+            .properties
+            .insert("__vybe_non_ctor".into(), Value::Bool(true));
+    }
     wrapper.properties.insert(
         "name".into(),
         Value::String(Arc::from(format!("bound {}", target_name).as_str())),

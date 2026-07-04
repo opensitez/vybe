@@ -141,6 +141,19 @@ impl VM {
 
         if let Some(idx) = matched_idx {
             let handler = self.exception_handlers[idx].clone();
+            // The handler's frame sits BELOW the innermost dispatch loop's
+            // floor: unwinding here would leave this nested loop executing
+            // an OUTER loop's frames (fatal "no frame" when the outer loop
+            // resumes on an empty stack). Defer instead — last_exception
+            // propagates through the host-call chain and re-raises at the
+            // outer loop's host-call site, which CAN unwind cleanly.
+            if let Some(&floor) = self.exec_floors.last() {
+                if handler.frame_depth < floor {
+                    self.last_exception = Some(val.clone());
+                    let stack = self.capture_call_stack();
+                    return Err(VMError::new(format!("{}", val)).with_stack(stack));
+                }
+            }
             self.exception_handlers.truncate(idx);
             while self.frames.len() > handler.frame_depth {
                 let base = self.frames.last().unwrap().base;

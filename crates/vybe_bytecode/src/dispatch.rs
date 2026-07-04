@@ -585,11 +585,43 @@ impl VM {
     }
 
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
+        // Track this loop's floor so exception unwinding defers instead of
+        // crossing it (see `raise_exception_value`). Pop on every exit.
+        self.exec_floors.push(min_depth);
+        let result = self.execute_until_inner(min_depth);
+        self.exec_floors.pop();
+        result
+    }
+
+    fn execute_until_inner(&mut self, min_depth: usize) -> Result<Value, VMError> {
         // The fiber this loop was entered on. Stack-switching swaps whole frame
         // stacks mid-loop; `min_depth` is only meaningful for THIS fiber, so
         // the return/end boundaries below are gated on still running it.
         let entry_fiber_id = self.cur_fiber_id;
+        let mut dbg_last_op: Option<Op> = None; // TEMP diagnostics (VYBE_DEBUG_AC)
         loop {
+            if self.frames.is_empty() && std::env::var("VYBE_DEBUG_AC").is_ok() {
+                eprintln!(
+                    "[AC-DEBUG] loop-top EMPTY frames: last_op={:?} last_import={:?} stack_len={} ac_len={} fiber={} floors={:?}",
+                    dbg_last_op,
+                    self.dbg_last_import,
+                    self.stack.len(),
+                    self.active_continuations.len(),
+                    self.cur_fiber_id,
+                    self.async_floors
+                );
+            }
+            // Floor check on EVERY iteration, not only at RETURN/END sites:
+            // an exception raised inside this (nested) loop can unwind to a
+            // handler in a frame BELOW our floor (raise_exception_value jumps
+            // ip/frames directly). Continuing here would execute the OUTER
+            // loop's frames inside this one — running them to completion and
+            // leaving the outer dispatch loop facing an empty frame stack
+            // (fatal "no frame"). Yield control back to the Rust caller; the
+            // outer loop resumes at the handler ip the unwind established.
+            if self.frames.len() < min_depth && self.cur_fiber_id == entry_fiber_id {
+                return Ok(Value::Null);
+            }
             let f = self.frame();
             let chunk = &self.chunks[f.chunk_index];
 
@@ -621,6 +653,7 @@ impl VM {
                     )));
                 }
             };
+            dbg_last_op = Some(op);
 
             // ── Execution trace ──────────────────────────────────────────
             if self.trace {
@@ -1803,6 +1836,17 @@ impl VM {
                     // Mark the cont Done and transfer control back to the
                     // caller of RESUME/GEN_NEXT rather than exiting the VM.
                     if self.frames.is_empty() {
+                        if std::env::var("VYBE_DEBUG_AC").is_ok() {
+                            eprintln!(
+                                "[AC-DEBUG] empty-frames RETURN: chunk={} ip={} min_depth={} ac_len={} fiber={} stack_len={}",
+                                self.chunks[frame_chunk].name,
+                                opcode_start,
+                                min_depth,
+                                self.active_continuations.len(),
+                                self.cur_fiber_id,
+                                self.stack.len()
+                            );
+                        }
                         if let Some(ac) = self.active_continuations.pop() {
                             if let Value::Object(ref obj) = ac.cont {
                                 let o = obj.lock().unwrap();
@@ -1909,6 +1953,13 @@ impl VM {
                             let args: Vec<Value> = self.stack[base..].to_vec();
                             self.stack.truncate(base);
 
+                            if std::env::var("VYBE_DEBUG_AC").is_ok() {
+                                self.dbg_last_import = self
+                                    .host_registry
+                                    .iter()
+                                    .find(|(_, v)| **v == host_idx)
+                                    .map(|((m, n), _)| format!("{}:{}", m, n));
+                            }
                             let host_fn = self.host_fns[host_idx].clone();
                             let result = {
                                 let mut ctx = self.make_host_context();
