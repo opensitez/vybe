@@ -20,20 +20,41 @@ pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
 // (setPrototypeOf inside the guard), never replaced, so hoisted stamps
 // keep identity. Each prototype inherits from %Function.prototype%, so
 // `asyncFn instanceof Function` stays true through the chain.
-function AsyncFunction() { throw new TypeError("AsyncFunction constructor is not supported"); }
-function GeneratorFunction() { throw new TypeError("GeneratorFunction constructor is not supported"); }
-function AsyncGeneratorFunction() { throw new TypeError("AsyncGeneratorFunction constructor is not supported"); }
+// §27.3.2 / §27.7.3 / §27.4.2: each intrinsic constructor's `length` is 1
+// (the trailing body argument) — hence the single parameter.
+function AsyncFunction(body) { throw new TypeError("AsyncFunction constructor is not supported"); }
+function GeneratorFunction(body) { throw new TypeError("GeneratorFunction constructor is not supported"); }
+function AsyncGeneratorFunction(body) { throw new TypeError("AsyncGeneratorFunction constructor is not supported"); }
 
 // These link fresh PER-VM objects (the hoisted declarations above), so they
 // must run on every VM — NOT inside the prelude-done guard, whose flag rides
 // the process-global shared prototypes and stays set across VMs in one
 // process (test harness). All three statements are idempotent.
 Object.setPrototypeOf(AsyncFunction.prototype, Function.prototype);
-globalThis.AsyncFunction = AsyncFunction;
 Object.setPrototypeOf(GeneratorFunction.prototype, Function.prototype);
-globalThis.GeneratorFunction = GeneratorFunction;
 Object.setPrototypeOf(AsyncGeneratorFunction.prototype, Function.prototype);
-globalThis.AsyncGeneratorFunction = AsyncGeneratorFunction;
+// §19: well-known intrinsics on the global object are non-enumerable.
+Object.defineProperty(globalThis, "AsyncFunction", { value: AsyncFunction, writable: true, enumerable: false, configurable: true });
+Object.defineProperty(globalThis, "GeneratorFunction", { value: GeneratorFunction, writable: true, enumerable: false, configurable: true });
+Object.defineProperty(globalThis, "AsyncGeneratorFunction", { value: AsyncGeneratorFunction, writable: true, enumerable: false, configurable: true });
+
+// §20.2.3.6 Function.prototype[Symbol.hasInstance] — OrdinaryHasInstance:
+// walk V's prototype chain looking for this.prototype. Lives on
+// %Function.prototype% so EVERY function inherits the SAME fn
+// (F[Symbol.hasInstance] === Function[Symbol.hasInstance]); also set on
+// Function directly since the global constructor object may lack the
+// proto link. Must stay idempotent (configurable: true): this unguarded
+// prelude runs once per VM and several VMs share one process (test
+// harness) — a non-configurable redefine would throw on the second VM.
+var __vybe_ordinary_has_instance = function(v) {
+    if (v === null || v === undefined) return false;
+    let p = Object.getPrototypeOf(Object(v));
+    const target = this.prototype;
+    while (p) { if (p === target) return true; p = Object.getPrototypeOf(p); }
+    return false;
+};
+Object.defineProperty(Function.prototype, Symbol.hasInstance, { value: __vybe_ordinary_has_instance, writable: false, enumerable: false, configurable: true });
+Object.defineProperty(Function, Symbol.hasInstance, { value: __vybe_ordinary_has_instance, writable: false, enumerable: false, configurable: true });
 
 if (!globalThis.__vybe_js_prelude_done) {
     globalThis.__vybe_js_prelude_done = true;

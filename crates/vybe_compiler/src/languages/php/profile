@@ -10,6 +10,10 @@ extensions = ["php", "phtml"]
 
 [compiler]
 function_return = "explicit"
+throwable_is_root = true            # `Throwable` is the universal root; the
+                                    # `Error` and `Exception` branches are
+                                    # siblings, so `catch (Exception)` does not
+                                    # catch `Error`s (matches via __types chain).
 string_aware_relational = true      # `<`/`>`/`<=`/`>=`/`<=>` compare strings
                                     # lexicographically, else numeric/dynamic;
                                     # DateTime operands unboxed first.
@@ -68,7 +72,7 @@ __php_intdiv        = { emit = "common:php.intdiv",          min_args = 2, max_a
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-strlen              = { emit = "common:str_length",          min_args = 1, max_args = 1 }
+strlen              = { emit = "common:php.strlen",          min_args = 1, max_args = 1 }
 strtolower          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
 strtoupper          = { emit = "common:str_to_upper",        min_args = 1, max_args = 1 }
 strcmp              = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
@@ -86,8 +90,8 @@ chr                 = { emit = "common:str_from_char_code",  min_args = 1, max_a
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 # PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
 # arg is an offset rather than JS's direct `indexOf` shape.
-strpos              = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
-mb_strpos           = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
+strpos              = { emit = "common:php.strpos",          min_args = 2, max_args = 3 }
+mb_strpos           = { emit = "common:php.strpos",          min_args = 2, max_args = 3 }
 # stripos walker-normalized to strpos(strtolower(h), strtolower(n)) in walker.rs
 # Path utilities — routed through the PHP filesystem emitter so PHP keeps a
 # language-local boundary even when the underlying host call is a thin path op.
@@ -188,7 +192,18 @@ join                = { emit = "common:collections.join",    min_args = 1, max_a
 # `strtr($str, $array)` — multi-pair substring replacement. Iterates the
 # array's entries in insertion order and applies STR_REPLACE per (key,
 # value) pair. Compiled as a multi-opcode intrinsic; no host call.
-strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_args = 3 }
+strtr               = { emit = "common:php.strtr",           min_args = 2, max_args = 3 }
+quotemeta           = { emit = "common:php.quotemeta",       min_args = 1, max_args = 1 }
+strspn              = { emit = "common:php.strspn",          min_args = 2, max_args = 4 }
+strcspn             = { emit = "common:php.strcspn",         min_args = 2, max_args = 4 }
+str_increment       = { emit = "common:php.str_increment",   min_args = 1, max_args = 1 }
+str_decrement       = { emit = "common:php.str_decrement",   min_args = 1, max_args = 1 }
+count_chars         = { emit = "common:php.count_chars",     min_args = 1, max_args = 2 }
+convert_uuencode    = { emit = "common:php.convert_uuencode", min_args = 1, max_args = 1 }
+convert_uudecode    = { emit = "common:php.convert_uudecode", min_args = 1, max_args = 1 }
+quoted_printable_encode = { emit = "common:php.quoted_printable_encode", min_args = 1, max_args = 1 }
+quoted_printable_decode = { emit = "common:php.quoted_printable_decode", min_args = 1, max_args = 1 }
+__php_strtr         = { emit = "common:php.strtr",           min_args = 2, max_args = 3 }
 # `dir($path)` returns a Directory iterator with `read()`/`close()`
 # methods. Backed by an runtime helper that wraps wasi:filesystem:listDir.
 dir                 = { emit = "common:php.dir",            min_args = 1, max_args = 1 }
@@ -482,7 +497,7 @@ sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_ar
 __php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
 __php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
 __php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
-__php_strpos        = { emit = "intrinsic:php_strpos",          min_args = 2, max_args = 3 }
+__php_strpos        = { emit = "common:php.strpos",             min_args = 2, max_args = 3 }
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
 __php_array_slice   = { emit = "intrinsic:php_array_slice",     min_args = 2, max_args = 4 }
 __php_print_expr    = { emit = "common:php.print_expr",          min_args = 1, max_args = 1 }

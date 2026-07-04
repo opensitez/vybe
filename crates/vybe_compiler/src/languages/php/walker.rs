@@ -83,6 +83,21 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
     static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
         RefCell::new(std::collections::HashMap::new());
+    // Declared type names → kind ("class" | "interface" | "trait" | "enum"),
+    // for `class_exists`/`interface_exists`/`trait_exists`/`enum_exists`/
+    // `get_declared_*` resolved at compile time.
+    static TYPE_KINDS: RefCell<std::collections::HashMap<String, &'static str>> =
+        RefCell::new(std::collections::HashMap::new());
+    // Monotonic counter for naming anonymous classes `class@anonymous...`.
+    static ANON_CLASS_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn register_type_kind(name: &str, kind: &'static str) {
+    TYPE_KINDS.with(|r| r.borrow_mut().insert(name.to_string(), kind));
+}
+
+fn type_kind_is(name: &str, kind: &str) -> bool {
+    TYPE_KINDS.with(|r| r.borrow().get(name).map(|k| *k == kind).unwrap_or(false))
 }
 
 #[derive(Debug, Clone)]
@@ -891,6 +906,104 @@ fn collect_program_body(
     Ok(())
 }
 
+/// The SPL/core exception hierarchy, defined as real PHP classes so they
+/// flow through the shared class emitter (PHP over JS): `new ParseError()`
+/// works, `get_class` returns the real name, and `catch (Error|Exception|
+/// Throwable)` resolves through the normal `__types` inheritance chain —
+/// no name-mangling `is_exception_type` shortcut.
+const EXCEPTION_PRELUDE: &str = r##"
+interface Throwable {}
+class Exception implements Throwable {
+    protected $message = "";
+    protected $code = 0;
+    protected $previous = null;
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $this->message = $message; $this->code = $code; $this->previous = $previous;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function getPrevious() { return $this->previous; }
+    public function getLine() { return 0; }
+    public function getFile() { return ""; }
+    public function getTrace() { return []; }
+    public function getTraceAsString() { return "#0 {main}"; }
+    public function __toString() { return $this->message; }
+}
+class Error implements Throwable {
+    protected $message = "";
+    protected $code = 0;
+    protected $previous = null;
+    public function __construct($message = "", $code = 0, $previous = null) {
+        $this->message = $message; $this->code = $code; $this->previous = $previous;
+    }
+    public function getMessage() { return $this->message; }
+    public function getCode() { return $this->code; }
+    public function getPrevious() { return $this->previous; }
+    public function getLine() { return 0; }
+    public function getFile() { return ""; }
+    public function getTrace() { return []; }
+    public function getTraceAsString() { return "#0 {main}"; }
+    public function __toString() { return $this->message; }
+}
+class ErrorException extends Exception {}
+class TypeError extends Error {}
+class ValueError extends Error {}
+class ArithmeticError extends Error {}
+class DivisionByZeroError extends ArithmeticError {}
+class ArgumentCountError extends TypeError {}
+class CompileError extends Error {}
+class ParseError extends CompileError {}
+class AssertionError extends Error {}
+class UnhandledMatchError extends Error {}
+class RuntimeException extends Exception {}
+class LogicException extends Exception {}
+class InvalidArgumentException extends LogicException {}
+class DomainException extends LogicException {}
+class LengthException extends LogicException {}
+class OutOfRangeException extends LogicException {}
+class BadFunctionCallException extends LogicException {}
+class BadMethodCallException extends BadFunctionCallException {}
+class OutOfBoundsException extends RuntimeException {}
+class RangeException extends RuntimeException {}
+class OverflowException extends RuntimeException {}
+class UnderflowException extends RuntimeException {}
+class UnexpectedValueException extends RuntimeException {}
+class JsonException extends Exception {}
+"##;
+
+/// Parse the exception prelude into statements (registering the classes in
+/// the walker's registries as a side effect). Returns `[]` on any error so
+/// a prelude problem never breaks user compilation.
+fn exception_prelude_statements() -> Vec<Statement> {
+    let mut stmts = Vec::new();
+    let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, EXCEPTION_PRELUDE) else {
+        return stmts;
+    };
+    let Some(program) = pairs.next() else {
+        return stmts;
+    };
+    if !matches!(program.as_rule(), Rule::program_pure) {
+        return stmts;
+    }
+    for pair in program.into_inner() {
+        if matches!(pair.as_rule(), Rule::EOI) {
+            continue;
+        }
+        let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
+            match pair.into_inner().next() {
+                Some(inner) => inner,
+                None => continue,
+            }
+        } else {
+            pair
+        };
+        if let Ok(Some(stmt)) = walk_statement(pair) {
+            stmts.push(stmt);
+        }
+    }
+    stmts
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
     let trimmed = source.trim_start();
     let should_normalize_first =
@@ -1169,7 +1282,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
     hoisted.append(&mut rest);
-    let body = hoisted;
+
+    // Prepend the core exception hierarchy (Throwable/Error/Exception + SPL)
+    // as real classes so built-in exceptions use the shared class emitter.
+    let body = {
+        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(EXCEPTION_PRELUDE));
+        let mut prelude = exception_prelude_statements();
+        prelude.append(&mut hoisted);
+        prelude
+    };
 
     LINE_STARTS.with(|starts| starts.borrow_mut().clear());
 
@@ -2333,6 +2454,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Register class metadata for ReflectionClass lookups.
     let meta = extract_class_meta(&name, &parents, &interfaces, &modifiers, &members);
     CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
+    register_type_kind(&name, "class");
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -2404,6 +2526,107 @@ fn extract_class_meta(
     }
 }
 
+// ── Compile-time class-introspection helpers ───────────────────────
+//
+// PHP's reflection-style builtins (`get_parent_class`, `is_subclass_of`,
+// `method_exists`, `get_class_methods`, `class_parents`, `class_implements`)
+// take a class-*name* string. When that name is a literal, the walker can
+// answer them at compile time from `CLASS_REGISTRY` — no runtime metadata
+// object needed. These helpers walk the recorded inheritance graph.
+
+/// Ancestor class names (nearest first), excluding `name` itself.
+fn class_parent_chain(name: &str) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(name.to_string());
+    let mut cur = name.to_string();
+    loop {
+        let parent = CLASS_REGISTRY.with(|r| r.borrow().get(&cur).and_then(|m| m.parent.clone()));
+        match parent {
+            Some(p) if seen.insert(p.clone()) => {
+                chain.push(p.clone());
+                cur = p;
+            }
+            _ => break,
+        }
+    }
+    chain
+}
+
+/// All interfaces implemented by `name` or any of its ancestors.
+fn class_all_interfaces(name: &str) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    names.extend(class_parent_chain(name));
+    let mut result = Vec::new();
+    for n in &names {
+        let ifaces = CLASS_REGISTRY
+            .with(|r| r.borrow().get(n).map(|m| m.interfaces.clone()))
+            .unwrap_or_default();
+        for i in ifaces {
+            if !result.contains(&i) {
+                result.push(i);
+            }
+        }
+    }
+    result
+}
+
+fn class_is_registered(name: &str) -> bool {
+    CLASS_REGISTRY.with(|r| r.borrow().contains_key(name))
+}
+
+/// `is_subclass_of($c, $target)` — true iff `target` is a proper ancestor
+/// or an implemented interface of `c` (never `c` itself).
+fn class_is_subclass_of(c: &str, target: &str) -> bool {
+    class_parent_chain(c).iter().any(|p| p == target)
+        || class_all_interfaces(c).iter().any(|i| i == target)
+}
+
+fn class_has_method(c: &str, method: &str) -> bool {
+    let mut names = vec![c.to_string()];
+    names.extend(class_parent_chain(c));
+    names.iter().any(|n| {
+        CLASS_REGISTRY.with(|r| {
+            r.borrow()
+                .get(n)
+                .map(|m| m.methods.iter().any(|mm| mm.name.eq_ignore_ascii_case(method)))
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// Extract a class name from an argument that names a class: a string
+/// literal (`'C'`, `C::class`), or a `new C()` expression.
+fn class_name_from_arg(e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Public method names of `c` and its ancestors (first-seen order).
+fn class_public_methods(c: &str) -> Vec<String> {
+    let mut names = vec![c.to_string()];
+    names.extend(class_parent_chain(c));
+    let mut result = Vec::new();
+    for n in &names {
+        CLASS_REGISTRY.with(|r| {
+            if let Some(m) = r.borrow().get(n) {
+                for mm in &m.methods {
+                    if matches!(mm.visibility, Visibility::Public) && !result.contains(&mm.name) {
+                        result.push(mm.name.clone());
+                    }
+                }
+            }
+        });
+    }
+    result
+}
+
 fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // PHP interfaces behave like classes that carry constants. Walking
     // them as ClassDecl lets `Interface::CONST` static access resolve
@@ -2444,6 +2667,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
+    register_type_kind(&name, "interface");
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -2490,6 +2714,7 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
+    register_type_kind(&name, "trait");
     Ok(StmtKind::ClassDecl {
         name,
         parents: Vec::new(),
@@ -2725,6 +2950,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         });
     }
 
+    register_type_kind(&name, "enum");
     Ok(StmtKind::ClassDecl {
         name,
         parents: vec![],
@@ -6678,9 +6904,16 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
                 let _ = interfaces; // walker doesn't enforce interface contracts
                 args = ctor_args;
+                // PHP names anonymous classes `class@anonymous...`; matching
+                // that lets `get_class()` / anonymity checks behave like PHP.
+                let anon_name = ANON_CLASS_COUNTER.with(|c| {
+                    let n = c.get() + 1;
+                    c.set(n);
+                    format!("class@anonymous\0{}", n)
+                });
                 class = Some(Expression::with_span(
                     ExprKind::ClassExpr {
-                        name: None,
+                        name: Some(anon_name),
                         parent: parent.map(Box::new),
                         members,
                     },
@@ -6902,6 +7135,57 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 }]),
                 span,
             ));
+        }
+    }
+    // PHP: `new <interface|trait|enum>()` is a fatal Error. Detect the kind
+    // from the walker's registry and emit a throwing IIFE instead.
+    if let ExprKind::Ident(name) = &class_expr.kind {
+        let kind = TYPE_KINDS.with(|r| r.borrow().get(name.as_str()).copied());
+        let is_abstract = CLASS_REGISTRY.with(|r| {
+            r.borrow().get(name.as_str()).map(|m| m.is_abstract).unwrap_or(false)
+        });
+        let uninstantiable = match kind {
+            Some(k @ ("interface" | "trait" | "enum")) => Some(k),
+            _ if is_abstract => Some("abstract class"),
+            _ => None,
+        };
+        if let Some(kind) = uninstantiable {
+            {
+                let msg = format!("Cannot instantiate {} {}", kind, name);
+                let err = Expression::with_span(
+                    ExprKind::New {
+                        class: Box::new(Expression::with_span(
+                            ExprKind::Ident("Error".to_string()),
+                            span.clone(),
+                        )),
+                        args: vec![Argument::positional(Expression::with_span(
+                            ExprKind::Lit(Literal::Str(msg)),
+                            span.clone(),
+                        ))],
+                    },
+                    span.clone(),
+                );
+                let throw_iife = ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Lambda {
+                            params: vec![],
+                            body: LambdaBody::Block(vec![Statement::with_span(
+                                StmtKind::Throw {
+                                    expr: Some(err),
+                                    cause: None,
+                                },
+                                span.clone(),
+                            )]),
+                            is_async: false,
+                            captures: vec![],
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![],
+                    optional: false,
+                };
+                return Ok(Expression::with_span(throw_iife, span));
+            }
         }
     }
     Ok(Expression::with_span(
@@ -10695,6 +10979,14 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // PHP `is_subclass_of($obj, "Name")` (literal class name) →
         // `$obj instanceof Name && $obj.constructor.name !== "Name"`.
         "is_subclass_of" if args.len() == 2 => {
+            // Class-name string receiver → resolve from CLASS_REGISTRY.
+            if let (ExprKind::Lit(Literal::Str(c)), ExprKind::Lit(Literal::Str(target))) =
+                (&args[0].value.kind, &args[1].value.kind)
+            {
+                if class_is_registered(c) {
+                    return Some(ExprKind::Lit(Literal::Bool(class_is_subclass_of(c, target))));
+                }
+            }
             if let ExprKind::Lit(Literal::Str(class_name)) = &args[1].value.kind {
                 let inst = Expression::with_span(
                     ExprKind::Binary {
@@ -10741,6 +11033,14 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // receiver) → `typeof $obj.m === "function"` — instance methods
         // are bound as properties on the instance.
         "method_exists" if args.len() == 2 => {
+            // Class-name string receiver → resolve from CLASS_REGISTRY.
+            if let (ExprKind::Lit(Literal::Str(c)), ExprKind::Lit(Literal::Str(m))) =
+                (&args[0].value.kind, &args[1].value.kind)
+            {
+                if class_is_registered(c) {
+                    return Some(ExprKind::Lit(Literal::Bool(class_has_method(c, m))));
+                }
+            }
             if let ExprKind::Lit(Literal::Str(method_name)) = &args[1].value.kind {
                 let member = Expression::with_span(
                     ExprKind::Member {
@@ -11402,6 +11702,326 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 span.clone(),
             ),
             vec![arg(0)?],
+        ),
+        // PHP `filter_var($value, $filter)` — the subset of filters that map
+        // cleanly onto existing string ops. Sanitizers → htmlspecialchars;
+        // FILTER_VALIDATE_EMAIL → regex test returning the value or false.
+        "filter_var" if args.len() >= 2 => {
+            let filter_id = match &args[1].value.kind {
+                ExprKind::Lit(Literal::Int(n)) => *n,
+                _ => return None,
+            };
+            let val = arg(0)?;
+            match filter_id {
+                // FILTER_SANITIZE_FULL_SPECIAL_CHARS / SPECIAL_CHARS
+                522 | 515 => mk_call(
+                    Expression::with_span(
+                        ExprKind::Ident("htmlspecialchars".to_string()),
+                        span.clone(),
+                    ),
+                    vec![val],
+                ),
+                // FILTER_VALIDATE_EMAIL → preg_match(regex, v) ? v : false
+                274 => {
+                    let regex = Expression::with_span(
+                        ExprKind::Lit(Literal::Str("/^[^@]+@[^@]+\\.[^@]+$/".to_string())),
+                        span.clone(),
+                    );
+                    let test = Expression::with_span(
+                        mk_call(
+                            Expression::with_span(
+                                ExprKind::Ident("preg_match".to_string()),
+                                span.clone(),
+                            ),
+                            vec![regex, val.clone()],
+                        ),
+                        span.clone(),
+                    );
+                    ExprKind::Ternary {
+                        cond: Box::new(test),
+                        then: Box::new(val),
+                        else_: Box::new(Expression::with_span(
+                            ExprKind::Lit(Literal::Bool(false)),
+                            span.clone(),
+                        )),
+                    }
+                }
+                _ => return None,
+            }
+        }
+        // PHP `localeconv()` — locale numeric/monetary formatting info.
+        // Vybe runs in the "C" locale; return the standard associative
+        // array (PHP array ≡ Map). Only the string fields matter for the
+        // subset of tests we support.
+        "localeconv" if args.is_empty() => {
+            let s = |v: &str| {
+                Expression::with_span(ExprKind::Lit(Literal::Str(v.to_string())), span.clone())
+            };
+            let entry = |k: &str, v: &str| ArrayElement {
+                key: Some(s(k)),
+                value: s(v),
+                spread: false,
+                by_ref: false,
+            };
+            ExprKind::Array(vec![
+                entry("decimal_point", "."),
+                entry("thousands_sep", ""),
+                entry("int_curr_symbol", ""),
+                entry("currency_symbol", ""),
+                entry("mon_decimal_point", ""),
+                entry("mon_thousands_sep", ""),
+                entry("positive_sign", ""),
+                entry("negative_sign", ""),
+            ])
+        }
+        // ── Class introspection resolved at compile time ──────────────
+        // When the class name is a string literal, answer from the
+        // walker's CLASS_REGISTRY. Non-literal receivers fall through.
+        "get_parent_class" if args.len() == 1 => match &args[0].value.kind {
+            ExprKind::Lit(Literal::Str(cls)) if class_is_registered(cls) => {
+                match CLASS_REGISTRY.with(|r| r.borrow().get(cls).and_then(|m| m.parent.clone())) {
+                    Some(p) => ExprKind::Lit(Literal::Str(p)),
+                    None => ExprKind::Lit(Literal::Bool(false)),
+                }
+            }
+            _ => return None,
+        },
+        "get_class_methods" if args.len() == 1 => match &args[0].value.kind {
+            ExprKind::Lit(Literal::Str(c)) if class_is_registered(c) => {
+                let items = class_public_methods(c)
+                    .into_iter()
+                    .map(|name| ArrayElement {
+                        key: None,
+                        value: Expression::with_span(
+                            ExprKind::Lit(Literal::Str(name)),
+                            span.clone(),
+                        ),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect();
+                ExprKind::Array(items)
+            }
+            _ => return None,
+        },
+        "interface_exists" if !args.is_empty() => match &args[0].value.kind {
+            ExprKind::Lit(Literal::Str(n)) => {
+                ExprKind::Lit(Literal::Bool(type_kind_is(n, "interface")))
+            }
+            _ => return None,
+        },
+        "trait_exists" if !args.is_empty() => match &args[0].value.kind {
+            ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(n, "trait"))),
+            _ => return None,
+        },
+        "enum_exists" if !args.is_empty() => match &args[0].value.kind {
+            ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(n, "enum"))),
+            _ => return None,
+        },
+        "class_parents" if !args.is_empty() => {
+            match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
+                Some(c) => {
+                    let items = class_parent_chain(&c)
+                        .into_iter()
+                        .map(|name| ArrayElement {
+                            key: None,
+                            value: Expression::with_span(
+                                ExprKind::Lit(Literal::Str(name)),
+                                span.clone(),
+                            ),
+                            spread: false,
+                            by_ref: false,
+                        })
+                        .collect();
+                    ExprKind::Array(items)
+                }
+                None => return None,
+            }
+        }
+        "class_implements" if !args.is_empty() => {
+            match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
+                Some(c) => {
+                    let items = class_all_interfaces(&c)
+                        .into_iter()
+                        .map(|name| ArrayElement {
+                            key: None,
+                            value: Expression::with_span(
+                                ExprKind::Lit(Literal::Str(name)),
+                                span.clone(),
+                            ),
+                            spread: false,
+                            by_ref: false,
+                        })
+                        .collect();
+                    ExprKind::Array(items)
+                }
+                None => return None,
+            }
+        }
+        // PHP `similar_text($a, $b, $pct)` — the 3rd arg is a by-reference
+        // out-param receiving the similarity percentage. Same shape as
+        // `preg_match`'s `$matches`: assign the percent, then yield the count.
+        // percent = matched * 2 / (strlen(a) + strlen(b)) * 100.
+        "similar_text" if args.len() == 3 => {
+            let a = arg(0)?;
+            let b = arg(1)?;
+            let pct_target = args[2].value.clone();
+            let ident = |n: &str| Expression::with_span(ExprKind::Ident(n.to_string()), span.clone());
+            let call1 = |name: &str, a: Expression| {
+                Expression::with_span(mk_call(ident(name), vec![a]), span.clone())
+            };
+            let bin = |op: BinOp, l: Expression, r: Expression| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op,
+                        left: Box::new(l),
+                        right: Box::new(r),
+                    },
+                    span.clone(),
+                )
+            };
+            let tmp = ident("__vybe_similar_text_n");
+            // __vybe_similar_text_n = similar_text($a, $b)  (2-arg count form)
+            let count_call = Expression::with_span(
+                mk_call(ident("similar_text"), vec![a.clone(), b.clone()]),
+                span.clone(),
+            );
+            let assign_tmp = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(tmp.clone()),
+                    value: Box::new(count_call),
+                },
+                span.clone(),
+            );
+            // $pct = tmp * 200 / (strlen($a) + strlen($b))
+            let denom = bin(BinOp::Add, call1("strlen", a), call1("strlen", b));
+            let num = bin(
+                BinOp::Mul,
+                tmp.clone(),
+                Expression::with_span(ExprKind::Lit(Literal::Float(200.0)), span.clone()),
+            );
+            let assign_pct = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(pct_target),
+                    value: Box::new(bin(BinOp::Div, num, denom)),
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![assign_tmp, assign_pct, tmp])
+        }
+        // PHP `assert($cond, $descOrThrowable?)` — with assertions active
+        // (the default), a falsy assertion throws. Normalize to
+        // `$cond ? true : throw <thrown>` using the PHP-8 throw expression,
+        // where `<thrown>` is the 2nd arg if it's already a Throwable
+        // (`new X(...)`), otherwise a fresh `AssertionError`.
+        "assert" if !args.is_empty() => {
+            let cond = arg(0)?;
+            let thrown = match args.get(1).map(|a| &a.value.kind) {
+                // A Throwable instance is thrown as-is.
+                Some(ExprKind::New { .. }) => arg(1)?,
+                // A description string → AssertionError(description).
+                Some(_) => Expression::with_span(
+                    ExprKind::New {
+                        class: Box::new(Expression::with_span(
+                            ExprKind::Ident("AssertionError".to_string()),
+                            span.clone(),
+                        )),
+                        args: vec![Argument::positional(arg(1)?)],
+                    },
+                    span.clone(),
+                ),
+                None => Expression::with_span(
+                    ExprKind::New {
+                        class: Box::new(Expression::with_span(
+                            ExprKind::Ident("AssertionError".to_string()),
+                            span.clone(),
+                        )),
+                        args: vec![Argument::positional(Expression::with_span(
+                            ExprKind::Lit(Literal::Str("assert failed".to_string())),
+                            span.clone(),
+                        ))],
+                    },
+                    span.clone(),
+                ),
+            };
+            // `throw <thrown>` in expression position → immediately-invoked
+            // closure whose body throws (same shape the throw_expression
+            // walker produces).
+            let throw_iife = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Lambda {
+                            params: vec![],
+                            body: LambdaBody::Block(vec![Statement::with_span(
+                                StmtKind::Throw {
+                                    expr: Some(thrown),
+                                    cause: None,
+                                },
+                                span.clone(),
+                            )]),
+                            is_async: false,
+                            captures: vec![],
+                        },
+                        span.clone(),
+                    ),
+                    vec![],
+                ),
+                span.clone(),
+            );
+            ExprKind::Ternary {
+                cond: Box::new(cond),
+                then: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Bool(true)),
+                    span.clone(),
+                )),
+                else_: Box::new(throw_iife),
+            }
+        }
+        // PHP `assert_options($what, $value?)` — returns the previous value.
+        // Vybe runs with assertions active + exception mode; report that and
+        // otherwise no-op (the flags don't change compiled behavior).
+        "assert_options" => ExprKind::Lit(Literal::Int(1)),
+        // PHP `chop` is an alias for `rtrim`.
+        "chop" => mk_call(
+            Expression::with_span(ExprKind::Ident("rtrim".to_string()), span.clone()),
+            args.iter().map(|a| a.value.clone()).collect(),
+        ),
+        // PHP `hash_equals($known, $user)` — constant-time string compare.
+        // Timing-safety is a runtime property we can't model over JS; the
+        // observable result is strict string equality.
+        "hash_equals" if args.len() == 2 => ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(arg(0)?),
+            right: Box::new(arg(1)?),
+        },
+        // PHP `strtr` — routed to the PHP string adapter (`common:php.strtr`).
+        // The 2-arg associative form must apply longer keys before shorter
+        // ones; that ordering is a compile-time concern, so sort a literal
+        // map here (the runtime replace loop lives in the adapter). This is
+        // the part that used to live in the shared compiler's intrinsic.
+        "strtr" if args.len() == 2 => {
+            let map = arg(1)?;
+            let sorted_map = if let ExprKind::Array(items) = &map.kind {
+                let mut v = items.clone();
+                v.sort_by(|a, b| {
+                    let key_len = |e: &ArrayElement| match e.key.as_ref().map(|k| &k.kind) {
+                        Some(ExprKind::Lit(Literal::Str(s))) => s.len(),
+                        _ => 0,
+                    };
+                    key_len(b).cmp(&key_len(a)) // longest key first
+                });
+                Expression::with_span(ExprKind::Array(v), map.span.clone())
+            } else {
+                map
+            };
+            mk_call(
+                Expression::with_span(ExprKind::Ident("__php_strtr".to_string()), span.clone()),
+                vec![arg(0)?, sorted_map],
+            )
+        }
+        "strtr" if args.len() == 3 => mk_call(
+            Expression::with_span(ExprKind::Ident("__php_strtr".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?, arg(2)?],
         ),
         // PHP `stripos($hay, $needle, $offset?)` has the same false-or-index
         // result shape as `strpos`, but compares case-insensitively.
@@ -12429,9 +13049,32 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "SORT_FLAG_CASE" => ExprKind::Lit(Literal::Int(8)),
         "SORT_NATURAL" => ExprKind::Lit(Literal::Int(6)),
         "SORT_LOCALE_STRING" => ExprKind::Lit(Literal::Int(5)),
+        // ── assert() option flags ──
+        "ASSERT_ACTIVE" => ExprKind::Lit(Literal::Int(1)),
+        "ASSERT_CALLBACK" => ExprKind::Lit(Literal::Int(2)),
+        "ASSERT_BAIL" => ExprKind::Lit(Literal::Int(3)),
+        "ASSERT_WARNING" => ExprKind::Lit(Literal::Int(4)),
+        "ASSERT_QUIET_EVAL" => ExprKind::Lit(Literal::Int(5)),
+        "ASSERT_EXCEPTION" => ExprKind::Lit(Literal::Int(6)),
         // ── filter flags — integer literals ──
         "ARRAY_FILTER_USE_KEY" => ExprKind::Lit(Literal::Int(2)),
         "ARRAY_FILTER_USE_BOTH" => ExprKind::Lit(Literal::Int(1)),
+        // ── filter_var() filter IDs (php.net values) ──
+        "FILTER_VALIDATE_INT" => ExprKind::Lit(Literal::Int(257)),
+        "FILTER_VALIDATE_BOOLEAN" | "FILTER_VALIDATE_BOOL" => ExprKind::Lit(Literal::Int(258)),
+        "FILTER_VALIDATE_FLOAT" => ExprKind::Lit(Literal::Int(259)),
+        "FILTER_VALIDATE_REGEXP" => ExprKind::Lit(Literal::Int(272)),
+        "FILTER_VALIDATE_URL" => ExprKind::Lit(Literal::Int(273)),
+        "FILTER_VALIDATE_EMAIL" => ExprKind::Lit(Literal::Int(274)),
+        "FILTER_VALIDATE_IP" => ExprKind::Lit(Literal::Int(275)),
+        "FILTER_SANITIZE_STRING" => ExprKind::Lit(Literal::Int(513)),
+        "FILTER_SANITIZE_SPECIAL_CHARS" => ExprKind::Lit(Literal::Int(515)),
+        "FILTER_SANITIZE_FULL_SPECIAL_CHARS" => ExprKind::Lit(Literal::Int(522)),
+        "FILTER_SANITIZE_EMAIL" => ExprKind::Lit(Literal::Int(517)),
+        "FILTER_SANITIZE_URL" => ExprKind::Lit(Literal::Int(518)),
+        "FILTER_SANITIZE_NUMBER_INT" => ExprKind::Lit(Literal::Int(519)),
+        "FILTER_DEFAULT" => ExprKind::Lit(Literal::Int(516)),
+        "FILTER_FLAG_NONE" => ExprKind::Lit(Literal::Int(0)),
         // ── preg flags ──
         "PREG_GREP_INVERT" => ExprKind::Lit(Literal::Int(1)),
         "PREG_SPLIT_NO_EMPTY" => ExprKind::Lit(Literal::Int(1)),

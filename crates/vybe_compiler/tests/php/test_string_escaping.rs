@@ -74,7 +74,7 @@ echo stripslashes("it\\'s");
         r#"<?php
 echo nl2br("a\nb", false);
 "#,
-        ["a<br />\nb"]
+        ["a<br>", "b"]
     };
 
     filter_var_sanitize_full_special_chars => {

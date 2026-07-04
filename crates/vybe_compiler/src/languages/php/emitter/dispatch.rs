@@ -526,6 +526,49 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strripos" => {
             crate::emitter::php::string_adapter::emit_strripos(chunks, current, argc, line)
         }
+        "php.strpos" => {
+            crate::emitter::php::string_adapter::emit_strpos(chunks, current, argc, line)
+        }
+        "php.strtr" => {
+            crate::emitter::php::string_adapter::emit_strtr(chunks, current, argc, line)
+        }
+        "php.quotemeta" => {
+            crate::emitter::php::string_adapter::emit_quotemeta(chunks, current, argc, line)
+        }
+        "php.strspn" => {
+            crate::emitter::php::string_adapter::emit_strspn(chunks, current, argc, line)
+        }
+        "php.strcspn" => {
+            crate::emitter::php::string_adapter::emit_strcspn(chunks, current, argc, line)
+        }
+        "php.strlen" => {
+            crate::emitter::php::string_adapter::emit_strlen(chunks, current, argc, line)
+        }
+        "php.count_chars" => {
+            crate::emitter::php::string_adapter::emit_count_chars(chunks, current, argc, line)
+        }
+        "php.convert_uuencode" => {
+            crate::emitter::php::string_adapter::emit_convert_uuencode(chunks, current, argc, line)
+        }
+        "php.convert_uudecode" => {
+            crate::emitter::php::string_adapter::emit_convert_uudecode(chunks, current, argc, line)
+        }
+        "php.quoted_printable_encode" => {
+            crate::emitter::php::string_adapter::emit_quoted_printable_encode(
+                chunks, current, argc, line,
+            )
+        }
+        "php.quoted_printable_decode" => {
+            crate::emitter::php::string_adapter::emit_quoted_printable_decode(
+                chunks, current, argc, line,
+            )
+        }
+        "php.str_increment" => {
+            crate::emitter::php::string_adapter::emit_str_increment(chunks, current, argc, line)
+        }
+        "php.str_decrement" => {
+            crate::emitter::php::string_adapter::emit_str_decrement(chunks, current, argc, line)
+        }
         "php.strncmp" => {
             crate::emitter::php::string_adapter::emit_strncmp(chunks, current, false, line)
         }

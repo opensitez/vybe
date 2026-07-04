@@ -193,7 +193,8 @@ echo is_subclass_of(Dog::class, Animal::class) ? 'yes' : 'no', "\n";
 echo is_subclass_of(Animal::class, Dog::class) ? 'yes' : 'no', "\n";
 "#
         ),
-        vec!["yesno"]
+        // Each echo ends with "\n"; the harness splits stdout into lines.
+        vec!["yes", "no"]
     );
 }
 

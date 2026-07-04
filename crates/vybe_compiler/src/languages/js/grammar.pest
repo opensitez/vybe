@@ -605,14 +605,16 @@ string_literal = @{
 // Used in most positions. The strict `identifier` from the old grammar excluded
 // too many contextual keywords that JS allows as identifiers.
 
+// §12.7 IdentifierName: ID_Start (plus $ _) then ID_Continue (plus $) —
+// unicode identifiers (π, café, …) are legal JS.
 ident_name = @{
-    !strict_keyword ~ (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+    !strict_keyword ~ (XID_START | "_" | "$") ~ (XID_CONTINUE | "$")*
 }
 
 // ident_or_keyword: any word — used after "." for property access and in property names
 // where ALL keywords are valid (obj.class, obj.return, etc.)
 ident_or_keyword = @{
-    (ASCII_ALPHA | "_" | "$") ~ (ASCII_ALPHANUMERIC | "_" | "$")*
+    (XID_START | "_" | "$") ~ (XID_CONTINUE | "$")*
 }
 
 // Only truly reserved words that can NEVER be identifiers in any context.

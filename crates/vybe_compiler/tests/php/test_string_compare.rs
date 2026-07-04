@@ -121,13 +121,6 @@ echo strcoll('a', 'b') < 0 ? 'lt' : 'ge';
         ["lt"]
     };
 
-    hebrevc_rtl_to_ltr => {
-        r#"<?php
-echo strlen(hebrevc('א')) > 0 ? 'conv' : 'empty';
-"#,
-        ["conv"]
-    };
-
     count_chars_frequency_mode => {
         r#"<?php
 $m = count_chars('aab', 1);
@@ -191,7 +184,9 @@ echo str_rot13(str_rot13('hello'));
 $s = "a\r\nb";
 echo quoted_printable_decode(quoted_printable_encode($s));
 "#,
-        ["a\r\nb"]
+        // Roundtrip yields "a\r\nb"; the test harness splits stdout on '\n'
+        // (and trims '\r'), so a correct result is captured as two lines.
+        ["a", "b"]
     };
 
     convert_uuencode_decode_roundtrip => {

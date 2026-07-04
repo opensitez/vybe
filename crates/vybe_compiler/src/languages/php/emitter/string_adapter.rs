@@ -3154,9 +3154,11 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 /// where Thompson and Thomson should both encode as "TMSN".
 pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    // Drop optional max-phonemes arg.
-    for _ in 1..argc {
-        chunk.emit_op(Op::DROP, line);
+    // Optional max-phonemes arg (TOS). PHP: 0 means "no limit".
+    let limit_slot = alloc_local(chunk);
+    if argc >= 2 {
+        crate::emitter::convert::emit_to_int(chunk, line);
+        lset(chunk, limit_slot, line);
     }
     let s_slot = alloc_local(chunk);
     let out_slot = alloc_local(chunk);
@@ -3270,7 +3272,23 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
-    lget(chunk, out_slot, line);
+    // Apply the max-phonemes limit (only when > 0; PHP treats 0 as no limit).
+    if argc >= 2 {
+        lget(chunk, limit_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        lget(chunk, out_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        lget(chunk, limit_slot, line);
+        crate::emitter::strings::emit_substring(chunk, line);
+        chunk.emit_else(line);
+        lget(chunk, out_slot, line);
+        chunk.emit_end(line);
+    } else {
+        lget(chunk, out_slot, line);
+    }
 }
 
 // ── preg_quote ─────────────────────────────────────────────────────
@@ -5179,39 +5197,256 @@ const HTML_NAMED_ENTITIES_DECODE: &[(&str, &str)] = &[
 // since the test case only has allowed tags in the string).
 // Full implementation would require dynamic regex construction at runtime.
 pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let regex_replace = chunks[0].add_import("ecma:regexp".to_string(), "replaceAll".to_string());
+    // Scan the string: copy text through; for each `<...>` tag, extract its
+    // name (letters/digits after `<` and an optional `/`) and keep the whole
+    // tag only when `<name>` appears in the (lower-cased) allow-list. PHP
+    // keeps tag *text content* — only the tags themselves are removed.
     let chunk = &mut chunks[current];
+    let allowed_slot = alloc_local(chunk);
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let j_slot = alloc_local(chunk);
+    let k_slot = alloc_local(chunk);
+    let name_slot = alloc_local(chunk);
+    let cc_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): s, [allowed]. Pop allowed (lower-cased) then s.
     if argc >= 2 {
-        // Has allowed_tags argument — save it and check if non-empty
-        let allowed_slot = alloc_local(chunk);
-        let str_slot = alloc_local(chunk);
-        lset(chunk, allowed_slot, line); // pop allowed_tags
-        coerce_to_str(chunk, line);
-        lset(chunk, str_slot, line);
-        // if allowed_tags is non-empty string: return str unchanged (simplified)
-        lget(chunk, allowed_slot, line);
         coerce_to_str(chunk, line);
         {
-            let idx = chunk.add_import("wasm:js-string", "length");
+            let idx = chunk.add_import("ecma:string", "toLowerCase");
             chunk.emit_call(idx, 1, line);
         }
-        push_const(chunk, Value::F64(0.0), line);
-        crate::emitter::ops::emit_dyn_gt(chunk, line);
-        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if_value(line);
-        lget(chunk, str_slot, line);
-        chunk.emit_else(line);
-        lget(chunk, str_slot, line);
-        push_str(chunk, "<[^>]*>", line);
-        push_str(chunk, "", line);
-        chunk.emit_call(regex_replace, 3u8, line);
-        chunk.emit_end(line);
+        lset(chunk, allowed_slot, line);
     } else {
-        coerce_to_str(chunk, line);
-        push_str(chunk, "<[^>]*>", line);
         push_str(chunk, "", line);
-        chunk.emit_call(regex_replace, 3u8, line);
+        lset(chunk, allowed_slot, line);
     }
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let outer = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // if s.charCodeAt(i) == '<' (60)
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    push_const(chunk, Value::F64(60.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    // j = s.indexOf('>', i)
+    lget(chunk, s_slot, line);
+    push_str(chunk, ">", line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 3, line);
+    }
+    lset(chunk, j_slot, line);
+
+    // if j < 0: append the rest and finish; else process the tag.
+    lget(chunk, j_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // out += s.substring(i, n); i = n
+    lget(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, n_slot, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_else(line);
+
+    // k = i + 1; if s.charCodeAt(k) == '/' (47): k += 1
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, k_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, k_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    push_const(chunk, Value::F64(47.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, k_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, k_slot, line);
+    chunk.emit_end(line);
+
+    // name = "" ; read [A-Za-z0-9] from k
+    push_str(chunk, "", line);
+    lset(chunk, name_slot, line);
+    let _ = chunk;
+    let inner = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, k_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, s_slot, line);
+    lget(chunk, k_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, cc_slot, line);
+    // is_alnum = (48..=57) | (65..=90) | (97..=122)
+    // digit
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(48.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(57.0), line);
+    crate::emitter::ops::emit_dyn_le(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    // upper
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(65.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(90.0), line);
+    crate::emitter::ops::emit_dyn_le(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+    // lower
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(97.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, cc_slot, line);
+    push_const(chunk, Value::F64(122.0), line);
+    crate::emitter::ops::emit_dyn_le(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    // alnum: name += s.charAt(k); k += 1
+    lget(chunk, name_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, k_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, name_slot, line);
+    lget(chunk, k_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, k_slot, line);
+    chunk.emit_else(line);
+    // non-alnum: stop the name scan
+    lget(chunk, n_slot, line);
+    lset(chunk, k_slot, line);
+    chunk.emit_end(line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, inner, line);
+    let chunk = &mut chunks[current];
+
+    // keep = allowed.indexOf("<" + name.toLowerCase() + ">") >= 0
+    lget(chunk, allowed_slot, line);
+    push_str(chunk, "<", line);
+    lget(chunk, name_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    push_str(chunk, ">", line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // keep the whole tag: out += s.substring(i, j+1)
+    lget(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    lget(chunk, j_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("ecma:string", "substring");
+        chunk.emit_call(idx, 3, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_end(line);
+    // i = j + 1
+    lget(chunk, j_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line); // end j<0 else
+
+    chunk.emit_else(line); // char is not '<'
+    // out += s.charAt(i); i += 1
+    lget(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line); // end if '<'
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, outer, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
 }
 
 // ── strrchr ───────────────────────────────────────────────────────────────
@@ -5584,8 +5819,12 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     lset(chunk, wstart_slot, line);
     push_const(chunk, Value::Bool(false), line);
     lset(chunk, in_word2_slot, line);
-    // create empty object
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    // Create an empty associative array (Map). PHP mode 2 returns a
+    // position→word map; count() must return the entry count (3 for
+    // "a b c"), not max-index+1 — so a Map, not a sparse Array.
+    let _ = chunk;
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    let chunk = &mut chunks[current];
     lset(chunk, obj_slot, line);
 
     let _ = chunk;
@@ -5645,7 +5884,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     lget(chunk, wstart_slot, line);
     lget(chunk, char_pos_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "ecma:array", "set", 3, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::Bool(false), line);
@@ -6397,4 +6636,1398 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_end(line);
+}
+
+// ── strpos / mb_strpos ─────────────────────────────────────────────
+//
+// Relocated out of the shared compiler's intrinsic table (`compiler/mod.rs`
+// `"php_strpos"`) — PHP-specific runtime semantics belong in the PHP
+// emitter. Returns the code-unit index of the first `needle` occurrence
+// (>= `offset`), or PHP's `false` on a miss. `ecma:string.indexOf` is
+// UTF-16 code-unit based (ECMA-262 §22.1.3.9), so for BMP text this equals
+// the codepoint index `mb_strpos` wants.
+pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let haystack_slot = alloc_local(chunk);
+    let needle_slot = alloc_local(chunk);
+    let offset_slot = alloc_local(chunk);
+    let idx_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): haystack, needle, [offset]. Pop in reverse.
+    if argc >= 3 {
+        crate::emitter::convert::emit_to_int(chunk, line);
+        lset(chunk, offset_slot, line);
+    }
+    coerce_to_str(chunk, line);
+    lset(chunk, needle_slot, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, haystack_slot, line);
+    if argc < 3 {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, offset_slot, line);
+    }
+
+    // idx = haystack.substring(offset).indexOf(needle)
+    lget(chunk, haystack_slot, line);
+    lget(chunk, offset_slot, line);
+    push_const(chunk, Value::I32(i32::MAX), line);
+    crate::emitter::strings::emit_substring(chunk, line);
+    lget(chunk, needle_slot, line);
+    crate::emitter::strings::emit_index_of(chunk, line);
+    lset(chunk, idx_slot, line);
+
+    // idx >= 0 ? idx + offset : false
+    lget(chunk, idx_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, idx_slot, line);
+    lget(chunk, offset_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_end(line);
+}
+
+// ── strtr ──────────────────────────────────────────────────────────
+//
+// Relocated out of the shared compiler's intrinsic table (`compiler/mod.rs`
+// `"strtr"`). Two forms:
+//   strtr($s, $from, $to)  — per-position single-char translation
+//   strtr($s, $map)        — associative replacement (longest key first;
+//                            the walker pre-sorts literal maps)
+// Uses `replaceAll` (PHP replaces every occurrence — the old intrinsic used
+// `replace`, which only hit the first).
+pub fn emit_strtr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 3 {
+        emit_strtr3(chunks, current, line);
+    } else {
+        emit_strtr_map(chunks, current, line);
+    }
+}
+
+fn emit_strtr3(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let to_slot = alloc_local(chunk);
+    let from_slot = alloc_local(chunk);
+    let str_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let flen_slot = alloc_local(chunk);
+    let fc_slot = alloc_local(chunk);
+    let tc_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): str, from, to. Pop in reverse.
+    coerce_to_str(chunk, line);
+    lset(chunk, to_slot, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, from_slot, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, str_slot, line);
+
+    lget(chunk, from_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, flen_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    let st = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, flen_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // fc = from.charAt(i)
+    lget(chunk, from_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, fc_slot, line);
+    // tc = to.charAt(i)
+    lget(chunk, to_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, tc_slot, line);
+    // str = str.replaceAll(fc, tc)
+    lget(chunk, str_slot, line);
+    lget(chunk, fc_slot, line);
+    lget(chunk, tc_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
+    lset(chunk, str_slot, line);
+    // i++
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, st, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, str_slot, line);
+}
+
+fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let map_slot = alloc_local(chunk);
+    let str_slot = alloc_local(chunk);
+    let entries_slot = alloc_local(chunk);
+    let idx_slot = alloc_local(chunk);
+    let pair_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): str, map. Pop map then str.
+    lset(chunk, map_slot, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, str_slot, line);
+
+    lget(chunk, map_slot, line);
+    let _ = chunk;
+    crate::emitter::collections::emit_iter_entries(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, entries_slot, line);
+
+    let _ = chunk;
+    let state =
+        crate::emitter::loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
+    // for_in_start leaves the current entry on the stack — drop it; we
+    // re-fetch [k, v] by index below.
+    chunks[current].emit_op(Op::DROP, line);
+
+    let chunk = &mut chunks[current];
+    lget(chunk, str_slot, line);
+    lget(chunk, entries_slot, line);
+    lget(chunk, idx_slot, line);
+    let _ = chunk;
+    crate::emitter::collections::emit_get(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, pair_slot, line);
+    lget(chunk, pair_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    let _ = chunk;
+    crate::emitter::collections::emit_get(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, pair_slot, line);
+    push_const(chunk, Value::I32(1), line);
+    let _ = chunk;
+    crate::emitter::collections::emit_get(chunks, current, line);
+    let chunk = &mut chunks[current];
+    {
+        let idx = chunk.add_import("ecma:string", "replaceAll");
+        chunk.emit_call(idx, 3, line);
+    }
+    lset(chunk, str_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, str_slot, line);
+}
+
+// ── quotemeta / strspn / strcspn ───────────────────────────────────
+
+/// PHP `quotemeta($s)` — backslash-escape the regex metacharacters
+/// `. \ + * ? [ ^ ] $ ( )`.
+pub fn emit_quotemeta(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let c_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let is_meta_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    // . 46, \ 92, + 43, * 42, ? 63, [ 91, ^ 94, ] 93, $ 36, ( 40, ) 41
+    let metas: &[u32] = &[46, 92, 43, 42, 63, 91, 94, 93, 36, 40, 41];
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, c_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+
+    push_const(chunk, Value::Bool(false), line);
+    lset(chunk, is_meta_slot, line);
+    for &m in metas {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(m as f64), line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::Bool(true), line);
+        lset(chunk, is_meta_slot, line);
+        chunk.emit_end(line);
+    }
+    lget(chunk, is_meta_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "\\", line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lget(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_else(line);
+    lget(chunk, out_slot, line);
+    lget(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_end(line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+}
+
+/// Shared body for `strspn`/`strcspn`. `reject` = false → count the initial
+/// run of chars **in** the mask (strspn); true → chars **not** in the mask
+/// (strcspn).
+fn emit_str_span(chunks: &mut [Chunk], current: usize, reject: bool, line: u32) {
+    let chunk = &mut chunks[current];
+    let mask_slot = alloc_local(chunk);
+    let s_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let count_slot = alloc_local(chunk);
+    let c_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): subject, mask. Pop mask then subject.
+    coerce_to_str(chunk, line);
+    lset(chunk, mask_slot, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, count_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // c = subject.charAt(i); in_mask = mask.indexOf(c) >= 0
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, c_slot, line);
+    lget(chunk, mask_slot, line);
+    lget(chunk, c_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "indexOf");
+        chunk.emit_call(idx, 2, line);
+    }
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    // `matches` = keep going: strspn → char in mask; strcspn → char NOT in mask.
+    if reject {
+        chunk.emit_op(Op::I32_EQZ, line);
+    }
+    chunk.emit_if(line);
+    // matched: count++, i++
+    lget(chunk, count_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, count_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_else(line);
+    // stop: force loop exit by jumping i to n
+    lget(chunk, n_slot, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, count_slot, line);
+}
+
+/// PHP `strspn($subject, $mask)`.
+pub fn emit_strspn(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_str_span(chunks, current, false, line);
+}
+
+/// PHP `strcspn($subject, $mask)`.
+pub fn emit_strcspn(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_str_span(chunks, current, true, line);
+}
+
+// ── str_increment / str_decrement (PHP 8.3) ────────────────────────
+//
+// Perl-style alphanumeric increment/decrement. Rightmost char changes;
+// 'z'→'a', 'Z'→'A', '9'→'0' carry left. On carry past the leftmost char
+// a new digit/letter is prepended ('1' for digits, 'a'/'A' for letters).
+fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let carry_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let newcode_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    lset(chunk, carry_slot, line);
+
+    // wrap triples: (trigger_code, wrapped_code)
+    let wraps: &[(f64, f64)] = if inc {
+        &[(122.0, 97.0), (90.0, 65.0), (57.0, 48.0)]
+    } else {
+        &[(97.0, 122.0), (65.0, 90.0), (48.0, 57.0)]
+    };
+    let step = if inc { 1.0 } else { -1.0 };
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // if carry: compute new char; else: keep original
+    lget(chunk, carry_slot, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    // code = s.charCodeAt(i)
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+    // assume no further carry; newcode = code + step
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, carry_slot, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(step), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, newcode_slot, line);
+    // wrap overrides
+    for &(trigger, wrapped) in wraps {
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(trigger), line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::F64(wrapped), line);
+        lset(chunk, newcode_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        lset(chunk, carry_slot, line);
+        chunk.emit_end(line);
+    }
+    // newch = fromCharCode(newcode)
+    lget(chunk, newcode_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    chunk.emit_else(line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    chunk.emit_end(line);
+    // out = newch + out
+    lget(chunk, out_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    // i--
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+
+    // Final carry → prepend a fresh leading char (increment only; PHP
+    // str_decrement on underflow throws, which the tests don't exercise).
+    if inc {
+        lget(chunk, carry_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        // class of first char decides the prepended digit/letter
+        lget(chunk, s_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        {
+            let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+            chunk.emit_call(idx, 2, line);
+        }
+        lset(chunk, code_slot, line);
+        // default 'a' (97); if digit → '1' (49); if upper A-Z → 'A' (65)
+        push_const(chunk, Value::F64(97.0), line);
+        lset(chunk, newcode_slot, line);
+        // digit? code <= 57
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(57.0), line);
+        crate::emitter::ops::emit_dyn_le(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::F64(49.0), line);
+        lset(chunk, newcode_slot, line);
+        chunk.emit_end(line);
+        // uppercase? code >= 65 && code <= 90
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(65.0), line);
+        crate::emitter::ops::emit_dyn_ge(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(90.0), line);
+        crate::emitter::ops::emit_dyn_le(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::F64(65.0), line);
+        lset(chunk, newcode_slot, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        lget(chunk, newcode_slot, line);
+        {
+            let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+            chunk.emit_call(idx, 1, line);
+        }
+        lget(chunk, out_slot, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
+        lset(chunk, out_slot, line);
+        chunk.emit_end(line);
+    }
+
+    lget(chunk, out_slot, line);
+}
+
+/// PHP 8.3 `str_increment($s)`.
+pub fn emit_str_increment(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_str_incdec(chunks, current, true, line);
+}
+
+/// PHP 8.3 `str_decrement($s)`.
+pub fn emit_str_decrement(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_str_incdec(chunks, current, false, line);
+}
+
+// ── strlen (byte length) ───────────────────────────────────────────
+//
+// PHP strings are byte strings, so `strlen` counts UTF-8 *bytes*, unlike
+// JS `.length` (UTF-16 code units) / `mb_strlen` (codepoints). Vybe stores
+// strings as JS strings, so recover the byte count by summing the UTF-8
+// width of each codepoint. (mb_strlen stays on `common:str_length`.)
+pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let bytes_slot = alloc_local(chunk);
+    let cp_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, bytes_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // cp = s.codePointAt(i)
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "codePointAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, cp_slot, line);
+
+    // bytes += cp<0x80?1 : cp<0x800?2 : cp<0x10000?3 : 4
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(128.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_else(line);
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(2048.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_else(line);
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(65536.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(3.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(4.0), line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    lget(chunk, bytes_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, bytes_slot, line);
+
+    // i += cp > 0xFFFF ? 2 : 1  (astral codepoints span two UTF-16 units)
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(65535.0), line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_end(line);
+    lget(chunk, i_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, bytes_slot, line);
+}
+
+// ── count_chars ────────────────────────────────────────────────────
+//
+// PHP `count_chars($s, $mode)`. Supported modes:
+//   1 → associative array { byte-value → frequency } for bytes that occur
+//   3 → the set of distinct characters (as a keyed map, so array_keys()
+//        yields the characters in first-seen order)
+// PHP array ≡ Map, so both return an ObjectKind::Map.
+pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let mode_slot = alloc_local(chunk);
+    let s_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let ch_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+    let cur_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): s, [mode]. Pop mode (TOS) then s.
+    if argc >= 2 {
+        crate::emitter::convert::emit_to_int(chunk, line);
+        lset(chunk, mode_slot, line);
+    }
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    if argc < 2 {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, mode_slot, line);
+    }
+
+    let _ = chunk;
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, ch_slot, line);
+
+    // key = (mode == 3) ? ch : code
+    lget(chunk, mode_slot, line);
+    push_const(chunk, Value::F64(3.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, ch_slot, line);
+    chunk.emit_else(line);
+    lget(chunk, code_slot, line);
+    chunk.emit_end(line);
+    lset(chunk, key_slot, line);
+
+    // cur = result.has(key) ? result.get(key) : 0
+    lget(chunk, result_slot, line);
+    lget(chunk, key_slot, line);
+    {
+        let idx = chunk.add_import("ecma:map", "has");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, result_slot, line);
+    lget(chunk, key_slot, line);
+    {
+        let idx = chunk.add_import("ecma:map", "get");
+        chunk.emit_call(idx, 2, line);
+    }
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, cur_slot, line);
+
+    // result.set(key, cur)
+    lget(chunk, result_slot, line);
+    lget(chunk, key_slot, line);
+    lget(chunk, cur_slot, line);
+    {
+        let idx = chunk.add_import("ecma:map", "set");
+        chunk.emit_call(idx, 3, line);
+    }
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, result_slot, line);
+}
+
+// ── quoted_printable_encode / decode ───────────────────────────────
+//
+// RFC 2045 §6.7 quoted-printable. Encode: `=`, bytes >126 and control
+// chars (except TAB) become `=XX` (upper-case hex). Decode reverses that
+// and drops `=CRLF` soft line breaks.
+pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let hi_slot = alloc_local(chunk);
+    let hex_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "0123456789ABCDEF", line);
+    lset(chunk, hex_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+
+    // need = code==61 | code>126 | (code<32 & code!=9)
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(61.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(126.0), line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(32.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(9.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    // out += "=" + hex[hi] + hex[lo]
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(16.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::emitter::math::emit_floor(chunk, line);
+    lset(chunk, hi_slot, line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "=", line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lget(chunk, hex_slot, line);
+    lget(chunk, hi_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lget(chunk, hex_slot, line);
+    // lo = code - hi*16
+    lget(chunk, code_slot, line);
+    lget(chunk, hi_slot, line);
+    push_const(chunk, Value::F64(16.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_else(line);
+    lget(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_end(line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+}
+
+/// Decode a single hex digit's char code to its value on the stack top.
+fn emit_hexval(chunk: &mut Chunk, code_slot: u16, line: u32) {
+    // 48-57 → -48 ; 65-70 → -55 ; 97-102 → -87 (upper/lower A-F)
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(57.0), line);
+    crate::emitter::ops::emit_dyn_le(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(48.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_else(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(97.0), line);
+    crate::emitter::ops::emit_dyn_ge(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(87.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_else(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(55.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let c1_slot = alloc_local(chunk);
+    let c2_slot = alloc_local(chunk);
+    let byte_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, code_slot, line);
+
+    // if code == '=' (61)
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(61.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // c1 = charCodeAt(i+1)
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, c1_slot, line);
+    // soft break? c1==13 | c1==10
+    lget(chunk, c1_slot, line);
+    push_const(chunk, Value::F64(13.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, c1_slot, line);
+    push_const(chunk, Value::F64(10.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    // soft break: skip '=' + CR (+ LF if CRLF). i += (c1==13 ? 2 : 1) ... plus the '='
+    // Advance past '=' and the CR/LF; if CRLF advance one more.
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    // if c1==13: also skip the following LF
+    lget(chunk, c1_slot, line);
+    push_const(chunk, Value::F64(13.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    // =XX hex escape
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, c2_slot, line);
+    emit_hexval(chunk, c1_slot, line);
+    push_const(chunk, Value::F64(16.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_hexval(chunk, c2_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, byte_slot, line);
+    lget(chunk, out_slot, line);
+    lget(chunk, byte_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(3.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    // literal char
+    lget(chunk, out_slot, line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_end(line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+}
+
+// ── convert_uuencode / convert_uudecode ────────────────────────────
+//
+// uuencode maps each 3 input bytes to 4 printable chars: 6-bit groups
+// offset by 32 (0 → backtick, matching PHP). A leading length char
+// records how many bytes the line encodes. Single-line form (inputs in
+// these tests are short); decode reads the length char and stops there.
+
+/// Emit `enc(c)` — the value in `c_slot` (0..63) → a uuencode char, on TOS.
+fn emit_uu_enc(chunk: &mut Chunk, c_slot: u16, line: u32) {
+    lget(chunk, c_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(96.0), line);
+    chunk.emit_else(line);
+    lget(chunk, c_slot, line);
+    push_const(chunk, Value::F64(32.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_end(line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+}
+
+/// Emit `dec(code)` — a uuencode char code in `code_slot` → its 0..63 value.
+fn emit_uu_dec(chunk: &mut Chunk, code_slot: u16, line: u32) {
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(96.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_else(line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(32.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_end(line);
+}
+
+/// Push `floor(slot / div)` onto the stack.
+fn emit_floordiv(chunk: &mut Chunk, slot: u16, div: f64, line: u32) {
+    lget(chunk, slot, line);
+    push_const(chunk, Value::F64(div), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::emitter::math::emit_floor(chunk, line);
+}
+
+/// Push `slot mod m` onto the stack (m a power used in uuencode).
+fn emit_modn(chunk: &mut Chunk, slot: u16, m: f64, line: u32) {
+    lget(chunk, slot, line);
+    emit_floordiv(chunk, slot, m, line);
+    push_const(chunk, Value::F64(m), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+}
+
+pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let b0_slot = alloc_local(chunk);
+    let b1_slot = alloc_local(chunk);
+    let b2_slot = alloc_local(chunk);
+    let c_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    lget(chunk, s_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, n_slot, line);
+    // out = fromCharCode(n + 32)  (length char)
+    lget(chunk, n_slot, line);
+    push_const(chunk, Value::F64(32.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // b0 = charCodeAt(i)
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    lset(chunk, b0_slot, line);
+    // b1 = (i+1<n) ? charCodeAt(i+1) : 0
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    lset(chunk, b1_slot, line);
+    // b2 = (i+2<n) ? charCodeAt(i+2) : 0
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lget(chunk, n_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    lset(chunk, b2_slot, line);
+
+    // c0 = floor(b0/4)
+    emit_floordiv(chunk, b0_slot, 4.0, line);
+    lset(chunk, c_slot, line);
+    lget(chunk, out_slot, line);
+    emit_uu_enc(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    // c1 = (b0 mod 4)*16 + floor(b1/16)
+    emit_modn(chunk, b0_slot, 4.0, line);
+    push_const(chunk, Value::F64(16.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_floordiv(chunk, b1_slot, 16.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, c_slot, line);
+    lget(chunk, out_slot, line);
+    emit_uu_enc(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    // c2 = (b1 mod 16)*4 + floor(b2/64)
+    emit_modn(chunk, b1_slot, 16.0, line);
+    push_const(chunk, Value::F64(4.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_floordiv(chunk, b2_slot, 64.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, c_slot, line);
+    lget(chunk, out_slot, line);
+    emit_uu_enc(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    // c3 = b2 mod 64
+    emit_modn(chunk, b2_slot, 64.0, line);
+    lset(chunk, c_slot, line);
+    lget(chunk, out_slot, line);
+    emit_uu_enc(chunk, c_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(3.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+    push_str(chunk, "\n", line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+}
+
+pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let count_slot = alloc_local(chunk);
+    let pos_slot = alloc_local(chunk);
+    let done_slot = alloc_local(chunk);
+    let c0 = alloc_local(chunk);
+    let c1 = alloc_local(chunk);
+    let c2 = alloc_local(chunk);
+    let c3 = alloc_local(chunk);
+    let byte_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    // count = charCodeAt(0) - 32
+    lget(chunk, s_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    push_const(chunk, Value::F64(32.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, count_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    lset(chunk, pos_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, done_slot, line);
+
+    let _ = chunk;
+    let loop_state = crate::emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, done_slot, line);
+    lget(chunk, count_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    // decode c0..c3 from four chars at pos
+    for (k, slot) in [(0.0, c0), (1.0, c1), (2.0, c2), (3.0, c3)] {
+        lget(chunk, s_slot, line);
+        lget(chunk, pos_slot, line);
+        push_const(chunk, Value::F64(k), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        {
+            let idx = chunk.add_import("wasm:js-string", "charCodeAt");
+            chunk.emit_call(idx, 2, line);
+        }
+        let tmp = alloc_local(chunk);
+        lset(chunk, tmp, line);
+        emit_uu_dec(chunk, tmp, line);
+        lset(chunk, slot, line);
+    }
+    // b0 = c0*4 + floor(c1/16)
+    lget(chunk, c0, line);
+    push_const(chunk, Value::F64(4.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_floordiv(chunk, c1, 16.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, byte_slot, line);
+    lget(chunk, out_slot, line);
+    lget(chunk, byte_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, done_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, done_slot, line);
+
+    // if done < count: emit b1
+    lget(chunk, done_slot, line);
+    lget(chunk, count_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // b1 = (c1 mod 16)*16 + floor(c2/4)
+    emit_modn(chunk, c1, 16.0, line);
+    push_const(chunk, Value::F64(16.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_floordiv(chunk, c2, 4.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, byte_slot, line);
+    lget(chunk, out_slot, line);
+    lget(chunk, byte_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, done_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, done_slot, line);
+    chunk.emit_end(line);
+
+    // if done < count: emit b2
+    lget(chunk, done_slot, line);
+    lget(chunk, count_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    // b2 = (c2 mod 4)*64 + c3
+    emit_modn(chunk, c2, 4.0, line);
+    push_const(chunk, Value::F64(64.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    lget(chunk, c3, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, byte_slot, line);
+    lget(chunk, out_slot, line);
+    lget(chunk, byte_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "fromCharCode");
+        chunk.emit_call(idx, 1, line);
+    }
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, done_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, done_slot, line);
+    chunk.emit_end(line);
+
+    lget(chunk, pos_slot, line);
+    push_const(chunk, Value::F64(4.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, pos_slot, line);
+    let _ = chunk;
+    crate::emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
 }

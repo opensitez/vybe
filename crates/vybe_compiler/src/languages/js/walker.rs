@@ -1804,6 +1804,8 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
+    // `class X extends null {}` — legal definition, throwing construction.
+    let mut extends_null = false;
     // Pre-class statements emitted to bind synthetic names for non-trivial
     // `extends <expression>` heads (e.g. `class X extends getBase()`).
     let mut pre_class_stmts: Vec<Statement> = Vec::new();
@@ -1828,7 +1830,23 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     && !raw.contains(' ')
                     && !raw.contains('[')
                     && !raw.is_empty();
-                if is_simple {
+                // §15.7.5 ClassDefinitionEvaluation: `extends undefined`
+                // throws a TypeError at DEFINITION time; `extends null`
+                // is legal at definition — the class is heritage-less and
+                // constructing it throws instead (node-verified).
+                if raw == "undefined" {
+                    pre_class_stmts.push(Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("TypeError")),
+                            args: vec![Argument::positional(Expression::string(
+                                "Class extends value undefined is not a constructor or null",
+                            ))],
+                        })),
+                        cause: None,
+                    }));
+                } else if raw == "null" {
+                    extends_null = true;
+                } else if is_simple {
                     parents.push(raw);
                 } else {
                     let synth = format!("__extends_{}_{}", name, parents.len());
@@ -1855,6 +1873,34 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             _ => {}
         }
+    }
+
+    // `extends null` (§15.7.14): the implicit derived constructor would
+    // call super — with a null heritage that's "Super constructor null …
+    // is not a constructor". Synthesize a constructor that throws the
+    // TypeError at construction time (node-verified). A user-written
+    // constructor keeps its own body.
+    if extends_null
+        && !members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor { .. }))
+    {
+        members.push(ClassMember::Constructor {
+            params: vec![],
+            body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("TypeError")),
+                    args: vec![Argument::positional(Expression::string(&format!(
+                        "Super constructor null of {} is not a constructor",
+                        name
+                    )))],
+                })),
+                cause: None,
+            })],
+            base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        });
     }
 
     // Extract static block bodies — these run immediately after class definition.
@@ -3621,6 +3667,19 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         } else {
                             body = LambdaBody::Expr(Box::new(walk_expression(p)?));
                         }
+                    }
+                }
+            }
+            // §15.3.1 early error: arrow parameter lists may NEVER
+            // contain duplicate names (unlike sloppy-mode functions).
+            {
+                let mut seen = std::collections::HashSet::new();
+                for param in &params {
+                    if !param.name.starts_with("__") && !seen.insert(param.name.as_str()) {
+                        return Err(format!(
+                            "Duplicate parameter name not allowed in this context: '{}'",
+                            param.name
+                        ));
                     }
                 }
             }

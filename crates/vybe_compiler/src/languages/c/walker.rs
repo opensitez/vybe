@@ -1174,7 +1174,10 @@ impl Walker {
             self.structs.insert("tm".to_string(), fields.clone());
             self.struct_field_types.insert(
                 "tm".to_string(),
-                fields.into_iter().map(|field| (field, "int".to_string())).collect(),
+                fields
+                    .into_iter()
+                    .map(|field| (field, "int".to_string()))
+                    .collect(),
             );
         }
         let defs: &[(&str, i64)] = match header {
@@ -1408,8 +1411,7 @@ impl Walker {
                             scoped_param_types.push((param.name.clone(), previous_type));
                             let previous_size = self.var_sizes.insert(
                                 param.name.clone(),
-                                if type_hint.contains('*')
-                                    || type_hint.contains(ARRAY_PARAM_MARKER)
+                                if type_hint.contains('*') || type_hint.contains(ARRAY_PARAM_MARKER)
                                 {
                                     8
                                 } else {
@@ -1914,6 +1916,7 @@ impl Walker {
                             && struct_fields.is_none()
                             && !is_pointer_decl
                             && !is_function_pointer_decl
+                            && !was_array_decl
                         {
                             if let ExprKind::Array(elems) = &raw.kind {
                                 if elems.len() == 1 && elems[0].key.is_none() {
@@ -2064,8 +2067,7 @@ impl Walker {
                 if is_pointer_decl && init_is_heap_array && !was_array_decl {
                     self.char_pointers.insert(name.clone());
                     self.initialized_char_buffers.insert(name.clone());
-                    self.char_string_values
-                        .insert(name.clone(), String::new());
+                    self.char_string_values.insert(name.clone(), String::new());
                     init = Some(expr(ExprKind::Lit(Literal::Str(String::new()))));
                 } else if init_is_string
                     || (is_pointer_decl && !init_is_addr_of && !is_null_pointer_init(&init))
@@ -2202,9 +2204,11 @@ impl Walker {
                     let is_char = normalized_c_type_name(&type_text) == "char";
                     if let Some(bounds) = &array_bounds {
                         if bounds.len() >= 2 && !is_char {
-                            if let Some(zero) =
-                                zero_nd_array(&self.evaluable_bounds(bounds).unwrap_or_else(|| bounds.clone()))
-                            {
+                            if let Some(zero) = zero_nd_array(
+                                &self
+                                    .evaluable_bounds(bounds)
+                                    .unwrap_or_else(|| bounds.clone()),
+                            ) {
                                 init = Some(zero);
                                 array_bounds = None;
                             }
@@ -2388,6 +2392,11 @@ impl Walker {
                     }
                 }
             }
+            if was_array_decl && type_text.contains("unsigned") {
+                if let Some(init_expr) = init.take() {
+                    init = Some(normalize_unsigned_array_literal(init_expr));
+                }
+            }
             if is_function_pointer_decl {
                 if let Some(return_type) = init
                     .as_ref()
@@ -2403,9 +2412,11 @@ impl Walker {
             if !type_text.contains("char") && struct_fields.is_none() {
                 if let (Some(bounds), Some(init_expr)) = (&array_bounds, &init) {
                     if bounds.len() > 1 && is_all_zero_init(init_expr) {
-                        if let Some(zero) =
-                            zero_nd_array(&self.evaluable_bounds(bounds).unwrap_or_else(|| bounds.clone()))
-                        {
+                        if let Some(zero) = zero_nd_array(
+                            &self
+                                .evaluable_bounds(bounds)
+                                .unwrap_or_else(|| bounds.clone()),
+                        ) {
                             init = Some(zero);
                             array_bounds = None;
                         }
@@ -2538,8 +2549,31 @@ impl Walker {
                 }
                 renamed
             } else {
-                name
+                name.clone()
             };
+            if emit_name != name {
+                if self.array_ptr_vars.contains(&name) {
+                    self.array_ptr_vars.insert(emit_name.clone());
+                }
+                if self.carray_ptr_vars.contains(&name) {
+                    self.carray_ptr_vars.insert(emit_name.clone());
+                }
+                if self.char_pointers.contains(&name) {
+                    self.char_pointers.insert(emit_name.clone());
+                }
+                if self.initialized_char_buffers.contains(&name) {
+                    self.initialized_char_buffers.insert(emit_name.clone());
+                }
+                if self.char_string_arrays.contains(&name) {
+                    self.char_string_arrays.insert(emit_name.clone());
+                }
+                if let Some(type_text) = self.var_types.get(&name).cloned() {
+                    self.var_types.insert(emit_name.clone(), type_text);
+                }
+                if let Some(size) = self.var_sizes.get(&name).copied() {
+                    self.var_sizes.insert(emit_name.clone(), size);
+                }
+            }
             declarations.push(VarDeclarator {
                 pattern: BindingPattern::Ident(emit_name),
                 type_hint: Some(emitted_type_hint),
@@ -2554,10 +2588,7 @@ impl Walker {
             } else {
                 VarDeclKind::Var
             };
-            out.push(stmt(StmtKind::VarDecl {
-                declarations,
-                kind,
-            }));
+            out.push(stmt(StmtKind::VarDecl { declarations, kind }));
         }
     }
 
@@ -3552,7 +3583,7 @@ impl Walker {
         }
         self.block_renames.pop();
         self.block_depth = self.block_depth.saturating_sub(1);
-        out
+        lower_c_gotos(out)
     }
 
     fn walk_statement(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
@@ -4251,7 +4282,9 @@ impl Walker {
             let struct_name = normalized_c_type_name(type_text);
             let fields = self.structs.get(&struct_name)?;
             let field_types = self.struct_field_types.get(&struct_name)?;
-            let assigned_type = field_types.get(field).map(|ty| normalized_c_type_name(ty))?;
+            let assigned_type = field_types
+                .get(field)
+                .map(|ty| normalized_c_type_name(ty))?;
             let anon_union_like = fields.len() == 2
                 && fields.iter().any(|f| {
                     field_types
@@ -4305,7 +4338,9 @@ impl Walker {
             let field_value = field_types
                 .and_then(|types| types.get(field))
                 .filter(|ty| ty.contains("char") && ty.contains('['))
-                .map(|ty| int_to_byte_array(value.clone(), array_bound_from_type_text(ty).unwrap_or(4)))
+                .map(|ty| {
+                    int_to_byte_array(value.clone(), array_bound_from_type_text(ty).unwrap_or(4))
+                })
                 .unwrap_or_else(|| value.clone());
             seq.push(assign_expr(
                 expr(ExprKind::Member {
@@ -4939,11 +4974,14 @@ impl Walker {
             ExprKind::Ident(name) => self
                 .var_types
                 .get(name)
-                .map(|t| t.contains("unsigned") || t.contains("uint") || t == "size_t")
+                .map(|t| {
+                    !t.contains('*')
+                        && (t.contains("unsigned") || t.contains("uint") || t == "size_t")
+                })
                 .unwrap_or(false),
             ExprKind::Cast { type_name, .. } => {
                 let t = normalized_c_type_name(type_name);
-                t.contains("unsigned") || t.contains("uint") || t == "size_t"
+                !t.contains('*') && (t.contains("unsigned") || t.contains("uint") || t == "size_t")
             }
             _ => false,
         }
@@ -5930,12 +5968,9 @@ impl Walker {
                 && !self.char_string_values.contains_key(name)
             {
                 let code_value = match value.kind {
-                    ExprKind::Lit(Literal::Str(s)) => int_lit(
-                        s.chars()
-                            .next()
-                            .map(|ch| ch as u32 as i64)
-                            .unwrap_or(0),
-                    ),
+                    ExprKind::Lit(Literal::Str(s)) => {
+                        int_lit(s.chars().next().map(|ch| ch as u32 as i64).unwrap_or(0))
+                    }
                     _ => value,
                 };
                 return Some(assign_expr(
@@ -6470,6 +6505,15 @@ impl Walker {
                     }
                 }
                 // *carray_object (result of carray_advance etc.) → .__base[.__idx]
+                if let (Some(base), Some(index)) =
+                    (carray_base_expr(&operand), carray_idx_expr(&operand))
+                {
+                    return expr(ExprKind::Index {
+                        object: Box::new(base),
+                        index: Box::new(index),
+                        null_safe: false,
+                    });
+                }
                 if is_carray_object(&operand) {
                     return pointers::carray_deref_read(operand);
                 }
@@ -6711,6 +6755,11 @@ impl Walker {
             // snapshot at the cast site (write-back through the char* is not
             // modeled — Vybe scalars are values, not bytes in linear memory).
             if normalized_c_type_name(&tn.replace('*', "")) == "char" {
+                if let ExprKind::Ident(name) = &operand.kind {
+                    if self.array_ptr_vars.contains(name) || self.is_fixed_array_var(name) {
+                        return pointers::make_carray_ptr(operand, int_lit(0));
+                    }
+                }
                 if let ExprKind::Unary {
                     op: UnaryOp::AddrOf,
                     expr: inner,
@@ -6755,6 +6804,36 @@ impl Walker {
                                 );
                             }
                         }
+                    }
+                }
+            }
+            if normalized_c_type_name(&tn.replace('*', "")) != "char" {
+                if let ExprKind::Ident(name) = &operand.kind {
+                    if self.carray_ptr_vars.contains(name)
+                        && self
+                            .var_types
+                            .get(name)
+                            .map(|ty| normalized_c_type_name(ty).starts_with("char"))
+                            .unwrap_or(false)
+                    {
+                        let elem_size = sizeof_from_type_text(&tn.replace('*', "")).max(1);
+                        let scaled_idx = expr(ExprKind::Binary {
+                            op: BinOp::Div,
+                            left: Box::new(expr(ExprKind::Member {
+                                object: Box::new(ident(name)),
+                                field: CARRAY_IDX_KEY.to_string(),
+                                null_safe: false,
+                            })),
+                            right: Box::new(int_lit(elem_size)),
+                        });
+                        return pointers::make_carray_ptr(
+                            expr(ExprKind::Member {
+                                object: Box::new(ident(name)),
+                                field: CARRAY_BASE_KEY.to_string(),
+                                null_safe: false,
+                            }),
+                            scaled_idx,
+                        );
                     }
                 }
             }
@@ -6940,10 +7019,21 @@ impl Walker {
                                     ident(&tmp),
                                 ]))
                             } else {
-                                expr(ExprKind::Unary {
-                                    op: UnaryOp::PostInc,
-                                    expr: Box::new(base),
-                                })
+                                let id = self.tmp_counter;
+                                self.tmp_counter += 1;
+                                let tmp = format!("__c_post{id}");
+                                expr(ExprKind::Sequence(vec![
+                                    assign_expr(ident(&tmp), ident(name)),
+                                    assign_expr(
+                                        ident(name),
+                                        expr(ExprKind::Binary {
+                                            op: BinOp::Add,
+                                            left: Box::new(ident(name)),
+                                            right: Box::new(int_lit(1)),
+                                        }),
+                                    ),
+                                    ident(&tmp),
+                                ]))
                             }
                         } else {
                             if let Some((width, signed)) = self.bitfield_of_member(&base) {
@@ -6988,10 +7078,21 @@ impl Walker {
                                     })),
                                 })
                             } else {
-                                expr(ExprKind::Unary {
-                                    op: UnaryOp::PostDec,
-                                    expr: Box::new(base),
-                                })
+                                let id = self.tmp_counter;
+                                self.tmp_counter += 1;
+                                let tmp = format!("__c_post{id}");
+                                expr(ExprKind::Sequence(vec![
+                                    assign_expr(ident(&tmp), ident(name)),
+                                    assign_expr(
+                                        ident(name),
+                                        expr(ExprKind::Binary {
+                                            op: BinOp::Sub,
+                                            left: Box::new(ident(name)),
+                                            right: Box::new(int_lit(1)),
+                                        }),
+                                    ),
+                                    ident(&tmp),
+                                ]))
                             }
                         } else {
                             if let Some((width, signed)) = self.bitfield_of_member(&base) {
@@ -8660,6 +8761,199 @@ impl Walker {
                     }
                     return int_lit(0);
                 }
+                "wcsncmp" => {
+                    let mut it = args.into_iter();
+                    if let (Some(a), Some(b), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wcsncmp(
+                            self.wide_array_operand(a.value),
+                            self.wide_array_operand(b.value),
+                            n.value,
+                        );
+                    }
+                    return int_lit(0);
+                }
+                "wcschr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(ch)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcschr(self.wide_array_operand(s.value), ch.value);
+                    }
+                    return null_lit();
+                }
+                "wcsrchr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(ch)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcsrchr(self.wide_array_operand(s.value), ch.value);
+                    }
+                    return null_lit();
+                }
+                "wcsstr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(hay), Some(needle)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcsstr(
+                            self.wide_array_operand(hay.value),
+                            self.wide_array_operand(needle.value),
+                        );
+                    }
+                    return null_lit();
+                }
+                "wcspbrk" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(accept)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcspbrk(
+                            self.wide_array_operand(s.value),
+                            self.wide_array_operand(accept.value),
+                        );
+                    }
+                    return null_lit();
+                }
+                "wcsspn" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(accept)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcsspn(
+                            self.wide_array_operand(s.value),
+                            self.wide_array_operand(accept.value),
+                        );
+                    }
+                    return int_lit(0);
+                }
+                "wcscspn" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(reject)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcscspn(
+                            self.wide_array_operand(s.value),
+                            self.wide_array_operand(reject.value),
+                        );
+                    }
+                    return int_lit(0);
+                }
+                "wcsnlen" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(n)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcsnlen(self.wide_array_operand(s.value), n.value);
+                    }
+                    return int_lit(0);
+                }
+                "wcsncpy" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wcsncpy(
+                            self.wide_array_operand(dest.value),
+                            self.wide_array_operand(src.value),
+                            n.value,
+                        );
+                    }
+                    return null_lit();
+                }
+                "wcscat" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src)) = (it.next(), it.next()) {
+                        return wchar_adapter::wcscat(
+                            self.wide_array_operand(dest.value),
+                            self.wide_array_operand(src.value),
+                        );
+                    }
+                    return null_lit();
+                }
+                "wcsncat" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wcsncat(
+                            self.wide_array_operand(dest.value),
+                            self.wide_array_operand(src.value),
+                            n.value,
+                        );
+                    }
+                    return null_lit();
+                }
+                "wmemchr" => {
+                    let mut it = args.into_iter();
+                    if let (Some(s), Some(ch), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wmemchr(
+                            self.wide_array_operand(s.value),
+                            ch.value,
+                            n.value,
+                        );
+                    }
+                    return null_lit();
+                }
+                "wmemcmp" => {
+                    let mut it = args.into_iter();
+                    if let (Some(a), Some(b), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wmemcmp(
+                            self.wide_array_operand(a.value),
+                            self.wide_array_operand(b.value),
+                            n.value,
+                        );
+                    }
+                    return int_lit(0);
+                }
+                "wmemcpy" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wmemcpy(
+                            self.wide_array_operand(dest.value),
+                            self.wide_array_operand(src.value),
+                            n.value,
+                        );
+                    }
+                    return null_lit();
+                }
+                "wmemset" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(ch), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return wchar_adapter::wmemset(
+                            self.wide_array_operand(dest.value),
+                            ch.value,
+                            n.value,
+                        );
+                    }
+                    return null_lit();
+                }
+                "btowc" | "wctob" => {
+                    if let Some(value) = args.into_iter().next() {
+                        return value.value;
+                    }
+                    return int_lit(0);
+                }
+                "mbstowcs" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src), Some(n)) = (it.next(), it.next(), it.next()) {
+                        return expr(ExprKind::Assign {
+                            target: Box::new(self.wide_array_operand(dest.value)),
+                            value: Box::new(expr(ExprKind::Call {
+                                callee: Box::new(expr(ExprKind::Member {
+                                    object: Box::new(wchar_adapter::string_to_wide(src.value)),
+                                    field: "slice".to_string(),
+                                    null_safe: false,
+                                })),
+                                args: vec![
+                                    Argument::positional(int_lit(0)),
+                                    Argument::positional(n.value),
+                                ],
+                                optional: false,
+                            })),
+                        });
+                    }
+                    return int_lit(0);
+                }
+                "wcstombs" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dest), Some(src), Some(_n)) = (it.next(), it.next(), it.next()) {
+                        return expr(ExprKind::Assign {
+                            target: Box::new(self.wide_array_operand(dest.value)),
+                            value: Box::new(wchar_adapter::wide_to_string(
+                                self.wide_array_operand(src.value),
+                            )),
+                        });
+                    }
+                    return int_lit(0);
+                }
+                "wcsdup" => {
+                    if let Some(src) = args.into_iter().next() {
+                        return wchar_adapter::wcsdup(self.wide_array_operand(src.value));
+                    }
+                    return null_lit();
+                }
                 // strcat(dest, src) → dest = dest + src  (returns dest)
                 "strcat" => {
                     let mut it = args.into_iter();
@@ -9535,7 +9829,8 @@ impl Walker {
                         let left = self.value_from_c_address_arg(a.value);
                         let right = self.value_from_c_address_arg(b.value);
                         if self.is_struct_value_expr(&left) && self.is_struct_value_expr(&right) {
-                            let left_json = call_expr(member(ident("JSON"), "stringify"), vec![left]);
+                            let left_json =
+                                call_expr(member(ident("JSON"), "stringify"), vec![left]);
                             let right_json =
                                 call_expr(member(ident("JSON"), "stringify"), vec![right]);
                             return expr(ExprKind::Ternary {
@@ -10399,8 +10694,8 @@ fn rewrite_gotos_in_stmts(
             _ => out.push(stmt_in),
         }
     }
-        lower_c_gotos(out)
-    }
+    out
+}
 
 // ── Binary precedence folding ─────────────────────────────────────────────
 
@@ -10586,12 +10881,37 @@ fn unsigned_u32_expr(value: Expression) -> Expression {
     })
 }
 
+fn normalize_unsigned_array_literal(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Array(elements) => expr(ExprKind::Array(
+            elements
+                .into_iter()
+                .map(|mut element| {
+                    element.value = normalize_unsigned_array_literal(element.value);
+                    element
+                })
+                .collect(),
+        )),
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } if type_name == "uint32" => match inner.kind {
+            ExprKind::Lit(Literal::Int(_)) | ExprKind::Lit(Literal::Float(_)) => *inner,
+            _ => expr(ExprKind::Cast {
+                expr: inner,
+                type_name,
+            }),
+        },
+        other => expr(other),
+    }
+}
+
 fn is_wide_unsigned_limit_expr(value: &Expression) -> bool {
     matches!(&value.kind, ExprKind::Ident(name)
-        if matches!(
-            name.as_str(),
-            "ULONG_MAX" | "ULLONG_MAX" | "UINT64_MAX" | "UINTPTR_MAX" | "SIZE_MAX"
-        ))
+    if matches!(
+        name.as_str(),
+        "ULONG_MAX" | "ULLONG_MAX" | "UINT64_MAX" | "UINTPTR_MAX" | "SIZE_MAX"
+    ))
 }
 
 fn array_bound_from_type_text(text: &str) -> Option<usize> {
@@ -11611,7 +11931,7 @@ impl Walker {
 fn sizeof_from_type_text(text: &str) -> i64 {
     // Strip qualifiers
     let cleaned = strip_internal_type_markers(text);
-        let t = normalized_c_type_name(&cleaned);
+    let t = normalized_c_type_name(&cleaned);
     let (base, array_count, has_array) = split_array_type_text(&t);
     let t = base.trim();
     if t.starts_with("enum ") {
@@ -11722,8 +12042,7 @@ fn normalized_c_type_name(text: &str) -> String {
 }
 
 fn strip_internal_type_markers(text: &str) -> String {
-    text.replace(ARRAY_PARAM_MARKER, "").trim()
-        .to_string()
+    text.replace(ARRAY_PARAM_MARKER, "").trim().to_string()
 }
 
 fn strip_alignment_specifiers(text: &str) -> String {

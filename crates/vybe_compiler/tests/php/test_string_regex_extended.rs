@@ -167,8 +167,11 @@ fn regex_dotall_matches_newline() {
 #[test]
 fn regex_extended_ignores_whitespace() {
     assert_eq!(
+        // In /x (extended) mode unescaped whitespace is ignored, so the
+        // pattern collapses to `\d+\d`, which cannot match "1 2" (space
+        // between the digits). PHP 8.4 returns 0 here — verified.
         run_prints(r#"<?php echo preg_match('/\d +  \d/x', '1 2') ? 'yes' : 'no'; "#),
-        vec!["yes"]
+        vec!["no"]
     );
 }
 

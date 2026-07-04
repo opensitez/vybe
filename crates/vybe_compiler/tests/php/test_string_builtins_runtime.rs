@@ -34,7 +34,8 @@ echo "$y-$m-$d";
         r#"<?php
 echo strip_tags('<p>ok</p><script>x</script>', '<p>');
 "#,
-        ["<p>ok</p>"]
+        // PHP strips the <script> tags but keeps their text content ("x").
+        ["<p>ok</p>x"]
     };
 
     htmlspecialchars_encodes_angle_and_amp => {
@@ -105,7 +106,7 @@ echo str_word_count('one two three');
         r#"<?php
 echo nl2br("a\nb", false);
 "#,
-        ["a<br />\nb"]
+        ["a<br>", "b"]
     };
 
     str_getcsv_parses_quoted_comma_field => {
