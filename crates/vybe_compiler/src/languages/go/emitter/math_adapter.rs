@@ -43,6 +43,32 @@ pub fn emit_helper(
             chunk.emit_op(Op::F64_MUL, line); // round(x/y)*y
             chunk.emit_op(Op::F64_SUB, line); // x - round(x/y)*y
         }
+        // time.Duration unit accessors — the receiver is the duration in
+        // nanoseconds (a plain number); divide by the unit.
+        "go.dur_minutes" => {
+            chunk.emit_f64_const(60_000_000_000.0, line);
+            chunk.emit_op(Op::F64_DIV, line);
+        }
+        "go.dur_seconds" => {
+            chunk.emit_f64_const(1_000_000_000.0, line);
+            chunk.emit_op(Op::F64_DIV, line);
+        }
+        "go.dur_hours" => {
+            chunk.emit_f64_const(3_600_000_000_000.0, line);
+            chunk.emit_op(Op::F64_DIV, line);
+        }
+        // Nanoseconds() returns the raw count.
+        "go.dur_nanoseconds" => {}
+        "go.dur_milliseconds" => {
+            chunk.emit_f64_const(1_000_000.0, line);
+            chunk.emit_op(Op::F64_DIV, line);
+            chunk.emit_op(Op::F64_TRUNC, line);
+        }
+        "go.dur_microseconds" => {
+            chunk.emit_f64_const(1_000.0, line);
+            chunk.emit_op(Op::F64_DIV, line);
+            chunk.emit_op(Op::F64_TRUNC, line);
+        }
         _ => return false,
     }
     true

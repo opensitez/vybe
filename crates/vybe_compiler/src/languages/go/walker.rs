@@ -53,6 +53,28 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("strings.") {
         prelude.extend(go_prelude_body(GO_STRINGS_PRELUDE)?);
     }
+    if source.contains("strconv.") {
+        prelude.extend(go_prelude_body(GO_STRCONV_PRELUDE)?);
+    }
+    if source.contains("time.") {
+        prelude.extend(go_prelude_body(GO_TIME_PRELUDE)?);
+    }
+    if source.contains("net/url") {
+        prelude.extend(go_prelude_body(GO_NETURL_PRELUDE)?);
+    }
+    if source.contains("atomic.") {
+        prelude.extend(go_prelude_body(GO_ATOMIC_PRELUDE)?);
+    }
+    if source.contains("slices.") || source.contains("maps.") {
+        prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
+    }
+    // slog handlers write to a bytes.Buffer, so slog pulls in the bytes prelude.
+    if source.contains("bytes.") || source.contains("slog.") {
+        prelude.extend(go_prelude_body(GO_BYTES_PRELUDE)?);
+    }
+    if source.contains("slog.") {
+        prelude.extend(go_prelude_body(GO_SLOG_PRELUDE)?);
+    }
     if !prelude.is_empty() {
         prelude.append(&mut body);
         body = prelude;
@@ -123,6 +145,650 @@ func __go_sort_is_sorted(n int, less func(int, int) bool) bool {
 func main() {}
 "#;
 
+/// Go-source runtime prelude for the `time` package. `time.Time` is modeled as
+/// `{sec, nsec, loc}` — the wasi wall-clock datetime shape — for nanosecond
+/// precision. `Now()` reads `wasi:clocks/wall-clock`; calendar breakdown uses
+/// `ecma:date` (both reached via the `__go_date_*` / `__go_wall_now` builtins).
+const GO_TIME_PRELUDE: &str = r#"package main
+
+type __goLoc struct {
+	name   string
+	offset int
+}
+
+type __goTime struct {
+	sec  int
+	nsec int
+	loc  __goLoc
+}
+
+func __go_time_norm(sec, nsec int) (int, int) {
+	for nsec >= 1000000000 {
+		nsec -= 1000000000
+		sec++
+	}
+	for nsec < 0 {
+		nsec += 1000000000
+		sec--
+	}
+	return sec, nsec
+}
+
+func __go_time_Unix(sec, nsec int) __goTime {
+	s, n := __go_time_norm(sec, nsec)
+	return __goTime{sec: s, nsec: n, loc: __goLoc{name: "UTC", offset: 0}}
+}
+
+func __go_time_UnixMilli(ms int) __goTime {
+	return __go_time_Unix(ms/1000, (ms%1000)*1000000)
+}
+
+func __go_time_UnixMicro(us int) __goTime {
+	return __go_time_Unix(us/1000000, (us%1000000)*1000)
+}
+
+func __go_time_Date(year, month, day, hour, minu, second, nsec int, loc __goLoc) __goTime {
+	ms := __go_date_utc(year, month-1, day, hour, minu, second)
+	sec := ms/1000 - loc.offset
+	return __goTime{sec: sec, nsec: nsec, loc: loc}
+}
+
+func __go_time_Now() __goTime {
+	dt := __go_wall_now()
+	return __goTime{sec: dt.seconds, nsec: dt.nanoseconds, loc: __goLoc{name: "UTC", offset: 0}}
+}
+
+func __go_time_FixedZone(name string, offset int) __goLoc {
+	return __goLoc{name: name, offset: offset}
+}
+
+func (t __goTime) __localMs() int {
+	return (t.sec + t.loc.offset) * 1000
+}
+func (t __goTime) Year() int       { return __go_date_year(__go_date_new(t.__localMs())) }
+func (t __goTime) Day() int        { return __go_date_day(__go_date_new(t.__localMs())) }
+func (t __goTime) Hour() int       { return __go_date_hour(__go_date_new(t.__localMs())) }
+func (t __goTime) Minute() int     { return __go_date_min(__go_date_new(t.__localMs())) }
+func (t __goTime) Second() int     { return __go_date_sec(__go_date_new(t.__localMs())) }
+func (t __goTime) Nanosecond() int { return t.nsec }
+func (t __goTime) Unix() int       { return t.sec }
+func (t __goTime) UnixNano() int   { return t.sec*1000000000 + t.nsec }
+func (t __goTime) UnixMilli() int  { return t.sec*1000 + t.nsec/1000000 }
+func (t __goTime) UnixMicro() int  { return t.sec*1000000 + t.nsec/1000 }
+func (t __goTime) UTC() __goTime {
+	return __goTime{sec: t.sec, nsec: t.nsec, loc: __goLoc{name: "UTC", offset: 0}}
+}
+func (t __goTime) Location() __goLoc { return t.loc }
+func (t __goTime) IsZero() bool      { return t.sec == 0 && t.nsec == 0 }
+func (t __goTime) Before(u __goTime) bool {
+	return t.sec < u.sec || (t.sec == u.sec && t.nsec < u.nsec)
+}
+func (t __goTime) After(u __goTime) bool {
+	return t.sec > u.sec || (t.sec == u.sec && t.nsec > u.nsec)
+}
+func (t __goTime) Equal(u __goTime) bool { return t.sec == u.sec && t.nsec == u.nsec }
+func (t __goTime) Add(d int) __goTime {
+	s, n := __go_time_norm(t.sec+d/1000000000, t.nsec+d%1000000000)
+	return __goTime{sec: s, nsec: n, loc: t.loc}
+}
+func (t __goTime) Sub(u __goTime) int {
+	return (t.sec-u.sec)*1000000000 + (t.nsec - u.nsec)
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for `net/url`, wrapping the shared WHATWG `web:url`
+/// host (`__go_url_*` builtins) into Go's `URL`/`Values`/`Userinfo` shapes.
+/// `##` delimiters because the URL fragment code contains `"#"`.
+const GO_NETURL_PRELUDE: &str = r##"package main
+
+import "strings"
+import "sort"
+
+type __goUser struct {
+	name    string
+	pass    string
+	hasPass bool
+}
+
+func (u __goUser) Username() string         { return u.name }
+func (u __goUser) Password() (string, bool) { return u.pass, u.hasPass }
+func (u __goUser) String() string {
+	if u.hasPass {
+		return u.name + ":" + u.pass
+	}
+	return u.name
+}
+
+type __goValues map[string][]string
+
+func (v __goValues) Get(k string) string {
+	if x, ok := v[k]; ok && len(x) > 0 {
+		return x[0]
+	}
+	return ""
+}
+func (v __goValues) Set(k, val string) { v[k] = []string{val} }
+func (v __goValues) Add(k, val string) { v[k] = append(v[k], val) }
+func (v __goValues) Del(k string)      { delete(v, k) }
+func (v __goValues) Encode() string {
+	keys := []string{}
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	res := ""
+	for _, k := range keys {
+		for _, val := range v[k] {
+			if len(res) > 0 {
+				res += "&"
+			}
+			res += __go_url_qesc(k) + "=" + __go_url_qesc(val)
+		}
+	}
+	return res
+}
+
+type __goURL struct {
+	Scheme   string
+	Host     string
+	Path     string
+	RawQuery string
+	Fragment string
+	User     __goUser
+	raw      string
+}
+
+func (u __goURL) Query() __goValues { return __go_url_parse_query(u.RawQuery) }
+func (u __goURL) String() string {
+	s := ""
+	if len(u.Scheme) > 0 {
+		s += u.Scheme + "://"
+		if len(u.User.name) > 0 {
+			s += u.User.String() + "@"
+		}
+		s += u.Host
+	}
+	s += u.Path
+	if len(u.RawQuery) > 0 {
+		s += "?" + u.RawQuery
+	}
+	if len(u.Fragment) > 0 {
+		s += "#" + u.Fragment
+	}
+	return s
+}
+func (u __goURL) ResolveReference(ref __goURL) __goURL {
+	r, _ := __go_url_parse_with_base(ref.raw, u.String())
+	return r
+}
+
+func __go_url_qesc(s string) string {
+	return strings.ReplaceAll(__go_url_esc(s), "%20", "+")
+}
+
+func __go_url_parse_query(raw string) __goValues {
+	v := __goValues{}
+	if len(raw) == 0 {
+		return v
+	}
+	for _, p := range strings.Split(raw, "&") {
+		if len(p) == 0 {
+			continue
+		}
+		i := strings.Index(p, "=")
+		key := p
+		val := ""
+		if i >= 0 {
+			key = p[:i]
+			val = p[i+1:]
+		}
+		key = __go_url_unesc(strings.ReplaceAll(key, "+", " "))
+		val = __go_url_unesc(strings.ReplaceAll(val, "+", " "))
+		v[key] = append(v[key], val)
+	}
+	return v
+}
+
+func __go_url_parse_with_base(s, base string) (__goURL, error) {
+	o := __go_url_parse(s, base)
+	absolute := strings.Contains(s, "://")
+	scheme := ""
+	host := ""
+	if absolute {
+		scheme = o.protocol
+		if len(scheme) > 0 {
+			scheme = scheme[:len(scheme)-1]
+		}
+		host = o.host
+	}
+	rawq := o.search
+	if len(rawq) > 0 {
+		rawq = rawq[1:]
+	}
+	frag := o.hash
+	if len(frag) > 0 {
+		frag = frag[1:]
+	}
+	user := __goUser{name: o.username, pass: o.password, hasPass: len(o.password) > 0}
+	return __goURL{Scheme: scheme, Host: host, Path: o.pathname, RawQuery: rawq, Fragment: frag, User: user, raw: s}, nil
+}
+
+func __go_url_Parse(s string) (__goURL, error) {
+	return __go_url_parse_with_base(s, "http://__vybe_base_/")
+}
+
+func __go_url_ParseRequestURI(s string) (__goURL, error) {
+	return __go_url_parse_with_base(s, "http://__vybe_base_/")
+}
+
+func __go_url_PathEscape(s string) string {
+	return strings.ReplaceAll(__go_url_esc(s), "%2F", "/")
+}
+
+func __go_url_PathUnescape(s string) (string, error) {
+	return __go_url_unesc(s), nil
+}
+
+func __go_url_JoinPath(base string, elems []string) string {
+	res := base
+	for _, e := range elems {
+		if len(res) > 0 && res[len(res)-1] != '/' {
+			res += "/"
+		}
+		res += e
+	}
+	parts := strings.Split(res, "/")
+	out := []string{}
+	for _, p := range parts {
+		if p == ".." && len(out) > 0 && out[len(out)-1] != ".." && out[len(out)-1] != "" {
+			out = out[:len(out)-1]
+		} else if p != "." {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "/")
+}
+
+func __go_url_User(name string) __goUser {
+	return __goUser{name: name, pass: "", hasPass: false}
+}
+
+func __go_url_UserPassword(name, pass string) __goUser {
+	return __goUser{name: name, pass: pass, hasPass: true}
+}
+
+func main() {}
+"##;
+
+/// Go-source runtime prelude for `bytes.Buffer` (string-backed accumulator).
+const GO_BYTES_PRELUDE: &str = r#"package main
+
+type __goBuffer struct {
+	data string
+}
+
+func (b *__goBuffer) WriteString(s string) (int, error) {
+	b.data = b.data + s
+	return len(s), nil
+}
+func (b *__goBuffer) Write(p []byte) (int, error) {
+	b.data = b.data + string(p)
+	return len(p), nil
+}
+func (b *__goBuffer) WriteByte(c byte) error {
+	b.data = b.data + string(rune(c))
+	return nil
+}
+func (b *__goBuffer) String() string { return b.data }
+func (b *__goBuffer) Len() int       { return len(b.data) }
+func (b *__goBuffer) Reset()         { b.data = "" }
+func (b *__goBuffer) Bytes() []byte  { return []byte(b.data) }
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for `log/slog` (structured logging). Handlers write
+/// formatted `level`/`msg`/`key=val` lines to their `io.Writer` (a `bytes.Buffer`
+/// in the tests). Levels are a named int type so `Level.String()` works.
+const GO_SLOG_PRELUDE: &str = r#"package main
+
+import "fmt"
+
+type __goLevel int
+
+func (l __goLevel) String() string {
+	if l <= -4 {
+		return "DEBUG"
+	}
+	if l < 4 {
+		return "INFO"
+	}
+	if l < 8 {
+		return "WARN"
+	}
+	return "ERROR"
+}
+
+func __go_slog_LevelDebug() __goLevel { return __goLevel(-4) }
+func __go_slog_LevelInfo() __goLevel  { return __goLevel(0) }
+func __go_slog_LevelWarn() __goLevel  { return __goLevel(4) }
+func __go_slog_LevelError() __goLevel { return __goLevel(8) }
+
+type __goAttr struct {
+	key string
+	val string
+}
+
+func __go_slog_Int(k string, v int) __goAttr     { return __goAttr{key: k, val: fmt.Sprintf("%v", v)} }
+func __go_slog_Int64(k string, v int64) __goAttr { return __goAttr{key: k, val: fmt.Sprintf("%v", v)} }
+func __go_slog_String(k, v string) __goAttr      { return __goAttr{key: k, val: v} }
+func __go_slog_Float64(k string, v float64) __goAttr {
+	return __goAttr{key: k, val: fmt.Sprintf("%v", v)}
+}
+func __go_slog_Duration(k string, v int) __goAttr {
+	return __goAttr{key: k, val: fmt.Sprintf("%v", v)}
+}
+func __go_slog_Any(k string, v int) __goAttr { return __goAttr{key: k, val: fmt.Sprintf("%v", v)} }
+func __go_slog_Bool(k string, v bool) __goAttr {
+	val := "false"
+	if v {
+		val = "true"
+	}
+	return __goAttr{key: k, val: val}
+}
+func __go_slog_Group(k string, attrs []__goAttr) __goAttr {
+	s := ""
+	for _, a := range attrs {
+		if len(s) > 0 {
+			s = s + " "
+		}
+		s = s + a.key + "=" + a.val
+	}
+	return __goAttr{key: k, val: s}
+}
+
+type __goHandlerOptions struct {
+	Level     __goLevel
+	AddSource bool
+}
+
+type __goSlogHandler struct {
+	w     *__goBuffer
+	level int
+}
+
+type __goSlogLogger struct {
+	h *__goSlogHandler
+}
+
+func __go_slog_optlevel(opts *__goHandlerOptions) int {
+	if opts != nil {
+		return int(opts.Level)
+	}
+	return 0
+}
+func __go_slog_NewTextHandler(w *__goBuffer, opts *__goHandlerOptions) *__goSlogHandler {
+	return &__goSlogHandler{w: w, level: __go_slog_optlevel(opts)}
+}
+func __go_slog_NewJSONHandler(w *__goBuffer, opts *__goHandlerOptions) *__goSlogHandler {
+	return &__goSlogHandler{w: w, level: __go_slog_optlevel(opts)}
+}
+func __go_slog_New(h *__goSlogHandler) *__goSlogLogger {
+	return &__goSlogLogger{h: h}
+}
+func __go_slog_Default() *__goSlogLogger {
+	return &__goSlogLogger{h: &__goSlogHandler{w: &__goBuffer{data: ""}, level: 0}}
+}
+
+func (l *__goSlogLogger) __emit(level int, name, msg string, attrs []__goAttr) {
+	if level < l.h.level {
+		return
+	}
+	line := "level=" + name + " msg=" + msg
+	for _, a := range attrs {
+		line = line + " " + a.key + "=" + a.val
+	}
+	line = line + "\n"
+	l.h.w.WriteString(line)
+}
+func (l *__goSlogLogger) Info(msg string, attrs ...__goAttr)  { l.__emit(0, "INFO", msg, attrs) }
+func (l *__goSlogLogger) Debug(msg string, attrs ...__goAttr) { l.__emit(-4, "DEBUG", msg, attrs) }
+func (l *__goSlogLogger) Warn(msg string, attrs ...__goAttr)  { l.__emit(4, "WARN", msg, attrs) }
+func (l *__goSlogLogger) Error(msg string, attrs ...__goAttr) { l.__emit(8, "ERROR", msg, attrs) }
+func (l *__goSlogLogger) LogAttrs(ctx any, level __goLevel, msg string, attrs ...__goAttr) {
+	l.__emit(int(level), level.String(), msg, attrs)
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for the `slices` and `maps` packages — pure
+/// generic algorithms over slices/maps (type params erase, so no element
+/// coercion). Rewritten from `slices.*` / `maps.*` in the walker.
+const GO_SLICES_MAPS_PRELUDE: &str = r#"package main
+
+func __go_slices_Contains[T any](s []T, v T) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+func __go_slices_Index[T any](s []T, v T) int {
+	for i, x := range s {
+		if x == v {
+			return i
+		}
+	}
+	return -1
+}
+func __go_slices_IndexFunc[T any](s []T, f func(T) bool) int {
+	for i, x := range s {
+		if f(x) {
+			return i
+		}
+	}
+	return -1
+}
+func __go_slices_Equal[T any](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+func __go_slices_Compare[T any](a, b []T) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+func __go_slices_Clone[T any](s []T) []T {
+	r := []T{}
+	for _, x := range s {
+		r = append(r, x)
+	}
+	return r
+}
+func __go_slices_Compact[T any](s []T) []T {
+	r := []T{}
+	for i, x := range s {
+		if i == 0 || x != s[i-1] {
+			r = append(r, x)
+		}
+	}
+	return r
+}
+func __go_slices_Delete[T any](s []T, i, j int) []T {
+	r := []T{}
+	for k, x := range s {
+		if k < i || k >= j {
+			r = append(r, x)
+		}
+	}
+	return r
+}
+func __go_slices_Insert[T any](s []T, i int, vals []T) []T {
+	r := []T{}
+	for k := 0; k < i; k++ {
+		r = append(r, s[k])
+	}
+	for _, v := range vals {
+		r = append(r, v)
+	}
+	for k := i; k < len(s); k++ {
+		r = append(r, s[k])
+	}
+	return r
+}
+func __go_slices_Replace[T any](s []T, i, j int, vals []T) []T {
+	r := []T{}
+	for k := 0; k < i; k++ {
+		r = append(r, s[k])
+	}
+	for _, v := range vals {
+		r = append(r, v)
+	}
+	for k := j; k < len(s); k++ {
+		r = append(r, s[k])
+	}
+	return r
+}
+func __go_slices_Grow[T any](s []T, n int) []T { return s }
+func __go_slices_Clip[T any](s []T) []T        { return s }
+func __go_slices_BinarySearch[T any](s []T, target T) (int, bool) {
+	lo, hi := 0, len(s)
+	for lo < hi {
+		mid := (lo + hi) >> 1
+		if s[mid] < target {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	found := lo < len(s) && s[lo] == target
+	return lo, found
+}
+func __go_slices_BinarySearchFunc[T any, E any](s []T, target E, cmp func(T, E) int) (int, bool) {
+	lo, hi := 0, len(s)
+	for lo < hi {
+		mid := (lo + hi) >> 1
+		if cmp(s[mid], target) < 0 {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	found := lo < len(s) && cmp(s[lo], target) == 0
+	return lo, found
+}
+
+func __go_maps_Clone[K any, V any](m map[K]V) map[K]V {
+	r := map[K]V{}
+	for k, v := range m {
+		r[k] = v
+	}
+	return r
+}
+func __go_maps_Copy[K any, V any](dst, src map[K]V) {
+	for k, v := range src {
+		dst[k] = v
+	}
+}
+func __go_maps_DeleteFunc[K any, V any](m map[K]V, f func(K, V) bool) {
+	for k, v := range m {
+		if f(k, v) {
+			delete(m, k)
+		}
+	}
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for `sync/atomic` function-style ops. The VM is a
+/// single logical thread, so these are plain pointer reads/writes; every typed
+/// variant (Int32/Int64/Uint32/Uint64) maps to the same helper.
+const GO_ATOMIC_PRELUDE: &str = r#"package main
+
+func __go_atomic_Load(p *int64) int64 { return *p }
+func __go_atomic_Store(p *int64, v int64) { *p = v }
+func __go_atomic_Add(p *int64, delta int64) int64 {
+	*p += delta
+	return *p
+}
+func __go_atomic_Swap(p *int64, v int64) int64 {
+	old := *p;
+	*p = v
+	return old
+}
+func __go_atomic_CAS(p *int64, old, repl int64) bool {
+	if *p == old {
+		*p = repl
+		return true
+	}
+	return false
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for the string-based `strconv` helpers (ParseBool,
+/// CanBackquote) — pure string logic, no numeric primitives needed.
+const GO_STRCONV_PRELUDE: &str = r#"package main
+
+import "strings"
+
+func __go_strconv_ParseBool(s string) (bool, error) {
+	if s == "1" || s == "t" || s == "T" || s == "TRUE" || s == "true" || s == "True" {
+		return true, nil
+	}
+	if s == "0" || s == "f" || s == "F" || s == "FALSE" || s == "false" || s == "False" {
+		return false, nil
+	}
+	return false, "invalid syntax"
+}
+
+func __go_strconv_CanBackquote(s string) bool {
+	if strings.Contains(s, "`") {
+		return false
+	}
+	for _, c := range s {
+		if c == '\n' || c == '\r' || c == '\\' {
+			return false
+		}
+		if c < ' ' && c != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+func main() {}
+"#;
+
 /// Go-source runtime prelude for composite `strings` helpers that compose the
 /// already-wired primitives (`Contains`, `Index`, `HasPrefix`, slicing, `range`).
 /// Rewritten from `strings.<Name>` in the walker (see `go_rewrite_strings_call`).
@@ -164,6 +830,23 @@ func __go_strings_Cut(s, sep string) (string, string, bool) {
 		return s, "", false
 	}
 	return s[:i], s[i+len(sep):], true
+}
+
+func __go_strings_Replace(s, old, repl string, n int) string {
+	if n < 0 {
+		return strings.ReplaceAll(s, old, repl)
+	}
+	res := ""
+	for n > 0 {
+		i := strings.Index(s, old)
+		if i < 0 {
+			break
+		}
+		res += s[:i] + repl
+		s = s[i+len(old):]
+		n--
+	}
+	return res + s
 }
 
 func __go_strings_ContainsRune(s string, r rune) bool {
@@ -3377,6 +4060,16 @@ fn normalize_go_expr(
             field,
             null_safe,
         } => {
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "time") {
+                if let Some(rewritten) = go_rewrite_time_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "slog") {
+                if let Some(rewritten) = go_rewrite_slog_member(field) {
+                    return rewritten;
+                }
+            }
             let next_object = normalize_go_expr(object, env, signatures, state);
             let rewritten =
                 go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
@@ -3496,6 +4189,24 @@ fn normalize_go_expr(
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_strings_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_strconv_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_time_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_url_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_slices_maps_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_slog_call(name, &next_args) {
                     return rewritten;
                 }
             }
@@ -4251,6 +4962,7 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
         "strings.CutPrefix" => "__go_strings_CutPrefix",
         "strings.CutSuffix" => "__go_strings_CutSuffix",
         "strings.Cut" => "__go_strings_Cut",
+        "strings.Replace" if args.len() == 4 => "__go_strings_Replace",
         "strings.ContainsRune" => "__go_strings_ContainsRune",
         "strings.ContainsAny" => "__go_strings_ContainsAny",
         "strings.ContainsFunc" => "__go_strings_ContainsFunc",
@@ -4277,6 +4989,234 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
         mapped,
         args.iter().map(|a| a.value.clone()).collect(),
     ))
+}
+
+/// Rewrite `strconv.*` conversions. Parse functions return a `(value, error)`
+/// tuple; the string-based helpers route to the strconv prelude.
+fn go_rewrite_strconv_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    let tuple_with_nil = |value: Expression| {
+        Expression::new(ExprKind::Tuple(vec![value, Expression::null()]))
+    };
+    match call_name {
+        "strconv.ParseBool" => Some(go_builtin_call("__go_strconv_ParseBool", vec![arg(0)])),
+        "strconv.CanBackquote" => Some(go_builtin_call("__go_strconv_CanBackquote", vec![arg(0)])),
+        // strconv.FormatBool(b) → b ? "true" : "false"
+        "strconv.FormatBool" => Some(Expression::new(ExprKind::Ternary {
+            cond: Box::new(arg(0)),
+            then: Box::new(Expression::string("true")),
+            else_: Box::new(Expression::string("false")),
+        })),
+        // strconv.Atoi(s) → (int(s), nil)
+        "strconv.Atoi" => Some(tuple_with_nil(go_builtin_call("__go_to_int", vec![arg(0)]))),
+        // strconv.ParseInt/ParseUint(s, base, bits) → (parseInt(s, base), nil)
+        "strconv.ParseInt" | "strconv.ParseUint" => {
+            let base = if args.len() >= 2 { arg(1) } else { Expression::int(10) };
+            Some(tuple_with_nil(go_builtin_call(
+                "__go_parse_int",
+                vec![arg(0), base],
+            )))
+        }
+        // strconv.ParseFloat(s, bits) → (parseFloat(s), nil)
+        "strconv.ParseFloat" => Some(tuple_with_nil(go_builtin_call(
+            "__go_parse_float",
+            vec![arg(0)],
+        ))),
+        _ => None,
+    }
+}
+
+/// Rewrite `time.*` constructor calls to the injected time-prelude helpers.
+fn go_rewrite_time_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let mapped = match call_name {
+        "time.Unix" => "__go_time_Unix",
+        "time.Date" => "__go_time_Date",
+        "time.Now" => "__go_time_Now",
+        "time.UnixMilli" => "__go_time_UnixMilli",
+        "time.UnixMicro" => "__go_time_UnixMicro",
+        "time.FixedZone" => "__go_time_FixedZone",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        mapped,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
+}
+
+/// Rewrite a `time.<Const>` member (non-call) to its runtime value. Durations
+/// and layout strings come from `[namespace_constants]`; `time.UTC` builds the
+/// UTC location.
+fn go_rewrite_time_member(field: &str) -> Option<Expression> {
+    match field {
+        "UTC" | "Local" => Some(go_builtin_call(
+            "__go_time_FixedZone",
+            vec![Expression::string("UTC"), Expression::int(0)],
+        )),
+        _ => None,
+    }
+}
+
+/// Rewrite `log/slog` package calls to the slog prelude helpers.
+fn go_rewrite_slog_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let direct = |helper: &str| {
+        Some(go_builtin_call(
+            helper,
+            args.iter().map(|a| a.value.clone()).collect(),
+        ))
+    };
+    match call_name {
+        "slog.NewTextHandler" => direct("__go_slog_NewTextHandler"),
+        "slog.NewJSONHandler" => direct("__go_slog_NewJSONHandler"),
+        "slog.New" => direct("__go_slog_New"),
+        "slog.Default" => direct("__go_slog_Default"),
+        "slog.Int" => direct("__go_slog_Int"),
+        "slog.Int64" => direct("__go_slog_Int64"),
+        "slog.String" => direct("__go_slog_String"),
+        "slog.Bool" => direct("__go_slog_Bool"),
+        "slog.Float64" => direct("__go_slog_Float64"),
+        "slog.Duration" => direct("__go_slog_Duration"),
+        "slog.Any" => direct("__go_slog_Any"),
+        // slog.Group(key, attrs...) — variadic tail → slice.
+        "slog.Group" => {
+            let key = go_arg_value(args, 0);
+            let attrs: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
+            Some(go_builtin_call("__go_slog_Group", vec![key, go_array_of(attrs)]))
+        }
+        _ => None,
+    }
+}
+
+/// Rewrite a `slog.<Const>` member to its prelude value (`slog.LevelInfo` etc.).
+fn go_rewrite_slog_member(field: &str) -> Option<Expression> {
+    let helper = match field {
+        "LevelDebug" => "__go_slog_LevelDebug",
+        "LevelInfo" => "__go_slog_LevelInfo",
+        "LevelWarn" => "__go_slog_LevelWarn",
+        "LevelError" => "__go_slog_LevelError",
+        _ => return None,
+    };
+    Some(go_builtin_call(helper, vec![]))
+}
+
+/// Rewrite `slices.*` / `maps.*` calls to the slices/maps prelude helpers.
+/// `Insert`/`Replace` collect their variadic tail into a slice.
+fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let direct = |helper: &str, args: &[Argument]| {
+        Some(go_builtin_call(
+            helper,
+            args.iter().map(|a| a.value.clone()).collect(),
+        ))
+    };
+    match call_name {
+        "slices.Contains" => direct("__go_slices_Contains", args),
+        "slices.Index" => direct("__go_slices_Index", args),
+        "slices.IndexFunc" => direct("__go_slices_IndexFunc", args),
+        "slices.Equal" => direct("__go_slices_Equal", args),
+        "slices.Compare" => direct("__go_slices_Compare", args),
+        "slices.Clone" => direct("__go_slices_Clone", args),
+        "slices.Compact" => direct("__go_slices_Compact", args),
+        "slices.Delete" => direct("__go_slices_Delete", args),
+        "slices.Grow" => direct("__go_slices_Grow", args),
+        "slices.Clip" => direct("__go_slices_Clip", args),
+        "slices.BinarySearch" => direct("__go_slices_BinarySearch", args),
+        "slices.BinarySearchFunc" => direct("__go_slices_BinarySearchFunc", args),
+        "maps.Clone" => direct("__go_maps_Clone", args),
+        "maps.Copy" => direct("__go_maps_Copy", args),
+        "maps.DeleteFunc" => direct("__go_maps_DeleteFunc", args),
+        // slices.Insert(s, i, vals...) / Replace(s, i, j, vals...) — variadic tail → slice.
+        "slices.Insert" => {
+            let head: Vec<Expression> = args.iter().take(2).map(|a| a.value.clone()).collect();
+            let tail: Vec<Expression> = args.iter().skip(2).map(|a| a.value.clone()).collect();
+            let mut call_args = head;
+            call_args.push(go_array_of(tail));
+            Some(go_builtin_call("__go_slices_Insert", call_args))
+        }
+        "slices.Replace" => {
+            let head: Vec<Expression> = args.iter().take(3).map(|a| a.value.clone()).collect();
+            let tail: Vec<Expression> = args.iter().skip(3).map(|a| a.value.clone()).collect();
+            let mut call_args = head;
+            call_args.push(go_array_of(tail));
+            Some(go_builtin_call("__go_slices_Replace", call_args))
+        }
+        _ => None,
+    }
+}
+
+/// Rewrite `sync/atomic` function-style ops to the atomic prelude helpers. All
+/// typed variants (`LoadInt64`, `LoadUint32`, …) map by operation prefix.
+fn go_rewrite_atomic_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let rest = call_name.strip_prefix("atomic.")?;
+    let helper = if rest.starts_with("Load") {
+        "__go_atomic_Load"
+    } else if rest.starts_with("Store") {
+        "__go_atomic_Store"
+    } else if rest.starts_with("Add") {
+        "__go_atomic_Add"
+    } else if rest.starts_with("Swap") {
+        "__go_atomic_Swap"
+    } else if rest.starts_with("CompareAndSwap") {
+        "__go_atomic_CAS"
+    } else {
+        return None;
+    };
+    Some(go_builtin_call(
+        helper,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
+}
+
+/// Rewrite `net/url` package functions to the injected url-prelude helpers.
+fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "url.Parse" => Some(go_builtin_call("__go_url_Parse", vec![go_arg_value(args, 0)])),
+        "url.ParseRequestURI" => Some(go_builtin_call(
+            "__go_url_ParseRequestURI",
+            vec![go_arg_value(args, 0)],
+        )),
+        "url.PathEscape" => Some(go_builtin_call(
+            "__go_url_PathEscape",
+            vec![go_arg_value(args, 0)],
+        )),
+        "url.PathUnescape" => Some(go_builtin_call(
+            "__go_url_PathUnescape",
+            vec![go_arg_value(args, 0)],
+        )),
+        "url.QueryEscape" => Some(go_builtin_call("__go_url_qesc", vec![go_arg_value(args, 0)])),
+        "url.QueryUnescape" => Some(go_builtin_call("__go_url_unesc", vec![go_arg_value(args, 0)])),
+        "url.User" => Some(go_builtin_call("__go_url_User", vec![go_arg_value(args, 0)])),
+        "url.UserPassword" => Some(go_builtin_call(
+            "__go_url_UserPassword",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "url.JoinPath" => {
+            let base = go_arg_value(args, 0);
+            let elems: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
+            Some(go_builtin_call(
+                "__go_url_JoinPath",
+                vec![base, go_array_of(elems)],
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Bind a Go stdlib type name to the runtime backing type its package prelude
+/// defines — Go's equivalent of the `.NET` component types / libc surface. Used
+/// so `url.Values{}` / `var q url.Values` resolve to the prelude's named type
+/// (whose methods dispatch by type stamp).
+fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
+    match type_name.trim() {
+        "url.Values" => Some("__goValues"),
+        "url.URL" => Some("__goURL"),
+        "url.Userinfo" => Some("__goUser"),
+        "bytes.Buffer" => Some("__goBuffer"),
+        "slog.Level" => Some("__goLevel"),
+        "slog.Attr" => Some("__goAttr"),
+        "slog.Logger" => Some("__goSlogLogger"),
+        "slog.Handler" => Some("__goSlogHandler"),
+        "slog.HandlerOptions" => Some("__goHandlerOptions"),
+        _ => None,
+    }
 }
 
 /// Rewrite `cmp` package ordering helpers to plain comparisons.
@@ -5780,6 +6720,9 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 }
 
 fn walk_type(pair: Pair<Rule>) -> String {
+    if let Some(backing) = go_stdlib_type_binding(pair.as_str()) {
+        return backing.to_string();
+    }
     // Erase generic type arguments: a `Name[args]` instantiation becomes the
     // bare `Name` (Vybe is dynamically typed, so generics are type-erased).
     let mut inners = pair.clone().into_inner();
@@ -7928,6 +8871,9 @@ fn go_retype_elided_element(value: Expression, elem_type: Option<&str>) -> Expre
 /// Type name of a composite `literal_type`, erasing generic type arguments
 /// (`Pair[int]` → `Pair`).
 fn go_literal_type_name(pair: Pair<Rule>) -> String {
+    if let Some(backing) = go_stdlib_type_binding(pair.as_str()) {
+        return backing.to_string();
+    }
     let mut inners = pair.clone().into_inner();
     if let Some(first) = inners.next() {
         if first.as_rule() == Rule::ident_name {

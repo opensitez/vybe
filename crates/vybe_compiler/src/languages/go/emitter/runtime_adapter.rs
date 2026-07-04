@@ -67,10 +67,32 @@ fn emit_fmt_printf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
 }
 
 fn emit_formatted_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    // Go prints slices/arrays as "[e1 e2 e3]" (space-separated, bracketed),
+    // unlike JS's comma join. Everything else goes through ecma:string.String.
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let to_string = chunks[current].add_import("ecma:string", "String");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, to_string, line);
-    chunks[current].emit(1, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        // then: "[" + join(v, " ") + "]"
+        chunks[current].emit_string_const("[", line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_string_const(" ", line);
+        let join = chunks[current].add_import("ecma:array", "join");
+        chunks[current].emit_call(join, 2, line);
+        host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
+        chunks[current].emit_string_const("]", line);
+        host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        // else: ecma:string.String(v)
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        let to_string = chunks[current].add_import("ecma:string", "String");
+        chunks[current].emit_call(to_string, 1, line);
+    }
+    chunks[current].emit_end(line);
 }
 
 fn emit_log(chunks: &mut [Chunk], current: usize, line: u32) {

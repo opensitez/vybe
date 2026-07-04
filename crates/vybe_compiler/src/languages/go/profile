@@ -43,6 +43,10 @@ materialize_bool_results = true
 "strconv.Atoi"    = { emit = "common:to_int",                    min_args = 1, max_args = 1 }
 "strconv.Itoa"    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 "strconv.ParseFloat" = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
+"strconv.FormatInt"  = { emit = "host:ecma:number:toString",    min_args = 2, max_args = 2 }
+"strconv.FormatUint" = { emit = "host:ecma:number:toString",    min_args = 2, max_args = 2 }
+"__go_parse_int"     = { emit = "host:ecma:number:parseInt",    min_args = 1, max_args = 2 }
+"__go_parse_float"   = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -146,6 +150,26 @@ materialize_bool_results = true
 
 "time.Now"        = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
 
+# ── time primitives exposed to the Go time prelude ───────────────────────────
+# time.Time is modeled as {seconds, nanoseconds, loc} (the wasi wall-clock
+# datetime shape). Now() uses wasi:clocks/wall-clock; calendar breakdown uses
+# ecma:date. These builtins let the prelude reach those host surfaces.
+"__go_wall_now"   = { emit = "host:wasi:clocks/wall-clock:now",  min_args = 0, max_args = 0 }
+"__go_date_utc"   = { emit = "host:ecma:date:UTC",              min_args = 6, max_args = 7 }
+"__go_date_new"   = { emit = "host:ecma:date:new",              min_args = 1, max_args = 1 }
+"__go_date_year"  = { emit = "host:ecma:date:getUTCFullYear",   min_args = 1, max_args = 1 }
+"__go_date_month" = { emit = "host:ecma:date:getUTCMonth",      min_args = 1, max_args = 1 }
+"__go_date_day"   = { emit = "host:ecma:date:getUTCDate",       min_args = 1, max_args = 1 }
+"__go_date_hour"  = { emit = "host:ecma:date:getUTCHours",      min_args = 1, max_args = 1 }
+"__go_date_min"   = { emit = "host:ecma:date:getUTCMinutes",    min_args = 1, max_args = 1 }
+"__go_date_sec"   = { emit = "host:ecma:date:getUTCSeconds",    min_args = 1, max_args = 1 }
+"__go_date_wday"  = { emit = "host:ecma:date:getUTCDay",        min_args = 1, max_args = 1 }
+
+# ── net/url primitives (WHATWG URL host, shared with JS) ─────────────────────
+"__go_url_parse"  = { emit = "host:web:url:parse",                     min_args = 1, max_args = 2 }
+"__go_url_esc"    = { emit = "host:ecma:string:encodeURIComponent",    min_args = 1, max_args = 1 }
+"__go_url_unesc"  = { emit = "host:ecma:string:decodeURIComponent",    min_args = 1, max_args = 1 }
+
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
 "os.ReadFile"     = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
@@ -167,6 +191,14 @@ materialize_bool_results = true
 # ────────────────────────────────────────────────────────────────────────────
 
 [value_methods]
+
+# time.Duration unit accessors (receiver = nanoseconds)
+Minutes      = { emit = "common:go.dur_minutes",      min_args = 0, max_args = 0 }
+Seconds      = { emit = "common:go.dur_seconds",      min_args = 0, max_args = 0 }
+Hours        = { emit = "common:go.dur_hours",        min_args = 0, max_args = 0 }
+Nanoseconds  = { emit = "common:go.dur_nanoseconds",  min_args = 0, max_args = 0 }
+Milliseconds = { emit = "common:go.dur_milliseconds", min_args = 0, max_args = 0 }
+Microseconds = { emit = "common:go.dur_microseconds", min_args = 0, max_args = 0 }
 
 # String methods
 ToUpper      = { emit = "common:str_to_upper",      min_args = 0, max_args = 0 }
@@ -206,6 +238,13 @@ Values       = { emit = "host:ecma:object:values",  min_args = 0, max_args = 0 }
 
 [namespace_constants]
 "math.Pi"       = 3.141592653589793
+# time.Duration constants — nanoseconds (Duration is an int64 ns count).
+"time.Nanosecond"  = 1
+"time.Microsecond" = 1000
+"time.Millisecond" = 1000000
+"time.Second"      = 1000000000
+"time.Minute"      = 60000000000
+"time.Hour"        = 3600000000000
 "math.E"        = 2.718281828459045
 "math.Ln2"      = 0.6931471805599453
 "math.Ln10"     = 2.302585092994046
