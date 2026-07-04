@@ -1,0 +1,22 @@
+lua_print! {
+    test_vararg_basic => { "local function f(...) local a,b,c = ...; return a..b..c end; print(f(1,2,3))", "123" },
+    test_vararg_select_hash => { "local function f(...) return select('#', ...) end; print(f(1,nil,3))", "3" },
+    test_vararg_select_index => { "local function f(...) return select(2, ...) end; local a,b = f('x','y','z'); print(a..b)", "yz" },
+    test_vararg_select_index_out_of_bounds => { "local function f(...) return select(5, ...) end; local a = f(1,2); print(a or 'nil')", "nil" },
+    test_vararg_select_negative_index => { "local function f(...) return select(-2, ...) end; local a,b = f('x','y','z'); print(a..b)", "yz" },
+    test_vararg_select_invalid_index => { "local function f(...) local ok = pcall(function() select(0, ...) end); return tostring(ok) end; print(f(1))", "false" },
+    test_vararg_select_invalid_string => { "local function f(...) local ok = pcall(function() select('abc', ...) end); return tostring(ok) end; print(f(1))", "false" },
+    test_vararg_pack_table => { "local function f(...) local t = {...}; return t[1]..t[3] end; print(f('a', 'b', 'c'))", "ac" },
+    test_vararg_table_constructor_trailing => { "local function f(...) local t={10, ...}; return t[1]..t[2]..t[3] end; print(f(20,30))", "102030" },
+    test_vararg_table_constructor_middle => { "local function f(...) local t={..., 30}; return t[1]..t[2] end; print(f(10, 20))", "1030" },
+    test_vararg_function_call_trailing => { "local function g(a,b,c) return a..b..c end; local function f(...) return g(0, ...) end; print(f(1,2))", "012" },
+    test_vararg_function_call_middle => { "local function g(a,b,c) return a..b..tostring(c) end; local function f(...) return g(..., 3) end; print(f(1,2))", "13nil" },
+    test_vararg_nested_functions => { "local function outer(...) return function() return ... end end; local f = outer(1,2,3); local a,b,c = f(); print(a..b..c)", "123" },
+    test_vararg_nested_varargs_shadowing => { "local function outer(...) local a = ...; return function(...) local b = ...; return a..b end end; print(outer(1)(2))", "12" },
+    test_vararg_return_trailing => { "local function f(...) return 0, ... end; local a,b,c = f(1,2); print(a..b..c)", "012" },
+    test_vararg_return_middle => { "local function f(...) return ..., 0 end; local a,b,c = f(1,2); print(a..b..tostring(c))", "10nil" },
+    test_vararg_in_assignment => { "local function f(...) local a, b = ...; return a..b end; print(f(1,2,3))", "12" },
+    test_vararg_empty => { "local function f(...) return select('#', ...) end; print(f())", "0" },
+    test_vararg_with_named_params => { "local function f(x, y, ...) local a = ...; return x..y..(a or 'nil') end; print(f(1, 2, 3))", "123" },
+    test_vararg_not_in_vararg_function => { "local ok = load('local function f() return ... end'); print(tostring(ok==nil))", "true" }
+}

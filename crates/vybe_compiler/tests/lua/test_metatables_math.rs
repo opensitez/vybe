@@ -1,0 +1,23 @@
+lua_print! {
+    test_math_add_tables => { "local t1={v=10}; local t2={v=20}; local mt={__add=function(a,b) return a.v+b.v end}; setmetatable(t1, mt); setmetatable(t2, mt); print(t1+t2)", "30" },
+    test_math_sub_tables => { "local mt={__sub=function(a,b) return a.v-b.v end}; local t1=setmetatable({v=50}, mt); local t2=setmetatable({v=20}, mt); print(t1-t2)", "30" },
+    test_math_mul_tables => { "local mt={__mul=function(a,b) return a.v*b end}; local t1=setmetatable({v=5}, mt); print(t1*4)", "20" },
+    test_math_div_tables => { "local mt={__div=function(a,b) return a.v/b.v end}; local t1=setmetatable({v=10}, mt); local t2=setmetatable({v=2}, mt); print(t1/t2)", "5.0" },
+    test_math_idiv_tables => { "local mt={__idiv=function(a,b) return a.v//b.v end}; local t1=setmetatable({v=11}, mt); local t2=setmetatable({v=2}, mt); print(t1//t2)", "5" },
+    test_math_mod_tables => { "local mt={__mod=function(a,b) return a.v%b.v end}; local t1=setmetatable({v=11}, mt); local t2=setmetatable({v=3}, mt); print(t1%t2)", "2" },
+    test_math_pow_tables => { "local mt={__pow=function(a,b) return a.v^b.v end}; local t1=setmetatable({v=2}, mt); local t2=setmetatable({v=3}, mt); print(t1^t2)", "8.0" },
+    test_math_unm_table => { "local mt={__unm=function(a) return -a.v end}; local t1=setmetatable({v=10}, mt); print(-t1)", "-10" },
+    test_math_band_tables => { "local mt={__band=function(a,b) return a.v & b.v end}; local t1=setmetatable({v=3}, mt); local t2=setmetatable({v=1}, mt); print(t1 & t2)", "1" },
+    test_math_bor_tables => { "local mt={__bor=function(a,b) return a.v | b.v end}; local t1=setmetatable({v=2}, mt); local t2=setmetatable({v=1}, mt); print(t1 | t2)", "3" },
+    test_math_bxor_tables => { "local mt={__bxor=function(a,b) return a.v ~ b.v end}; local t1=setmetatable({v=3}, mt); local t2=setmetatable({v=1}, mt); print(t1 ~ t2)", "2" },
+    test_math_bnot_table => { "local mt={__bnot=function(a) return ~a.v end}; local t1=setmetatable({v=1}, mt); print(~t1)", "-2" },
+    test_math_shl_tables => { "local mt={__shl=function(a,b) return a.v << b.v end}; local t1=setmetatable({v=1}, mt); local t2=setmetatable({v=2}, mt); print(t1 << t2)", "4" },
+    test_math_shr_tables => { "local mt={__shr=function(a,b) return a.v >> b.v end}; local t1=setmetatable({v=4}, mt); local t2=setmetatable({v=1}, mt); print(t1 >> t2)", "2" },
+    test_math_eq_tables => { "local mt={__eq=function(a,b) return a.v==b.v end}; local t1=setmetatable({v=1}, mt); local t2=setmetatable({v=1}, mt); print(tostring(t1==t2)..' '..tostring(t1~=t2))", "true false" },
+    test_math_lt_tables => { "local mt={__lt=function(a,b) return a.v<b.v end}; local t1=setmetatable({v=1}, mt); local t2=setmetatable({v=2}, mt); print(tostring(t1<t2)..' '..tostring(t1>=t2))", "true false" },
+    test_math_le_tables => { "local mt={__le=function(a,b) return a.v<=b.v end}; local t1=setmetatable({v=2}, mt); local t2=setmetatable({v=2}, mt); print(tostring(t1<=t2)..' '..tostring(t1>t2))", "true false" },
+    test_math_different_metatables_left_priority => { "local mt1={__add=function() return 1 end}; local mt2={__add=function() return 2 end}; local t1=setmetatable({}, mt1); local t2=setmetatable({}, mt2); print(t1+t2)", "1" },
+    test_math_different_metatables_right_priority => { "local mt1={}; local mt2={__add=function() return 2 end}; local t1=setmetatable({}, mt1); local t2=setmetatable({}, mt2); print(t1+t2)", "2" },
+    test_math_no_metamethod_error => { "local t1={}; local t2={}; local ok = pcall(function() return t1+t2 end); print(ok)", "false" },
+    test_math_string_metamethod => { "debug.setmetatable('', {__add=function(a,b) return a..b end}); print('a'+'b')", "ab" }
+}
