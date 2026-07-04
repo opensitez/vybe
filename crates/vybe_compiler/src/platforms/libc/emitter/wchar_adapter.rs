@@ -16,6 +16,7 @@ use crate::ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
+use crate::platforms::libc::emitter::pointers;
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
@@ -31,6 +32,9 @@ fn lit_int(n: i64) -> Expression {
 }
 fn lit_str(v: &str) -> Expression {
     e(ExprKind::Lit(Literal::Str(v.to_string())))
+}
+fn null_lit() -> Expression {
+    e(ExprKind::Lit(Literal::Null))
 }
 fn member(o: Expression, f: &str) -> Expression {
     e(ExprKind::Member {
@@ -56,6 +60,13 @@ fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
         right: Box::new(r),
     })
 }
+fn index(o: Expression, i: Expression) -> Expression {
+    e(ExprKind::Index {
+        object: Box::new(o),
+        index: Box::new(i),
+        null_safe: false,
+    })
+}
 fn assign(target: Expression, value: Expression) -> Expression {
     e(ExprKind::Assign {
         target: Box::new(target),
@@ -79,6 +90,18 @@ fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
         cond,
         body,
         else_body: None,
+    })
+}
+fn if_stmt(
+    cond: Expression,
+    then_body: Vec<Statement>,
+    else_body: Option<Vec<Statement>>,
+) -> Statement {
+    s(StmtKind::If {
+        cond,
+        then_body,
+        elifs: Vec::new(),
+        else_body,
     })
 }
 fn ret(v: Expression) -> Statement {
@@ -208,11 +231,135 @@ pub fn literal_wide_to_string(arr: &Expression) -> Option<String> {
 fn lt(l: Expression, r: Expression) -> Expression {
     bin(BinOp::Lt, l, r)
 }
+fn lte(l: Expression, r: Expression) -> Expression {
+    bin(BinOp::LtEq, l, r)
+}
+fn eq(l: Expression, r: Expression) -> Expression {
+    bin(BinOp::Eq, l, r)
+}
+fn ne(l: Expression, r: Expression) -> Expression {
+    bin(BinOp::NotEq, l, r)
+}
+fn and(l: Expression, r: Expression) -> Expression {
+    bin(BinOp::And, l, r)
+}
 fn incr(name: &str) -> Statement {
     expr_stmt(assign(
         ident(name),
         bin(BinOp::Add, ident(name), lit_int(1)),
     ))
+}
+
+fn min_expr(a: Expression, b: Expression) -> Expression {
+    e(ExprKind::Ternary {
+        cond: Box::new(bin(BinOp::Lt, a.clone(), b.clone())),
+        then: Box::new(a),
+        else_: Box::new(b),
+    })
+}
+
+fn ptr_or_null(base: Expression, idx: Expression) -> Expression {
+    e(ExprKind::Ternary {
+        cond: Box::new(bin(BinOp::Lt, idx.clone(), lit_int(0))),
+        then: Box::new(null_lit()),
+        else_: Box::new(pointers::make_carray_ptr(base, idx)),
+    })
+}
+
+pub fn wcsnlen(arr: Expression, n: Expression) -> Expression {
+    min_expr(nul_index(arr), n)
+}
+
+pub fn wcsncmp(a: Expression, b: Expression, n: Expression) -> Expression {
+    wcscmp(
+        call_member(a, "slice", vec![lit_int(0), n.clone()]),
+        call_member(b, "slice", vec![lit_int(0), n]),
+    )
+}
+
+pub fn wcschr(arr: Expression, ch: Expression) -> Expression {
+    let searchable = call_member(
+        arr.clone(),
+        "slice",
+        vec![
+            lit_int(0),
+            bin(BinOp::Add, nul_index(arr.clone()), lit_int(1)),
+        ],
+    );
+    let idx = call_member(searchable, "indexOf", vec![ch]);
+    ptr_or_null(arr, idx)
+}
+
+pub fn wcsrchr(arr: Expression, ch: Expression) -> Expression {
+    let searchable = call_member(
+        arr.clone(),
+        "slice",
+        vec![
+            lit_int(0),
+            bin(BinOp::Add, nul_index(arr.clone()), lit_int(1)),
+        ],
+    );
+    let idx = call_member(searchable, "lastIndexOf", vec![ch]);
+    ptr_or_null(arr, idx)
+}
+
+pub fn wcsstr(hay: Expression, needle: Expression) -> Expression {
+    let idx = call_member(
+        wide_to_string(hay.clone()),
+        "indexOf",
+        vec![wide_to_string(needle)],
+    );
+    ptr_or_null(hay, idx)
+}
+
+pub fn wcspbrk(arr: Expression, accept: Expression) -> Expression {
+    let idx = call(ident("__libc_wcspbrk_idx"), vec![arr.clone(), accept]);
+    ptr_or_null(arr, idx)
+}
+
+pub fn wcsspn(arr: Expression, accept: Expression) -> Expression {
+    call(ident("__libc_wcsspn"), vec![arr, accept])
+}
+
+pub fn wcscspn(arr: Expression, reject: Expression) -> Expression {
+    call(ident("__libc_wcscspn"), vec![arr, reject])
+}
+
+pub fn wmemcmp(a: Expression, b: Expression, n: Expression) -> Expression {
+    call(ident("__libc_wmemcmp"), vec![a, b, n])
+}
+
+pub fn wmemchr(arr: Expression, ch: Expression, n: Expression) -> Expression {
+    let idx = call_member(
+        call_member(arr.clone(), "slice", vec![lit_int(0), n]),
+        "indexOf",
+        vec![ch],
+    );
+    ptr_or_null(arr, idx)
+}
+
+pub fn wcsncpy(dst: Expression, src: Expression, n: Expression) -> Expression {
+    call(ident("__libc_wcsncpy"), vec![dst, src, n])
+}
+
+pub fn wcscat(dst: Expression, src: Expression) -> Expression {
+    call(ident("__libc_wcscat"), vec![dst, src])
+}
+
+pub fn wcsncat(dst: Expression, src: Expression, n: Expression) -> Expression {
+    call(ident("__libc_wcsncat"), vec![dst, src, n])
+}
+
+pub fn wmemcpy(dst: Expression, src: Expression, n: Expression) -> Expression {
+    call(ident("__libc_wmemcpy"), vec![dst, src, n])
+}
+
+pub fn wmemset(dst: Expression, ch: Expression, n: Expression) -> Expression {
+    call(ident("__libc_wmemset"), vec![dst, ch, n])
+}
+
+pub fn wcsdup(src: Expression) -> Expression {
+    call_member(src, "slice", vec![lit_int(0)])
 }
 
 /// Runtime boundary helper: convert a runtime JS string into a NUL-terminated
@@ -229,7 +376,10 @@ pub fn runtime_helpers() -> Vec<Statement> {
                 expr_stmt(call_member(
                     ident("a"),
                     "push",
-                    vec![call(ident("__c_char_code_at"), vec![ident("s"), ident("i")])],
+                    vec![call(
+                        ident("__c_char_code_at"),
+                        vec![ident("s"), ident("i")],
+                    )],
                 )),
                 incr("i"),
             ],
@@ -243,5 +393,193 @@ pub fn runtime_helpers() -> Vec<Statement> {
             p.type_hint = Some("char*".to_string());
         }
     }
-    vec![decl]
+    let wcsncpy_body = vec![
+        var_decl("i", lit_int(0)),
+        var_decl("len", nul_index(ident("src"))),
+        while_stmt(
+            lt(ident("i"), ident("n")),
+            vec![
+                if_stmt(
+                    lt(ident("i"), ident("len")),
+                    vec![expr_stmt(assign(
+                        index(ident("dst"), ident("i")),
+                        index(ident("src"), ident("i")),
+                    ))],
+                    Some(vec![expr_stmt(assign(
+                        index(ident("dst"), ident("i")),
+                        lit_int(0),
+                    ))]),
+                ),
+                incr("i"),
+            ],
+        ),
+        ret(ident("dst")),
+    ];
+
+    let wcscat_body = vec![
+        var_decl("start", nul_index(ident("dst"))),
+        var_decl("i", lit_int(0)),
+        var_decl("len", nul_index(ident("src"))),
+        while_stmt(
+            lte(ident("i"), ident("len")),
+            vec![
+                expr_stmt(assign(
+                    index(ident("dst"), bin(BinOp::Add, ident("start"), ident("i"))),
+                    index(ident("src"), ident("i")),
+                )),
+                incr("i"),
+            ],
+        ),
+        ret(ident("dst")),
+    ];
+
+    let wcsncat_body = vec![
+        var_decl("start", nul_index(ident("dst"))),
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            and(
+                lt(ident("i"), ident("n")),
+                ne(index(ident("src"), ident("i")), lit_int(0)),
+            ),
+            vec![
+                expr_stmt(assign(
+                    index(ident("dst"), bin(BinOp::Add, ident("start"), ident("i"))),
+                    index(ident("src"), ident("i")),
+                )),
+                incr("i"),
+            ],
+        ),
+        expr_stmt(assign(
+            index(ident("dst"), bin(BinOp::Add, ident("start"), ident("i"))),
+            lit_int(0),
+        )),
+        ret(ident("dst")),
+    ];
+
+    let wmemcpy_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            lt(ident("i"), ident("n")),
+            vec![
+                expr_stmt(assign(
+                    index(ident("dst"), ident("i")),
+                    index(ident("src"), ident("i")),
+                )),
+                incr("i"),
+            ],
+        ),
+        ret(ident("dst")),
+    ];
+
+    let wmemset_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            lt(ident("i"), ident("n")),
+            vec![
+                expr_stmt(assign(index(ident("dst"), ident("i")), ident("ch"))),
+                incr("i"),
+            ],
+        ),
+        ret(ident("dst")),
+    ];
+
+    let wmemcmp_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            lt(ident("i"), ident("n")),
+            vec![
+                if_stmt(
+                    ne(index(ident("a"), ident("i")), index(ident("b"), ident("i"))),
+                    vec![ret(e(ExprKind::Ternary {
+                        cond: Box::new(lt(
+                            index(ident("a"), ident("i")),
+                            index(ident("b"), ident("i")),
+                        )),
+                        then: Box::new(lit_int(-1)),
+                        else_: Box::new(lit_int(1)),
+                    }))],
+                    None,
+                ),
+                incr("i"),
+            ],
+        ),
+        ret(lit_int(0)),
+    ];
+
+    let wcspbrk_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            ne(index(ident("s"), ident("i")), lit_int(0)),
+            vec![
+                if_stmt(
+                    bin(
+                        BinOp::GtEq,
+                        call_member(
+                            ident("accept"),
+                            "indexOf",
+                            vec![index(ident("s"), ident("i"))],
+                        ),
+                        lit_int(0),
+                    ),
+                    vec![ret(ident("i"))],
+                    None,
+                ),
+                incr("i"),
+            ],
+        ),
+        ret(lit_int(-1)),
+    ];
+
+    let wcsspn_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            and(
+                ne(index(ident("s"), ident("i")), lit_int(0)),
+                bin(
+                    BinOp::GtEq,
+                    call_member(
+                        ident("accept"),
+                        "indexOf",
+                        vec![index(ident("s"), ident("i"))],
+                    ),
+                    lit_int(0),
+                ),
+            ),
+            vec![incr("i")],
+        ),
+        ret(ident("i")),
+    ];
+
+    let wcscspn_body = vec![
+        var_decl("i", lit_int(0)),
+        while_stmt(
+            and(
+                ne(index(ident("s"), ident("i")), lit_int(0)),
+                bin(
+                    BinOp::Lt,
+                    call_member(
+                        ident("reject"),
+                        "indexOf",
+                        vec![index(ident("s"), ident("i"))],
+                    ),
+                    lit_int(0),
+                ),
+            ),
+            vec![incr("i")],
+        ),
+        ret(ident("i")),
+    ];
+
+    vec![
+        decl,
+        function("__libc_wcsncpy", vec!["dst", "src", "n"], wcsncpy_body),
+        function("__libc_wcscat", vec!["dst", "src"], wcscat_body),
+        function("__libc_wcsncat", vec!["dst", "src", "n"], wcsncat_body),
+        function("__libc_wmemcpy", vec!["dst", "src", "n"], wmemcpy_body),
+        function("__libc_wmemset", vec!["dst", "ch", "n"], wmemset_body),
+        function("__libc_wmemcmp", vec!["a", "b", "n"], wmemcmp_body),
+        function("__libc_wcspbrk_idx", vec!["s", "accept"], wcspbrk_body),
+        function("__libc_wcsspn", vec!["s", "accept"], wcsspn_body),
+        function("__libc_wcscspn", vec!["s", "reject"], wcscspn_body),
+    ]
 }

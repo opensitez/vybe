@@ -181,13 +181,7 @@ pub fn printf_to_c_fputs(fmt: Expression, rest: Vec<Expression>) -> Expression {
 }
 
 pub fn normalize_printf_literal_format(format_text: &str, arg_count: usize) -> String {
-    let mut out = format_text
-        .replace("%.1g", "%.1e")
-        .replace("%.1G", "%.1E")
-        .replace("%.1e", "%.2g")
-        .replace("%.1E", "%.2G")
-        .replace("%.2e", "%.3g")
-        .replace("%.2E", "%.3G");
+    let mut out = format_text.to_string();
     if arg_count == 0 {
         out = collapse_stray_triple_percents(&out);
     }
