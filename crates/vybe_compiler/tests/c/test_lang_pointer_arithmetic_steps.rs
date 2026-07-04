@@ -27,7 +27,7 @@ c_run_cases! {
     struct_array_pointer_steps_by_element => { includes: ["<stdio.h>"], decls: "struct P{int v;};", body: "struct P a[3]={{1},{2},{3}}; struct P *p=a; p++; printf(\"%d\\n\", p->v); return 0;", expect: ["2"] },
     struct_array_pointer_difference_counts => { includes: ["<stdio.h>"], decls: "struct P{int v;};", body: "struct P a[3]={{1},{2},{3}}; printf(\"%d\\n\", (int)(&a[2]-&a[0])); return 0;", expect: ["2"] },
     const_array_pointer_can_read => { includes: ["<stdio.h>"], decls: "", body: "const int a[3]={9,8,7}; const int *p=a+2; printf(\"%d\\n\", *p); return 0;", expect: ["7"] },
-    static_local_array_pointer_increment => { includes: ["<stdio.h>"], decls: "int rd(void){ static int a[2]={3,4}; static int i=0; return *(a+(i++%2)); }", body: "printf(\"%d %d\\n\", rd(), rd()); return 0;", expect: ["3 4"] },
+    static_local_array_pointer_increment => { includes: ["<stdio.h>"], decls: "int rd(void){ static int a[2]={3,4}; static int i=0; return *(a+(i++%2)); }", body: "int first=rd(); int second=rd(); printf(\"%d %d\\n\", first, second); return 0;", expect: ["3 4"] },
     nested_pointer_offset_via_subscript => { includes: ["<stdio.h>"], decls: "", body: "int a[4]={2,4,6,8}; int *p=a; printf(\"%d\\n\", (p+2)[1]); return 0;", expect: ["8"] },
     reverse_subscript_with_stepped_pointer => { includes: ["<stdio.h>"], decls: "", body: "int a[4]={2,4,6,8}; int *p=a+1; printf(\"%d\\n\", 1[p]); return 0;", expect: ["6"] },
     for_loop_increment_accumulates => { includes: ["<stdio.h>"], decls: "", body: "int a[4]={1,2,3,4}; int *p=a,*e=a+4,s=0; for(;p<e;p++) s+=*p; printf(\"%d\\n\", s); return 0;", expect: ["10"] },

@@ -318,6 +318,6 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "printf(\"%.1g%%\\n\", 12.3); return 0;",
-        expect: ["1.2e+01%"]
+        expect: ["1e+01%"]
     },
 }
