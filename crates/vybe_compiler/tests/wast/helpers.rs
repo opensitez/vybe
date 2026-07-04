@@ -77,3 +77,36 @@ pub fn run_wast(src: &str) -> Vec<String> {
 pub fn run_wast_one(src: &str) -> String {
     run_wast(src).into_iter().next().unwrap_or_default()
 }
+
+#[macro_export]
+macro_rules! wat_exec {
+    ($($name:ident => { $src:expr, $expect:expr }),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                let wrapped_src = format!(
+                    r#"
+(module
+  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
+  (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
+  (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  {}
+)
+"#,
+                    $src
+                );
+                
+                // If it already is a module, don't wrap it. Just assume if it starts with (module it's complete.
+                let final_src = if $src.trim().starts_with("(module") {
+                    $src.to_string()
+                } else {
+                    wrapped_src
+                };
+
+                let out = $crate::helpers::run_wast_one(&final_src);
+                assert_eq!(out, $expect);
+            }
+        )*
+    };
+}

@@ -445,6 +445,28 @@ pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
 /// Attach a static method to the constructor function object.
 /// Same pattern as VB Shared, JS static, C# static, Python @staticmethod.
 /// Stack: unchanged (reads constructor from local)
+/// ECMA-262 §15.7.14 step 2 (ClassCallError): a class constructor invoked
+/// without `new` throws a TypeError. `__js_new_target` is null on plain
+/// calls (set by `new` chains), so the guard is a simple null check at the
+/// constructor body's start.
+pub fn emit_class_requires_new_guard(chunk: &mut Chunk, class_name: &str, line: u32) {
+    let nt_key = chunk.add_constant(Value::String(Arc::from("__js_new_target")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, nt_key, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const(
+        &format!(
+            "Class constructor {} cannot be invoked without 'new'",
+            class_name
+        ),
+        line,
+    );
+    let te_idx = chunk.add_import("ecma:error", "TypeError");
+    chunk.emit_call(te_idx, 1, line);
+    crate::emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+}
+
 pub fn emit_attach_static_method(
     chunk: &mut Chunk,
     ctor_local: u16,

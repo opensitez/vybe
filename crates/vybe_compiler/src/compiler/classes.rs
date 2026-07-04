@@ -1584,6 +1584,16 @@ impl Compiler {
             }
 
             if is_ctor {
+                // §15.7.14: class constructors require `new` (JS only —
+                // other languages construct through their own paths).
+                if cc.is_js_profile() {
+                    let line = cc.line;
+                    common::classes::emit_class_requires_new_guard(
+                        cc.chunk(),
+                        &class.name,
+                        line,
+                    );
+                }
                 for s in &m.body {
                     cc.compile_stmt(s)?;
                 }
@@ -1994,6 +2004,16 @@ impl Compiler {
                 .unwrap_or_default();
             for p in &user_params {
                 self.define_local(p);
+            }
+            // §15.7.14: class constructors require `new` (JS only).
+            // `__js_new_target` is null on plain calls; every `new` chain
+            // (incl. super()) sets or defaults it before this body runs.
+            // Emitted AFTER param slots are claimed — emitter scratch
+            // allocation before define_local shifts param slots (the
+            // documented alloc_scratch/define_local collision).
+            if self.is_js_profile() {
+                let line = self.line;
+                common::classes::emit_class_requires_new_guard(self.chunk(), name, line);
             }
             for (i, p) in user_params.iter().enumerate() {
                 if let Some(Some(default)) = ctor_param_defaults.get(i) {

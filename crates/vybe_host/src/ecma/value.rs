@@ -279,7 +279,9 @@ pub fn register(vm: &mut VM) {
 fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     match receiver {
         Value::Bool(_) => dispatch_boolean(receiver, method, args),
-        Value::F64(_) | Value::I32(_) | Value::I64(_) => dispatch_number(receiver, method, args),
+        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+            dispatch_number(ctx, receiver, method, args)
+        }
         Value::String(_) => dispatch_string(ctx, receiver, method, args),
         Value::Symbol(desc) => match method {
             // ECMA-262 §20.4.3.3 Symbol.prototype.toString — "Symbol(<desc>)"
@@ -540,12 +542,20 @@ fn dispatch_bigint(n: i64, method: &str, args: &[Value]) -> Value {
 
 // ── Number methods (`Number.prototype.*`) ─────────────────────────────
 
-fn dispatch_number(receiver: &Value, method: &str, args: &[Value]) -> Value {
+fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     let n = receiver.as_f64();
     match method {
         "toString" => {
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
-            if radix == 10 || radix < 2 || radix > 36 {
+            // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
+            if !(2..=36).contains(&radix) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toString() radix must be between 2 and 36",
+                ));
+                return Value::Undefined;
+            }
+            if radix == 10 {
                 if n.is_finite() && n.fract() == 0.0 {
                     return Value::String(Arc::from(format!("{}", n as i64).as_str()));
                 }
@@ -569,13 +579,30 @@ fn dispatch_number(receiver: &Value, method: &str, args: &[Value]) -> Value {
             Value::String(Arc::from(out.as_str()))
         }
         "toFixed" => {
-            let digits = args
-                .first()
-                .map(|v| v.as_i32().max(0) as usize)
-                .unwrap_or(0);
+            // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
+            let digits_i = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if !(0..=100).contains(&digits_i) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toFixed() digits argument must be between 0 and 100",
+                ));
+                return Value::Undefined;
+            }
+            let digits = digits_i as usize;
             Value::String(Arc::from(format!("{:.1$}", n, digits).as_str()))
         }
         "toExponential" => {
+            // §21.1.3.2 step 8: RangeError unless 0 ≤ fractionDigits ≤ 100.
+            if let Some(d) = args.first() {
+                let di = d.as_i32();
+                if !(0..=100).contains(&di) {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "RangeError",
+                        "toExponential() argument must be between 0 and 100",
+                    ));
+                    return Value::Undefined;
+                }
+            }
             let raw = if let Some(digits_arg) = args.first() {
                 let digits = digits_arg.as_i32().max(0) as usize;
                 format!("{:.1$e}", n, digits)
@@ -593,13 +620,19 @@ fn dispatch_number(receiver: &Value, method: &str, args: &[Value]) -> Value {
             }
         }
         "toPrecision" => {
-            let prec = args
-                .first()
-                .map(|v| v.as_i32().max(1) as usize)
-                .unwrap_or(0);
-            if prec == 0 {
-                return Value::String(Arc::from(format!("{}", n).as_str()));
+            // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
+            let prec_i = match args.first() {
+                Some(v) => v.as_i32(),
+                None => return Value::String(Arc::from(format!("{}", n).as_str())),
+            };
+            if !(1..=100).contains(&prec_i) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toPrecision() argument must be between 1 and 100",
+                ));
+                return Value::Undefined;
             }
+            let prec = prec_i as usize;
             Value::String(Arc::from(format!("{:.prec$}", n, prec = prec).as_str()))
         }
         "toLocaleString" => {
@@ -2634,7 +2667,7 @@ fn dispatch_tagged_object(
             }
         } else if tag == "Number" {
             if let Some(value) = primitive.as_ref() {
-                return Some(dispatch_number(value, method, args));
+                return Some(dispatch_number(ctx, value, method, args));
             }
         } else if tag == "String" {
             if let Some(value) = primitive.as_ref() {

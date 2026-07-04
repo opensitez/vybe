@@ -491,13 +491,22 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
         "toFixed",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = f_arg(args, 0).unwrap_or(0.0);
-            let digits = match args.get(1) {
-                Some(Value::F64(d)) => *d as usize,
-                Some(Value::I32(d)) => *d as usize,
-                _ => 0,
+            let digits_f = match args.get(1) {
+                Some(Value::F64(d)) => *d,
+                Some(Value::I32(d)) => *d as f64,
+                _ => 0.0,
             };
+            // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
+            if !(0.0..=100.0).contains(&digits_f) || digits_f.is_nan() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toFixed() digits argument must be between 0 and 100",
+                ));
+                return Value::Undefined;
+            }
+            let digits = digits_f as usize;
             s_val(&format!("{:.1$}", n, digits))
         }),
     );
@@ -505,13 +514,21 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
         "toString",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = f_arg(args, 0).unwrap_or(0.0);
             let radix = match args.get(1) {
                 Some(Value::F64(r)) => *r as u32,
                 Some(Value::I32(r)) => *r as u32,
                 _ => 10,
             };
+            // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
+            if !(2..=36).contains(&radix) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toString() radix must be between 2 and 36",
+                ));
+                return Value::Undefined;
+            }
             if radix == 10 {
                 // Integer-valued floats print without trailing ".0" per JS.
                 if n.is_finite() && n.fract() == 0.0 {
@@ -519,7 +536,7 @@ fn register_prototype(vm: &mut VM) {
                 }
                 return s_val(&format!("{}", n));
             }
-            if !(2..=36).contains(&radix) || !n.is_finite() {
+            if !n.is_finite() {
                 return s_val(&format!("{}", n));
             }
             // Integer-only radix conversion (ECMA's algorithm for
@@ -594,8 +611,23 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
         "toExponential",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = f_arg(args, 0).unwrap_or(0.0);
+            // §21.1.3.2 step 8: RangeError unless 0 ≤ fractionDigits ≤ 100.
+            let frac = match args.get(1) {
+                Some(Value::F64(d)) => Some(*d),
+                Some(Value::I32(d)) => Some(*d as f64),
+                _ => None,
+            };
+            if let Some(d) = frac {
+                if !(0.0..=100.0).contains(&d) || d.is_nan() {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "RangeError",
+                        "toExponential() argument must be between 0 and 100",
+                    ));
+                    return Value::Undefined;
+                }
+            }
             let raw = match args.get(1) {
                 Some(Value::F64(d)) => format!("{:.1$e}", n, *d as usize),
                 Some(Value::I32(d)) => format!("{:.1$e}", n, *d as usize),
@@ -615,16 +647,22 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
         "toPrecision",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = f_arg(args, 0).unwrap_or(0.0);
-            let prec = match args.get(1) {
-                Some(Value::F64(p)) => *p as usize,
-                Some(Value::I32(p)) => *p as usize,
+            let prec_f = match args.get(1) {
+                Some(Value::F64(p)) => *p,
+                Some(Value::I32(p)) => *p as f64,
                 _ => return s_val(&format!("{}", n)),
             };
-            if prec == 0 {
-                return s_val(&format!("{}", n));
+            // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
+            if !(1.0..=100.0).contains(&prec_f) || prec_f.is_nan() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "toPrecision() argument must be between 1 and 100",
+                ));
+                return Value::Undefined;
             }
+            let prec = prec_f as usize;
             if n == 0.0 {
                 if prec <= 1 {
                     return s_val("0");
