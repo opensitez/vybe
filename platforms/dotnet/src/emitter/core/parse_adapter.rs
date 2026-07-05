@@ -1,0 +1,142 @@
+//! .NET `<Type>.Parse(s)` / `TryParse(s, out)` — bytecode emitters.
+//!
+//! `int.Parse("42")` returns `42`; `int.Parse("abc")` throws
+//! `FormatException` per ECMA-335. JS `Number(s)` returns `NaN` on
+//! failure, which is what every `intrinsic:cint` emit currently does.
+//! These adapters wrap the JS coercion with a NaN check that throws a
+//! .NET-shape error so try/catch around the parse picks it up.
+//!
+//! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
+
+use vybe_emitter::instructions::{core_wasm, host};
+use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    chunk.alloc_scratch(1)
+}
+
+/// `int.Parse(s)` — `Number(s)` then `Math.floor`. If the result is
+/// NaN, throw `Error("Input string was not in a correct format.")`
+/// (the .NET `FormatException` message). Stack: `[s]` → `[i32]`.
+pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
+    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
+    chunk.emit(1, line);
+    let result = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // NaN check: `r !== r` is the canonical NaN test.
+    let if_block = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_br_if(0, line);
+    // NaN — throw FormatException-shaped object so `e.Message` works.
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("Input string was not in a correct format.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(if_block);
+
+    // Floor for integer semantics (matches `intrinsic:cint`).
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+
+/// `double.Parse(s)` — `Number(s)` with NaN guard. Stack: `[s]` → `[f64]`.
+pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
+    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
+    chunk.emit(1, line);
+    let result = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    let if_block = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_string_const("Input string was not in a correct format.", line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(if_block);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// `bool.Parse(s)` — accepts `"true"` / `"false"` (case-insensitive),
+/// throws on anything else. Stack: `[s]` → `[bool]`.
+///
+/// Inline-emits `s.toLowerCase() === "true"` as the truthy path and
+/// throws if neither `"true"` nor `"false"` was given. Matches
+/// .NET `Boolean.Parse` semantics per ECMA-335.
+pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
+    let lower_idx = chunks[0].add_import("ecma:string", "toLowerCase");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
+    chunk.emit(1, line);
+    let lc = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, lc, line);
+
+    // If lc === "true" → push true and return.
+    let outer = chunk.emit_block(line);
+    // Branch 1: true
+    let not_true = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
+    chunk.emit_string_const("true", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    chunk.emit_br_if(0, line);
+    core_wasm::bool_const(chunk, line, true);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
+    chunk.patch_block(not_true);
+    // Branch 2: false
+    let not_false = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
+    chunk.emit_string_const("false", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    chunk.emit_br_if(0, line);
+    core_wasm::bool_const(chunk, line, false);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
+    chunk.patch_block(not_false);
+    // Neither — throw FormatException-shape object.
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("String was not recognized as a valid Boolean.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
+}
+
+/// `char.Parse(s)` — require a single-character string and return it.
+pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    let ok_block = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    core_wasm::i32_const(chunk, line, 1);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_br_if(0, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("String must be exactly one character long.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(ok_block);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+}
