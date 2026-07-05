@@ -12631,7 +12631,13 @@ fn is_carray_like_expr(e: &Expression) -> bool {
     }
     match &e.kind {
         ExprKind::Ternary { then, else_, .. } => {
-            is_carray_like_expr(then) || matches!(else_.kind, ExprKind::Lit(Literal::Null))
+            is_carray_like_expr(then)
+                || matches!(else_.kind, ExprKind::Lit(Literal::Null))
+                // `ptr_or_null` (wcschr/wcsstr/wmemchr/... "not found") produces the
+                // mirror shape `idx < 0 ? null : carray`, so the carray sits in the
+                // else branch and null in the then branch. Recognize that too, or
+                // `wcschr(...) == 0` won't be normalized to a null-pointer check.
+                || (matches!(then.kind, ExprKind::Lit(Literal::Null)) && is_carray_like_expr(else_))
         }
         ExprKind::Call { callee, .. } => {
             let ExprKind::Lambda { body, .. } = &callee.kind else {
@@ -13232,6 +13238,11 @@ fn index_has_side_effects(e: &Expression) -> bool {
             index_has_side_effects(object) || index_has_side_effects(index)
         }
         ExprKind::Member { object, .. } => index_has_side_effects(object),
+        // Postfix/prefix inc-dec desugars to a `Sequence([tmp = v, v = v+1, tmp])`,
+        // so a bare `Sequence` in an index position carries the increment's side
+        // effect. Without this arm the splice reads the index twice and fires the
+        // increment twice (`s[w++] = c` advances `w` by 2).
+        ExprKind::Sequence(exprs) => exprs.iter().any(index_has_side_effects),
         _ => false,
     }
 }

@@ -35,7 +35,7 @@ c_cases! {
     printf_can_emit_octal_and_unsigned_same_call => { declarations: "", body: "printf(\"%o %u\\n\", 8, 8u);\nreturn 0;", expect: ["10 8"] },
     puts_after_sprintf_can_show_signed_integer => { declarations: "char buf[64];", body: "sprintf(buf, \"%+d\", 7);\nputs(buf);\nreturn 0;", expect: ["+7"] },
     printf_can_use_width_on_string => { declarations: "", body: "printf(\"%5s\\n\", \"go\");\nreturn 0;", expect: ["   go"] },
-    sprintf_can_capture_scientific_notation => { declarations: "char buf[64];", body: "sprintf(buf, \"%.1e\", 1200.0);\nputs(buf);\nreturn 0;", expect: ["1.2e+3"] },
+    sprintf_can_capture_scientific_notation => { declarations: "char buf[64];", body: "sprintf(buf, \"%.1e\", 1200.0);\nputs(buf);\nreturn 0;", expect: ["1.2e+03"] },
     fprintf_can_forward_mixed_arguments => { declarations: "", body: "fprintf(stdout, \"%s %d %c\\n\", \"mix\", 4, 'Q');\nreturn 0;", expect: ["mix 4 Q"] },
     printf_can_emit_multiple_lines_from_one_format => { declarations: "", body: "printf(\"a\\nb\\n\");\nreturn 0;", expect: ["a", "b"] },
     sprintf_can_reuse_same_buffer_variable => { declarations: "char buf[64];", body: "sprintf(buf, \"%d\", 3);\nputs(buf);\nsprintf(buf, \"%d\", 4);\nputs(buf);\nreturn 0;", expect: ["3", "4"] },
