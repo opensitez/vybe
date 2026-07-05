@@ -560,7 +560,7 @@ impl Compiler {
                         self.emit_const(Value::F64(f64::INFINITY));
                         return Ok(());
                     }
-                    "__js_import_meta" if self.is_js_profile() => {
+                    "__js_import_meta" if self.profile.supports_dynamic_import => {
                         self.emit_js_import_meta_object();
                         return Ok(());
                     }
@@ -673,7 +673,7 @@ impl Compiler {
 
             // ── This / Super ────────────────────────────────────────────
             ExprKind::This => {
-                if self.is_js_profile()
+                if self.profile.ambient_this_binding
                     && self.current_class.is_some()
                     && self.current_func_name.as_deref() != Some("<lambda>")
                     && self.current_func_name.as_deref().is_some_and(|name| {
@@ -710,7 +710,7 @@ impl Compiler {
                         let idx = self.closure_env_index(&kw);
                         let l = self.line;
                         crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
-                    } else if self.is_js_profile() {
+                    } else if self.profile.ambient_this_binding {
                         if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this")
                         {
                             let env = self.closure_env_slot();
@@ -721,13 +721,13 @@ impl Compiler {
                             let idx = self.str_const("__js_this");
                             self.emit_u16(Op::GLOBAL_GET, idx);
                         }
-                    } else if self.is_js_profile() {
+                    } else if self.profile.ambient_this_binding {
                         let idx = self.str_const("__js_this");
                         self.emit_u16(Op::GLOBAL_GET, idx);
                     } else {
                         self.emit(Op::NULL);
                     }
-                } else if self.is_js_profile() {
+                } else if self.profile.ambient_this_binding {
                     let idx = self.str_const("__js_this");
                     self.emit_u16(Op::GLOBAL_GET, idx);
                 } else {
@@ -860,7 +860,7 @@ impl Compiler {
                 // Pow → BigInt fast path, then canonical stdlib path.
                 if *op == BinOp::Pow {
                     let line = self.line;
-                    if self.is_js_profile()
+                    if self.profile.has_ecma_bigint
                         && self.infer_expr_type_hint(left).as_deref() == Some("bigint")
                         && self.infer_expr_type_hint(right).as_deref() == Some("bigint")
                     {
@@ -883,7 +883,7 @@ impl Compiler {
                 // Dynamic RHS (the rare `a instanceof someVariable` JS form)
                 // falls through to the host-less polyfill in compile_binop.
                 if *op == BinOp::InstanceOf {
-                    if self.is_js_profile() {
+                    if self.class_prototype_dispatch() {
                         self.compile_expr(left)?;
                         match &right.kind {
                             // For built-in constructors that stamp `__type` on their instances,
@@ -938,7 +938,7 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                if self.is_js_profile() && *op == BinOp::In {
+                if self.profile.ecma_in_operator && *op == BinOp::In {
                     if let ExprKind::Ident(field) = &left.kind {
                         if field.starts_with('#') {
                             let storage_name = self.js_member_storage_name(field);
@@ -1082,7 +1082,7 @@ impl Compiler {
                         }
                     }
                 }
-                if self.is_js_profile() {
+                if self.profile.has_ecma_bigint {
                     let left_hint = self.infer_expr_type_hint(left);
                     let right_hint = self.infer_expr_type_hint(right);
                     let left_is_bigint = left_hint.as_deref() == Some("bigint");
@@ -1255,7 +1255,7 @@ impl Compiler {
                         self.compile_deref_expr(inner)?;
                     }
                     _ => {
-                        if self.is_js_profile() && matches!(op, UnaryOp::Typeof) {
+                        if self.profile.ecma_typeof_operator && matches!(op, UnaryOp::Typeof) {
                             if let ExprKind::Ident(name) = &inner.kind {
                                 let is_callable_global =
                                     matches!(
@@ -1304,7 +1304,7 @@ impl Compiler {
                         match op {
                             UnaryOp::Neg => {
                                 let l = self.line;
-                                if (self.is_js_profile() || self.is_php_profile())
+                                if self.profile.has_ecma_bigint
                                     && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
                                 {
                                     let idx = self.import("ecma:bigint", "neg");
@@ -1318,7 +1318,7 @@ impl Compiler {
                                 // BigInt is the one primitive exception: unary
                                 // plus throws, while explicit Number(1n) still
                                 // converts.
-                                if self.is_js_profile()
+                                if self.profile.has_ecma_bigint
                                     && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
                                 {
                                     self.emit_const(Value::String(Arc::from(
@@ -1334,7 +1334,7 @@ impl Compiler {
                                 // overrides fire with the JS method-call
                                 // protocol intact), then `Number(...)` to
                                 // finalise the coercion.
-                                if self.is_js_profile() {
+                                if self.profile.ecma_to_primitive {
                                     self.emit_to_primitive("number");
                                 }
                                 let idx = self.import("ecma:number", "Number");
@@ -1349,7 +1349,7 @@ impl Compiler {
                                 } else {
                                     crate::emitter::ops::emit_dyn_not(self.chunk(), line);
                                 }
-                                if (self.is_js_profile() || self.profile.materialize_bool_results)
+                                if (self.profile.ecma_boolean_operators || self.profile.materialize_bool_results)
                                     && !(self.profile.name == "pascal"
                                         && self.pascal_expr_is_integer_like(inner))
                                 {
@@ -1358,7 +1358,7 @@ impl Compiler {
                             }
                             UnaryOp::BitNot => {
                                 let l = self.line;
-                                if self.is_js_profile()
+                                if self.profile.has_ecma_bigint
                                     && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
                                 {
                                     let idx = self.import("ecma:bigint", "not");
@@ -1517,7 +1517,7 @@ impl Compiler {
                 // Map/Set/Boolean/Number wrappers.
                 // BISECT: temporarily disabled — see below.
                 if false
-                    && self.is_js_profile()
+                    && self.profile.dynamic_member_access
                     && !*null_safe
                     && matches!(&object.kind, ExprKind::Ident(n) if n == "globalThis")
                 {
@@ -1800,7 +1800,7 @@ impl Compiler {
                     }
                 }
 
-                if self.is_js_profile() && matches!(&object.kind, ExprKind::Super) && !*null_safe {
+                if self.class_prototype_dispatch() && matches!(&object.kind, ExprKind::Super) && !*null_safe {
                     if let Some(parent) = self
                         .current_class
                         .as_ref()
@@ -1858,7 +1858,7 @@ impl Compiler {
                 // reads through the inline dispatcher in
                 // `emitter/js/proxy_adapter.rs`. Non-proxy code keeps
                 // the direct STRUCT_GET path.
-                if self.is_js_profile() && self.uses_proxy && !*null_safe {
+                if self.uses_proxy && !*null_safe {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
@@ -1870,7 +1870,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.is_js_profile() {
+                if self.profile.dynamic_member_access {
                     if *null_safe {
                         self.compile_expr(object)?;
                         let nullsafe_obj_slot = self.define_local("__js_member_nullsafe_obj");
@@ -2526,7 +2526,7 @@ impl Compiler {
                 // strings and arrays both work uniformly.
                 if let ExprKind::Range { start, end, .. } = &index.kind {
                     let line = self.line;
-                    if self.is_js_profile() {
+                    if self.profile.ecma_array_method_dispatch {
                         // Emit an inline polymorphic slice for JS: strings use
                         // STR_SUBSTRING, arrays call ecma:array.slice. Save
                         // operands to locals so we can test the receiver.
@@ -2572,7 +2572,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     let line = self.line;
                     if step.is_none() {
-                        if self.is_js_profile() {
+                        if self.profile.ecma_array_method_dispatch {
                             // JS: compute start/end into locals, then dispatch
                             // to STR_SUBSTRING for strings or ecma:array.slice
                             // for arrays.
@@ -2807,7 +2807,7 @@ impl Compiler {
                     self.emit_const(Value::F64(1.0));
                     self.emit(Op::F64_SUB);
                     fn_call!(self, "ecma:string", "charAt", 2);
-                } else if self.is_js_profile() && self.uses_proxy && !*null_safe {
+                } else if self.uses_proxy && !*null_safe {
                     // Proxy get-trap dispatch on bracket-notation reads.
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -2817,7 +2817,7 @@ impl Compiler {
                         self.current,
                         line,
                     );
-                } else if self.is_js_profile() && *null_safe {
+                } else if self.profile.dynamic_member_access && *null_safe {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -2988,7 +2988,7 @@ impl Compiler {
                         self.chunk().emit_end(line);
                     }
                 } else {
-                    if self.is_js_profile() {
+                    if self.profile.dynamic_member_access {
                         self.compile_expr(object)?;
                         let obj_slot = self.define_local("__js_index_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3228,7 +3228,7 @@ impl Compiler {
                 // module-level `uses_proxy` flag (set by the AST scan)
                 // tells subsequent Member/Index emits to route through
                 // the dispatcher.
-                if self.is_js_profile() {
+                if self.profile.ecma_new_dispatch {
                     if let ExprKind::Ident(name) = &class.kind {
                         if name == "Set" && args.len() <= 1 {
                             if let Some(arg) = args.first() {
@@ -3315,7 +3315,7 @@ impl Compiler {
                         // ctor's rest slot receives a proper Array (no
                         // surplus ⇒ empty array). Static packing; spread
                         // args keep the plain path.
-                        let js_ctor_rest_fixed: Option<usize> = if self.is_js_profile()
+                        let js_ctor_rest_fixed: Option<usize> = if self.profile.ecma_new_dispatch
                             && !args
                                 .iter()
                                 .any(|a| matches!(a.value.kind, ExprKind::Spread(_)))
@@ -3387,7 +3387,7 @@ impl Compiler {
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
-                    if self.is_js_profile() && self.defined_functions.contains(&canon_type) {
+                    if self.profile.ecma_new_dispatch && self.defined_functions.contains(&canon_type) {
                         let idx = self.str_const(&canon_type);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                         let ctor_slot = self.define_local("__js_ctor");
@@ -3690,7 +3690,7 @@ impl Compiler {
                         }
                     }
                 }
-                if self.is_js_profile() {
+                if self.profile.ecma_new_dispatch {
                     self.compile_expr(class)?;
                     let ctor_slot = self.define_local("__js_ctor");
                     self.emit_u16(Op::LOCAL_SET, ctor_slot);
@@ -3767,17 +3767,17 @@ impl Compiler {
                 //                `ecma:array.get/.set` which now
                 //                dispatch polymorphically on Map.
                 let line = self.line;
-                let is_js_profile = self.is_js_profile();
-                let is_js_array_elision = |elem: &ArrayElement| {
-                    is_js_profile
+                let allows_array_elisions = self.profile.ecma_array_elisions;
+                let is_array_elision = |elem: &ArrayElement| {
+                    allows_array_elisions
                         && !elem.spread
                         && matches!(&elem.key, Some(key) if matches!(key.kind, ExprKind::Lit(Literal::Int(-1))))
                         && matches!(elem.value.kind, ExprKind::Lit(Literal::Undefined))
                 };
                 let has_keys = elements
                     .iter()
-                    .any(|e| e.key.is_some() && !is_js_array_elision(e));
-                let has_elisions = is_js_profile && elements.iter().any(is_js_array_elision);
+                    .any(|e| e.key.is_some() && !is_array_elision(e));
+                let has_elisions = allows_array_elisions && elements.iter().any(is_array_elision);
 
                 if self.profile.name == "c"
                     && !has_keys
@@ -3843,7 +3843,7 @@ impl Compiler {
                         self.emit_const(Value::I32(elements.len() as i32));
                         self.emit_host_call(array_new_idx, 1);
                         for (index, elem) in elements.iter().enumerate() {
-                            if is_js_array_elision(elem) {
+                            if is_array_elision(elem) {
                                 continue;
                             }
                             inst!(self, core_wasm::dup);
@@ -3880,7 +3880,7 @@ impl Compiler {
                                 // loop (WASM stack switching) — works for ANY
                                 // language with generators (JS, PHP), no runtime
                                 // isGenerator check, no runtime helper.
-                                let is_known_gen = (self.is_js_profile()
+                                let is_known_gen = (self.profile.has_generators
                                     || self.profile.buffered_iterator_methods)
                                     && self.is_direct_generator_call(&elem.value);
                                 self.compile_expr(&elem.value)?;
@@ -4014,7 +4014,7 @@ impl Compiler {
                                 // append a duplicate `x` to `__keys`. Must run
                                 // pre-set: post-set the property always exists
                                 // and tracking would be skipped entirely.
-                                if self.is_js_profile() {
+                                if self.profile.ecma_object_literals {
                                     inst!(self, core_wasm::dup);
                                     self.emit_const(Value::String(Arc::from(key_name.as_str())));
                                     let track_idx = self.import("ecma:object", "trackKey");
@@ -4023,7 +4023,7 @@ impl Compiler {
                                 }
                                 inst!(self, core_wasm::dup);
                                 self.compile_expr(value)?;
-                                if self.is_js_profile() {
+                                if self.profile.ecma_object_literals {
                                     let should_infer_name = match &value.kind {
                                         ExprKind::Lambda { .. } => true,
                                         ExprKind::FunctionExpr(stmt) => {
@@ -4061,7 +4061,7 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 // Non-JS: append to __keys directly (JS already
                                 // tracked it via the deduping `trackKey` above).
-                                if !self.is_js_profile() {
+                                if !self.profile.ecma_object_literals {
                                     inst!(self, core_wasm::dup);
                                     let keys_key = self.str_const("__keys");
                                     self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4139,7 +4139,7 @@ impl Compiler {
                                 ..
                             } = &value.kind
                             {
-                                if self.is_js_profile() {
+                                if self.profile.ecma_object_literals {
                                     self.compile_lambda_with_flags(
                                         params,
                                         &LambdaBody::Block(body.clone()),
@@ -4175,7 +4175,7 @@ impl Compiler {
                                 self.emit(Op::NULL);
                             }
                             // Set fn.name = key for Function.prototype.name support.
-                            if self.is_js_profile() {
+                            if self.profile.ecma_object_literals {
                                 inst!(self, core_wasm::dup);
                                 self.emit_const(Value::String(Arc::from(key.as_str())));
                                 let name_key = self.str_const("name");
@@ -4196,7 +4196,7 @@ impl Compiler {
                                 ..
                             } = &value.kind
                             {
-                                if self.is_js_profile() {
+                                if self.profile.ecma_object_literals {
                                     self.compile_lambda_with_flags(
                                         params,
                                         &LambdaBody::Block(body.clone()),
@@ -4259,7 +4259,7 @@ impl Compiler {
                             // §10.2.9 SetFunctionName: an anonymous fn under
                             // a computed key is named from the runtime key
                             // (symbols → "[<description>]").
-                            if self.is_js_profile()
+                            if self.profile.ecma_object_literals
                                 && matches!(
                                     &value.kind,
                                     ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
@@ -4301,7 +4301,7 @@ impl Compiler {
                 // through it ensures user `toString` overrides fire
                 // (sets `__js_this` via the JS method-call protocol),
                 // then `"" + primitive` produces the final string.
-                let use_to_primitive = self.is_js_profile();
+                let use_to_primitive = self.profile.ecma_to_primitive;
                 self.emit_const(Value::String(Arc::from("")));
                 let acc_slot = self.define_local("__interp_acc");
                 self.emit_u16(Op::LOCAL_SET, acc_slot);
@@ -4993,7 +4993,7 @@ impl Compiler {
             }
 
             ExprKind::TypeOf(inner) => {
-                if self.is_js_profile() {
+                if self.profile.ecma_typeof_operator {
                     if let ExprKind::Ident(name) = &inner.kind {
                         let is_callable_global = !self.has_accessible_local_binding(name)
                             && (matches!(
@@ -5043,7 +5043,7 @@ impl Compiler {
                 let inner_res = self.compile_expr(inner);
                 self.in_typeof_operand = saved_typeof;
                 inner_res?;
-                if self.is_js_profile() {
+                if self.profile.ecma_typeof_operator {
                     // ECMA-262 §13.5.3 Table 41: arrays are "object",
                     // not "array". The VM's REF_TYPEOF emits "array"
                     // (Vybe-specific), so JS routes through the host
@@ -5382,7 +5382,7 @@ impl Compiler {
                         self.emit_var_get(&parent_canon);
                         self.emit_u16(Op::STRUCT_GET, method_idx);
 
-                        if self.is_js_profile() {
+                        if self.profile.ambient_this_binding {
                             let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
                             if let Some(self_slot) = self
                                 .scope()
@@ -5612,7 +5612,7 @@ impl Compiler {
                 // delete obj.prop → ecma:object.delete(obj, key), returns true.
                 // Proxy modules route through ecma:proxy.deleteProperty so the
                 // deleteProperty trap fires (non-proxy targets fall through).
-                let delete_import: (&str, &str) = if self.is_js_profile() && self.uses_proxy {
+                let delete_import: (&str, &str) = if self.uses_proxy {
                     ("ecma:proxy", "deleteProperty")
                 } else {
                     ("ecma:object", "delete")

@@ -1001,7 +1001,7 @@ impl Compiler {
         saved_name: &str,
     ) -> Option<u16> {
         let saved_js_this = self.save_js_this(saved_name);
-        if !self.is_js_profile() {
+        if !self.profile.ambient_this_binding {
             return saved_js_this;
         }
 
@@ -1256,7 +1256,7 @@ impl Compiler {
         // fire (ECMA-262 §10.5.12). ecma:proxy.apply falls through to an
         // ordinary invoke for plain callables, so all dynamic calls can
         // route through it.
-        if self.is_js_profile() && self.uses_proxy && receiver_slot.is_none() {
+        if self.uses_proxy && receiver_slot.is_none() {
             let line = self.line;
             let args_arr_slot = self.define_local("__proxy_apply_args");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -1644,7 +1644,7 @@ impl Compiler {
         name: &str,
         args: &[Argument],
     ) -> Result<bool, String> {
-        if !self.is_js_profile() || !args.iter().any(|a| a.spread) {
+        if !self.profile.supports_spread_arguments || !args.iter().any(|a| a.spread) {
             return Ok(false);
         }
         let Some(def) = self.profile.lookup_builtin(name) else {
@@ -1948,7 +1948,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn js_error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
+    pub(super) fn error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
         match type_name.trim() {
             "Error" => &["Error"],
             "EvalError" => &["EvalError", "Error"],
@@ -1978,7 +1978,7 @@ impl Compiler {
         let exc_tmp = self.define_local("__exc_tmp");
         self.emit_u16(Op::LOCAL_SET, exc_tmp);
 
-        if self.is_js_profile() {
+        if self.profile.ecma_error_object_shape {
             // Fix property descriptors to be non-enumerable per ECMA-262 §20.5.
             // message, name, and internal properties (__type, __exception_type) should be non-enumerable.
             let define_prop_idx = self.import("ecma:object", "defineProperty");
@@ -2029,7 +2029,7 @@ impl Compiler {
         let stack_val = self.define_local("__stack_val");
         self.emit_u16(Op::LOCAL_SET, stack_val);
 
-        if self.is_js_profile() {
+        if self.profile.ecma_error_object_shape {
             // Set stack as non-enumerable using Object.defineProperty
             let define_prop_idx = self.import("ecma:object", "defineProperty");
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -2055,8 +2055,8 @@ impl Compiler {
             self.emit(Op::DROP);
         }
 
-        if self.is_js_profile() {
-            for name in Self::js_error_instanceof_chain(type_name) {
+        if self.profile.ecma_error_object_shape {
+            for name in Self::error_instanceof_chain(type_name) {
                 common::classes::emit_instanceof_chain(
                     &mut self.chunks,
                     self.current,
@@ -2315,7 +2315,7 @@ impl Compiler {
             return Ok(());
         }
 
-        if self.is_js_profile() {
+        if self.profile.supports_dynamic_import {
             if let ExprKind::Ident(name) = &callee.kind {
                 if name == "__js_dynamic_import" {
                     let Some(path) = args.first().and_then(|arg| match &arg.value.kind {
@@ -2843,7 +2843,7 @@ impl Compiler {
                     let method_idx = self.str_const(&canon_field);
                     self.emit_u16(Op::STRUCT_GET, method_idx);
 
-                    if self.is_js_profile() {
+                    if self.profile.ambient_this_binding {
                         let saved_js_this = self.save_js_this("__js_prev_this_super_method");
                         if let Some(slot) = self_slot {
                             self.emit_u16(Op::LOCAL_GET, slot);
@@ -2943,7 +2943,6 @@ impl Compiler {
                     {
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
-                            && !self.is_js_profile()
                         {
                             let sort_global = self.str_const("__vybe_sort_with_comparator");
                             self.emit_u16(Op::GLOBAL_GET, sort_global);
@@ -3002,7 +3001,6 @@ impl Compiler {
 
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
-                            && !self.is_js_profile()
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
                                     || name.eq_ignore_ascii_case("ArrayList")
@@ -3854,17 +3852,17 @@ impl Compiler {
                 if !dotnet_root {
                     let alias_key = self.canon(&lower_parts[0]);
                     if let Some(module) = self.host_namespace_aliases.get(&alias_key).cloned() {
-                        let is_js_prototype_chain = self.is_js_profile()
+                        let is_prototype_chain = self.class_prototype_dispatch()
                             && lower_parts.len() > 2
                             && lower_parts
                                 .get(1)
                                 .is_some_and(|part| part.eq_ignore_ascii_case("prototype"));
-                        let is_js_function_helper_chain = self.is_js_profile()
+                        let is_function_helper_chain = self.profile.has_function_prototype_bind
                             && lower_parts.len() > 2
                             && lower_parts.last().is_some_and(|part| {
                                 matches!(part.as_str(), "call" | "apply" | "bind")
                             });
-                        if is_js_prototype_chain || is_js_function_helper_chain {
+                        if is_prototype_chain || is_function_helper_chain {
                             // `Array.prototype.join.bind(...)` and similar borrowed-method
                             // chains must stay as property access on the extracted function
                             // value, not collapse into a synthetic host import like
@@ -4040,7 +4038,7 @@ impl Compiler {
                 }
 
                 if let Some(canon) = static_class_canon {
-                    if self.is_js_profile() {
+                    if self.class_prototype_dispatch() {
                         let method_name = self.js_member_storage_name_for_class(&canon, field);
                         let cls_idx = self.str_const(&canon);
                         self.emit_u16(Op::GLOBAL_GET, cls_idx);
@@ -4379,7 +4377,7 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if self.is_js_profile()
+            if self.profile.has_function_prototype_bind
                 && !self.direct_receiver_has_own_pending_method(object, field)
                 && (field == "call" || field == "apply" || field == "bind")
             {
@@ -4439,7 +4437,6 @@ impl Compiler {
                     {
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
-                            && !self.is_js_profile()
                         {
                             let sort_global = self.str_const("__vybe_sort_with_comparator");
                             self.emit_u16(Op::GLOBAL_GET, sort_global);
@@ -4498,7 +4495,6 @@ impl Compiler {
 
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
-                            && !self.is_js_profile()
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
                                     || name.eq_ignore_ascii_case("ArrayList")
@@ -4681,7 +4677,7 @@ impl Compiler {
                 // registry for shared .NET collection methods instead of
                 // intercepting them via language profile value-method tables.
             } else if let Some(def) = matched_value_method {
-                if self.is_js_profile() && field == "push" && args.iter().any(|arg| arg.spread) {
+                if self.profile.supports_spread_arguments && field == "push" && args.iter().any(|arg| arg.spread) {
                     let line = self.line;
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_value_push_spread_obj");
@@ -4829,13 +4825,13 @@ impl Compiler {
                     .is_some_and(|type_hint| {
                         self.pending_class_has_method_name_for_type(type_hint, field)
                     });
-            let js_requires_dynamic_callback_dispatch = self.is_js_profile()
+            let requires_dynamic_callback_dispatch = self.profile.ecma_array_method_dispatch
                 && arg_exprs
                     .first()
                     .is_some_and(|expr| matches!(expr.kind, ExprKind::Call { .. }));
             if !user_class_method
                 && !receiver_is_url_search_params
-                && !js_requires_dynamic_callback_dispatch
+                && !requires_dynamic_callback_dispatch
                 && self.profile.lookup_array_method(&field_lower).is_some()
             {
                 // (re-fetch only when we're committed to the HOF path so
@@ -4845,10 +4841,10 @@ impl Compiler {
                 .profile
                 .lookup_array_method(&field_lower)
                 .filter(|_| {
-                    !self.is_js_profile()
+                    !self.profile.ecma_array_method_dispatch
                         && !user_class_method
                         && !receiver_is_url_search_params
-                        && !js_requires_dynamic_callback_dispatch
+                        && !requires_dynamic_callback_dispatch
                 })
                 .map(|s| s.to_string())
             {
@@ -4987,7 +4983,7 @@ impl Compiler {
                         // is in dispatch_{array,map,set}). For non-JS
                         // profiles, keep the array-only stdlib loop —
                         // PHP / VB iteration semantics differ.
-                        if self.is_js_profile() {
+                        if self.profile.ecma_array_method_dispatch {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_u16(Op::LOCAL_GET, fn_slot);
                             if let Some(this_arg) = arg_exprs.get(1) {
@@ -5039,7 +5035,7 @@ impl Compiler {
                         // JS spec §23.1.3.10: returns undefined when no match;
                         // other languages stick with Null for cross-compat
                         // (Python None / VB Nothing / .NET null match Null).
-                        if self.is_js_profile() {
+                        if self.profile.has_undefined_value {
                             inst!(self, core_wasm::undefined);
                         } else {
                             self.emit(Op::NULL);
@@ -5147,7 +5143,7 @@ impl Compiler {
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
-                        if self.is_js_profile() {
+                        if self.profile.ecma_array_method_dispatch {
                             // ecma:array.sort returns the sorted array
                             // (in-place, returns receiver). One-arg call.
                             let idx = self.import("ecma:array", "sort");
@@ -5684,7 +5680,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 return Ok(());
             }
-            if self.is_js_profile() {
+            if self.profile.ecma_promise_methods {
                 if !*null_safe
                     && self.try_compile_js_promise_chain_call(object, field, &arg_exprs)?
                 {
@@ -5853,7 +5849,7 @@ impl Compiler {
                         // (done=true) with no explicit return value, the VM
                         // leaves null on the stack. Convert null → undefined
                         // so the {value} field is spec-correct.
-                        if self.is_js_profile() {
+                        if self.profile.ecma_iterator_result_shape {
                             self.emit_u16(Op::LOCAL_GET, done_slot);
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6413,7 +6409,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, receiver_key);
                 let receiver_slot = self.define_local("__member_fast_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                if self.is_js_profile() {
+                if self.class_prototype_dispatch() {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -6552,7 +6548,7 @@ impl Compiler {
                             args,
                             signature,
                         )?;
-                    } else if self.is_js_profile() {
+                    } else if self.class_prototype_dispatch() {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
@@ -6668,7 +6664,7 @@ impl Compiler {
                     self.finish_buffered_generator_method_dispatch(result_slot);
                     return Ok(());
                 }
-                if self.is_js_profile() {
+                if self.class_prototype_dispatch() {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -6841,7 +6837,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
                     self.emit_known_rest_call_from_local(
                         direct_fn_tmp,
-                        if self.is_js_profile() {
+                        if self.class_prototype_dispatch() {
                             None
                         } else {
                             Some(obj_tmp)
@@ -7146,7 +7142,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
                 self.emit_known_rest_call_from_local(
                     direct_fn_tmp,
-                    if self.is_js_profile() {
+                    if self.class_prototype_dispatch() {
                         None
                     } else {
                         Some(obj_tmp)
@@ -7156,7 +7152,7 @@ impl Compiler {
                 )?;
             } else {
                 let receiver_slot = obj_tmp;
-                if self.is_js_profile() {
+                if self.class_prototype_dispatch() {
                     let js_result_slot = self.define_local("__js_member_result");
                     self.emit(Op::NULL);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
@@ -8239,7 +8235,7 @@ impl Compiler {
         // is bound to `obj` before invocation. Without this binding the
         // callee body sees a stale __js_this and `this.x` traps. Same
         // semantics as ECMA-262 §13.3.7 (CallMemberExpression).
-        if self.is_js_profile() {
+        if self.class_prototype_dispatch() {
             if let ExprKind::Index { object, index, .. } = &callee.kind {
                 if arg_exprs.is_empty()
                     && matches!(&object.kind, ExprKind::Array(_))
@@ -8907,7 +8903,7 @@ impl Compiler {
         callee: &Expression,
         args: &[Argument],
     ) -> Result<bool, String> {
-        if !self.is_js_profile() || !args.is_empty() {
+        if !self.profile.ecma_array_method_dispatch || !args.is_empty() {
             return Ok(false);
         }
 
@@ -10622,7 +10618,7 @@ impl Compiler {
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
             if !by_ref {
-                if self.is_js_profile() && capture_name == "__js_this" {
+                if self.profile.ambient_this_binding && capture_name == "__js_this" {
                     self.compile_expr(&Expression::new(ExprKind::This))?;
                 } else {
                     self.emit_var_get(capture_name);
@@ -10662,7 +10658,7 @@ impl Compiler {
         // existing upvalue resolution is the capture; otherwise snapshot
         // the current globals into enclosing locals the arrow body's
         // upvalue resolution will find by name.
-        if self.is_js_profile() && is_arrow {
+        if self.profile.ambient_this_binding && is_arrow {
             let self_kw = self.profile.self_keyword.clone();
             let scope_idx = self.scopes.len() - 1;
             let this_reachable = self.scope().resolve(&self_kw).is_some()
@@ -10751,7 +10747,7 @@ impl Compiler {
         }
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
-        if self.is_js_profile() && self.scopes.len() > 1 {
+        if self.profile.ambient_this_binding && self.scopes.len() > 1 {
             let parent_has_this = self.scopes.len() > 2
                 && self.scopes[self.scopes.len() - 2]
                     .resolve("__js_this")
@@ -10842,7 +10838,7 @@ impl Compiler {
         };
         let saved_result_slot = result_slot.as_ref().map(|(_, saved_rs)| *saved_rs);
 
-        let async_try = if is_async && self.is_js_profile() {
+        let async_try = if is_async && self.profile.async_wraps_body_in_try {
             let line = self.line;
             Some(common::functions::emit_async_body_start(
                 &mut self.chunks[self.current],
@@ -10980,7 +10976,7 @@ impl Compiler {
             self.chunks[self.current].emit(1, line); // is_local = true
             self.chunks[self.current].emit(env_slot as u8, line);
         }
-        if self.is_js_profile() {
+        if self.profile.has_function_prototype_bind {
             let length = params
                 .iter()
                 .take_while(|p| p.default.is_none() && !p.is_rest)

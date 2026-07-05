@@ -14,6 +14,32 @@ constructor_name = "constructor"
 supports_private_fields = true      # ECMAScript `#private` class members
 has_function_prototype_bind = true  # Function.prototype .bind/.call/.apply
 has_function_constructor = true     # new Function("a","return a") constructor
+async_wraps_body_in_try = true      # async body throw -> rejected promise
+ecma_error_object_shape = true      # Error objects: non-enum fields + instanceof chain
+has_undefined_value = true            # distinct undefined value (ECMA)
+supports_spread_arguments = true      # f(...arr) call-site expansion
+supports_dynamic_import = true        # ECMAScript import()
+has_ecma_bigint = true                # ECMAScript BigInt via ecma:bigint
+ecma_strict_mode = true               # "use strict"
+ecma_switch_strict_equality = true    # switch uses ===
+ecma_lexical_declarations = true      # const/let/var lexical rules
+has_ecma_globals = true               # Object/Array/Math/JSON globals
+ecma_operator_coercion = true         # ToPrimitive/ToNumber operator coercion
+abstract_equality = true              # == via ecma:value.abstractEq
+has_arguments_object = true           # arguments object (ECMA 10.4.4)
+relaxed_call_arity = true             # missing->undefined, extra ignored
+ecma_new_dispatch = true               # new = [[Construct]] model
+ecma_array_elisions = true            # [1, , 3] holes
+has_generators = true                 # statically-detectable generators
+ecma_object_literals = true           # key tracking + fn.name inference
+ecma_boolean_operators = true          # !x etc. yield Bool values
+dynamic_member_access = true          # dynamic property/element reads + ?.
+ecma_typeof_operator = true           # typeof operator (ECMA 13.5.3)
+ecma_to_primitive = true              # ToPrimitive coercion (ECMA 7.1.1)
+ecma_in_operator = true               # 'k' in obj / #f in obj
+ecma_array_method_dispatch = true     # array methods via ecma:array + dynamic callbacks
+ecma_promise_methods = true           # .then/.catch/.finally chaining
+ecma_iterator_result_shape = true     # .next() -> {value, done}
 # ECMA-262 §15.7: instance methods live on the class prototype and
 # construction binds from it — decorator-style reassignment
 # (C.prototype.m = wrap(C.prototype.m)) reaches later instances.

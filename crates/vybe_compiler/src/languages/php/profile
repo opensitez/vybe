@@ -9,6 +9,9 @@ name = "php"
 extensions = ["php", "phtml"]
 
 [compiler]
+has_ecma_bigint = true               # ecma:bigint for BigInt operands
+has_generators = true                # PHP generators (yield)
+abstract_equality = true             # PHP == loose equality
 function_return = "explicit"
 member_call_on_null_error = "Error" # `$null->method()` throws `Error` (PHP);
                                     # JS default is `TypeError`.

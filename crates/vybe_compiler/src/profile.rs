@@ -132,6 +132,144 @@ pub struct LanguageProfile {
     /// string arguments (ECMAScript §20.2.1.1). JS-only today.
     pub has_function_constructor: bool,
 
+    /// An `async` function body is wrapped so a synchronous `throw` inside it
+    /// becomes a rejected promise instead of propagating (ECMAScript §27.7).
+    /// Languages without promise-based async leave this off.
+    pub async_wraps_body_in_try: bool,
+
+    /// Exception objects are shaped as ECMAScript `Error`s: internal fields
+    /// (`message`/`name`/`__type`/`stack`) are non-enumerable (§20.5) and the
+    /// object carries the `Error`/`TypeError`/… `instanceof` prototype chain.
+    pub ecma_error_object_shape: bool,
+
+    /// The language has a distinct `undefined` value separate from `null`
+    /// (ECMAScript). When set, sites that need "the empty/default value"
+    /// — an unmatched `find`, an initializer-less declared field — emit
+    /// `undefined`; otherwise they emit `null` (Python `None`, VB `Nothing`,
+    /// .NET/PHP `null`).
+    pub has_undefined_value: bool,
+
+    /// Spread arguments (`f(...arr)`, `arr.push(...xs)`) are expanded at the
+    /// call site by the shared compiler (ECMAScript spread). Languages whose
+    /// walker lowers their own spread syntax to `Argument { spread: true }`
+    /// opt in so the same expansion path serves them.
+    pub supports_spread_arguments: bool,
+
+    /// The language has ECMAScript module runtime features — dynamic
+    /// `import()` (lowered by the walker to a `__js_dynamic_import` call) and
+    /// the `import.meta` object. JS-only today.
+    pub supports_dynamic_import: bool,
+
+    /// The language has an ECMAScript `BigInt` type backed by the `ecma:bigint`
+    /// host surface, so arbitrary-precision operators (e.g. `**`) route there.
+    pub has_ecma_bigint: bool,
+
+    /// The language honors ECMAScript strict mode — a top-level `"use strict"`
+    /// prologue sets strict semantics (e.g. assignment to an undeclared global
+    /// throws, §11.2.1). Off for languages with no strict-mode concept.
+    pub ecma_strict_mode: bool,
+
+    /// `switch` case matching uses ECMAScript strict equality (`===`, no type
+    /// coercion, §14.12.1). Off for languages whose switch uses loose equality.
+    pub ecma_switch_strict_equality: bool,
+
+    /// Variable declarations follow ECMAScript lexical rules: `const` bindings
+    /// are immutable (reassignment guarded), top-level `var` also binds on
+    /// `globalThis`, and `const`/`let` init infers the function `.name`.
+    pub ecma_lexical_declarations: bool,
+
+    /// The language exposes the ECMAScript global object surface — `Object`,
+    /// `Array`, `Math`, `JSON`, built-in constructors, `Object.groupBy`, the
+    /// `len`/`size` canonical mappings — recognized as runtime globals.
+    pub has_ecma_globals: bool,
+
+    /// Operators apply ECMAScript coercion: `+`/relational operators run
+    /// `ToPrimitive`/`ToNumber` on their operands, `===` is strict equality,
+    /// `>>>` yields an unsigned 32-bit Number, and compound assignments coerce
+    /// likewise. Off for languages with their own operator typing.
+    pub ecma_operator_coercion: bool,
+
+    /// `==`/`!=` use abstract (loose) equality with cross-type coercion via the
+    /// host `ecma:value.abstractEq` (ECMAScript §7.2.15; PHP `==` shares this).
+    /// Off for languages whose `==` is strict/typed.
+    pub abstract_equality: bool,
+
+    /// Functions expose the ECMAScript `arguments` object binding the actual
+    /// call arguments (ECMA-262 §10.4.4). Off for languages without it.
+    pub has_arguments_object: bool,
+
+    /// Calls tolerate arity mismatch the ECMAScript way — missing parameters
+    /// bind to `undefined`, extra arguments are ignored (constructors included)
+    /// rather than being an error. Off for languages that enforce arity.
+    pub relaxed_call_arity: bool,
+
+    /// `new` follows the ECMAScript `[[Construct]]` model: any function is a
+    /// constructor, built-in constructors (`Set`/`Map`/…) dispatch through the
+    /// host, rest parameters are packed, and `new.target` is bound. Off for
+    /// languages whose construction is a plain class-instantiation.
+    pub ecma_new_dispatch: bool,
+
+    /// Array literals may have elisions (holes), e.g. `[1, , 3]` — the walker
+    /// marks a hole with a sentinel key and the compiler builds a sparse array.
+    /// ECMAScript-only syntax.
+    pub ecma_array_elisions: bool,
+
+    /// The language has generator functions the compiler can detect statically
+    /// (JS, PHP) — a direct call to a generator yields an iterator without a
+    /// runtime `isGenerator` check.
+    pub has_generators: bool,
+
+    /// Object literals follow ECMAScript semantics: insertion-ordered key
+    /// tracking (`ecma:object.trackKey`), method shorthand compiled as
+    /// functions, and `fn.name` inference from the property key. Off for
+    /// languages whose map/record literals don't carry these.
+    pub ecma_object_literals: bool,
+
+    /// Logical/comparison operators yield real boolean values in expression
+    /// position (ECMAScript). When set, results of `!x` and friends are
+    /// materialized as `Bool` (see also `materialize_bool_results`, which Go
+    /// uses for the same effect on comparisons).
+    pub ecma_boolean_operators: bool,
+
+    /// Property/element access is dynamic (ECMAScript): reads go through the
+    /// dynamic `STRUCT_GET`/host lookup path, honoring optional chaining
+    /// (`?.`, `?.[]`) and dynamic property names, rather than static typed
+    /// field access. Off for statically-typed field layouts (VB/C#/Pascal).
+    pub dynamic_member_access: bool,
+
+    /// The language has the ECMAScript `typeof` operator, whose result strings
+    /// (`"function"`, `"undefined"`, …) and never-throws semantics the compiler
+    /// reproduces (ECMA-262 §13.5.3). Off for languages with no such operator.
+    pub ecma_typeof_operator: bool,
+
+    /// Numeric/string coercion of objects runs the ECMAScript `ToPrimitive`
+    /// abstract operation (`Symbol.toPrimitive`/`valueOf`/`toString`,
+    /// ECMA-262 §7.1.1) before the final conversion. Off for languages that
+    /// coerce objects directly.
+    pub ecma_to_primitive: bool,
+
+    /// The language has the ECMAScript `in` operator testing property/private-
+    /// field existence on an object (`"k" in obj`, `#f in obj`). Off for
+    /// languages whose `in` (Python membership) is lowered to a call instead.
+    pub ecma_in_operator: bool,
+
+    /// Array instance methods (`map`/`filter`/`find`/`sort`/…) dispatch through
+    /// the ECMAScript `ecma:array` host surface, and callback arguments are
+    /// invoked with runtime dispatch. When false the language resolves array
+    /// methods through its profile's array-method table instead.
+    pub ecma_array_method_dispatch: bool,
+
+    /// Promises expose ECMAScript chaining methods (`.then`/`.catch`/`.finally`,
+    /// ECMA-262 §27.2.5) that the shared compiler lowers to a promise-chain
+    /// call. Languages without ECMA promises leave this off.
+    pub ecma_promise_methods: bool,
+
+    /// Iterator `.next()` returns an ECMAScript result record `{ value, done }`
+    /// (ECMA-262 §27.1.1.3), so the compiler shapes iteration results with an
+    /// explicit `done` flag and `value` field. Off for languages whose
+    /// iteration protocol signals completion differently.
+    pub ecma_iterator_result_shape: bool,
+
     /// PHP/Java: `Throwable` is the universal exception root; `Exception`
     /// is only one branch (the `Error` branch is a sibling), so
     /// `catch (Exception)` must NOT be a catch-all — it matches via the
@@ -606,6 +744,110 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("supports_private_fields")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let ecma_error_object_shape = compiler
+        .get("ecma_error_object_shape")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_undefined_value = compiler
+        .get("has_undefined_value")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let supports_spread_arguments = compiler
+        .get("supports_spread_arguments")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let supports_dynamic_import = compiler
+        .get("supports_dynamic_import")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_ecma_bigint = compiler
+        .get("has_ecma_bigint")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_strict_mode = compiler
+        .get("ecma_strict_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_switch_strict_equality = compiler
+        .get("ecma_switch_strict_equality")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_lexical_declarations = compiler
+        .get("ecma_lexical_declarations")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_ecma_globals = compiler
+        .get("has_ecma_globals")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_operator_coercion = compiler
+        .get("ecma_operator_coercion")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let abstract_equality = compiler
+        .get("abstract_equality")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_arguments_object = compiler
+        .get("has_arguments_object")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let relaxed_call_arity = compiler
+        .get("relaxed_call_arity")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_new_dispatch = compiler
+        .get("ecma_new_dispatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_array_elisions = compiler
+        .get("ecma_array_elisions")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_generators = compiler
+        .get("has_generators")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_object_literals = compiler
+        .get("ecma_object_literals")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_boolean_operators = compiler
+        .get("ecma_boolean_operators")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dynamic_member_access = compiler
+        .get("dynamic_member_access")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_typeof_operator = compiler
+        .get("ecma_typeof_operator")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_to_primitive = compiler
+        .get("ecma_to_primitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_in_operator = compiler
+        .get("ecma_in_operator")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_array_method_dispatch = compiler
+        .get("ecma_array_method_dispatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_promise_methods = compiler
+        .get("ecma_promise_methods")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ecma_iterator_result_shape = compiler
+        .get("ecma_iterator_result_shape")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let async_wraps_body_in_try = compiler
+        .get("async_wraps_body_in_try")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let has_function_constructor = compiler
         .get("has_function_constructor")
         .and_then(|v| v.as_bool())
@@ -1001,6 +1243,32 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         supports_private_fields,
         has_function_prototype_bind,
         has_function_constructor,
+        async_wraps_body_in_try,
+        ecma_error_object_shape,
+        has_undefined_value,
+        supports_spread_arguments,
+        supports_dynamic_import,
+        has_ecma_bigint,
+        ecma_strict_mode,
+        ecma_switch_strict_equality,
+        ecma_lexical_declarations,
+        has_ecma_globals,
+        ecma_operator_coercion,
+        abstract_equality,
+        has_arguments_object,
+        relaxed_call_arity,
+        ecma_new_dispatch,
+        ecma_array_elisions,
+        has_generators,
+        ecma_object_literals,
+        ecma_boolean_operators,
+        dynamic_member_access,
+        ecma_typeof_operator,
+        ecma_to_primitive,
+        ecma_in_operator,
+        ecma_array_method_dispatch,
+        ecma_promise_methods,
+        ecma_iterator_result_shape,
         member_call_on_null_error,
         string_aware_relational,
         lexical_block_scope,

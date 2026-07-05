@@ -118,7 +118,7 @@ impl Compiler {
             self.emit_u8(Op::CALL_REF, 0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
-        } else if self.is_js_profile() {
+        } else if self.profile.has_undefined_value {
             // JS spec: declared fields with no initializer default to undefined (not null).
             inst!(self, core_wasm::undefined);
         } else {
@@ -250,7 +250,7 @@ impl Compiler {
                     *mci,
                     capture_names,
                     method_rest_fixed_counts.get(mci).copied(),
-                    !self.is_js_profile(),
+                    !self.class_prototype_dispatch(),
                 )?;
             }
         }
@@ -332,7 +332,7 @@ impl Compiler {
     /// outermost `new` already set it; this default covers constructors
     /// invoked without an outer `new` frame.
     fn emit_default_js_new_target(&mut self, name: &str) {
-        if !self.is_js_profile() {
+        if !self.profile.ecma_new_dispatch {
             return;
         }
         let nt_key = self.str_const("__js_new_target");
@@ -517,7 +517,7 @@ impl Compiler {
         }
         let name = &cname;
 
-        let uses_js_arguments = self.is_js_profile()
+        let uses_js_arguments = self.profile.has_arguments_object
             && !is_generator
             && (params
                 .iter()
@@ -798,7 +798,7 @@ impl Compiler {
         // uncaught exceptions short-circuit to the Promise.reject
         // path. The `await` opcode handles per-await suspension via
         // JSPI; this wrap just covers terminal throw / return.
-        let async_try = if is_async && !is_generator && self.is_js_profile() {
+        let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
             let line = self.line;
             Some(common::functions::emit_async_body_start(
                 &mut self.chunks[self.current],
@@ -811,7 +811,7 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        if self.is_js_profile() && crate::compiler::closures_in_body_reference_this(body) {
+        if self.profile.ambient_this_binding && crate::compiler::closures_in_body_reference_this(body) {
             let this_idx = self.str_const("__js_this");
             self.emit_u16(Op::GLOBAL_GET, this_idx);
             let this_local = self.define_local("__js_this");
@@ -1011,7 +1011,7 @@ impl Compiler {
         let idx = self.str_const(name);
         self.emit_u16(Op::GLOBAL_SET, idx);
 
-        if self.is_js_profile() {
+        if self.profile.has_function_prototype_bind {
             let line = self.line;
             self.emit_common("object.new", 0, line);
             let proto_slot = self.define_local("__js_fn_proto");
@@ -1691,7 +1691,7 @@ impl Compiler {
                 }
             }
 
-            let async_try = if m.is_async && !m.is_generator && cc.is_js_profile() {
+            let async_try = if m.is_async && !m.is_generator && cc.profile.async_wraps_body_in_try {
                 let line = cc.line;
                 Some(common::functions::emit_async_body_start(
                     &mut cc.chunks[ci],
@@ -1707,7 +1707,7 @@ impl Compiler {
             if is_ctor {
                 // §15.7.14: class constructors require `new` (JS only —
                 // other languages construct through their own paths).
-                if cc.is_js_profile() {
+                if cc.profile.ecma_new_dispatch {
                     let line = cc.line;
                     common::classes::emit_class_requires_new_guard(
                         cc.chunk(),
@@ -2132,7 +2132,7 @@ impl Compiler {
             // Emitted AFTER param slots are claimed — emitter scratch
             // allocation before define_local shifts param slots (the
             // documented alloc_scratch/define_local collision).
-            if self.is_js_profile() {
+            if self.profile.ecma_new_dispatch {
                 let line = self.line;
                 common::classes::emit_class_requires_new_guard(self.chunk(), name, line);
             }
@@ -2160,7 +2160,7 @@ impl Compiler {
             }
             self.define_local(&self_kw);
             let this_slot = user_arity as u16;
-            if self.is_js_profile() {
+            if self.profile.ambient_this_binding {
                 let js_this = self.str_const("__js_this");
                 self.emit_u16(Op::GLOBAL_GET, js_this);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -2171,7 +2171,7 @@ impl Compiler {
             // super() initializes it). Saved/restored so nested classes
             // compiled mid-body don't leak the context.
             let saved_derived_ctx = self.js_derived_ctor_ctx.take();
-            if self.is_js_profile() && parent.is_some() && ctor_body.is_some() {
+            if self.profile.ecma_new_dispatch && parent.is_some() && ctor_body.is_some() {
                 self.js_derived_ctor_ctx = Some((self.current, this_slot));
             }
 
@@ -2219,7 +2219,7 @@ impl Compiler {
                             *mci,
                             capture_names,
                             method_rest_fixed_count(*mci),
-                            !self.is_js_profile(),
+                            !self.class_prototype_dispatch(),
                         )?;
                     }
                 }
@@ -2444,7 +2444,7 @@ impl Compiler {
                                     *mci,
                                     capture_names,
                                     method_rest_fixed_count(*mci),
-                                    !self.is_js_profile(),
+                                    !self.class_prototype_dispatch(),
                                 )?;
                             }
                         }
@@ -2511,7 +2511,7 @@ impl Compiler {
                         // `this != null` (§9.1.1.3.4: this_slot stays null
                         // when super() never ran; the constructor-return
                         // TDZ guard throws the ReferenceError then).
-                        let stamps_deferred = super_idx.is_none() && self.is_js_profile();
+                        let stamps_deferred = super_idx.is_none() && self.profile.ecma_new_dispatch;
                         if !stamps_deferred {
                             self.emit_derived_ctor_stamps(
                                 name,
@@ -2606,7 +2606,7 @@ impl Compiler {
                                 *mci,
                                 capture_names,
                                 method_rest_fixed_count(*mci),
-                                !self.is_js_profile(),
+                                !self.class_prototype_dispatch(),
                             )?;
                         }
                     }
@@ -2759,7 +2759,7 @@ impl Compiler {
             self.abstract_classes.insert(self.canon(name));
         }
 
-        let js_ctor_relaxes_min_arity = self.is_js_profile();
+        let js_ctor_relaxes_min_arity = self.profile.relaxed_call_arity;
         let helper_for_count = |count: usize| {
             ctor_helpers
                 .iter()
@@ -2812,7 +2812,7 @@ impl Compiler {
             .iter()
             .map(|uv| (uv.is_local, uv.index))
             .collect();
-        let case_sensitive = self.is_js_profile();
+        let case_sensitive = self.profile.ecma_new_dispatch;
         common::classes::emit_store_constructor_with_upvalues(
             self.chunk(),
             name,
@@ -2886,7 +2886,7 @@ impl Compiler {
             // [[Prototype]] — the parent constructor for derived classes
             // (static inheritance walks it), %Function.prototype% for
             // base classes (C.bind / C.call / C.apply resolve through it).
-            if self.is_js_profile() {
+            if self.class_prototype_dispatch() {
                 if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -3089,7 +3089,7 @@ impl Compiler {
             all_statics.push((mname.clone(), *mci));
         }
 
-        if self.is_js_profile() {
+        if self.profile.supports_private_fields {
             for method in &class.static_methods {
                 if !method.source_name.starts_with('#') {
                     continue;
