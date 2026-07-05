@@ -24,7 +24,7 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
 use crate::emitter::{channels, collections, dict, ops, strings, threading};
-use crate::platforms::dotnet::emitter::core::thread_adapter;
+use vybe_emitter::threading as thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.

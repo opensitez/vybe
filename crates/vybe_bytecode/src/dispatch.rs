@@ -770,6 +770,15 @@ impl VM {
                     }
                     let base = self.frame().base;
                     let idx = base + slot;
+                    // Locals exist (zero-initialized) from function entry
+                    // (spec §4.4.9) — grow to the declared local frame the
+                    // same way LOCAL_SET does, so a tee before any set
+                    // doesn't trap.
+                    let ci = self.frame().chunk_index;
+                    let need = base + self.chunks[ci].local_count as usize;
+                    if self.stack.len() < need && idx < need {
+                        self.stack.resize(need, Value::Null);
+                    }
                     let dst = self
                         .stack
                         .get_mut(idx)

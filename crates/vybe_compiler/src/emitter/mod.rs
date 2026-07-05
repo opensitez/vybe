@@ -1,47 +1,20 @@
-//! Shared compilation helpers for all Vybe language compilers.
+//! Emit-layer facade.
 //!
-//! Emits portable WASM-compatible bytecode sequences for common patterns:
-//! - Dict/map operations (built from GC struct ops)
-//! - Math builtins (host imports with standard names)
-//! - Type conversions (host imports)
-//! - Print/IO (WASI imports)
-//!
-//! Language compilers call these instead of reimplementing the same patterns.
-//! Everything emitted is standard WASM — no custom opcodes.
+//! The pure chunk-level emit surface lives in the `vybe_emitter` crate
+//! (adapters, instructions, ops, collections, …) and is re-exported
+//! here wholesale, so `crate::emitter::ops::…` paths keep resolving.
+//! What actually lives at this level is the routing and bundling that
+//! must see languages and platforms:
+//! - `dispatch` — the `common:<name>` router (languages + platforms)
+//! - `runtime_helpers` — bundled stdlib chunks + polyglot polyfills
+//!   (compiles snippets through registered language frontends)
+//! - `bundle` — links runtime helpers into compiled programs
+
+pub use vybe_emitter::*;
 
 pub mod bundle;
-pub mod canonical;
-pub mod channels;
-pub mod classes;
-pub mod closures;
-pub mod collections;
-pub mod components;
-pub mod convert;
-pub mod delegates;
-pub mod dict;
 pub mod dispatch;
-pub mod dotnet;
-pub mod errors;
-pub mod expressions;
-pub mod functions;
-pub mod generators;
-pub mod gui;
-pub mod imports;
-pub mod instructions;
-pub mod invoke;
-pub mod io;
-pub mod loops;
-pub mod math;
-pub mod ops;
-pub mod promises;
-pub mod prototypes;
-pub mod references;
 pub mod runtime_helpers;
-pub mod sprintf;
-pub mod strings;
-pub mod target;
-pub mod threading;
-pub mod type_registry;
 
 pub use crate::languages::cobol::emitter as cobol;
 pub use crate::languages::dart::emitter as dart;
@@ -51,17 +24,15 @@ pub use crate::languages::php::emitter as php;
 pub use crate::languages::python::emitter as python;
 pub use crate::languages::ruby::emitter as ruby;
 pub use crate::languages::vb::emitter as vb;
+pub use crate::platforms::dotnet::emitter as dotnet;
 
 pub use runtime_helpers::RuntimeHelpers;
-pub use target::Target;
-pub use type_registry::CompileTimeTypes;
 
 /// Resolve a shared *platform* emit dispatcher by its `common:<prefix>.*`
 /// prefix. Platforms are emit surfaces shared by more than one language —
-/// currently `dotnet` (VB / C# / JS) and `libc` (C). Each platform module under
-/// `emitter/` registers its prefix here; languages register their own via
-/// [`crate::languages::Language::emit_dispatch`]. Returns `None` for
-/// non-platform prefixes.
+/// currently `dotnet` (VB / C# / JS) and `libc` (C). Languages register
+/// their own via [`crate::languages::Language::emit_dispatch`]. Returns
+/// `None` for non-platform prefixes.
 pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
     match prefix {
         "dotnet" => Some(dotnet::dispatch::dispatch),
