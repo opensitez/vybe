@@ -699,6 +699,42 @@ pub fn register(vm: &mut VM) {
     register_comparison(vm);
     register_prototype_methods(vm);
     register_php_extensions(vm);
+
+    // §20.1.3: %Object.prototype% carries its intrinsics as OWN callable
+    // values so borrowed-call forms work —
+    // `Object.prototype.hasOwnProperty.call(o, k)` etc.
+    if let Value::Object(proto) = shared_object_prototype() {
+        let mut p = proto.lock().unwrap();
+        for (name, registry_name) in [
+            // Borrowed-call values are the RAW intrinsics — a receiver's
+            // own override must not shadow an explicitly borrowed
+            // Object.prototype method.
+            ("hasOwnProperty", "hasOwnPropertyIntrinsic"),
+            ("propertyIsEnumerable", "propertyIsEnumerable"),
+            ("isPrototypeOf", "isPrototypeOf"),
+            ("toString", "toString"),
+            ("valueOf", "valueOf"),
+            ("toLocaleString", "toLocaleString"),
+        ] {
+            if p.properties.contains_key(name) {
+                continue;
+            }
+            let Some(&idx) = vm
+                .host_registry
+                .get(&("ecma:object".to_string(), registry_name.to_string()))
+            else {
+                continue;
+            };
+            let mut f = Object::new();
+            f.kind = ObjectKind::HostFunction(idx);
+            f.properties
+                .insert("name".into(), Value::String(Arc::from(name)));
+            f.properties
+                .insert("__vybe_method_receiver".into(), Value::Bool(true));
+            p.properties
+                .insert(name.into(), Value::Object(Arc::new(Mutex::new(f))));
+        }
+    }
 }
 
 // ── Construction ──────────────────────────────────────────────────────
@@ -2422,15 +2458,104 @@ fn register_comparison(vm: &mut VM) {
 
 // ── Prototype methods (called via obj.foo()) ──────────────────────────
 
+/// §20.1.3: a user-defined method on the receiver (or its prototype
+/// chain) SHADOWS the Object.prototype intrinsic. Compile-time routed
+/// intrinsics call this first so overrides win.
+fn user_method_override(
+    obj: &Arc<Mutex<Object>>,
+    name: &str,
+) -> Option<Value> {
+    let mut current = Some(obj.clone());
+    let mut guard = 0;
+    while let Some(cur) = current {
+        guard += 1;
+        if guard > 10_000 {
+            break;
+        }
+        let (prop, proto) = {
+            let o = cur.lock().unwrap();
+            (
+                o.properties.get(name).cloned(),
+                o.properties.get(PROTO_KEY).cloned(),
+            )
+        };
+        // Only USER-compiled functions shadow the intrinsic — a
+        // HostFunction found on the chain IS the intrinsic (re-invoking
+        // it would recurse forever).
+        if let Some(Value::Object(f)) = &prop {
+            if matches!(f.lock().unwrap().kind, ObjectKind::Function(_)) {
+                return prop;
+            }
+        }
+        current = match proto {
+            Some(Value::Object(p)) => Some(p),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// §20.1.3.2 raw intrinsic (no override dispatch) — the value installed
+/// on %Object.prototype% for borrowed-call forms.
+fn has_own_property_intrinsic(args: &[Value]) -> Value {
+    if let Some(obj) = obj_of(args, 0) {
+        let key = args.get(1).map(key_string).unwrap_or_default();
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Array(ref elems) = o.kind {
+            if key == "length" {
+                return Value::Bool(true);
+            }
+            if let Ok(idx) = key.parse::<usize>() {
+                return Value::Bool(idx < elems.len());
+            }
+        }
+        if matches!(o.kind, ObjectKind::Map(_) | ObjectKind::Set(_)) && key == "size" {
+            return Value::Bool(false);
+        }
+        return Value::Bool(o.properties.contains_key(&key) && !key.starts_with("__"));
+    }
+    Value::Bool(false)
+}
+
 fn register_prototype_methods(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
+        "hasOwnPropertyIntrinsic",
+        Box::new(|_ctx, args| has_own_property_intrinsic(args)),
+    );
+    vm.register_host_fn(
+        "ecma:object",
         "hasOwnProperty",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if let Some(f) = user_method_override(&obj, "hasOwnProperty") {
+                    return invoke_with_explicit_this(
+                        ctx,
+                        &f,
+                        Value::Object(obj),
+                        args.get(1..).unwrap_or(&[]),
+                    );
+                }
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
-                return Value::Bool(o.properties.contains_key(&key));
+                // §10.4.2 array exotics: element indices and `length` are
+                // own properties even though elements live in the kind.
+                if let ObjectKind::Array(ref elems) = o.kind {
+                    if key == "length" {
+                        return Value::Bool(true);
+                    }
+                    if let Ok(idx) = key.parse::<usize>() {
+                        return Value::Bool(idx < elems.len());
+                    }
+                }
+                // §24.1/§24.2: Map/Set expose `size` (and their methods)
+                // via the PROTOTYPE — instances have no own `size`.
+                if matches!(o.kind, ObjectKind::Map(_) | ObjectKind::Set(_)) && key == "size" {
+                    return Value::Bool(false);
+                }
+                return Value::Bool(
+                    o.properties.contains_key(&key) && !key.starts_with("__"),
+                );
             }
             Value::Bool(false)
         }),
@@ -2474,14 +2599,26 @@ fn register_prototype_methods(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "propertyIsEnumerable",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if let Some(f) = user_method_override(&obj, "propertyIsEnumerable") {
+                    return invoke_with_explicit_this(
+                        ctx,
+                        &f,
+                        Value::Object(obj),
+                        args.get(1..).unwrap_or(&[]),
+                    );
+                }
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
                 // §20.1.3.4: array index elements are own enumerable
                 // properties (they live in ObjectKind::Array, not the
-                // property map).
+                // property map); `length` is own but non-enumerable
+                // (§10.4.2).
                 if let ObjectKind::Array(ref elems) = o.kind {
+                    if key == "length" {
+                        return Value::Bool(false);
+                    }
                     if let Ok(idx) = key.parse::<usize>() {
                         if idx < elems.len() {
                             return Value::Bool(true);
@@ -2493,6 +2630,13 @@ fn register_prototype_methods(vm: &mut VM) {
                         && !key.starts_with("__")
                         && !is_nonenum(&o, &key),
                 );
+            }
+            // §10.4.3 string exotics: char indices are own enumerable.
+            if let (Some(Value::String(s)), Some(key)) = (args.first(), args.get(1)) {
+                let key = key_string(key);
+                if let Ok(idx) = key.parse::<usize>() {
+                    return Value::Bool(idx < s.chars().count());
+                }
             }
             Value::Bool(false)
         }),
@@ -2511,6 +2655,7 @@ fn register_prototype_methods(vm: &mut VM) {
                 Some(Value::I32(_)) | Some(Value::I64(_)) | Some(Value::F64(_)) => {
                     "Number".to_string()
                 }
+                Some(Value::BigInt(_)) => "BigInt".to_string(),
                 Some(Value::String(_)) => "String".to_string(),
                 Some(Value::Symbol(_)) => "Symbol".to_string(),
                 Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),

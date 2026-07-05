@@ -38,6 +38,12 @@ pub struct LanguageProfile {
     /// Constructor method name (matched case-insensitively for case-insensitive languages).
     pub constructor_name: String,
 
+    /// Exception type thrown by the common emitter when a method is called on
+    /// a `null`/`undefined` receiver. Language-defined and cross-language
+    /// compatible: JS throws `TypeError`, PHP throws `Error`, etc. The emitter
+    /// stays language-agnostic — it just throws whatever the profile names.
+    pub member_call_on_null_error: String,
+
     /// Class instance-method dispatch model.
     /// "instance" (default): construction binds compiled method refs
     /// directly onto the instance.
@@ -490,6 +496,11 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("constructor_name")
         .and_then(|v| v.as_str())
         .unwrap_or("constructor")
+        .to_string();
+    let member_call_on_null_error = compiler
+        .get("member_call_on_null_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("TypeError")
         .to_string();
     let class_method_dispatch = compiler
         .get("class_method_dispatch")
@@ -960,6 +971,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         throwable_is_root,
+        member_call_on_null_error,
         string_aware_relational,
         lexical_block_scope,
         unresolved_reference_throws,

@@ -1438,7 +1438,26 @@ impl Compiler {
         obj_slot: u16,
         method_name: &str,
         arg_slots: &[u16],
-    ) {
+    ) -> Result<(), String> {
+        // A method call on a null/undefined receiver is a *catchable* error,
+        // not a VM trap. Throw through the common `errors.rs` machinery; the
+        // exception type is language-defined (JS `TypeError`, PHP `Error`, …)
+        // and read from the profile so this stays language-agnostic and
+        // cross-language catchable.
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        self.emit(Op::I32_OR);
+        let nline = self.line;
+        self.chunk().emit_if(nline);
+        let msg = format!("Call to a member function {}() on null", method_name);
+        self.emit_const(Value::String(Arc::from(msg.as_str())));
+        let err_type = self.profile.member_call_on_null_error.clone();
+        self.emit_js_exception_ctor_from_message_value(&err_type)?;
+        common::errors::emit_throw(self.chunk(), nline);
+        self.chunk().emit_end(nline);
+
         let lookup = self.import("ecma:value", "getMethodForCall");
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::String(Arc::from(method_name)));
@@ -1461,6 +1480,7 @@ impl Compiler {
         self.emit_call_ref_with_bound_js_this_arg_slots(lookup_slot, obj_slot, arg_slots);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
+        Ok(())
     }
 
     fn emit_js_invoke_method_call(&mut self, obj_slot: u16, method_name: &str, arg_slots: &[u16]) {
@@ -6014,7 +6034,7 @@ impl Compiler {
                             obj_tmp,
                             &method_name,
                             &arg_slots,
-                        );
+                        )?;
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, marker_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -6024,7 +6044,7 @@ impl Compiler {
                             obj_tmp,
                             &method_name,
                             &arg_slots,
-                        );
+                        )?;
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -6039,7 +6059,7 @@ impl Compiler {
                             obj_tmp,
                             &method_name,
                             &arg_slots,
-                        );
+                        )?;
                     }
                     self.chunk().emit_end(line);
                     return Ok(());

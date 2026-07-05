@@ -73,7 +73,9 @@ pub fn emit_stamp_function_kind_proto(
 pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("name", line);
     chunk.emit_string_const("length", line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line); // [fn, ["name","length"]]
+    // §10.2.5: `prototype` on ordinary functions is non-enumerable too.
+    chunk.emit_string_const("prototype", line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line); // [fn, [3 keys]]
     let key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__nonenum")));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line); // [fn]
     chunk.emit_op(Op::DROP, line);

@@ -255,9 +255,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // §24.1.3.10: Map's `size` is an ACCESSOR on Map.prototype, never an
+    // own property of instances — node-verified false.
     hasownproperty_map_size_own => {
         r#"const m=new Map(); console.log(m.hasOwnProperty("size"));"#,
-        ["true"]
+        ["false"]
     };
 
     isprototypeof_object_on_plain => {

@@ -655,6 +655,18 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         _ => return Value::Undefined,
     };
     match method {
+        // §10.4.3: string exotics — character indices are own enumerable
+        // properties; `length` is own but non-enumerable.
+        "hasOwnProperty" | "propertyIsEnumerable" => {
+            let key = args.first().map(to_str).unwrap_or_default();
+            if key == "length" {
+                return Value::Bool(method == "hasOwnProperty");
+            }
+            if let Ok(idx) = key.parse::<usize>() {
+                return Value::Bool(idx < s.chars().count());
+            }
+            Value::Bool(false)
+        }
         "slice" | "substring" => {
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i32;
@@ -1133,6 +1145,34 @@ fn dispatch_array(
                 }
             }
             array_iterator_result(Value::Undefined, true)
+        }
+        // §20.1.3.2 on array exotics: element indices are own properties;
+        // `length` is own but NON-enumerable (§10.4.2).
+        "hasOwnProperty" => {
+            let key = args.first().map(to_str).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if key == "length" {
+                return Value::Bool(true);
+            }
+            if let Ok(idx) = key.parse::<usize>() {
+                if let ObjectKind::Array(ref v) = o.kind {
+                    return Value::Bool(idx < v.len());
+                }
+            }
+            Value::Bool(o.properties.contains_key(&key) && !key.starts_with("__"))
+        }
+        "propertyIsEnumerable" => {
+            let key = args.first().map(to_str).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if key == "length" {
+                return Value::Bool(false);
+            }
+            if let Ok(idx) = key.parse::<usize>() {
+                if let ObjectKind::Array(ref v) = o.kind {
+                    return Value::Bool(idx < v.len());
+                }
+            }
+            Value::Bool(o.properties.contains_key(&key) && !key.starts_with("__"))
         }
         "length" => {
             let o = obj.lock().unwrap();
@@ -2557,34 +2597,10 @@ fn dispatch_plain_object(
     method: &str,
     args: &[Value],
 ) -> Value {
-    if method == "hasOwnProperty" {
-        let key = args.first().map(to_str).unwrap_or_default();
-        let o = obj.lock().unwrap();
-        return Value::Bool(o.properties.contains_key(&key));
-    }
-    if method == "propertyIsEnumerable" {
-        let key = args.first().map(to_str).unwrap_or_default();
-        let o = obj.lock().unwrap();
-        let has_own = o.properties.contains_key(&key) && !key.starts_with("__");
-        if !has_own {
-            return Value::Bool(false);
-        }
-        let is_enum = match o.properties.get("__nonenum") {
-            Some(Value::Object(arr)) => {
-                let a = arr.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = a.kind {
-                    !elems
-                        .iter()
-                        .any(|e| matches!(e, Value::String(s) if s.as_ref() == key))
-                } else {
-                    true
-                }
-            }
-            _ => true,
-        };
-        return Value::Bool(is_enum);
-    }
     // Walk own properties then __proto__ chain for a callable method.
+    // NOTE: hasOwnProperty / propertyIsEnumerable built-ins live in the
+    // tail match BELOW this walk on purpose — §20.1.3: a user-defined
+    // override on the object (or its chain) must win over the intrinsic.
     let cb = {
         let mut found: Option<Value> = None;
         let mut current: Option<Arc<Mutex<Object>>> = Some(obj.clone());
@@ -2642,6 +2658,33 @@ fn dispatch_plain_object(
     // §20.1.3 Object.prototype defaults — reached when neither the object,
     // its prototype chain, nor a type tag supplied the method.
     match method {
+        "hasOwnProperty" => {
+            let key = args.first().map(to_str).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            Value::Bool(o.properties.contains_key(&key) && !key.starts_with("__"))
+        }
+        "propertyIsEnumerable" => {
+            let key = args.first().map(to_str).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            let has_own = o.properties.contains_key(&key) && !key.starts_with("__");
+            if !has_own {
+                return Value::Bool(false);
+            }
+            let is_enum = match o.properties.get("__nonenum") {
+                Some(Value::Object(arr)) => {
+                    let a = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref elems) = a.kind {
+                        !elems
+                            .iter()
+                            .any(|e| matches!(e, Value::String(s) if s.as_ref() == key))
+                    } else {
+                        true
+                    }
+                }
+                _ => true,
+            };
+            Value::Bool(is_enum)
+        }
         // §20.1.3.7: default valueOf returns the receiver itself (boxed
         // primitives unwrap via __primitive).
         "valueOf" => {
