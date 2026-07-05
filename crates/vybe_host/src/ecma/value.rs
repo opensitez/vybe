@@ -2830,13 +2830,11 @@ fn dispatch_error_object_method(
         return None;
     }
 
-    let (name_value, message_value) = {
-        let object = obj.lock().unwrap();
-        (
-            object.properties.get("name").cloned(),
-            object.properties.get("message").cloned(),
-        )
-    };
+    // §20.5.3.4 reads `this.name` / `this.message` via [[Get]] — the
+    // prototype chain, not own-only: instances carry no own `name` when
+    // the prelude-wired error prototypes are in place.
+    let name_value = crate::ecma::object::proto_walk_get(obj, "name");
+    let message_value = crate::ecma::object::proto_walk_get(obj, "message");
 
     let name = error_to_string_component(ctx, name_value, "Error");
     let message = error_to_string_component(ctx, message_value, "");

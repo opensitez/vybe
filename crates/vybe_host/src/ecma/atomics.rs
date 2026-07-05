@@ -32,6 +32,38 @@ fn typed_array_buffer(args: &[Value], idx: usize) -> Option<(Arc<Mutex<Vec<u8>>>
     None
 }
 
+/// §25.4.3.2 ValidateAtomicAccess: view length (elements) + whether the
+/// backing buffer is a SharedArrayBuffer. None for non-TypedArray args
+/// (magic test objects, property-bag fallbacks) — those stay permissive.
+fn ta_length_and_shared(args: &[Value], idx: usize) -> Option<(usize, bool)> {
+    if let Some(Value::Object(obj)) = args.get(idx) {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::TypedArray(ref ta) = o.kind {
+            let shared = {
+                let bo = ta.buffer_obj.lock().unwrap();
+                matches!(bo.kind, ObjectKind::ArrayBuffer(ref ab) if ab.shared)
+            };
+            return Some((ta.length, shared));
+        }
+    }
+    None
+}
+
+/// Throws RangeError when `idx` is past the view (§25.4.3.2 step 6).
+/// Returns false when the caller must bail with Undefined.
+fn check_atomic_bounds(ctx: &mut HostContext, args: &[Value], idx: usize) -> bool {
+    if let Some((len, _)) = ta_length_and_shared(args, 0) {
+        if idx >= len {
+            ctx.throw_value(crate::ecma::error::new_error(
+                "RangeError",
+                "Atomics access index out of bounds",
+            ));
+            return false;
+        }
+    }
+    true
+}
+
 /// Check if argument is a magic `{__shared_int32_len: N}` test object.
 fn is_magic_int32(args: &[Value], idx: usize) -> bool {
     if let Some(Value::Object(obj)) = args.get(idx) {
@@ -100,28 +132,51 @@ fn atomic_store_bytes(
     }
 }
 
+/// §25.4: BigInt64/BigUint64 lanes (bpe 8) traffic in BigInt values;
+/// smaller lanes in Numbers.
+fn lane_value(bpe: usize, n: i64) -> Value {
+    if bpe == 8 {
+        Value::BigInt(n)
+    } else {
+        Value::I32(n as i32)
+    }
+}
+
+fn arg_i64(args: &[Value], idx: usize) -> i64 {
+    match args.get(idx) {
+        Some(Value::BigInt(n)) | Some(Value::I64(n)) => *n,
+        Some(v) => v.as_i32() as i64,
+        None => 0,
+    }
+}
+
 pub fn register(vm: &mut VM) {
     macro_rules! rmw {
         ($name:expr, $op:expr) => {
             vm.register_host_fn(
                 "ecma:atomics",
                 $name,
-                Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+                Box::new(|ctx: &mut HostContext, args: &[Value]| {
                     let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
-                    let val = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+                    let val = arg_i64(args, 2);
+                    if !check_atomic_bounds(ctx, args, idx) {
+                        return Value::Undefined;
+                    }
                     if is_magic_int32(args, 0) {
                         if let Some(Value::Object(obj)) = args.first() {
                             let prev = magic_load_i32(obj, idx);
-                            let new_val: i32 = $op(prev, val);
+                            let new_val: i32 = $op(prev as i64, val) as i32;
                             magic_store_i32(obj, idx, new_val);
                             return Value::I32(prev);
                         }
                     }
                     if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
                         let prev = atomic_load(&buf, off, idx, bpe);
-                        let new_val: i64 = $op(prev as i32, val) as i64;
+                        // Sub-64 lanes wrap at lane width via the store's
+                        // truncating cast; the op itself runs in i64.
+                        let new_val: i64 = $op(prev, val);
                         atomic_store_bytes(&buf, off, idx, bpe, new_val);
-                        return Value::I32(prev as i32);
+                        return lane_value(bpe, prev);
                     }
                     Value::I32(0)
                 }),
@@ -129,29 +184,32 @@ pub fn register(vm: &mut VM) {
         };
     }
 
-    rmw!("add", |a: i32, b: i32| a.wrapping_add(b));
-    rmw!("sub", |a: i32, b: i32| a.wrapping_sub(b));
-    rmw!("and", |a: i32, b: i32| a & b);
-    rmw!("or", |a: i32, b: i32| a | b);
-    rmw!("xor", |a: i32, b: i32| a ^ b);
+    rmw!("add", |a: i64, b: i64| a.wrapping_add(b));
+    rmw!("sub", |a: i64, b: i64| a.wrapping_sub(b));
+    rmw!("and", |a: i64, b: i64| a & b);
+    rmw!("or", |a: i64, b: i64| a | b);
+    rmw!("xor", |a: i64, b: i64| a ^ b);
 
     vm.register_host_fn(
         "ecma:atomics",
         "exchange",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
-            let val = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            let val = arg_i64(args, 2);
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
                     let prev = magic_load_i32(obj, idx);
-                    magic_store_i32(obj, idx, val);
+                    magic_store_i32(obj, idx, val as i32);
                     return Value::I32(prev);
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
                 let prev = atomic_load(&buf, off, idx, bpe);
-                atomic_store_bytes(&buf, off, idx, bpe, val as i64);
-                return Value::I32(prev as i32);
+                atomic_store_bytes(&buf, off, idx, bpe, val);
+                return lane_value(bpe, prev);
             }
             Value::I32(0)
         }),
@@ -160,25 +218,28 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:atomics",
         "compareExchange",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
-            let expected = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
-            let replacement = args.get(3).map(|v| v.as_i32()).unwrap_or(0);
+            let expected = arg_i64(args, 2);
+            let replacement = arg_i64(args, 3);
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
                     let prev = magic_load_i32(obj, idx);
-                    if prev == expected {
-                        magic_store_i32(obj, idx, replacement);
+                    if prev as i64 == expected {
+                        magic_store_i32(obj, idx, replacement as i32);
                     }
                     return Value::I32(prev);
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
                 let prev = atomic_load(&buf, off, idx, bpe);
-                if prev == expected as i64 {
-                    atomic_store_bytes(&buf, off, idx, bpe, replacement as i64);
+                if prev == expected {
+                    atomic_store_bytes(&buf, off, idx, bpe, replacement);
                 }
-                return Value::I32(prev as i32);
+                return lane_value(bpe, prev);
             }
             Value::I32(0)
         }),
@@ -187,15 +248,18 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:atomics",
         "load",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
                     return Value::I32(magic_load_i32(obj, idx));
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
-                return Value::I32(atomic_load(&buf, off, idx, bpe) as i32);
+                return lane_value(bpe, atomic_load(&buf, off, idx, bpe));
             }
             Value::I32(0)
         }),
@@ -204,19 +268,23 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:atomics",
         "store",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
-            let val = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            let val = arg_i64(args, 2);
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {
-                    magic_store_i32(obj, idx, val);
-                    return Value::I32(val);
+                    magic_store_i32(obj, idx, val as i32);
+                    return Value::I32(val as i32);
                 }
             }
             if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
-                atomic_store_bytes(&buf, off, idx, bpe, val as i64);
+                atomic_store_bytes(&buf, off, idx, bpe, val);
+                return lane_value(bpe, val);
             }
-            Value::I32(val)
+            Value::I32(val as i32)
         }),
     );
 
@@ -232,8 +300,22 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:atomics",
         "wait",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
+            // §25.4.15 step 1: wait (unlike load/store since ES2024)
+            // still requires a SharedArrayBuffer backing.
+            if let Some((_, shared)) = ta_length_and_shared(args, 0) {
+                if !shared {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "TypeError",
+                        "Atomics.wait requires a SharedArrayBuffer",
+                    ));
+                    return Value::Undefined;
+                }
+            }
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             let expected = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
             let timeout_ms = args.get(3).map(|v| v.as_f64()).unwrap_or(f64::INFINITY);
             let actual = if is_magic_int32(args, 0) {
@@ -265,8 +347,20 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:atomics",
         "waitAsync",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
+            if let Some((_, shared)) = ta_length_and_shared(args, 0) {
+                if !shared {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "TypeError",
+                        "Atomics.waitAsync requires a SharedArrayBuffer",
+                    ));
+                    return Value::Undefined;
+                }
+            }
+            if !check_atomic_bounds(ctx, args, idx) {
+                return Value::Undefined;
+            }
             let expected = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
             let actual = if is_magic_int32(args, 0) {
                 if let Some(Value::Object(obj)) = args.first() {

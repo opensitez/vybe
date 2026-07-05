@@ -5,7 +5,7 @@
 //! stack value into the Upvalue's `closed` slot when the enclosing frame
 //! returns, so closures can outlive their defining frame.
 
-use crate::value::{Upvalue, UpvalueLocation};
+use crate::value::{Upvalue, UpvalueLocation, Value};
 use crate::vm::VM;
 use std::sync::{Arc, Mutex};
 
@@ -36,7 +36,13 @@ impl VM {
                 let uv = self.open_upvalues.remove(i);
                 let mut u = uv.lock().unwrap();
                 if let UpvalueLocation::Open(idx) = u.location {
-                    u.location = UpvalueLocation::Closed(self.stack[idx].clone());
+                    // Lazy-locals convention: a captured slot that was never
+                    // written may lie beyond the materialized stack — it
+                    // closes over Null, same as a LOCAL_GET of an untouched
+                    // local (see the matching read in calls.rs).
+                    u.location = UpvalueLocation::Closed(
+                        self.stack.get(idx).cloned().unwrap_or(Value::Null),
+                    );
                 }
             } else {
                 i += 1;

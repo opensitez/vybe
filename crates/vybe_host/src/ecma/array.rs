@@ -1557,6 +1557,9 @@ fn register_non_mutators(vm: &mut VM) {
                     let inner = o.lock().unwrap();
                     let stringify = |e: &Value| match e {
                         Value::Null | Value::Undefined => String::new(),
+                        // §7.1.17 ToString(BigInt) has no `n` suffix — that
+                        // is console.log's inspection format only.
+                        Value::BigInt(n) => n.to_string(),
                         _ => format!("{}", e),
                     };
                     match &inner.kind {

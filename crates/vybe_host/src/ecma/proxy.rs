@@ -239,6 +239,31 @@ pub(crate) fn construct_dispatch(
     constructor: &Value,
     args_list: &Value,
 ) -> Value {
+    construct_dispatch_with_new_target(ctx, constructor, args_list, None)
+}
+
+/// §28.1.2 step 2: newTarget defaults to the constructor itself; when
+/// given, it is what `new.target` observes inside the ctor chain. The
+/// binding rides the `__js_new_target` calling-convention global.
+pub(crate) fn construct_dispatch_with_new_target(
+    ctx: &mut HostContext,
+    constructor: &Value,
+    args_list: &Value,
+    new_target: Option<Value>,
+) -> Value {
+    let effective_nt = new_target.unwrap_or_else(|| constructor.clone());
+    let previous_nt = ctx.get_global("__js_new_target");
+    ctx.set_global("__js_new_target", effective_nt);
+    let result = construct_dispatch_inner(ctx, constructor, args_list);
+    ctx.set_global("__js_new_target", previous_nt);
+    result
+}
+
+fn construct_dispatch_inner(
+    ctx: &mut HostContext,
+    constructor: &Value,
+    args_list: &Value,
+) -> Value {
     if let Some(proxy_obj) = is_proxy(constructor) {
         if proxy_is_revoked(&proxy_obj) {
             return throw_revoked(ctx);

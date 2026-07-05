@@ -468,7 +468,13 @@ impl VM {
         let capture_base = self.chunks[chunk_index].capture_base as usize;
         for (i, uv) in func.upvalues.iter().enumerate().take(capture_count) {
             let val = match &uv.lock().unwrap().location {
-                crate::value::UpvalueLocation::Open(si) => self.stack[*si].clone(),
+                // Lazy-locals convention: LOCAL_SET grows the stack on
+                // demand, so a captured slot that was never written may
+                // lie beyond the current stack — it reads as Null, same
+                // as a direct LOCAL_GET of an untouched local.
+                crate::value::UpvalueLocation::Open(si) => {
+                    self.stack.get(*si).cloned().unwrap_or(Value::Null)
+                }
                 crate::value::UpvalueLocation::Closed(v) => v.clone(),
             };
             let slot = base + capture_base + i;
@@ -588,9 +594,18 @@ impl VM {
                     }
                 }
 
-                // 3. Universal Object methods (type 0)
-                if let Some(method) = self.type_registry.resolve_method(0, name) {
-                    return Ok(self.method_to_value(method));
+                // 3. Universal Object methods (type 0).
+                // §20.1.2.2: a bare object (`Object.create(null)`, marked
+                // by an explicit `__proto__: Null`) has NO reachable
+                // %Object.prototype% methods — skip the universal vtable.
+                let bare = {
+                    let ob = o.lock().unwrap();
+                    matches!(ob.properties.get("__proto__"), Some(Value::Null))
+                };
+                if !bare {
+                    if let Some(method) = self.type_registry.resolve_method(0, name) {
+                        return Ok(self.method_to_value(method));
+                    }
                 }
 
                 Ok(Value::Undefined)

@@ -747,13 +747,14 @@ fn register_dataview(vm: &mut VM) {
         u32::from_be_bytes,
         |v| Value::I32(v as i32)
     );
+    // §25.3.4: the BigInt64/BigUint64 accessors traffic in BigInt values.
     getter_multibyte!(
         "getBigInt64",
         8,
         i64,
         i64::from_le_bytes,
         i64::from_be_bytes,
-        |v| Value::I64(v)
+        |v| Value::BigInt(v)
     );
     getter_multibyte!(
         "getBigUint64",
@@ -761,7 +762,7 @@ fn register_dataview(vm: &mut VM) {
         u64,
         u64::from_le_bytes,
         u64::from_be_bytes,
-        |v| Value::I64(v as i64)
+        |v| Value::BigInt(v as i64)
     );
     getter_multibyte!(
         "getFloat32",
@@ -862,7 +863,7 @@ fn register_dataview(vm: &mut VM) {
         8,
         |v: Option<&Value>| v
             .map(|x| match x {
-                Value::I64(n) => *n,
+                Value::BigInt(n) | Value::I64(n) => *n,
                 other => other.as_i32() as i64,
             })
             .unwrap_or(0),
@@ -875,7 +876,7 @@ fn register_dataview(vm: &mut VM) {
         8,
         |v: Option<&Value>| v
             .map(|x| match x {
-                Value::I64(n) => *n as u64,
+                Value::BigInt(n) | Value::I64(n) => *n as u64,
                 other => other.as_i32() as u64,
             })
             .unwrap_or(0),
@@ -1319,6 +1320,38 @@ pub fn dispatch_dataview_method(
             }
             Some(Value::F64(0.0))
         }
+        "getBigInt64" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
+                let arr = [
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                ];
+                let v = if le {
+                    i64::from_le_bytes(arr)
+                } else {
+                    i64::from_be_bytes(arr)
+                };
+                return Some(Value::BigInt(v));
+            }
+            Some(Value::BigInt(0))
+        }
+        "getBigUint64" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
+                let arr = [
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                ];
+                let v = if le {
+                    u64::from_le_bytes(arr)
+                } else {
+                    u64::from_be_bytes(arr)
+                };
+                return Some(Value::BigInt(v as i64));
+            }
+            Some(Value::BigInt(0))
+        }
         "setInt8" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -1394,6 +1427,24 @@ pub fn dispatch_dataview_method(
         "setFloat64" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le {
+                val.to_le_bytes()
+            } else {
+                val.to_be_bytes()
+            };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setBigInt64" | "setBigUint64" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args
+                .get(1)
+                .map(|x| match x {
+                    Value::BigInt(n) | Value::I64(n) => *n,
+                    other => other.as_i32() as i64,
+                })
+                .unwrap_or(0);
             let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
             let bytes = if le {
                 val.to_le_bytes()

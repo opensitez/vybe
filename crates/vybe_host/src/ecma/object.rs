@@ -105,14 +105,14 @@ fn key_string(v: &Value) -> String {
     }
 }
 
-fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
+pub(crate) fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
     let o = obj.lock().unwrap();
     let target = o.properties.get(PROXY_TARGET_KEY).cloned()?;
     let handler = o.properties.get(PROXY_HANDLER_KEY).cloned()?;
     Some((target, handler))
 }
 
-fn proxy_trap(handler: &Value, name: &str) -> Option<Value> {
+pub(crate) fn proxy_trap(handler: &Value, name: &str) -> Option<Value> {
     let Value::Object(handler_obj) = handler else {
         return None;
     };
@@ -811,38 +811,13 @@ fn register_construction(vm: &mut VM) {
                 }
                 Some(Value::Null) => {
                     let mut o = arc.lock().unwrap();
+                    // Object.create(null) gives a "bare" object — none of
+                    // `Object.prototype`'s methods are reachable. The
+                    // explicit `__proto__: Null` marker is what
+                    // `resolve_property` keys off to skip the universal
+                    // Object vtable; no placeholder own-properties (they
+                    // made `hasOwnProperty.call(o, "toString")` lie).
                     o.properties.insert(PROTO_KEY.into(), Value::Null);
-                    // Object.create(null) gives a "bare" object — none
-                    // of `Object.prototype`'s methods (toString,
-                    // hasOwnProperty, valueOf, …) are reachable.
-                    // Stamp them as Undefined so reads bypass the
-                    // universal-Object vtable in resolve_property.
-                    for m in &[
-                        "toString",
-                        "valueOf",
-                        "hasOwnProperty",
-                        "propertyIsEnumerable",
-                        "isPrototypeOf",
-                        "toLocaleString",
-                    ] {
-                        o.properties.insert((*m).into(), Value::Undefined);
-                    }
-                    o.properties.insert(
-                        "__nonenum".into(),
-                        Value::Object(Arc::new(Mutex::new(Object::new_array(
-                            [
-                                "toString",
-                                "valueOf",
-                                "hasOwnProperty",
-                                "propertyIsEnumerable",
-                                "isPrototypeOf",
-                                "toLocaleString",
-                            ]
-                            .into_iter()
-                            .map(|m| Value::String(Arc::from(m)))
-                            .collect(),
-                        )))),
-                    );
                 }
                 _ => {}
             }

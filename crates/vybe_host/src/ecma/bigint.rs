@@ -15,6 +15,27 @@
 
 use vybe_bytecode::{HostContext, VM, Value};
 
+/// §7.1.14 StringToBigInt: optional sign for decimal, 0x/0o/0b radix
+/// prefixes (no sign), empty/whitespace → 0. None = invalid → the caller
+/// decides (BigInt() throws SyntaxError; coercions treat as 0).
+fn parse_bigint_str(s: &str) -> Option<i64> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Some(0);
+    }
+    let radix = |p: &str, r: u32| i64::from_str_radix(p, r).ok();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return radix(hex, 16);
+    }
+    if let Some(bin) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+        return radix(bin, 2);
+    }
+    if let Some(oct) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
+        return radix(oct, 8);
+    }
+    t.parse::<i64>().ok()
+}
+
 fn to_bigint(v: &Value) -> i64 {
     match v {
         Value::BigInt(n) => *n,
@@ -28,7 +49,7 @@ fn to_bigint(v: &Value) -> i64 {
                 0
             }
         }
-        Value::String(s) => s.trim().parse::<i64>().unwrap_or(0),
+        Value::String(s) => parse_bigint_str(s).unwrap_or(0),
         _ => 0,
     }
 }
@@ -38,9 +59,22 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:bigint",
         "BigInt",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             // §21.2.1.1: return Value::BigInt so strict equality (===) against
             // BigInt literals works — I64 and BigInt are different types.
+            // §7.1.14: an unparsable string is a SyntaxError.
+            if let Some(Value::String(text)) = args.first() {
+                return match parse_bigint_str(text) {
+                    Some(n) => Value::BigInt(n),
+                    None => {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "SyntaxError",
+                            &format!("Cannot convert {} to a BigInt", text),
+                        ));
+                        Value::Undefined
+                    }
+                };
+            }
             Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)))
         }),
     );
@@ -182,8 +216,9 @@ pub fn register(vm: &mut VM) {
     // emits I64_ADD/SUB/etc. directly; these handlers cover the
     // dynamic-dispatch case (e.g. `Reflect.apply(BigInt.add, ...)`).
     // Semantics use Rust's wrapping_* to match WASM i64.* trap-free
-    // arithmetic; division-by-zero returns 0 (the host fn convention
-    // is "no exceptions" — div-by-zero would trap inside the opcode).
+    // arithmetic. div/rem/pow are registered separately below: the spec
+    // requires them to throw RangeError (§6.1.6.2.3/5/6) rather than
+    // produce a value.
 
     macro_rules! binop {
         ($name:expr, $op:expr) => {
@@ -201,30 +236,54 @@ pub fn register(vm: &mut VM) {
     binop!("add", |a: i64, b: i64| a.wrapping_add(b));
     binop!("sub", |a: i64, b: i64| a.wrapping_sub(b));
     binop!("mul", |a: i64, b: i64| a.wrapping_mul(b));
-    binop!("div", |a: i64, b: i64| if b == 0 {
-        0
-    } else {
-        a.wrapping_div(b)
-    });
-    binop!("rem", |a: i64, b: i64| if b == 0 {
-        0
-    } else {
-        a.wrapping_rem(b)
-    });
     binop!("and", |a: i64, b: i64| a & b);
     binop!("or", |a: i64, b: i64| a | b);
     binop!("xor", |a: i64, b: i64| a ^ b);
     binop!("shl", |a: i64, b: i64| a.wrapping_shl((b & 63) as u32));
     binop!("shr", |a: i64, b: i64| a.wrapping_shr((b & 63) as u32));
-    binop!("pow", |a: i64, b: i64| {
-        if b < 0 {
-            0i64
-        } else if b == 0 {
-            1i64
-        } else {
-            a.wrapping_pow(b as u32)
-        }
-    });
+
+    // §6.1.6.2.5 BigInt::divide / §6.1.6.2.6 BigInt::remainder — a zero
+    // divisor throws RangeError (unlike Number's Infinity/NaN).
+    macro_rules! divlike {
+        ($name:expr, $op:expr) => {
+            vm.register_host_fn(
+                "ecma:bigint",
+                $name,
+                Box::new(|ctx: &mut HostContext, args: &[Value]| {
+                    let a = to_bigint(args.first().unwrap_or(&Value::Null));
+                    let b = to_bigint(args.get(1).unwrap_or(&Value::Null));
+                    if b == 0 {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "RangeError",
+                            "Division by zero",
+                        ));
+                        return Value::Undefined;
+                    }
+                    Value::BigInt($op(a, b))
+                }),
+            );
+        };
+    }
+    divlike!("div", |a: i64, b: i64| a.wrapping_div(b));
+    divlike!("rem", |a: i64, b: i64| a.wrapping_rem(b));
+
+    // §6.1.6.2.3 BigInt::exponentiate — negative exponent throws RangeError.
+    vm.register_host_fn(
+        "ecma:bigint",
+        "pow",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let a = to_bigint(args.first().unwrap_or(&Value::Null));
+            let b = to_bigint(args.get(1).unwrap_or(&Value::Null));
+            if b < 0 {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "Exponent must be non-negative",
+                ));
+                return Value::Undefined;
+            }
+            Value::BigInt(if b == 0 { 1 } else { a.wrapping_pow(b as u32) })
+        }),
+    );
 
     vm.register_host_fn(
         "ecma:bigint",

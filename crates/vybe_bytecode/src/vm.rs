@@ -110,6 +110,34 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Read a VM global by name (`Undefined` when absent). Lets host
+    /// modules reach canonical per-VM anchors (e.g. `__ctor_Error`'s
+    /// `prototype`, wired by a language prelude) so host-minted values
+    /// stay identical to compiled ones.
+    pub fn get_global(&self, name: &str) -> Value {
+        unsafe {
+            if self.globals_slot.is_null() {
+                Value::Undefined
+            } else {
+                (*self.globals_slot)
+                    .get(name)
+                    .cloned()
+                    .unwrap_or(Value::Undefined)
+            }
+        }
+    }
+
+    /// Write a VM global by name — counterpart of [`Self::get_global`],
+    /// used by host modules that must bind calling-convention globals
+    /// (e.g. `__js_new_target` around [[Construct]] dispatch).
+    pub fn set_global(&mut self, name: &str, value: Value) {
+        unsafe {
+            if !self.globals_slot.is_null() {
+                (*self.globals_slot).insert(name.to_string(), value);
+            }
+        }
+    }
+
     /// Read the current JS receiver binding (`__js_this`) from globals.
     /// Returns `Undefined` when no binding exists.
     pub fn current_js_this(&self) -> Value {

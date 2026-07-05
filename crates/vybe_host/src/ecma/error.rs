@@ -33,7 +33,7 @@ pub fn register(vm: &mut VM) {
         vm.register_host_fn(
             "ecma:error",
             kind,
-            Box::new(move |_ctx: &mut HostContext, args: &[Value]| make_error(&kind_owned, args)),
+            Box::new(move |ctx: &mut HostContext, args: &[Value]| make_error(ctx, &kind_owned, args)),
         );
     }
 
@@ -56,11 +56,12 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:error",
         "ErrorWithCause",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
             let cause = options_cause(args.get(1));
             let mut obj = Object::new();
             stamp_error_object(&mut obj, "Error", &message, cause);
+            link_error_prototype(ctx, &mut obj, "Error");
             Value::Object(Arc::new(Mutex::new(obj)))
         }),
     );
@@ -68,7 +69,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:error",
         "AggregateError",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             // AggregateError(errors, message?, options?)
             let this = args.first().cloned().unwrap_or(Value::Null);
             let errors = args
@@ -115,6 +116,7 @@ pub fn register(vm: &mut VM) {
                         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![errors])))),
                     );
                 }
+                link_error_prototype(ctx, &mut o, "AggregateError");
             }
             this
         }),
@@ -150,6 +152,27 @@ pub fn register(vm: &mut VM) {
     );
 }
 
+/// Link a host-minted error to the same per-VM prototype objects the JS
+/// prelude wires onto the canonical `__ctor_<Kind>` constructors — host
+/// errors and compiled errors share one prototype chain. No-op when the
+/// running language declared no error prototypes.
+fn link_error_prototype(ctx: &HostContext, obj: &mut Object, kind: &str) {
+    if !obj.properties.contains_key("__proto__") {
+        let Value::Object(ctor) = ctx.get_global(&format!("__ctor_{kind}")) else {
+            return;
+        };
+        let Some(proto @ Value::Object(_)) = ctor.lock().unwrap().properties.get("prototype").cloned() else {
+            return;
+        };
+        obj.properties.insert("__proto__".into(), proto);
+    }
+    // A chain is present (pre-linked by the compiled new-dispatch, or just
+    // wired above): `name` resolves through the prototype (§20.5.3.2 — it
+    // is NOT an own property: `new Error("x").hasOwnProperty("name")` is
+    // false). Languages without wired prototypes keep the own stamp.
+    obj.properties.remove("name");
+}
+
 fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {
     obj.properties
         .insert("__type".into(), Value::String(Arc::from(kind)));
@@ -183,7 +206,7 @@ pub(crate) fn new_error(kind: &str, message: &str) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-fn make_error(kind: &str, args: &[Value]) -> Value {
+fn make_error(ctx: &HostContext, kind: &str, args: &[Value]) -> Value {
     // Two call patterns:
     //   Compiler: args[0] = this (Object), args[1] = message, args[2] = options
     //   Direct:   args[0] = message (non-Object), args[1] = options
@@ -192,12 +215,14 @@ fn make_error(kind: &str, args: &[Value]) -> Value {
         let cause = options_cause(args.get(2));
         let mut o = obj.lock().unwrap();
         stamp_error_object(&mut o, kind, &message, cause);
+        link_error_prototype(ctx, &mut o, kind);
         return Value::Object(obj.clone());
     }
     let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
     let cause = options_cause(args.get(1));
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, &message, cause);
+    link_error_prototype(ctx, &mut obj, kind);
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 

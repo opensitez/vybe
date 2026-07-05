@@ -28,6 +28,27 @@ use vybe_bytecode::{HostContext, VM};
 
 const REGEXP_TYPE: &str = "RegExp";
 
+static REGEXP_PROTOTYPE: std::sync::OnceLock<Arc<Mutex<Object>>> = std::sync::OnceLock::new();
+
+/// %RegExp.prototype% — process-global singleton (same pattern as the
+/// other builtin prototypes). Instances link to it via `__proto__`, so
+/// `Object.getPrototypeOf(/a/) === RegExp.prototype` and
+/// `RegExp.prototype.isPrototypeOf(/a/)` hold (§22.2.6).
+pub(crate) fn shared_regexp_prototype() -> Value {
+    Value::Object(
+        REGEXP_PROTOTYPE
+            .get_or_init(|| {
+                let mut proto = Object::new();
+                proto.properties.insert(
+                    "__proto__".into(),
+                    crate::ecma::object::shared_object_prototype(),
+                );
+                Arc::new(Mutex::new(proto))
+            })
+            .clone(),
+    )
+}
+
 #[derive(Clone, Copy)]
 enum SpecialPattern {
     RgiEmoji,
@@ -546,6 +567,8 @@ fn register_constructor(vm: &mut VM) {
             // type registry; matches the pattern used by Map/Set/etc.
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
+            obj.properties
+                .insert("__proto__".into(), shared_regexp_prototype());
             Value::Object(Arc::new(Mutex::new(obj)))
         }),
     );
@@ -586,6 +609,8 @@ fn register_constructor(vm: &mut VM) {
             obj.properties.insert("lastIndex".into(), Value::I32(0));
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
+            obj.properties
+                .insert("__proto__".into(), shared_regexp_prototype());
             Value::Object(Arc::new(Mutex::new(obj)))
         }),
     );
