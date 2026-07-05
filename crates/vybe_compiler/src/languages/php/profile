@@ -626,8 +626,14 @@ unserialize         = { emit = "common:php.unserialize",    min_args = 1, max_ar
 # targets.
 # ────────────────────────────────────────────────────────────────────────────
 
-__php_dt_new           = { emit = "common:php.datetime_new",            min_args = 1, max_args = 1 }
-__php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 1 }
+__php_dt_new           = { emit = "common:php.datetime_new",            min_args = 1, max_args = 2 }
+__php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 2 }
+__php_datetimezone_new = { emit = "common:php.datetimezone_new",        min_args = 1, max_args = 1 }
+__php_dt_get_timezone  = { emit = "common:php.datetime_get_timezone",   min_args = 1, max_args = 1 }
+__php_dt_get_offset    = { emit = "common:php.datetime_get_offset",     min_args = 1, max_args = 2 }
+__php_dt_set_timezone  = { emit = "common:php.datetime_set_timezone",   min_args = 2, max_args = 2 }
+__php_dt_set_date      = { emit = "common:php.datetime_set_date",       min_args = 4, max_args = 4 }
+__php_dt_set_time      = { emit = "common:php.datetime_set_time",       min_args = 4, max_args = 4 }
 __php_dt_create_from_format = { emit = "common:php.datetime_create_from_format", min_args = 2, max_args = 2 }
 __php_dt_imm_create_from_format = { emit = "common:php.datetime_immutable_create_from_format", min_args = 2, max_args = 2 }
 __php_dt_format        = { emit = "common:php.datetime_format",         min_args = 2, max_args = 2 }

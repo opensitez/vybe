@@ -208,12 +208,32 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.print_r" => super::array_adapter::emit_php_print_r(chunks, current, argc, line),
 
         "php.datetime_new" => {
-            crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, line)
+            crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, argc, line)
         }
         "php.datetime_immutable_new" => {
             crate::emitter::php::datetime_adapter::emit_datetime_immutable_new(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
+        }
+        "php.datetimezone_new" => {
+            crate::emitter::php::datetime_adapter::emit_datetimezone_new(chunks, current, line)
+        }
+        "php.datetime_get_timezone" => {
+            crate::emitter::php::datetime_adapter::emit_datetime_get_timezone(chunks, current, line)
+        }
+        "php.datetime_get_offset" => {
+            crate::emitter::php::datetime_adapter::emit_datetime_get_offset(
+                chunks, current, argc, line,
+            )
+        }
+        "php.datetime_set_timezone" => {
+            crate::emitter::php::datetime_adapter::emit_datetime_set_timezone(chunks, current, line)
+        }
+        "php.datetime_set_date" => {
+            crate::emitter::php::datetime_adapter::emit_datetime_set_date(chunks, current, line)
+        }
+        "php.datetime_set_time" => {
+            crate::emitter::php::datetime_adapter::emit_datetime_set_time(chunks, current, line)
         }
         "php.datetime_create_from_format" => {
             crate::emitter::php::datetime_adapter::emit_datetime_create_from_format(

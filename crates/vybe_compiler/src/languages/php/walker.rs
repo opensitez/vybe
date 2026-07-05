@@ -5639,6 +5639,11 @@ fn apply_postfix(
                     "diff" => Some("__php_dt_diff"),
                     "add" => Some("__php_dt_add"),
                     "sub" => Some("__php_dt_sub"),
+                    "getTimezone" => Some("__php_dt_get_timezone"),
+                    "setTimezone" => Some("__php_dt_set_timezone"),
+                    "setDate" => Some("__php_dt_set_date"),
+                    "setTime" => Some("__php_dt_set_time"),
+                    "getOffset" => Some("__php_dt_get_offset"),
                     _ => None,
                 };
                 if let Some(fname) = target_fn {
@@ -6958,9 +6963,45 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             "DateTime" => Some("__php_dt_new"),
             "DateTimeImmutable" => Some("__php_dt_imm_new"),
             "DateInterval" => Some("__php_dateinterval_new"),
+            "DateTimeZone" => Some("__php_datetimezone_new"),
             _ => None,
         };
         if let Some(target) = rewrite_target {
+            // `new DateTime('@<ts>')` — a leading '@' denotes a Unix
+            // timestamp (seconds). Route through `createFromFormat('U', ts)`.
+            if (target == "__php_dt_new" || target == "__php_dt_imm_new") && args.len() == 1 {
+                if let ExprKind::Lit(Literal::Str(s)) = &args[0].value.kind {
+                    if let Some(ts) = s.strip_prefix('@') {
+                        if ts.trim().parse::<i64>().is_ok() {
+                            let cff = if target == "__php_dt_imm_new" {
+                                "__php_dt_imm_create_from_format"
+                            } else {
+                                "__php_dt_create_from_format"
+                            };
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Ident(cff.to_string()),
+                                        span.clone(),
+                                    )),
+                                    args: vec![
+                                        Argument::positional(Expression::with_span(
+                                            ExprKind::Lit(Literal::Str("U".to_string())),
+                                            span.clone(),
+                                        )),
+                                        Argument::positional(Expression::with_span(
+                                            ExprKind::Lit(Literal::Str(ts.trim().to_string())),
+                                            span.clone(),
+                                        )),
+                                    ],
+                                    optional: false,
+                                },
+                                span,
+                            ));
+                        }
+                    }
+                }
+            }
             if target == "__php_dateinterval_new" {
                 // DateInterval(P1Y2M3D) — for STRING-LITERAL ISO
                 // arguments, parse at compile time and synthesize the
@@ -12685,6 +12726,52 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 left: Box::new(lower_first),
                 right: Box::new(rest),
             }
+        }
+        // ── Procedural DateTime API — thin aliases for the OO methods ──
+        // Normalize to the `__php_dt_*` adapter calls (profile-bound) so the
+        // procedural and object-oriented surfaces share one implementation.
+        "date_create" => {
+            let mut a = vec![arg(0)?];
+            if let Some(tz) = arg(1) {
+                a.push(tz);
+            }
+            mk_call(Expression::ident("__php_dt_new"), a)
+        }
+        "date_create_immutable" => {
+            let mut a = vec![arg(0)?];
+            if let Some(tz) = arg(1) {
+                a.push(tz);
+            }
+            mk_call(Expression::ident("__php_dt_imm_new"), a)
+        }
+        "date_format" => mk_call(
+            Expression::ident("__php_dt_format"),
+            vec![arg(0)?, arg(1)?],
+        ),
+        "date_diff" => mk_call(Expression::ident("__php_dt_diff"), vec![arg(0)?, arg(1)?]),
+        "date_add" => mk_call(Expression::ident("__php_dt_add"), vec![arg(0)?, arg(1)?]),
+        "date_sub" => mk_call(Expression::ident("__php_dt_sub"), vec![arg(0)?, arg(1)?]),
+        "date_modify" => mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?, arg(1)?]),
+        "date_timestamp_get" => {
+            mk_call(Expression::ident("__php_dt_get_timestamp"), vec![arg(0)?])
+        }
+        // `gmdate` is `date` in UTC; the adapter is already UTC-absolute.
+        "gmdate" => {
+            let mut a = vec![arg(0)?];
+            if let Some(ts) = arg(1) {
+                a.push(ts);
+            }
+            mk_call(Expression::ident("date"), a)
+        }
+        // `idate($fmt, $ts)` → integer of the single-char `date()` code.
+        "idate" => {
+            let mut da = vec![arg(0)?];
+            if let Some(ts) = arg(1) {
+                da.push(ts);
+            }
+            let date_call =
+                Expression::with_span(mk_call(Expression::ident("date"), da), span.clone());
+            mk_call(Expression::ident("intval"), vec![date_call])
         }
         // PHP `strtotime("+N unit", $base)` with a literal relative string
         // is rewritten at compile time to `$base + N * unit_secs` (or

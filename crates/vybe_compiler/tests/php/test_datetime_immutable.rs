@@ -17,7 +17,9 @@ $a = new DateTimeImmutable('2024-01-01', new DateTimeZone('UTC'));
 $b = $a->modify('+1 day');
 echo $a->format('d') . $b->format('d');
 "#,
-        ["102"]
+        // format('d') is zero-padded (ECMA §... PHP: 2-digit day): $a stays
+        // 2024-01-01 → "01", $b is 2024-01-02 → "02", concatenated "0102".
+        ["0102"]
     };
 
     datetime_immutable_set_timezone => {

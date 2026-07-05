@@ -19,6 +19,10 @@ use vybe_bytecode::{Chunk, Value};
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
+/// The `DateTimeZone` object stored on a `DateTime`/`DateTimeImmutable`.
+const TZ_KEY: &str = "__tz";
+/// The IANA/abbrev name a `DateTimeZone` carries (e.g. "UTC", "Europe/Paris").
+const TZNAME_KEY: &str = "__tzname";
 
 const MS_PER_SECOND: f64 = 1_000.0;
 const MS_PER_MINUTE: f64 = 60_000.0;
@@ -103,14 +107,69 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
 ///
 /// Stack on entry: `[s]` (string arg) or `[]` (no-arg)
 /// Stack on exit: `[obj]` with `__type=tag`, `__time=ms`.
+/// Build a 1-arg getter chunk returning `this.<field>`; returns its index.
+/// Mirrors `reflection_adapter::build_field_getter` so the stamped method
+/// dispatches via the normal `STRUCT_GET` + `CALL_REF` path.
+fn build_tz_getter(chunks: &mut Vec<Chunk>, field: &str, line: u32) -> usize {
+    let mut c = Chunk::new("__dtz_getter");
+    c.arity = 1;
+    let k = c.add_constant(Value::String(Arc::from(field)));
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+/// Wrap the `DateTimeZone` name on stack-top in a
+/// `{__type:DateTimeZone, __tzname:name, getName:<fn>}` object. `getName`
+/// is stamped as a real method (like `ReflectionClass`) so `$tz->getName()`
+/// dispatches normally — no walker reroute, no collision with other classes'
+/// `getName`. Stack on entry: `[name]` ; Stack on exit: `[tz]`.
+fn emit_wrap_tz(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let getname_idx = build_tz_getter(chunks, TZNAME_KEY, line);
+    let chunk = &mut chunks[current];
+    let name_slot = alloc_local(chunk);
+    local_set(chunk, name_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    push_str(chunk, "DateTimeZone", line);
+    struct_set(chunk, TYPE_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, name_slot, line);
+    struct_set(chunk, TZNAME_KEY, line);
+    // Stamp getName() as a bound method ref.
+    chunk.emit_dup(line);
+    chunk.emit_op_u16(Op::REF_FUNC, getname_idx as u16, line);
+    chunk.emit(0, line);
+    struct_set(chunk, "getName", line);
+}
+
+/// PHP `new DateTime($s [, $tz])` / `new DateTimeImmutable(...)`.
+///
+/// `argc` covers the optional `DateTimeZone` second argument. When present
+/// it is stashed onto the object under `__tz`; otherwise a default `UTC`
+/// zone is attached so `getTimezone()` always resolves. Stack on entry:
+/// `[s]` or `[s, tz]` ; Stack on exit: `[dt]`.
 fn emit_datetime_ctor(
-    chunks: &mut [Chunk],
+    chunks: &mut Vec<Chunk>,
     current: usize,
     type_tag: &'static str,
-    has_arg: bool,
+    argc: u8,
     line: u32,
 ) {
-    if has_arg {
+    // Pop the optional timezone (top of stack) before parsing the string.
+    let tz_slot = if argc >= 2 {
+        let chunk = &mut chunks[current];
+        let slot = alloc_local(chunk);
+        local_set(chunk, slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+
+    if argc >= 1 {
         // Stack: [s] → ecma:date.parse → [ms_or_NaN]. NaN flow-through
         // is acceptable for the suite — invalid dates produce NaN
         // `__time`; downstream `format` returns an empty string.
@@ -118,18 +177,197 @@ fn emit_datetime_ctor(
     } else {
         call_import(chunks, current, "ecma:date", "now", 0, line);
     }
+    emit_wrap_ms(&mut chunks[current], type_tag, line);
+
+    // Attach the timezone: the caller-supplied one, or a default UTC zone.
+    match tz_slot {
+        Some(slot) => {
+            let chunk = &mut chunks[current];
+            chunk.emit_dup(line);
+            local_get(chunk, slot, line);
+            struct_set(chunk, TZ_KEY, line);
+        }
+        None => {
+            // Save the object, build a fresh UTC zone, then attach it.
+            let obj_slot = {
+                let chunk = &mut chunks[current];
+                let slot = alloc_local(chunk);
+                local_set(chunk, slot, line);
+                slot
+            };
+            push_str(&mut chunks[current], "UTC", line);
+            emit_wrap_tz(chunks, current, line);
+            let chunk = &mut chunks[current];
+            let tz = alloc_local(chunk);
+            local_set(chunk, tz, line);
+            local_get(chunk, obj_slot, line);
+            chunk.emit_dup(line);
+            local_get(chunk, tz, line);
+            struct_set(chunk, TZ_KEY, line);
+        }
+    }
+}
+
+/// PHP `new DateTime(...)` constructor. Stack: `[s]`/`[s, tz]` → `[dt]`.
+pub fn emit_datetime_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_datetime_ctor(chunks, current, "DateTime", argc, line);
+}
+
+/// PHP `new DateTimeImmutable(...)` constructor. Stack: `[s]`/`[s, tz]` → `[dt]`.
+pub fn emit_datetime_immutable_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_datetime_ctor(chunks, current, "DateTimeImmutable", argc, line);
+}
+
+/// PHP `new DateTimeZone($name)`. Stack: `[name]` → `[tz]`.
+pub fn emit_datetimezone_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_wrap_tz(chunks, current, line);
+}
+
+/// PHP `$dt->getTimezone()`. Stack: `[dt]` → `[tz]`.
+pub fn emit_datetime_get_timezone(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get(&mut chunks[current], TZ_KEY, line);
+}
+
+/// PHP `$dt->getOffset()` / `$tz->getOffset($dt)` — UTC offset in seconds.
+/// The stored instant is UTC-absolute (no zone conversion is applied), so the
+/// offset is `0`. Drops the receiver/args and pushes `0`.
+pub fn emit_datetime_get_offset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    emit_wrap_ms(chunk, type_tag, line);
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(chunk, Value::I32(0), line);
 }
 
-/// PHP `new DateTime(...)` constructor. Stack: `[s]` → `[dt]`.
-pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_datetime_ctor(chunks, current, "DateTime", true, line);
+/// PHP `$dt->setTimezone($tz)` — returns a new object carrying the same
+/// instant (`__time`) with the supplied zone. Actual offset conversion is
+/// not applied (the stored instant is UTC-absolute). Stack: `[dt, tz]` → `[dt2]`.
+pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let tz_slot = alloc_local(chunk);
+    local_set(chunk, tz_slot, line);
+    let dt_slot = alloc_local(chunk);
+    local_set(chunk, dt_slot, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    // __type = dt.__type
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TYPE_KEY, line);
+    struct_set(chunk, TYPE_KEY, line);
+    // __time = dt.__time
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TIME_KEY, line);
+    struct_set(chunk, TIME_KEY, line);
+    // __tz = tz
+    chunk.emit_dup(line);
+    local_get(chunk, tz_slot, line);
+    struct_set(chunk, TZ_KEY, line);
 }
 
-/// PHP `new DateTimeImmutable(...)` constructor. Stack: `[s]` → `[dt]`.
-pub fn emit_datetime_immutable_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_datetime_ctor(chunks, current, "DateTimeImmutable", true, line);
+/// Build `{__type: dt.__type, __time: <ms_slot>, __tz: dt.__tz}` on stack-top,
+/// cloning the object's identity while swapping in a fresh instant.
+fn emit_rewrap_like(chunk: &mut Chunk, dt_slot: u16, ms_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TYPE_KEY, line);
+    struct_set(chunk, TYPE_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, ms_slot, line);
+    struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
+}
+
+/// PHP `$dt->setDate($y, $m, $d)` — returns a new object with the calendar
+/// date replaced and the time-of-day preserved. Stack: `[dt, y, m, d]` → `[dt2]`.
+pub fn emit_datetime_set_date(chunks: &mut [Chunk], current: usize, line: u32) {
+    let (d_slot, m_slot, y_slot, dt_slot) = {
+        let chunk = &mut chunks[current];
+        let d = alloc_local(chunk);
+        local_set(chunk, d, line);
+        let m = alloc_local(chunk);
+        local_set(chunk, m, line);
+        let y = alloc_local(chunk);
+        local_set(chunk, y, line);
+        let dt = alloc_local(chunk);
+        local_set(chunk, dt, line);
+        (d, m, y, dt)
+    };
+    // Preserve the time-of-day (h/i/s) from the original instant.
+    let h_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getHours", line);
+    local_set(&mut chunks[current], h_slot, line);
+    let i_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
+    local_set(&mut chunks[current], i_slot, line);
+    let s_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
+    local_set(&mut chunks[current], s_slot, line);
+    // ms = ecma:date.UTC(y, m-1, d, h, i, s)  — PHP months are 1-based.
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, y_slot, line);
+        local_get(chunk, m_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_SUB, line);
+        local_get(chunk, d_slot, line);
+        local_get(chunk, h_slot, line);
+        local_get(chunk, i_slot, line);
+        local_get(chunk, s_slot, line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 6, line);
+    let chunk = &mut chunks[current];
+    let ms_slot = alloc_local(chunk);
+    local_set(chunk, ms_slot, line);
+    emit_rewrap_like(chunk, dt_slot, ms_slot, line);
+}
+
+/// PHP `$dt->setTime($h, $i, $s)` — returns a new object with the time-of-day
+/// replaced and the calendar date preserved. Stack: `[dt, h, i, s]` → `[dt2]`.
+pub fn emit_datetime_set_time(chunks: &mut [Chunk], current: usize, line: u32) {
+    let (s_slot, i_slot, h_slot, dt_slot) = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        local_set(chunk, s, line);
+        let i = alloc_local(chunk);
+        local_set(chunk, i, line);
+        let h = alloc_local(chunk);
+        local_set(chunk, h, line);
+        let dt = alloc_local(chunk);
+        local_set(chunk, dt, line);
+        (s, i, h, dt)
+    };
+    // Preserve the calendar date (Y/M/D). `getMonth` is already 0-based, the
+    // form `ecma:date.UTC` expects.
+    let y_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+    local_set(&mut chunks[current], y_slot, line);
+    let mo_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
+    local_set(&mut chunks[current], mo_slot, line);
+    let d_slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+    local_set(&mut chunks[current], d_slot, line);
+    // ms = ecma:date.UTC(y, mo, d, h, i, s)
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, y_slot, line);
+        local_get(chunk, mo_slot, line);
+        local_get(chunk, d_slot, line);
+        local_get(chunk, h_slot, line);
+        local_get(chunk, i_slot, line);
+        local_get(chunk, s_slot, line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 6, line);
+    let chunk = &mut chunks[current];
+    let ms_slot = alloc_local(chunk);
+    local_set(chunk, ms_slot, line);
+    emit_rewrap_like(chunk, dt_slot, ms_slot, line);
 }
 
 fn emit_parse_int_base10(chunks: &mut [Chunk], current: usize, str_slot: u16, line: u32) {
@@ -306,6 +544,23 @@ fn emit_datetime_create_from_format_impl(
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+
+    // PHP `createFromFormat` returns `false` when the value doesn't match the
+    // format. Our branches leave a NaN `__time` in that case; convert it.
+    let dt_slot = alloc_local(chunk);
+    local_set(chunk, dt_slot, line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TIME_KEY, line);
+    let time_slot = alloc_local(chunk);
+    local_set(chunk, time_slot, line);
+    local_get(chunk, time_slot, line);
+    local_get(chunk, time_slot, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_else(line);
+    local_get(chunk, dt_slot, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_datetime_create_from_format(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -365,6 +620,247 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &s
     call_import(chunks, current, "ecma:date", getter, 1, line);
 }
 
+/// Read a getter into a fresh scratch local, returning its slot.
+fn getter_to_slot(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &str, line: u32) -> u16 {
+    let slot = alloc_local(&mut chunks[current]);
+    emit_dt_getter(chunks, current, dt_slot, getter, line);
+    local_set(&mut chunks[current], slot, line);
+    slot
+}
+
+/// Push `1.0` when the year of `dt` is a leap year, else `0.0`.
+/// Uses the Feb-29 rollover trick: `UTC(year, 1, 29)` keeps month 1 in a
+/// leap year but rolls to month 2 (March) otherwise, so `2 - month` is the flag.
+fn emit_leap_flag(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, year_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        push_const(chunk, Value::F64(29.0), line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let tmp = {
+        let chunk = &mut chunks[current];
+        emit_wrap_ms(chunk, "Date", line);
+        let tmp = alloc_local(chunk);
+        local_set(chunk, tmp, line);
+        tmp
+    };
+    emit_dt_getter(chunks, current, tmp, "getMonth", line);
+    let chunk = &mut chunks[current];
+    // flag = 2 - month
+    push_const(chunk, Value::F64(-1.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+}
+
+/// Push the number of days in `dt`'s month (28–31) via `UTC(y, m+1, 0)`,
+/// whose day-0 resolves to the last day of month `m`.
+fn emit_days_in_month(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
+    let month_slot = getter_to_slot(chunks, current, dt_slot, "getMonth", line);
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, year_slot, line);
+        local_get(chunk, month_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        push_const(chunk, Value::F64(0.0), line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let tmp = {
+        let chunk = &mut chunks[current];
+        emit_wrap_ms(chunk, "Date", line);
+        let tmp = alloc_local(chunk);
+        local_set(chunk, tmp, line);
+        tmp
+    };
+    emit_dt_getter(chunks, current, tmp, "getDate", line);
+}
+
+/// Push the 0-based day of the year (`0` = Jan 1) for `dt`.
+fn emit_day_of_year(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
+    let month_slot = getter_to_slot(chunks, current, dt_slot, "getMonth", line);
+    let day_slot = getter_to_slot(chunks, current, dt_slot, "getDate", line);
+    // today = UTC(year, month, day) — midnight of the current calendar day.
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, year_slot, line);
+        local_get(chunk, month_slot, line);
+        local_get(chunk, day_slot, line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let today_slot = {
+        let chunk = &mut chunks[current];
+        let slot = alloc_local(chunk);
+        local_set(chunk, slot, line);
+        slot
+    };
+    // jan1 = UTC(year, 0, 1)
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, year_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        push_const(chunk, Value::F64(1.0), line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let chunk = &mut chunks[current];
+    let jan1_slot = alloc_local(chunk);
+    local_set(chunk, jan1_slot, line);
+    // z = floor((today - jan1) / MS_PER_DAY)
+    local_get(chunk, today_slot, line);
+    local_get(chunk, jan1_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(MS_PER_DAY), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+
+/// Append the ISO-8601 form `Y-m-dTH:i:s+00:00` of `dt` to `result_slot`.
+/// The offset is fixed at `+00:00` (the stored instant is UTC-absolute).
+fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot: u16, line: u32) {
+    // Year
+    emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
+    emit_stringify(&mut chunks[current], line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
+    append_lit(&mut chunks[current], result_slot, "-", line);
+    // Month (1-based, padded)
+    emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        emit_pad_to_width(chunk, 2, line);
+        emit_append_to_result(chunk, result_slot, line);
+    }
+    append_lit(&mut chunks[current], result_slot, "-", line);
+    // Day
+    emit_dt_getter(chunks, current, dt_slot, "getDate", line);
+    emit_pad_to_width(&mut chunks[current], 2, line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
+    append_lit(&mut chunks[current], result_slot, "T", line);
+    // Hour
+    emit_dt_getter(chunks, current, dt_slot, "getHours", line);
+    emit_pad_to_width(&mut chunks[current], 2, line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
+    append_lit(&mut chunks[current], result_slot, ":", line);
+    // Minute
+    emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
+    emit_pad_to_width(&mut chunks[current], 2, line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
+    append_lit(&mut chunks[current], result_slot, ":", line);
+    // Second
+    emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
+    emit_pad_to_width(&mut chunks[current], 2, line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
+    append_lit(&mut chunks[current], result_slot, "+00:00", line);
+}
+
+/// Append a string literal to `result_slot`.
+fn append_lit(chunk: &mut Chunk, result_slot: u16, s: &str, line: u32) {
+    push_str(chunk, s, line);
+    emit_append_to_result(chunk, result_slot, line);
+}
+
+/// Push the millisecond instant of the Thursday of `dt`'s ISO-8601 week.
+/// ISO-8601 weeks are Thursday-anchored, so that Thursday's calendar year and
+/// day-of-year determine both the ISO week number (`W`) and ISO year (`o`).
+fn emit_iso_thursday_ms(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
+    let month_slot = getter_to_slot(chunks, current, dt_slot, "getMonth", line);
+    let day_slot = getter_to_slot(chunks, current, dt_slot, "getDate", line);
+    // today = UTC(year, month, day) — midnight.
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, year_slot, line);
+        local_get(chunk, month_slot, line);
+        local_get(chunk, day_slot, line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let today_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        local_set(chunk, s, line);
+        s
+    };
+    // isoDOW = ((getDay + 6) % 7) + 1
+    emit_dt_getter(chunks, current, dt_slot, "getDay", line);
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::F64(6.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    push_const(chunk, Value::F64(7.0), line);
+    crate::emitter::expressions::emit_f64_mod(chunk, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    let isodow_slot = alloc_local(chunk);
+    local_set(chunk, isodow_slot, line);
+    // thursday = today + (4 - isoDOW) * MS_PER_DAY
+    local_get(chunk, today_slot, line);
+    push_const(chunk, Value::F64(4.0), line);
+    local_get(chunk, isodow_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(MS_PER_DAY), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+}
+
+/// Push `dt`'s ISO-8601 week number (1–53) as an f64.
+fn emit_iso_week(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    emit_iso_thursday_ms(chunks, current, dt_slot, line);
+    let thu_ms_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        local_set(chunk, s, line);
+        s
+    };
+    // Wrap the Thursday instant so its calendar year is available.
+    let thu_slot = {
+        let chunk = &mut chunks[current];
+        local_get(chunk, thu_ms_slot, line);
+        emit_wrap_ms(chunk, "Date", line);
+        let s = alloc_local(chunk);
+        local_set(chunk, s, line);
+        s
+    };
+    let thu_year_slot = getter_to_slot(chunks, current, thu_slot, "getFullYear", line);
+    // jan1 = UTC(thuYear, 0, 1)
+    {
+        let chunk = &mut chunks[current];
+        local_get(chunk, thu_year_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        push_const(chunk, Value::F64(1.0), line);
+    }
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let chunk = &mut chunks[current];
+    let jan1_slot = alloc_local(chunk);
+    local_set(chunk, jan1_slot, line);
+    // week = floor(((thursday - jan1) / MS_PER_DAY) / 7) + 1
+    local_get(chunk, thu_ms_slot, line);
+    local_get(chunk, jan1_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(MS_PER_DAY), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    push_const(chunk, Value::F64(7.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+}
+
+/// Push `dt`'s ISO-8601 year (the year that owns its ISO week) as an f64.
+fn emit_iso_year(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    emit_iso_thursday_ms(chunks, current, dt_slot, line);
+    let chunk = &mut chunks[current];
+    emit_wrap_ms(chunk, "Date", line);
+    let thu_slot = alloc_local(chunk);
+    local_set(chunk, thu_slot, line);
+    emit_dt_getter(chunks, current, thu_slot, "getFullYear", line);
+}
+
 /// Push a zero-padded decimal string for `value` (f64 on stack) of
 /// width `width`. Naive implementation: builds the string by repeated
 /// "0" prepend until length ≥ width. Width is small (1..=4) for date
@@ -389,7 +885,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
             let idx = chunk.add_import("wasm:js-string", "length");
             chunk.emit_call(idx, 1, line);
         }
-        let _idx = chunk.add_constant(Value::F64(width as f64));
+        push_const(chunk, Value::F64(width as f64), line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "0", line);
@@ -738,6 +1234,132 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 push_str(&mut chunks[current], "UTC", line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // N: ISO-8601 day of week, 1 (Mon) … 7 (Sun).
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "N",
+            line,
+            |chunks, current| {
+                // getDay() is 0 (Sun) … 6 (Sat); map to 1..7 with Sun→7.
+                emit_dt_getter(chunks, current, dt_slot, "getDay", line);
+                let chunk = &mut chunks[current];
+                // n = ((day + 6) % 7) + 1
+                push_const(chunk, Value::F64(6.0), line);
+                chunk.emit_op(Op::F64_ADD, line);
+                push_const(chunk, Value::F64(7.0), line);
+                crate::emitter::expressions::emit_f64_mod(chunk, line);
+                push_const(chunk, Value::F64(1.0), line);
+                chunk.emit_op(Op::F64_ADD, line);
+                emit_stringify(chunk, line);
+                emit_append_to_result(chunk, result_slot, line);
+            },
+        );
+        // L: 1 if a leap year, else 0.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "L",
+            line,
+            |chunks, current| {
+                emit_leap_flag(chunks, current, dt_slot, line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // t: number of days in the month (28–31).
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "t",
+            line,
+            |chunks, current| {
+                emit_days_in_month(chunks, current, dt_slot, line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // z: day of the year, 0 (Jan 1) … 365.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "z",
+            line,
+            |chunks, current| {
+                emit_day_of_year(chunks, current, dt_slot, line);
+                emit_stringify(&mut chunks[current], line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // u: microseconds, 6 digits (millisecond precision → trailing zeros).
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "u",
+            line,
+            |chunks, current| {
+                let chunk = &mut chunks[current];
+                // us = (__time mod 1000) * 1000
+                chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
+                struct_get(chunk, TIME_KEY, line);
+                push_const(chunk, Value::F64(1000.0), line);
+                crate::emitter::expressions::emit_f64_mod(chunk, line);
+                push_const(chunk, Value::F64(1000.0), line);
+                chunk.emit_op(Op::F64_MUL, line);
+                emit_pad_to_width(chunk, 6, line);
+                emit_append_to_result(chunk, result_slot, line);
+            },
+        );
+        // c: ISO-8601 date, e.g. 2024-06-15T10:00:00+00:00.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "c",
+            line,
+            |chunks, current| {
+                emit_iso8601(chunks, current, dt_slot, result_slot, line);
+            },
+        );
+        // W: ISO-8601 week number, zero-padded to 2 digits.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "W",
+            line,
+            |chunks, current| {
+                emit_iso_week(chunks, current, dt_slot, line);
+                emit_pad_to_width(&mut chunks[current], 2, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // o: ISO-8601 year.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "o",
+            line,
+            |chunks, current| {
+                emit_iso_year(chunks, current, dt_slot, line);
+                emit_stringify(&mut chunks[current], line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
             },
         );
@@ -1734,6 +2356,18 @@ pub fn emit_php_strtotime(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     push_const(chunk, Value::F64(MS_PER_SECOND), line);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_FLOOR, line);
+    // PHP `strtotime` returns `false` (not NaN) when the string can't be
+    // parsed. Detect NaN via the self-inequality `secs != secs`.
+    let secs_slot = alloc_local(chunk);
+    local_set(chunk, secs_slot, line);
+    local_get(chunk, secs_slot, line);
+    local_get(chunk, secs_slot, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_else(line);
+    local_get(chunk, secs_slot, line);
+    chunk.emit_end(line);
 }
 
 /// PHP `$dt->getTimestamp()`.
@@ -2351,6 +2985,8 @@ pub fn emit_datetime_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let dt_slot = alloc_local(chunk);
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
+    // DateTimeImmutable::add returns a new instance; mutable DateTime mutates.
+    emit_clone_if_immutable(chunk, dt_slot, line);
     emit_apply_interval(chunk, dt_slot, interval_slot, 1.0, line);
     local_get(chunk, dt_slot, line);
 }
@@ -2362,6 +2998,8 @@ pub fn emit_datetime_sub(chunks: &mut [Chunk], current: usize, line: u32) {
     let dt_slot = alloc_local(chunk);
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
+    // DateTimeImmutable::sub returns a new instance; mutable DateTime mutates.
+    emit_clone_if_immutable(chunk, dt_slot, line);
     emit_apply_interval(chunk, dt_slot, interval_slot, -1.0, line);
     local_get(chunk, dt_slot, line);
 }
