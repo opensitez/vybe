@@ -454,7 +454,7 @@ pub fn run() {
 
     // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
     if emit_wasm {
-        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&compiled.chunks);
+        let wasm_bytes = vybe_platform_wasm::write_wasm(&compiled.chunks);
         let out_path = source_path.with_extension("wasm");
         std::fs::write(&out_path, &wasm_bytes).unwrap();
         eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
@@ -495,7 +495,7 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
     };
     eprintln!("Loading WASM: {} ({} bytes)", path.display(), data.len());
 
-    let chunks = match vybe_bytecode::wasm::read_wasm(&data) {
+    let chunks = match vybe_platform_wasm::read_wasm(&data) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("WASM error: {e}");

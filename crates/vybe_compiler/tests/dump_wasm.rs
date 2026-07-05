@@ -13,6 +13,6 @@ fn dump_wasm_imports() {
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
-    let wasm = vybe_bytecode::wasm::write_wasm(&chunks);
+    let wasm = vybe_platform_wasm::write_wasm(&chunks);
     std::fs::write("/tmp/test_js.wasm", &wasm).unwrap();
 }

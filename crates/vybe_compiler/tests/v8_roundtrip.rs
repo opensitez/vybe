@@ -25,7 +25,7 @@ fn compile_to_wasm(src: &str) -> Vec<u8> {
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
-    vybe_bytecode::wasm::write_wasm(&chunks)
+    vybe_platform_wasm::write_wasm(&chunks)
 }
 
 fn run_on_v8(wasm: &[u8], export: &str) -> Result<String, String> {

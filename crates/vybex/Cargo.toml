@@ -12,6 +12,7 @@ gui_forms = []
 [dependencies]
 vybe_compiler = { workspace = true }
 vybe_bytecode = { workspace = true }
+vybe_platform_wasm = { workspace = true }
 vybe_host = { workspace = true, features = ["gui"] }
 vybe_widgets = { workspace = true }
 uuid = { workspace = true }

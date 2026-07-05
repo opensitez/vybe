@@ -88,7 +88,7 @@ pub fn compile_csharp_to_wasm(src: &str) -> Vec<u8> {
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");
-    vybe_bytecode::wasm::write_wasm(&chunks)
+    vybe_platform_wasm::write_wasm(&chunks)
 }
 
 pub fn extract_imports(wasm: &[u8]) -> Vec<(String, String)> {

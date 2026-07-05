@@ -242,7 +242,7 @@ impl Bundle {
 
         // Load and append WASM binary chunks
         for wf in &self.wasm_files {
-            let wasm_chunks = vybe_bytecode::wasm::read_wasm(&wf.data)
+            let wasm_chunks = vybe_platform_wasm::read_wasm(&wf.data)
                 .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
             eprintln!(
                 "[vybex] Loaded {} chunks from {}",

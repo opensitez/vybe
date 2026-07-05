@@ -10,6 +10,30 @@
 //! producing a unified import table for the VM.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+/// A binary-format loader registered by a platform crate — decodes a
+/// module binary (.wasm, .class, …) into chunks. The VM itself ships no
+/// codecs; platforms/* register theirs at host startup (e.g.
+/// `vybe_platform_wasm::register()`), keyed by file extension.
+pub type BinaryLoader = fn(&[u8]) -> Result<Vec<crate::Chunk>, String>;
+
+static BINARY_LOADERS: OnceLock<Mutex<HashMap<String, BinaryLoader>>> = OnceLock::new();
+
+/// Register a chunk-producing loader for a file extension (no dot,
+/// lowercase — "wasm", "class"). Later registrations replace earlier
+/// ones, so hosts can override a platform's default.
+pub fn register_binary_loader(ext: &str, loader: BinaryLoader) {
+    BINARY_LOADERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(ext.to_lowercase(), loader);
+}
+
+fn binary_loader(ext: &str) -> Option<BinaryLoader> {
+    BINARY_LOADERS.get()?.lock().unwrap().get(ext).copied()
+}
 
 /// A typed function signature in an interface.
 #[derive(Debug, Clone)]
@@ -641,7 +665,15 @@ impl ModuleResolver {
             .to_lowercase();
 
         let module = match ext.as_str() {
-            "wasm" => self.resolve_wasm(&abs_path)?,
+            _ if binary_loader(&ext).is_some() => {
+                self.resolve_binary(&abs_path, binary_loader(&ext).unwrap())?
+            }
+            "wasm" => {
+                return Err(format!(
+                    ".wasm module resolution requires a registered loader (call vybe_platform_wasm::register() at startup): {}",
+                    source
+                ));
+            }
             "js" => {
                 return Err(format!(
                     "JS module resolution requires vybe_compiler_js (use .vybe project for cross-language): {}",
@@ -661,10 +693,11 @@ impl ModuleResolver {
         Ok(&self.cache[&abs_path])
     }
 
-    /// Resolve a .wasm module — read binary, extract exports.
-    fn resolve_wasm(&self, path: &str) -> Result<ResolvedModule, String> {
+    /// Resolve a binary module through a registered platform loader —
+    /// read the file, decode to chunks, extract exports.
+    fn resolve_binary(&self, path: &str, loader: BinaryLoader) -> Result<ResolvedModule, String> {
         let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
-        let chunks = crate::wasm::read_wasm(&data)?;
+        let chunks = loader(&data)?;
 
         let mut exports = HashMap::new();
         for (i, chunk) in chunks.iter().enumerate() {

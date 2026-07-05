@@ -35,8 +35,7 @@ pub mod component;
 pub mod component_model;
 pub mod project;
 pub use component::{
-    Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult, Linker,
-    ModuleExport, ModuleResolver, ResolvedModule, ValType,
+    BinaryLoader, Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult,
+    Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader,
 };
 pub use project::ProjectConfig;
-pub mod wasm;
