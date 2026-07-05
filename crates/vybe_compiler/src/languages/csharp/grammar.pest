@@ -146,7 +146,7 @@ explicit_interface_indexer_declaration = {
     type_name ~ explicit_interface_name ~ "." ~ "this" ~ "[" ~ param_list ~ "]" ~ property_body
 }
 indexer_declaration = {
-    type_name ~ indexer_name ~ "[" ~ param_list ~ "]" ~ property_body
+    type_name ~ indexer_name ~ "[" ~ param_list ~ "]" ~ (property_body | expression_body)
 }
 
 // Constructor: ClassName(params) : base/this(args) { body }

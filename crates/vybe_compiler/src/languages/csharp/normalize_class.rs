@@ -176,7 +176,14 @@ pub fn normalize_class(
                 modifiers: m,
                 ..
             } => {
-                let (canonical, _) = canonicalize_method(ClassLang::CSharp, pname);
+                // C# is case-sensitive, and a property is read/written via member
+                // access (`obj.Prop`), which the VM's STRUCT_GET/SET resolves to a
+                // `__get_<Prop>` / `__set_<Prop>` accessor by the EXACT source name.
+                // Methods can lowercase their canonical because their call sites
+                // lowercase too, but property accessors are keyed by the raw field
+                // name — lowercasing here would bind `__get_prop` while access looks
+                // up `__get_Prop`, so the getter never fires. Preserve case (like JS).
+                let canonical = pname.clone();
                 let access = access_from_visibility(m.visibility);
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(

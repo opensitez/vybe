@@ -5873,6 +5873,20 @@ fn infer_csharp_expr_type(
     }
 }
 
+/// C# `char` is modeled as a one-character JS string ("C# over JS"), so a
+/// `char`-typed binding must NOT carry a type hint that drives the compiler's
+/// numeric `char` coercion (`Number()` + byte-truncate) — that turns the string
+/// into `NaN`. Map `char` → `string` for storage hints; all other types pass
+/// through unchanged. Char literals already lower to 1-char strings at runtime,
+/// so comparisons / `foreach` / interpolation then flow through ordinary JS
+/// string handling.
+fn csharp_storage_type_hint(type_name: &str) -> String {
+    match type_name.trim().to_lowercase().as_str() {
+        "char" | "system.char" => "string".to_string(),
+        _ => type_name.to_string(),
+    }
+}
+
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
@@ -5906,7 +5920,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if let Some(type_hint) = type_hint.filter(|hint| !hint.eq_ignore_ascii_case("var")) {
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
-            decl.type_hint = Some(type_hint.clone());
+            decl.type_hint = Some(csharp_storage_type_hint(&type_hint));
             if matches!(normalized_hint.as_str(), "object" | "system.object") {
                 if let Some(ref init) = decl.init {
                     if let crate::ast::ExprKind::New { class, .. } = &init.kind {
@@ -7397,7 +7411,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         Rule::explicit_interface_method_declaration | Rule::method_declaration => {
             walk_method(mp, mods).map(|m| vec![m])
         }
-        Rule::field_declaration => walk_field(mp, mods).map(|m| vec![m]),
+        Rule::field_declaration => walk_field(mp, mods),
         Rule::operator_declaration => walk_operator(mp, mods).map(|m| vec![m]),
         Rule::explicit_interface_indexer_declaration | Rule::indexer_declaration => {
             walk_indexer(mp, mods)
@@ -8202,6 +8216,18 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                 }
             }
             Rule::param_list => params = walk_params(p)?,
+            // Expression-bodied indexer: `public int this[int i] => expr;` is a
+            // get-only indexer whose body is `return expr;`.
+            Rule::expression_body => {
+                if let Some(expr_pair) = p.into_inner().next() {
+                    let span = to_span(&expr_pair);
+                    let expr = walk_expression(expr_pair)?;
+                    getter = Some(vec![Statement::with_span(
+                        StmtKind::Return(Some(expr)),
+                        span,
+                    )]);
+                }
+            }
             Rule::property_body => {
                 for acc in p.into_inner() {
                     if acc.as_rule() == Rule::accessor {
@@ -8390,36 +8416,43 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
     ))))
 }
 
-fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
-    let mut name = String::new();
+fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
     let mut type_hint = None;
-    let mut init = None;
+    let mut declarators: Vec<VarDeclarator> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
+            // `public int A, B;` declares one field per comma-separated
+            // declarator — walk them all, not just the first.
             Rule::var_declarator_list => {
-                // Take first declarator
-                if let Some(vd) = p.into_inner().find(|p| p.as_rule() == Rule::var_declarator) {
-                    let decl = walk_var_declarator(vd)?;
-                    if let BindingPattern::Ident(n) = decl.pattern {
-                        name = n;
+                for vd in p.into_inner() {
+                    if vd.as_rule() == Rule::var_declarator {
+                        declarators.push(walk_var_declarator(vd)?);
                     }
-                    init = decl.init;
                 }
             }
             _ => {}
         }
     }
 
-    Ok(ClassMember::Field {
-        name,
-        type_hint,
-        init,
-        modifiers: mods,
-        with_events: false,
-        array_bounds: None,
-    })
+    Ok(declarators
+        .into_iter()
+        .map(|decl| {
+            let name = match decl.pattern {
+                BindingPattern::Ident(n) => n,
+                _ => String::new(),
+            };
+            ClassMember::Field {
+                name,
+                type_hint: type_hint.clone(),
+                init: decl.init,
+                modifiers: mods.clone(),
+                with_events: false,
+                array_bounds: None,
+            }
+        })
+        .collect())
 }
 
 // ── Struct ──────────────────────────────────────────────────────────────────
@@ -9339,7 +9372,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(user_var),
-                            type_hint: Some(type_hint),
+                            type_hint: Some(csharp_storage_type_hint(&type_hint)),
                             init: Some(Expression::ident(&source_var)),
                             array_bounds: None,
                             with_events: false,
@@ -10468,7 +10501,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let right = walk_expression(inner.remove(0))?;
                 if op_str == "=" {
                     Ok(ExprKind::Assign {
-                        target: Box::new(left),
+                        target: Box::new(strip_object_get_lvalue(left)),
                         value: Box::new(right),
                     })
                 } else {
@@ -10487,7 +10520,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         _ => CompoundOp::Add,
                     };
                     Ok(ExprKind::Assign {
-                        target: Box::new(left.clone()),
+                        target: Box::new(strip_object_get_lvalue(left.clone())),
                         value: Box::new(Expression::new(ExprKind::Binary {
                             op: compound_to_binop(op),
                             left: Box::new(left),
@@ -13218,6 +13251,31 @@ fn unquote_raw_interpolated_string(s: &str) -> Result<String, String> {
 /// Normalizes language-specific names to canonical builtin calls so the compiler
 /// dispatches uniformly across all languages.
 ///
+/// Undo an eager DateTime-accessor rewrite when the expression is used as an
+/// assignment target. `canonicalize_member_access` turns `x.Year` / `.Month` /
+/// `.Day` / … into `__csharp_object_get(x, "Year")` because those are DateTime
+/// property names — harmless as a read (generic property get), but as an lvalue
+/// (`this.Year = v` on a user field named `Year`) it produces a call target that
+/// can't be assigned. Convert it back to a plain member so the write is a normal
+/// field store. (`.NET` DateTime properties are read-only, so a legitimate
+/// DateTime accessor never appears on the left of `=`.)
+fn strip_object_get_lvalue(expr: Expression) -> Expression {
+    if let ExprKind::Call { callee, args, .. } = &expr.kind {
+        if matches!(&callee.kind, ExprKind::Ident(n) if n == "__csharp_object_get")
+            && args.len() == 2
+        {
+            if let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind {
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(args[0].value.clone()),
+                    field: field.clone(),
+                    null_safe: false,
+                });
+            }
+        }
+    }
+    expr
+}
+
 /// `arr.Length` → `Call(__len__, [arr])`
 /// `list.Count` → `Call(__len__, [list])`
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
