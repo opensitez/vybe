@@ -6826,8 +6826,12 @@ impl Compiler {
             if let Some(chunk_idx) =
                 self.resolve_instance_method_overload_chunk(object, field, &arg_exprs)
             {
+                // Must re-resolve with the SAME include_receiver=false the
+                // chunk lookup used — `arg_exprs` here never contains the
+                // receiver, and mismatched flags strip a real argument
+                // (and can select a different overload than `chunk_idx`).
                 let overload = self
-                    .resolve_instance_method_overload(object, field, &arg_exprs, true)
+                    .resolve_instance_method_overload(object, field, &arg_exprs, false)
                     .ok_or_else(|| format!("failed to resolve method overload for {}", field))?;
                 if overload.signature.has_rest {
                     let line = self.line;

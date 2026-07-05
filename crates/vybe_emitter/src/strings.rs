@@ -140,6 +140,22 @@ pub fn emit_str_concat(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(idx, 2, line);
 }
 
+/// Concat with ToString coercion of both operands (VB `&`, C# string
+/// concat, …): `wasm:js-string.concat` is spec-strict and traps on
+/// non-string args, so operands that may be numbers/booleans must go
+/// through `ecma:string.String` first.
+/// Stack: [l, r] → [String(l) + String(r)]
+pub fn emit_str_concat_coercing(chunk: &mut Chunk, line: u32) {
+    let to_str = chunk.add_import("ecma:string", "String");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    let r = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, r, line); // [l]
+    chunk.emit_call(to_str, 1, line); // [String(l)]
+    chunk.emit_op_u16(Op::LOCAL_GET, r, line); // [String(l), r]
+    chunk.emit_call(to_str, 1, line); // [String(l), String(r)]
+    chunk.emit_call(concat, 2, line);
+}
+
 /// Reverse string. Stack: [string] → [reversed]
 /// Composed: split("") → reverse() → join("")
 pub fn emit_str_reverse(chunk: &mut Chunk, line: u32) {

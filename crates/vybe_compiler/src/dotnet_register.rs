@@ -39,7 +39,9 @@ impl Compiler {
     pub(crate) fn register_dotnet_classes(&mut self) -> Result<(), String> {
         // Step 1: shared `controlSetProperty` import. All setter chunks call
         // through this single import index — `add_import` dedupes for us, so
-        // calling it before each setter is safe.
+        // calling it before each setter is safe. The wrapper chunks stay
+        // free of LOCAL imports (strings are pool constants there), so the
+        // baked indices always resolve through the script-table fallback.
         let set_prop_idx = self.chunks_mut()[0]
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_SET_PROPERTY);
         let get_prop_idx = self.chunks_mut()[0]
@@ -111,10 +113,6 @@ impl Compiler {
         //
         // Method bindings are stored under their lowercased name because
         // that's what the canonical AST emits for `obj.MethodName(...)`.
-        // Use a `String` for the lowercased method name (the lifetime of
-        // the static `&str` doesn't survive the lowercasing) and store it
-        // alongside the binding so the borrow stays alive while we build
-        // the constructor chunk.
         let mut method_lowered_names: Vec<String> = Vec::with_capacity(class.methods.len());
         let mut method_thunk_indices: Vec<usize> = Vec::with_capacity(class.methods.len());
         for method in class.methods {

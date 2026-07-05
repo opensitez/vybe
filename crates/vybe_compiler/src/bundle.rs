@@ -244,16 +244,17 @@ impl Bundle {
         for wf in &self.wasm_files {
             let wasm_chunks = vybe_platform_wasm::read_wasm(&wf.data)
                 .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
-            eprintln!(
-                "[vybex] Loaded {} chunks from {}",
-                wasm_chunks.len(),
-                wf.path.display()
-            );
-            // Register WASM functions as globals so source code can call them
-            for wc in &wasm_chunks {
-                if !wc.name.is_empty() && wc.name != "<script>" {
-                    // The WASM chunk index will be: current chunks.len() + position
-                    eprintln!("  → fn {} (arity={})", wc.name, wc.arity);
+            if std::env::var_os("VYBE_TRACE").is_some() {
+                eprintln!(
+                    "[vybex] Loaded {} chunks from {}",
+                    wasm_chunks.len(),
+                    wf.path.display()
+                );
+                // The WASM chunk index will be: current chunks.len() + position
+                for wc in &wasm_chunks {
+                    if !wc.name.is_empty() && wc.name != "<script>" {
+                        eprintln!("  → fn {} (arity={})", wc.name, wc.arity);
+                    }
                 }
             }
             chunks.extend(wasm_chunks);

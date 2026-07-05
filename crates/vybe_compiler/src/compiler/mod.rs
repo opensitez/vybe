@@ -2668,6 +2668,24 @@ impl Compiler {
                 self.emit_var_get(ep);
                 self.emit_u8(Op::CALL_REF, 0);
                 self.emit(Op::DROP);
+            } else {
+                // C#-style entry: `static void Main()` lives as a static
+                // method stamped on the class object (class normalization),
+                // not as a bare global. Find the class declaring it and
+                // invoke `<Class>.<ep>()`.
+                let ep_canon = self.canon(ep);
+                let host_class = self
+                    .pending_classes
+                    .iter()
+                    .find(|(_, pc)| pc.static_method_names.iter().any(|m| *m == ep_canon))
+                    .map(|(name, _)| name.clone());
+                if let Some(class_name) = host_class {
+                    self.emit_var_get(&class_name);
+                    let key = self.str_const(&ep_canon);
+                    self.emit_u16(Op::STRUCT_GET, key);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
+                }
             }
         }
 
@@ -14685,7 +14703,7 @@ impl Compiler {
             }
             BinOp::Concat => {
                 let l = self.line;
-                common::strings::emit_str_concat(self.chunk(), l);
+                common::strings::emit_str_concat_coercing(self.chunk(), l);
             }
             BinOp::In => {
                 if self.is_python_profile() {
