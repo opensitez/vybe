@@ -10,6 +10,8 @@ extensions = ["php", "phtml"]
 
 [compiler]
 function_return = "explicit"
+member_call_on_null_error = "Error" # `$null->method()` throws `Error` (PHP);
+                                    # JS default is `TypeError`.
 throwable_is_root = true            # `Throwable` is the universal root; the
                                     # `Error` and `Exception` branches are
                                     # siblings, so `catch (Exception)` does not
