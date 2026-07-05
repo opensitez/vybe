@@ -1504,8 +1504,8 @@ impl Compiler {
                 field,
                 null_safe,
             } => {
-                if self.js_private_member_access_forbidden(field) {
-                    self.emit_js_private_access_denied(field)?;
+                if self.private_member_access_forbidden(field) {
+                    self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
                 // §19.3 global-object semantics: `globalThis.X` reads resolve
@@ -5738,8 +5738,8 @@ impl Compiler {
                 if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) =
                     (&class.kind, &member.kind)
                 {
-                    if self.js_private_member_access_forbidden(member_name) {
-                        self.emit_js_private_access_denied(member_name)?;
+                    if self.private_member_access_forbidden(member_name) {
+                        self.emit_private_access_denied(member_name)?;
                         return Ok(());
                     }
                     if let Some(value) = self.enum_member_ordinal(class_name, member_name) {

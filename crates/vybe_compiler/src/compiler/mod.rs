@@ -3902,7 +3902,7 @@ impl Compiler {
         owner_class: &str,
         field: &str,
     ) -> Option<String> {
-        if !self.is_js_profile() || !field.starts_with('#') {
+        if !self.profile.supports_private_fields || !field.starts_with('#') {
             return None;
         }
         Some(format!(
@@ -3925,7 +3925,7 @@ impl Compiler {
     }
 
     fn js_member_storage_name_for_receiver(&self, receiver: &Expression, field: &str) -> String {
-        if !self.is_js_profile() || !field.starts_with('#') {
+        if !self.profile.supports_private_fields || !field.starts_with('#') {
             return self.js_member_storage_name(field);
         }
 
@@ -4003,11 +4003,11 @@ impl Compiler {
         }
     }
 
-    fn js_private_member_access_forbidden(&self, field: &str) -> bool {
-        self.is_js_profile() && field.starts_with('#') && self.current_class.is_none()
+    fn private_member_access_forbidden(&self, field: &str) -> bool {
+        self.profile.supports_private_fields && field.starts_with('#') && self.current_class.is_none()
     }
 
-    fn emit_js_private_access_denied(&mut self, field: &str) -> Result<(), String> {
+    fn emit_private_access_denied(&mut self, field: &str) -> Result<(), String> {
         let message = format!("Cannot access private member {}", field);
         self.emit_const(Value::String(Arc::from(message.as_str())));
         self.emit_js_exception_ctor_from_message_value("TypeError")?;
@@ -12752,8 +12752,8 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, class_tmp);
                 if let ExprKind::Ident(name) = &member.kind {
-                    if self.js_private_member_access_forbidden(name) {
-                        self.emit_js_private_access_denied(name)?;
+                    if self.private_member_access_forbidden(name) {
+                        self.emit_private_access_denied(name)?;
                         return Ok(());
                     }
                     let field_name = match &class.kind {
@@ -12775,8 +12775,8 @@ impl Compiler {
                 }
             }
             ExprKind::Member { object, field, .. } => {
-                if self.js_private_member_access_forbidden(field) {
-                    self.emit_js_private_access_denied(field)?;
+                if self.private_member_access_forbidden(field) {
+                    self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
                 if let ExprKind::Ident(obj_name) = &object.kind {

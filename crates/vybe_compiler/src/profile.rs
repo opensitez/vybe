@@ -117,6 +117,21 @@ pub struct LanguageProfile {
     /// an explicit `break`. VB/Pascal/Python: each case is independent.
     pub switch_fallthrough: bool,
 
+    /// The language has ECMAScript-style private class members (`#field`).
+    /// Only languages that declare this treat a `#`-prefixed member specially;
+    /// the shared compiler no longer keys that on the JS name.
+    pub supports_private_fields: bool,
+
+    /// Functions/class-constructors are first-class objects carrying
+    /// `Function.prototype` methods `.bind`/`.call`/`.apply` (ECMAScript
+    /// §20.2.3). Languages that declare this route those member calls through
+    /// the function-object path instead of instance-method dispatch.
+    pub has_function_prototype_bind: bool,
+
+    /// The global `Function` is a constructor that builds a function from
+    /// string arguments (ECMAScript §20.2.1.1). JS-only today.
+    pub has_function_constructor: bool,
+
     /// PHP/Java: `Throwable` is the universal exception root; `Exception`
     /// is only one branch (the `Error` branch is a sibling), so
     /// `catch (Exception)` must NOT be a catch-all — it matches via the
@@ -587,6 +602,18 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("throwable_is_root")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let supports_private_fields = compiler
+        .get("supports_private_fields")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_function_constructor = compiler
+        .get("has_function_constructor")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let has_function_prototype_bind = compiler
+        .get("has_function_prototype_bind")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let string_aware_relational = compiler
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
@@ -971,6 +998,9 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         throwable_is_root,
+        supports_private_fields,
+        has_function_prototype_bind,
+        has_function_constructor,
         member_call_on_null_error,
         string_aware_relational,
         lexical_block_scope,

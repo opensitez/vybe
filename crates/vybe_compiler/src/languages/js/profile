@@ -11,6 +11,9 @@ extensions = ["js", "mjs"]
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
+supports_private_fields = true      # ECMAScript `#private` class members
+has_function_prototype_bind = true  # Function.prototype .bind/.call/.apply
+has_function_constructor = true     # new Function("a","return a") constructor
 # ECMA-262 §15.7: instance methods live on the class prototype and
 # construction binds from it — decorator-style reassignment
 # (C.prototype.m = wrap(C.prototype.m)) reaches later instances.

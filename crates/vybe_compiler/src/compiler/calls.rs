@@ -3044,7 +3044,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
                 let fn_tmp = self.define_local("__static_container_fn");
                 let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
-                if self.is_js_profile() && field.starts_with('#') {
+                if self.profile.supports_private_fields && field.starts_with('#') {
                     if let Some(overload) = self.resolve_static_method_overload_for_type(
                         &class_canon,
                         field,
@@ -3337,7 +3337,7 @@ impl Compiler {
                 // through %Function.prototype% unless shadowed by an own
                 // static — skip static dispatch so the generic
                 // Function.prototype route handles them.
-                if self.is_js_profile()
+                if self.profile.has_function_prototype_bind
                     && matches!(method_name.as_str(), "bind" | "call" | "apply")
                 {
                     if let Some(class_canon) = early_static_class_canon.as_ref() {
@@ -4023,7 +4023,8 @@ impl Compiler {
                 // own static with that name — clear the static-dispatch
                 // route so the generic Function.prototype path below
                 // handles them (class constructors are function objects).
-                if self.is_js_profile() && matches!(field.as_str(), "bind" | "call" | "apply") {
+                if self.profile.has_function_prototype_bind
+                    && matches!(field.as_str(), "bind" | "call" | "apply") {
                     if let Some(canon) = static_class_canon.as_ref() {
                         let canon_field = self.canon(field);
                         let shadowed = self
@@ -5596,11 +5597,11 @@ impl Compiler {
             null_safe,
         } = &callee.kind
         {
-            if self.js_private_member_access_forbidden(field) {
-                self.emit_js_private_access_denied(field)?;
+            if self.private_member_access_forbidden(field) {
+                self.emit_private_access_denied(field)?;
                 return Ok(());
             }
-            if self.is_js_profile() && field.starts_with('#') && !*null_safe {
+            if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__js_private_call_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
@@ -6209,7 +6210,7 @@ impl Compiler {
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
-            if self.is_js_profile() && field.starts_with('#') && !*null_safe {
+            if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
                 let class_parts = self.flatten_member_chain(object);
                 let class_name = if let Some(current_class) = self.current_class.clone() {
                     if class_parts
@@ -7442,7 +7443,7 @@ impl Compiler {
 
         // ── Simple call: name(args) / expr(args) ────────────────────
         if let ExprKind::Ident(name) = &callee.kind {
-            if self.is_js_profile() && name == "Function" {
+            if self.profile.has_function_constructor && name == "Function" {
                 for arg in &arg_exprs {
                     self.compile_expr(arg)?;
                 }
