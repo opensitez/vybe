@@ -884,180 +884,195 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::php::misc_adapter::emit_php_unserialize(chunks, current, argc, line)
         }
         "php.pdo_new" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_new(chunks, current, argc, line)
+            crate::emitter::php::pdo_adapter::emit_php_pdo_new(chunks, current, argc, line)
         }
         "php.pdo_query" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_query(chunks, current, argc, line)
+            crate::emitter::php::pdo_adapter::emit_php_pdo_query(chunks, current, argc, line)
         }
         "php.pdo_exec" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_exec(chunks, current, argc, line)
+            crate::emitter::php::pdo_adapter::emit_php_pdo_exec(chunks, current, argc, line)
         }
         "php.pdo_prepare" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_prepare(chunks, current, argc, line)
+            crate::emitter::php::pdo_adapter::emit_php_pdo_prepare(chunks, current, argc, line)
         }
+        "php.db_prepare" => {
+            crate::emitter::php::db_adapter::emit_db_prepare(chunks, current, argc, line)
+        }
+        "php.pdo_statement_fetch_column" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch_column(chunks, current, argc, line),
+        "php.pdo_statement_row_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_row_count(chunks, current, argc, line),
+        "php.pdo_statement_column_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_column_count(chunks, current, argc, line),
+        "php.pdo_get_attribute" => crate::emitter::php::pdo_adapter::emit_php_pdo_get_attribute(chunks, current, argc, line),
+        "php.pdo_quote" => crate::emitter::php::pdo_adapter::emit_php_pdo_quote(chunks, current, argc, line),
+        "php.pdo_error_code" => crate::emitter::php::pdo_adapter::emit_php_pdo_error_code(chunks, current, argc, line),
+        "php.pdo_last_insert_id" => crate::emitter::php::pdo_adapter::emit_php_pdo_last_insert_id(chunks, current, argc, line),
+        "php.pdo_error_info" => crate::emitter::php::pdo_adapter::emit_php_pdo_error_info(chunks, current, argc, line),
+        "php.mysqli_stmt_attr_get" => super::mysqli_adapter::emit_mysqli_stmt_attr_get(chunks, current, argc, line),
+        "php.mysqli_stmt_true" => super::mysqli_adapter::emit_mysqli_stmt_true(chunks, current, argc, line),
+        "php.mysqli_stmt_false" => super::mysqli_adapter::emit_mysqli_stmt_false(chunks, current, argc, line),
+        "php.mysqli_stmt_get_result" => super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line),
         "php.pdo_set_attribute" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_set_attribute(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_set_attribute(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_begin_transaction" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_begin_transaction(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_begin_transaction(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_commit" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_commit(chunks, current, argc, line)
+            crate::emitter::php::pdo_adapter::emit_php_pdo_commit(chunks, current, argc, line)
         }
-        "php.pdo_rollback" => crate::emitter::php::database_adapter::emit_php_pdo_rollback(
+        "php.pdo_rollback" => crate::emitter::php::pdo_adapter::emit_php_pdo_rollback(
             chunks, current, argc, line,
         ),
         "php.pdo_statement_bind_param" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_statement_bind_param(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_bind_param(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_statement_bind_value" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_statement_bind_value(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_bind_value(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_statement_execute" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_statement_execute(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_execute(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_statement_fetch" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_statement_fetch(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch(
                 chunks, current, argc, line,
             )
         }
         "php.pdo_statement_fetch_all" => {
-            crate::emitter::php::database_adapter::emit_php_pdo_statement_fetch_all(
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch_all(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_report" => crate::emitter::php::database_adapter::emit_php_mysqli_report(
+        "php.mysqli_report" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_report(
             chunks, current, argc, line,
         ),
-        "php.mysqli_connect" => crate::emitter::php::database_adapter::emit_php_mysqli_connect(
+        "php.mysqli_connect" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_connect(
             chunks, current, argc, line,
         ),
         "php.mysqli_init" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_init(chunks, current, argc, line)
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_init(chunks, current, argc, line)
         }
         "php.mysqli_real_connect" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_real_connect(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_real_connect(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_connect_errno" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_connect_errno(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_connect_errno(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_connect_error" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_connect_error(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_connect_error(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_error" => crate::emitter::php::database_adapter::emit_php_mysqli_error(
+        "php.mysqli_error" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_error(
             chunks, current, argc, line,
         ),
-        "php.mysqli_query" => crate::emitter::php::database_adapter::emit_php_mysqli_query(
+        "php.mysqli_query" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_query(
             chunks, current, argc, line,
         ),
-        "php.mysqli_prepare" => crate::emitter::php::database_adapter::emit_php_mysqli_prepare(
+        "php.mysqli_prepare" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_prepare(
             chunks, current, argc, line,
         ),
-        "php.mysqli_select_db" => crate::emitter::php::database_adapter::emit_php_mysqli_select_db(
+        "php.mysqli_select_db" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_select_db(
             chunks, current, argc, line,
         ),
         "php.mysqli_set_charset" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_set_charset(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_set_charset(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_ping" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_ping(chunks, current, argc, line)
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_ping(chunks, current, argc, line)
         }
-        "php.mysqli_errno" => crate::emitter::php::database_adapter::emit_php_mysqli_errno(
+        "php.mysqli_errno" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_errno(
             chunks, current, argc, line,
         ),
         "php.mysqli_affected_rows" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_affected_rows(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_affected_rows(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_insert_id" => crate::emitter::php::database_adapter::emit_php_mysqli_insert_id(
+        "php.mysqli_insert_id" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_insert_id(
             chunks, current, argc, line,
         ),
         "php.mysqli_num_fields" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_num_fields(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_num_fields(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_fetch_field" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_fetch_field(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_field(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_free_result" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_free_result(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_free_result(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_more_results" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_more_results(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_more_results(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_next_result" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_next_result(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_next_result(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_close" => crate::emitter::php::database_adapter::emit_php_mysqli_close(
+        "php.mysqli_close" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_close(
             chunks, current, argc, line,
         ),
         "php.mysqli_real_escape_string" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_real_escape_string(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_real_escape_string(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_character_set_name" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_character_set_name(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_character_set_name(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_get_client_info" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_get_client_info(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_get_client_info(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_get_server_info" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_get_server_info(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_get_server_info(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_fetch_array" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_fetch_array(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_array(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_fetch_assoc" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_fetch_assoc(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_assoc(
                 chunks, current, argc, line,
             )
         }
         "php.mysqli_fetch_object" => {
-            crate::emitter::php::database_adapter::emit_php_mysqli_fetch_object(
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_object(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_num_rows" => crate::emitter::php::database_adapter::emit_php_mysqli_num_rows(
+        "php.mysqli_num_rows" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_num_rows(
             chunks, current, argc, line,
         ),
-        "php.mysqli_fetch_all" => crate::emitter::php::database_adapter::emit_php_mysqli_fetch_all(
+        "php.mysqli_fetch_all" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_all(
             chunks, current, argc, line,
         ),
 

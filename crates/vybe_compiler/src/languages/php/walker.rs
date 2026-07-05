@@ -13117,6 +13117,23 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "PHP_FLOAT_EPSILON" => mk_member("Number", "EPSILON"),
         // ── PHP integer-like literals ──
         "PHP_INT_SIZE" => ExprKind::Lit(Literal::Int(8)),
+        // ── Error-reporting level bitmasks (ext/standard) ──
+        "E_ERROR" => ExprKind::Lit(Literal::Int(1)),
+        "E_WARNING" => ExprKind::Lit(Literal::Int(2)),
+        "E_PARSE" => ExprKind::Lit(Literal::Int(4)),
+        "E_NOTICE" => ExprKind::Lit(Literal::Int(8)),
+        "E_CORE_ERROR" => ExprKind::Lit(Literal::Int(16)),
+        "E_CORE_WARNING" => ExprKind::Lit(Literal::Int(32)),
+        "E_COMPILE_ERROR" => ExprKind::Lit(Literal::Int(64)),
+        "E_COMPILE_WARNING" => ExprKind::Lit(Literal::Int(128)),
+        "E_USER_ERROR" => ExprKind::Lit(Literal::Int(256)),
+        "E_USER_WARNING" => ExprKind::Lit(Literal::Int(512)),
+        "E_USER_NOTICE" => ExprKind::Lit(Literal::Int(1024)),
+        "E_STRICT" => ExprKind::Lit(Literal::Int(2048)),
+        "E_RECOVERABLE_ERROR" => ExprKind::Lit(Literal::Int(4096)),
+        "E_DEPRECATED" => ExprKind::Lit(Literal::Int(8192)),
+        "E_USER_DEPRECATED" => ExprKind::Lit(Literal::Int(16384)),
+        "E_ALL" => ExprKind::Lit(Literal::Int(32767)),
         "PHP_FLOAT_DIG" => ExprKind::Lit(Literal::Int(15)),
         // ── PHP round mode flags ──
         "PHP_ROUND_HALF_UP" => ExprKind::Lit(Literal::Int(1)),

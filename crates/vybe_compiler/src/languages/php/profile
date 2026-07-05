@@ -710,6 +710,7 @@ __php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args 
 
 [known_types]
 PDO = ["common", "php.pdo_new"]
+mysqli = ["common", "php.mysqli_init"]
 
 [value_methods]
 
@@ -717,7 +718,7 @@ toFixed          = { emit = "host:ecma:number:toFixed",           min_args = 0, 
 
 query            = { emit = "common:php.pdo_query",              min_args = 1, max_args = 1 }
 exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }
-prepare          = { emit = "common:php.pdo_prepare",            min_args = 1, max_args = 1 }
+prepare          = { emit = "common:php.db_prepare",             min_args = 1, max_args = 1 }
 setAttribute     = { emit = "common:php.pdo_set_attribute",      min_args = 2, max_args = 2 }
 beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, max_args = 0 }
 commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }
@@ -727,6 +728,33 @@ bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2,
 bindValue        = { emit = "common:php.pdo_statement_bind_value", min_args = 2, max_args = 4 }
 fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
 fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
+fetchColumn      = { emit = "common:php.pdo_statement_fetch_column", min_args = 0, max_args = 1 }
+rowCount         = { emit = "common:php.pdo_statement_row_count",  min_args = 0, max_args = 0 }
+columnCount      = { emit = "common:php.pdo_statement_column_count", min_args = 0, max_args = 0 }
+getAttribute     = { emit = "common:php.pdo_get_attribute",       min_args = 1, max_args = 1 }
+quote            = { emit = "common:php.pdo_quote",               min_args = 1, max_args = 2 }
+errorCode        = { emit = "common:php.pdo_error_code",          min_args = 0, max_args = 0 }
+errorInfo        = { emit = "common:php.pdo_error_info",           min_args = 0, max_args = 0 }
+lastInsertId     = { emit = "common:php.pdo_last_insert_id",      min_args = 0, max_args = 1 }
+attr_get         = { emit = "common:php.mysqli_stmt_attr_get",    min_args = 1, max_args = 1 }
+
+# ── mysqli_stmt OO methods (thin over the shared wasi:sql db_adapter) ──
+bind_param       = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 255 }
+bind_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 255 }
+store_result     = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
+free_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
+reset            = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
+close            = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
+send_long_data   = { emit = "common:php.mysqli_stmt_true",       min_args = 2, max_args = 2 }
+data_seek        = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 1 }
+get_warnings     = { emit = "common:php.mysqli_stmt_false",      min_args = 0, max_args = 0 }
+more_results     = { emit = "common:php.mysqli_stmt_false",      min_args = 0, max_args = 0 }
+next_result      = { emit = "common:php.mysqli_stmt_false",      min_args = 0, max_args = 0 }
+get_result       = { emit = "common:php.mysqli_stmt_get_result", min_args = 0, max_args = 0 }
+fetch_assoc      = { emit = "common:php.mysqli_fetch_assoc",     min_args = 0, max_args = 0 }
+fetch_row        = { emit = "common:php.mysqli_fetch_array",     min_args = 0, max_args = 0 }
+fetch_object     = { emit = "common:php.mysqli_fetch_object",    min_args = 0, max_args = 1 }
+fetch_all        = { emit = "common:php.mysqli_fetch_all",       min_args = 0, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY HIGHER-ORDER METHODS — same dispatch as JS profile.
