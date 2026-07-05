@@ -1352,7 +1352,72 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16, str_slice:
     hc(c, num_prec, 2);
     ls(c, RAW);
 
-    // Strip trailing zeros only for fixed notation (RAW has '.' and no 'e').
+    // C switches %g to scientific when the decimal exponent is < -4, but
+    // Number.toPrecision only switches below -6. A fixed toPrecision result whose
+    // magnitude is < 1e-4 (RAW reads "0.0000…" / "-0.0000…") must be re-rendered
+    // in scientific notation. Detecting on the rounded string means a value that
+    // rounds up across the 1e-4 boundary (→ "0.0001") correctly stays fixed.
+    {
+        let rb = c.emit_block(0);
+        lg(c, RAW);
+        cs(c, "0.0000");
+        {
+            let idx = c.add_import("ecma:string", "indexOf");
+            c.emit_call(idx, 2, 0);
+        }
+        ci(c, 0);
+        c.emit_op(Op::I32_EQ, 0);
+        lg(c, RAW);
+        cs(c, "-0.0000");
+        {
+            let idx = c.add_import("ecma:string", "indexOf");
+            c.emit_call(idx, 2, 0);
+        }
+        ci(c, 0);
+        c.emit_op(Op::I32_EQ, 0);
+        c.emit_op(Op::I32_OR, 0);
+        // ...and the value is non-zero (0.0 formats as "0", exponent treated as 0).
+        lg(c, N);
+        cf(c, 0.0);
+        c.emit_op(Op::F64_NE, 0);
+        c.emit_op(Op::I32_AND, 0);
+        c.emit_op(Op::I32_EQZ, 0);
+        c.emit_br_if(0, 0); // not small-magnitude fixed → keep toPrecision result
+        // RAW = N.toExponential(P-1) ; P-1 = (PREC>=0 ? max(PREC,1) : 6) - 1
+        lg(c, N);
+        {
+            lg(c, PREC);
+            ci(c, 0);
+            c.emit_op(Op::I32_LT_S, 0);
+            c.emit_if_value(0);
+            cf(c, 6.0);
+            c.emit_else(0);
+            lg(c, PREC);
+            ci(c, 1);
+            c.emit_op(Op::I32_LT_S, 0);
+            c.emit_if_value(0);
+            cf(c, 1.0);
+            c.emit_else(0);
+            lg(c, PREC);
+            c.emit_op(Op::F64_FROM_I32, 0);
+            c.emit_end(0);
+            c.emit_end(0);
+            cf(c, 1.0);
+            c.emit_op(Op::F64_SUB, 0);
+        }
+        {
+            let idx = c.add_import("ecma:number", "toExponential");
+            c.emit_call(idx, 2, 0);
+        }
+        ls(c, RAW);
+        c.emit_end(0);
+        c.patch_block(rb);
+    }
+
+    // Strip trailing zeros from the fractional part (and a bare trailing '.'),
+    // for both fixed notation and the mantissa of scientific notation. POS holds
+    // the '.' index (invariant — we only delete chars to its right); SAVEI holds
+    // the mantissa end (the 'e' index, or the string length when fixed).
     {
         let sb = c.emit_block(0);
         lg(c, RAW);
@@ -1361,36 +1426,46 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16, str_slice:
             let idx = c.add_import("ecma:string", "indexOf");
             c.emit_call(idx, 2, 0);
         }
+        ls(c, POS);
+        lg(c, POS);
         ci(c, 0);
         c.emit_op(Op::I32_LT_S, 0);
-        c.emit_br_if(0, 0); // no '.' → skip
+        c.emit_br_if(0, 0); // no '.' → nothing to strip
+
+        // SAVEI = (eIdx = RAW.indexOf("e")) < 0 ? RAW.length : eIdx
         lg(c, RAW);
         cs(c, "e");
         {
             let idx = c.add_import("ecma:string", "indexOf");
             c.emit_call(idx, 2, 0);
         }
+        ls(c, SAVEI);
+        lg(c, SAVEI);
         ci(c, 0);
-        c.emit_op(Op::I32_GE_S, 0);
-        c.emit_br_if(0, 0); // has 'e' → skip
+        c.emit_op(Op::I32_LT_S, 0);
+        c.emit_if_value(0);
+        lg(c, RAW);
+        {
+            let idx = c.add_import("wasm:js-string", "length");
+            c.emit_call(idx, 1, 0);
+        }
+        c.emit_else(0);
+        lg(c, SAVEI);
+        c.emit_end(0);
+        ls(c, SAVEI);
 
-        // while last char == '0' { RAW = RAW.slice(0, len-1) }
+        // while (SAVEI-1 > POS) && RAW[SAVEI-1]=='0': delete that char, SAVEI--
         {
             let zb = c.emit_block(0);
             let (zlp, _) = c.emit_loop_s(0);
+            lg(c, SAVEI);
+            ci(c, 1);
+            c.emit_op(Op::I32_SUB, 0);
+            lg(c, POS);
+            c.emit_op(Op::I32_LE_S, 0);
+            c.emit_br_if(1, 0); // reached the '.' → stop zero-stripping
             lg(c, RAW);
-            {
-                let idx = c.add_import("wasm:js-string", "length");
-                c.emit_call(idx, 1, 0);
-            }
-            c.emit_op(Op::I32_EQZ, 0);
-            c.emit_br_if(1, 0);
-            lg(c, RAW);
-            lg(c, RAW);
-            {
-                let idx = c.add_import("wasm:js-string", "length");
-                c.emit_call(idx, 1, 0);
-            }
+            lg(c, SAVEI);
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
             {
@@ -1399,36 +1474,40 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16, str_slice:
             }
             ci(c, 48);
             c.emit_op(Op::I32_NE, 0);
-            c.emit_br_if(1, 0); // last != '0' → break
+            c.emit_br_if(1, 0); // not '0' → stop
+            // RAW = RAW.slice(0, SAVEI-1) + RAW.slice(SAVEI)
             lg(c, RAW);
             ci(c, 0);
-            lg(c, RAW);
-            {
-                let idx = c.add_import("wasm:js-string", "length");
-                c.emit_call(idx, 1, 0);
-            }
+            lg(c, SAVEI);
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
             {
                 let idx = c.add_import("ecma:string", "slice");
                 c.emit_call(idx, 3, 0);
             }
+            lg(c, RAW);
+            lg(c, SAVEI);
+            {
+                let idx = c.add_import("ecma:string", "slice");
+                c.emit_call(idx, 2, 0);
+            }
+            hc(c, str_cat, 2);
             ls(c, RAW);
+            lg(c, SAVEI);
+            ci(c, 1);
+            c.emit_op(Op::I32_SUB, 0);
+            ls(c, SAVEI);
             c.emit_br(0, 0);
             c.emit_end(0);
             c.patch_loop(zlp);
             c.emit_end(0);
             c.patch_block(zb);
         }
-        // drop a bare trailing '.'
+        // drop a bare '.' at SAVEI-1 (== POS): RAW = RAW.slice(0,SAVEI-1)+RAW.slice(SAVEI)
         {
             let db = c.emit_block(0);
             lg(c, RAW);
-            lg(c, RAW);
-            {
-                let idx = c.add_import("wasm:js-string", "length");
-                c.emit_call(idx, 1, 0);
-            }
+            lg(c, SAVEI);
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
             {
@@ -1437,20 +1516,23 @@ fn conv_g(c: &mut Chunk, num_prec: u16, str_upper: u16, str_cat: u16, str_slice:
             }
             ci(c, 46);
             c.emit_op(Op::I32_NE, 0);
-            c.emit_br_if(0, 0); // last != '.' → skip
+            c.emit_br_if(0, 0); // not '.' → skip
             lg(c, RAW);
             ci(c, 0);
-            lg(c, RAW);
-            {
-                let idx = c.add_import("wasm:js-string", "length");
-                c.emit_call(idx, 1, 0);
-            }
+            lg(c, SAVEI);
             ci(c, 1);
             c.emit_op(Op::I32_SUB, 0);
             {
                 let idx = c.add_import("ecma:string", "slice");
                 c.emit_call(idx, 3, 0);
             }
+            lg(c, RAW);
+            lg(c, SAVEI);
+            {
+                let idx = c.add_import("ecma:string", "slice");
+                c.emit_call(idx, 2, 0);
+            }
+            hc(c, str_cat, 2);
             ls(c, RAW);
             c.emit_end(0);
             c.patch_block(db);
