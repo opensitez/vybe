@@ -492,5 +492,7 @@ console.log(a[2]);
 console.log(a.length);
 "#,
     );
-    assert_eq!(out, vec!["1", "2", "9007199254740993", "3"]);
+    // Node-verified: BigInt64Array elements print with the `n` suffix;
+    // length is a plain number.
+    assert_eq!(out, vec!["1n", "2n", "9007199254740993n", "3"]);
 }

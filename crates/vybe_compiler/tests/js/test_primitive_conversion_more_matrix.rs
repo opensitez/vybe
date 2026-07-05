@@ -22,10 +22,13 @@ console.log(value);
     boolean_symbol_is_true => { r#"console.log(Boolean(Symbol("x")));"#, ["true"] };
     boolean_bigint_zero_is_false => { r#"console.log(Boolean(0n));"#, ["false"] };
     boolean_bigint_nonzero_is_true => { r#"console.log(Boolean(1n));"#, ["true"] };
+    // Node-verified: explicit Number(1n) is ALLOWED (§21.1.1.1 converts
+    // BigInt→Number); it's implicit ToNumber — unary `+` — that throws
+    // TypeError (§7.1.4).
     number_bigint_throws_typeerror => {
         r#"
 try {
-  Number(1n);
+  +1n;
   console.log("no error");
 } catch (error) {
   console.log(error instanceof TypeError);

@@ -51,14 +51,17 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: getBigInt64 returns a BigInt, printed with `n`.
     dataview_get_bigint64_negative => {
         r#"const b=new ArrayBuffer(8); const v=new DataView(b); v.setBigInt64(0, -42n, true); console.log(v.getBigInt64(0, true));"#,
-        ["-42"]
+        ["-42n"]
     };
 
+    // Node-verified: prints with `n`. Currently limited by Value::BigInt(i64)
+    // — u64::MAX round-trips as -1n until the wider backing lands.
     dataview_get_biguint64_large => {
         r#"const b=new ArrayBuffer(8); const v=new DataView(b); v.setBigUint64(0, 18446744073709551615n, true); console.log(v.getBigUint64(0, true));"#,
-        ["18446744073709551615"]
+        ["18446744073709551615n"]
     };
 
     dataview_byte_length_matches_buffer => {

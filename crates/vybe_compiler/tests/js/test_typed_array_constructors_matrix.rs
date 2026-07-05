@@ -51,14 +51,17 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: BigInt64Array elements are BigInts, printed with `n`.
     bigint64array_bigint_elements => {
         r#"const a=new BigInt64Array([1n,-1n]); console.log(a[0]);console.log(a[1]);"#,
-        ["1", "-1"]
+        ["1n", "-1n"]
     };
 
+    // Node-verified: prints with `n`. Currently limited by Value::BigInt(i64)
+    // — u64::MAX round-trips as -1n until the wider backing lands.
     biguint64array_large_bigint => {
         r#"const a=new BigUint64Array([18446744073709551615n]); console.log(a[0]);"#,
-        ["18446744073709551615"]
+        ["18446744073709551615n"]
     };
 
     typed_array_length_from_constructor => {

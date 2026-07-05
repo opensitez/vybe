@@ -61,49 +61,51 @@ crate::js_cases! {
         ["boolean"]
     };
 
+    // Node-verified: Atomics ops on BigInt64Array return BigInts, which
+    // console.log prints with the `n` suffix (§25.4 + inspection format).
     atomics_add_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=10n; console.log(Atomics.add(ia,0,5n));console.log(ia[0]);"#,
-        ["10", "15"]
+        ["10n", "15n"]
     };
 
     atomics_sub_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=20n; Atomics.sub(ia,0,3n); console.log(ia[0]);"#,
-        ["17"]
+        ["17n"]
     };
 
     atomics_and_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=7n; Atomics.and(ia,0,3n); console.log(ia[0]);"#,
-        ["3"]
+        ["3n"]
     };
 
     atomics_or_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=1n; Atomics.or(ia,0,6n); console.log(ia[0]);"#,
-        ["7"]
+        ["7n"]
     };
 
     atomics_xor_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=5n; Atomics.xor(ia,0,3n); console.log(ia[0]);"#,
-        ["6"]
+        ["6n"]
     };
 
     atomics_exchange_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=4n; console.log(Atomics.exchange(ia,0,8n));"#,
-        ["4"]
+        ["4n"]
     };
 
     atomics_compare_exchange_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=2n; console.log(Atomics.compareExchange(ia,0,2n,5n));console.log(ia[0]);"#,
-        ["2", "5"]
+        ["2n", "5n"]
     };
 
     atomics_load_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); ia[0]=99n; console.log(Atomics.load(ia,0));"#,
-        ["99"]
+        ["99n"]
     };
 
     atomics_store_on_bigint64_array => {
         r#"const sab=new SharedArrayBuffer(8); const ia=new BigInt64Array(sab); console.log(Atomics.store(ia,0,11n));"#,
-        ["11"]
+        ["11n"]
     };
 
     atomics_operations_on_uint32_array => {
@@ -116,8 +118,10 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: since ES2024 Atomics.load works on non-shared buffers;
+    // only Atomics.wait still requires a SharedArrayBuffer (§25.4.15).
     atomics_on_non_shared_buffer_throws => {
-        r#"const ia=new Int32Array(1); try{Atomics.load(ia,0);}catch(e){console.log(e instanceof TypeError);}"#,
+        r#"const ia=new Int32Array(1); try{Atomics.wait(ia,0,0,0);}catch(e){console.log(e instanceof TypeError);}"#,
         ["true"]
     };
 

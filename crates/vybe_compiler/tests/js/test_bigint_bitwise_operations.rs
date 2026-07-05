@@ -88,17 +88,17 @@ crate::js_cases! {
 
     bigint_constructor_from_decimal_string => {
         r#"console.log(BigInt("99"));"#,
-        ["99"]
+        ["99n"]
     };
 
     bigint_constructor_from_hex_string => {
         r#"console.log(BigInt("0xff"));"#,
-        ["255"]
+        ["255n"]
     };
 
     bigint_constructor_from_binary_string => {
         r#"console.log(BigInt("0b1010"));"#,
-        ["10"]
+        ["10n"]
     };
 
     bigint_to_string_decimal => {
@@ -116,9 +116,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: relational comparison across BigInt/Number is LEGAL
+    // (§7.2.13) — only arithmetic mixing throws. 1n < 1 is false.
     bigint_mixed_with_number_compare_throws => {
         r#"try{console.log(1n<1);}catch(e){console.log(e instanceof TypeError);}"#,
-        ["true"]
+        ["false"]
     };
 
     bigint_zero_division_throws => {
@@ -128,7 +130,7 @@ crate::js_cases! {
 
     bigint_as_object_property => {
         r#"const o={v:9n}; console.log(o.v);"#,
-        ["9"]
+        ["9n"]
     };
 
     bigint_in_array_map => {
@@ -151,9 +153,11 @@ crate::js_cases! {
         ["-42"]
     };
 
+    // Node-verified: `b++` on a BigInt binding is perfectly legal (yields
+    // 2n) — nothing here is a SyntaxError.
     bigint_postfix_increment_syntax_error => {
-        r#"try{eval("let b=1n; b++;"); console.log("ok");}catch(e){console.log(e instanceof SyntaxError);}"#,
-        ["true"]
+        r#"let b=1n; b++; console.log(b);"#,
+        ["2n"]
     };
 
     bigint_valueof_returns_same => {
@@ -183,12 +187,12 @@ crate::js_cases! {
 
     bigint_chain_arithmetic => {
         r#"console.log(((2n**3n)+1n)*2n);"#,
-        ["18"]
+        ["18n"]
     };
 
     bigint_from_octal_string => {
         r#"console.log(BigInt("0o10"));"#,
-        ["8"]
+        ["8n"]
     };
 
     bigint_string_concat_not_add => {
@@ -198,7 +202,7 @@ crate::js_cases! {
 
     bigint_abs_via_condition => {
         r#"const b=-9n; console.log(b<0n?-b:b);"#,
-        ["9"]
+        ["9n"]
     };
 
     bigint_sort_in_array => {

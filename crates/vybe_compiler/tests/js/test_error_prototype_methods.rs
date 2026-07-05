@@ -16,9 +16,12 @@ crate::js_cases! {
         ["TypeError: bad"]
     };
 
+    // Node-verified: a bare subclass has no own `name` on its prototype,
+    // so §20.5.3.4 resolves `this.name` through the chain to
+    // %Error.prototype%.name = "Error" — NOT the subclass name.
     custom_error_subclass_tostring_uses_subclass_name => {
         r#"class AppError extends Error {} console.log(new AppError("app").toString());"#,
-        ["AppError: app"]
+        ["Error: app"]
     };
 
     error_name_assignment_changes_tostring_prefix => {
@@ -76,9 +79,11 @@ crate::js_cases! {
         ["string"]
     };
 
+    // Node-verified: §20.5.3.4 step 5 — empty `name` returns msg alone,
+    // with no ": " glue.
     error_to_string_on_subclass_with_empty_name => {
         r#"class Silent extends Error {} const e=new Silent("m");e.name="";console.log(e.toString());"#,
-        [": m"]
+        ["m"]
     };
 
     thrown_error_name_preserved_in_catch => {

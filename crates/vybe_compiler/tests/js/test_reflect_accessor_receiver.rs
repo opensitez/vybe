@@ -101,19 +101,24 @@ crate::js_cases! {
         ["true", "5"]
     };
 
+    // Node-verified: §28.1.2 — the explicit newTarget (A) is exactly what
+    // `new.target` observes through the ctor chain; node prints "A".
     reflect_construct_passes_new_target_to_operators => {
         r#"class A{constructor(){this.kind=new.target.name;}} class B extends A{} const i=Reflect.construct(B,[],A); console.log(i.kind);"#,
-        ["B"]
+        ["A"]
     };
 
+    // Node-verified: §28.1.5 step 1 — primitives are not Objects; no
+    // wrapper coercion happens, it throws TypeError.
     reflect_get_on_primitive_string_wrapper_coercion => {
-        r#"console.log(Reflect.get("hi","length"));"#,
-        ["2"]
+        r#"try{Reflect.get("hi","length");}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
+    // Node-verified: §28.1.12 step 1 — non-object target throws TypeError.
     reflect_set_on_primitive_returns_false => {
-        r#"console.log(Reflect.set("hi","length",9));"#,
-        ["false"]
+        r#"try{Reflect.set("hi","length",9);}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     reflect_get_on_null_throws => {
@@ -151,8 +156,10 @@ crate::js_cases! {
         ["1"]
     };
 
+    // Node-verified: ownKeys returns STRING keys ("0","1","length") —
+    // includes(0) with a number is false (§28.1.10 / §10.4.2.4).
     reflect_own_keys_on_array_includes_length => {
-        r#"const k=Reflect.ownKeys([1,2]); console.log(k.includes("length"));console.log(k.includes(0));"#,
+        r#"const k=Reflect.ownKeys([1,2]); console.log(k.includes("length"));console.log(k.includes("0"));"#,
         ["true", "true"]
     };
 
@@ -161,9 +168,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: §7.3.15 SetIntegrityLevel calls [[PreventExtensions]],
+    // so a sealed object is NOT extensible.
     reflect_is_extensible_on_sealed_object => {
         r#"const o=Object.seal({}); console.log(Reflect.isExtensible(o));"#,
-        ["true"]
+        ["false"]
     };
 
     reflect_prevent_extensions_on_frozen_object_still_false_extensible => {
@@ -211,9 +220,11 @@ crate::js_cases! {
         ["true", "true"]
     };
 
+    // Node-verified: Date instances have NO own keys — internal slots are
+    // not properties (§10.1.11); Reflect.ownKeys(new Date(0)) is [].
     reflect_own_keys_on_date_includes_internal_slots_as_keys => {
         r#"const k=Reflect.ownKeys(new Date(0)); console.log(k.length>0);"#,
-        ["true"]
+        ["false"]
     };
 
     reflect_get_prototype_of_function => {
