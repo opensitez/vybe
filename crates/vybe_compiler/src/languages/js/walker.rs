@@ -3781,6 +3781,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(ExprKind::ClassExpr {
                 name,
                 parent,
+                interfaces: Vec::new(),
                 members,
             })
         }
@@ -4475,6 +4476,11 @@ fn unescape_template(s: &str) -> String {
                         result.push(ch);
                         continue;
                     }
+                    // Unpaired surrogate escape → U+FFFD (see unquote).
+                    if (0xD800..=0xDFFF).contains(&n) {
+                        result.push('\u{FFFD}');
+                        continue;
+                    }
                 }
                 result.push('\\');
                 result.push('u');
@@ -5151,6 +5157,13 @@ fn unquote(s: &str) -> String {
                             }
                             if let Some(c) = char::from_u32(n) {
                                 out.push(c);
+                                continue;
+                            }
+                            // Unpaired surrogate escape: UTF-8 storage
+                            // cannot hold it — U+FFFD is the closest
+                            // faithful value (what toWellFormed yields).
+                            if (0xD800..=0xDFFF).contains(&n) {
+                                out.push('\u{FFFD}');
                                 continue;
                             }
                         }

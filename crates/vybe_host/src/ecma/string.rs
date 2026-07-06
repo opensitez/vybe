@@ -375,8 +375,10 @@ fn register_query_ops(vm: &mut VM) {
             if pos < 0 {
                 return s_val("");
             }
-            match s.chars().nth(pos as usize) {
-                Some(ch) => s_val(&ch.to_string()),
+            // §22.1.3.2: one UTF-16 code unit, not a code point — an
+            // unpaired surrogate half surfaces as U+FFFD (UTF-8 storage).
+            match utf16_units(&s).get(pos as usize) {
+                Some(unit) => s_val(&String::from_utf16_lossy(&[*unit])),
                 None => s_val(""),
             }
         }),
@@ -536,8 +538,10 @@ fn register_extract_ops(vm: &mut VM) {
         "slice",
         Box::new(|_ctx, args| {
             let s = s_arg(args, 0);
-            let chars: Vec<char> = s.chars().collect();
-            let len = chars.len();
+            // §22.1.3.21: indices are UTF-16 code units (same unit space
+            // as `length`/`charCodeAt`), not code points.
+            let units = utf16_units(&s);
+            let len = units.len();
             let start = clamp_signed(i32_arg(args, 1, 0), len);
             let end = if args.len() >= 3 {
                 clamp_signed(i32_arg(args, 2, len as i32), len)
@@ -547,7 +551,7 @@ fn register_extract_ops(vm: &mut VM) {
             if start >= end {
                 return s_val("");
             }
-            s_val(&chars[start..end].iter().collect::<String>())
+            s_val(&String::from_utf16_lossy(&units[start..end]))
         }),
     );
 }
@@ -605,9 +609,14 @@ fn register_trim_ops(vm: &mut VM) {
 fn register_pad_ops(vm: &mut VM) {
     fn pad(args: &[Value], at_start: bool) -> Value {
         let s = s_arg(args, 0);
-        let chars: Vec<char> = s.chars().collect();
+        // §22.1.3.17.1 StringPad: maxLength and the filler truncation are
+        // measured in UTF-16 CODE UNITS ("1".padEnd(3,"🌟") → "1🌟": the
+        // two-unit star fills exactly). A truncation that splits a
+        // surrogate pair would produce a lone surrogate per spec — our
+        // UTF-8 backing substitutes U+FFFD at that edge.
+        let units: Vec<u16> = s.encode_utf16().collect();
         let target = i32_arg(args, 1, 0).max(0) as usize;
-        if chars.len() >= target {
+        if units.len() >= target {
             return s_val(&s);
         }
         let pad_str = if args.len() >= 3 {
@@ -618,12 +627,13 @@ fn register_pad_ops(vm: &mut VM) {
         if pad_str.is_empty() {
             return s_val(&s);
         }
-        let pad_chars: Vec<char> = pad_str.chars().collect();
-        let needed = target - chars.len();
-        let mut filler = String::with_capacity(needed);
+        let pad_units: Vec<u16> = pad_str.encode_utf16().collect();
+        let needed = target - units.len();
+        let mut filler_units: Vec<u16> = Vec::with_capacity(needed);
         for i in 0..needed {
-            filler.push(pad_chars[i % pad_chars.len()]);
+            filler_units.push(pad_units[i % pad_units.len()]);
         }
+        let filler = String::from_utf16_lossy(&filler_units);
         let result = if at_start {
             format!("{}{}", filler, s)
         } else {
@@ -773,9 +783,19 @@ fn register_modify_ops(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:string",
         "repeat",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let s = s_arg(args, 0);
-            let n = i32_arg(args, 1, 0).max(0) as usize;
+            // §22.1.3.19 steps 3–4: count < 0 or count = +∞ throws
+            // RangeError (NaN → 0 via ToIntegerOrInfinity).
+            let n = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+            if n < 0.0 || (n.is_infinite() && n > 0.0) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "Invalid count value",
+                ));
+                return Value::Undefined;
+            }
+            let n = if n.is_nan() { 0 } else { n as usize };
             s_val(&s.repeat(n))
         }),
     );

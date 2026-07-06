@@ -1065,14 +1065,19 @@ fn register_construction(vm: &mut VM) {
 // ── Property access ───────────────────────────────────────────────────
 
 fn register_access(vm: &mut VM) {
-    // get(obj, key) -> value (walks prototype chain)
+    // get(obj, key) -> value — §7.3.2 GetV: full [[Get]], walking the
+    // prototype chain AND invoking accessor getters (a destructuring
+    // read like `const {msg} = o` lands here and must fire `get msg()`).
     vm.register_host_fn(
         "ecma:object",
         "get",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 if let Some(v) = proto_walk_get(&obj, &key) {
+                    return v;
+                }
+                if let Some(v) = proto_walk_invoke_getter(ctx, &obj, &key) {
                     return v;
                 }
             }
@@ -2299,22 +2304,27 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
     let o = obj.lock().unwrap();
     let getter_key = format!("__get_{}", key);
     let setter_key = format!("__set_{}", key);
-    // Discriminating data vs accessor in the accessor convention: a real
-    // accessor stores the value BEHIND `__get_<key>` (no plain entry),
-    // while a non-writable data property keeps its plain entry plus a
-    // noop `__set_<key>` guard. Plain entry present ⇒ data descriptor.
-    if let Some(v) = o.properties.get(key) {
-        let mut desc = Object::new();
-        desc.properties.insert("value".into(), v.clone());
-        desc.properties.insert(
-            "writable".into(),
-            Value::Bool(!o.properties.contains_key(&setter_key)),
-        );
-        desc.properties
-            .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
-        desc.properties
-            .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
-        return Value::Object(Arc::new(Mutex::new(desc)));
+    // Discriminating data vs accessor in the accessor convention:
+    //   - `__get_<key>` present ⇒ ACCESSOR (real getters always install
+    //     it, even when a plain placeholder entry coexists).
+    //   - plain entry without `__get_` ⇒ DATA; a noop `__set_<key>`
+    //     alongside it is the freeze/defineProperty non-writable guard
+    //     (writable=false), NOT an accessor.
+    //   - `__set_` only, no plain entry ⇒ setter-only accessor.
+    if !o.properties.contains_key(&getter_key) {
+        if let Some(v) = o.properties.get(key) {
+            let mut desc = Object::new();
+            desc.properties.insert("value".into(), v.clone());
+            desc.properties.insert(
+                "writable".into(),
+                Value::Bool(!o.properties.contains_key(&setter_key)),
+            );
+            desc.properties
+                .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
+            desc.properties
+                .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
+            return Value::Object(Arc::new(Mutex::new(desc)));
+        }
     }
     if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key) {
         let mut desc = Object::new();

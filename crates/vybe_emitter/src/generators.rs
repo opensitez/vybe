@@ -826,3 +826,168 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
+
+// ── Generator driver chunks (`it.next` protocol methods) ──────────────
+//
+// Whole-chunk builders for the `__stdlib_generator_next` /
+// `__stdlib_async_generator_next` drivers the VM attaches to every
+// continuation (`attach_continuation_protocols`). They compose the
+// recipe emitters above; `runtime_helpers.rs` only registers them.
+
+/// Sync driver — drive one step, return the raw `{value, done}`
+/// IteratorResult (§27.5.1.2).
+pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_generator_next");
+    c.arity = 0;
+    c.local_count = 2; // value(0) + has_more(1)
+    let value_local = 0u16;
+    let has_more_local = 1u16;
+    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
+    let value_key = c.add_constant(Value::String(Arc::from("value")));
+    let done_key = c.add_constant(Value::String(Arc::from("done")));
+
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    emit_next(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+
+    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    c.emit_dup(0);
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_dup(0);
+    c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
+    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+/// §27.6.1.2 AsyncGenerator.prototype.next(v) — drive one step and
+/// return a PROMISE of the IteratorResult. Mirrors the compiler's
+/// inline sync fast path (compiler/calls.rs `.next()`), plus the async
+/// deltas:
+///   - `next()`  → spec `resume` + `(on yield)` drive (`emit_next`);
+///   - `next(v)` → RESUME with v (the suspended `yield` evaluates to
+///     v), spec `done` via `ecma:value.isGeneratorDone`;
+///   - a prior `.return()` stamped `__vybe_gen_returned` → short-
+///     circuit to `{undefined, true}` (§27.5.1.2 step 2 mirror);
+///   - Await(value) before delivery — async bodies hand back promises
+///     (e.g. the wrapped return value); a rejection rejects the result;
+///   - completion with no explicit return leaves null → deliver
+///     undefined (§27.5.3.5); `done` is a real Boolean;
+///   - any throw out of the body REJECTS (`ecma:promise.reject`)
+///     instead of throwing synchronously into the caller.
+pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_async_generator_next");
+    c.arity = 1; // optional resume value; missing arg pads as Undefined
+    c.local_count = 4; // v(0) + value(1) + done_i32(2) + err(3)
+    let v_local = 0u16;
+    let value_local = 1u16;
+    let done_local = 2u16;
+    let err_local = 3u16;
+    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
+    let value_key = c.add_constant(Value::String(Arc::from("value")));
+    let done_key = c.add_constant(Value::String(Arc::from("done")));
+    let returned_key = c.add_constant(Value::String(Arc::from("__vybe_gen_returned")));
+    let started_key = c.add_constant(Value::String(Arc::from("__vybe_gen_started")));
+    // Per-chunk import convention (same as the sibling helpers): the
+    // CALL_IMPORT operand indexes THIS chunk's own import table, which
+    // the runtime resolves by (module, name).
+    let resolve_idx = c.add_import("ecma:promise", "resolve");
+    let reject_idx = c.add_import("ecma:promise", "reject");
+    let is_done_idx = c.add_import("ecma:value", "isGeneratorDone");
+
+    let try_patch = crate::errors::emit_try_start(&mut c, 0);
+
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    c.emit_op_u16(Op::STRUCT_GET, returned_key, 0); // null if never stamped
+    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    // `.return()` already closed the generator: {undefined, true}
+    // without resuming (resume on a returned cont would run the body).
+    core_wasm::undefined(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    core_wasm::i32_const(&mut c, 0, 1);
+    c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
+    c.emit_else(0);
+
+    // next() vs next(v): REF_IS_NULL is true for both Null and the
+    // Undefined the VM pads missing args with — and §27.6.1.2 treats
+    // next() and next(undefined) identically.
+    c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    // next() — drive one step; emit_next pushes [value, has_more].
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    emit_next(&mut c, 0);
+    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    ops::emit_dyn_not_into(imports, &mut c, 0); // i32 done = !has_more
+    c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    c.emit_else(0);
+    // next(v) — RESUME with v; the suspended `yield` evaluates to v.
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
+    emit_resume(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    c.emit_call(is_done_idx, 1, 0);
+    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
+    c.emit_end(0);
+
+    // Stamp started — `.throw()` on an unstarted generator keys on it.
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    core_wasm::bool_const(&mut c, 0, true);
+    c.emit_op_u16(Op::STRUCT_SET, started_key, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // §27.6.1.2: Await(value). Async bodies hand back promises (the
+    // completion value arrives promise-wrapped); deliver the settled
+    // value. Non-promises pass through; a rejection throws into the
+    // catch below and rejects the result promise.
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    crate::functions::emit_await(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+
+    // §27.5.3.5: completion with no explicit return value leaves null
+    // on the stack — the spec `value` is undefined.
+    c.emit_op_u16(Op::LOCAL_GET, done_local, 0);
+    ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_if(0);
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_if(0);
+    core_wasm::undefined(&mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    c.emit_end(0);
+    c.emit_end(0);
+
+    c.emit_end(0); // end returned-short-circuit if/else
+    crate::errors::emit_try_end(&mut c, 0);
+
+    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    c.emit_dup(0);
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_dup(0);
+    c.emit_op_u16(Op::LOCAL_GET, done_local, 0);
+    // §27.6.1.2: `done` is a Boolean, not the raw i32 flag.
+    ops::emit_i32_to_bool(&mut c, 0);
+    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_call(resolve_idx, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+
+    crate::errors::patch_catch(&mut c, try_patch);
+    c.emit_op_u16(Op::LOCAL_SET, err_local, 0);
+    c.emit_op_u16(Op::LOCAL_GET, err_local, 0);
+    c.emit_call(reject_idx, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}

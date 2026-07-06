@@ -652,8 +652,11 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             Value::Bool(false)
         }
         "slice" | "substring" => {
-            let chars: Vec<char> = s.chars().collect();
-            let len = chars.len() as i32;
+            // §22.1.3.21/§22.1.3.24: indices are UTF-16 code units (same
+            // unit space as `length` and `charCodeAt`), not code points —
+            // "x😀y".slice(1,3) is the emoji's surrogate pair.
+            let units = utf16_units(s.as_ref());
+            let len = units.len() as i32;
             let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let end = args
                 .get(1)
@@ -667,20 +670,20 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             } else if start < 0 {
                 ((len + start).max(0)) as usize
             } else {
-                (start as usize).min(chars.len())
+                (start as usize).min(units.len())
             };
             let mut e_idx = if method == "substring" {
                 end.max(0).min(len) as usize
             } else if end < 0 {
                 ((len + end).max(0)) as usize
             } else {
-                (end as usize).min(chars.len())
+                (end as usize).min(units.len())
             };
             if method == "substring" && s_idx > e_idx {
                 std::mem::swap(&mut s_idx, &mut e_idx);
             }
-            let out: String = if s_idx < e_idx {
-                chars[s_idx..e_idx].iter().collect()
+            let out = if s_idx < e_idx {
+                utf16_to_string(&units[s_idx..e_idx])
             } else {
                 String::new()
             };
@@ -785,23 +788,29 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             Value::Bool(hay.ends_with(needle.as_str()))
         }
         "at" => {
-            let chars: Vec<char> = s.chars().collect();
-            let len = chars.len() as i32;
+            // §22.1.3.1: UTF-16 code-unit indexing — at(i) on a surrogate
+            // pair returns ONE unit (an unpaired half surfaces as U+FFFD,
+            // the closest our UTF-8 storage can represent).
+            let units = utf16_units(s.as_ref());
+            let len = units.len() as i32;
             let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let idx = if i < 0 { len + i } else { i };
             if idx < 0 || idx >= len {
                 Value::Undefined
             } else {
-                Value::String(Arc::from(chars[idx as usize].to_string().as_str()))
+                let out = utf16_to_string(&units[idx as usize..idx as usize + 1]);
+                Value::String(Arc::from(out.as_str()))
             }
         }
         "charAt" => {
-            let chars: Vec<char> = s.chars().collect();
+            // §22.1.3.2: single UTF-16 code unit (see `at` above).
+            let units = utf16_units(s.as_ref());
             let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 || (i as usize) >= chars.len() {
+            if i < 0 || (i as usize) >= units.len() {
                 Value::String(Arc::from(""))
             } else {
-                Value::String(Arc::from(chars[i as usize].to_string().as_str()))
+                let out = utf16_to_string(&units[i as usize..i as usize + 1]);
+                Value::String(Arc::from(out.as_str()))
             }
         }
         "charCodeAt" => {
@@ -861,11 +870,24 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "trim" => Value::String(Arc::from(s.trim())),
         "trimStart" | "trimLeft" => Value::String(Arc::from(s.trim_start())),
         "trimEnd" | "trimRight" => Value::String(Arc::from(s.trim_end())),
+        // §22.1.3.10 / §22.1.3.28 (ES2024). Storage is UTF-8, which cannot
+        // hold unpaired surrogates, so every representable string is
+        // well-formed; unpaired halves were already replaced with U+FFFD
+        // on the way in — exactly what toWellFormed would do.
+        "isWellFormed" => Value::Bool(true),
+        "toWellFormed" => Value::String(s.clone()),
         "repeat" => {
-            let n = args
-                .first()
-                .map(|v| v.as_i32().max(0) as usize)
-                .unwrap_or(0);
+            // §22.1.3.19 steps 3–4: count < 0 or +∞ → RangeError
+            // (NaN → 0 via ToIntegerOrInfinity).
+            let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+            if n < 0.0 || (n.is_infinite() && n > 0.0) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    "Invalid count value",
+                ));
+                return Value::Undefined;
+            }
+            let n = if n.is_nan() { 0 } else { n as usize };
             Value::String(Arc::from(s.repeat(n).as_str()))
         }
         "split" => {
@@ -890,10 +912,24 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 }
             }
             let sep = args.first().map(to_str).unwrap_or_default();
-            let limit = args.get(1).and_then(|v| {
-                let n = v.as_i32();
-                if n > 0 { Some(n as usize) } else { None }
-            });
+            // §22.1.3.22 step 6: lim = undefined → 2^32-1, else ToUint32.
+            // lim 0 → empty array (0 is a real limit, not "no limit").
+            let limit = match args.get(1) {
+                None | Some(Value::Undefined) => None,
+                Some(v) => {
+                    let n = v.as_f64();
+                    // §7.1.7 ToUint32: NaN and ±∞ → +0.
+                    let lim = if n.is_nan() || n.is_infinite() {
+                        0
+                    } else {
+                        (n as i64).rem_euclid(1i64 << 32) as u32
+                    };
+                    Some(lim as usize)
+                }
+            };
+            if limit == Some(0) {
+                return make_array(Vec::new());
+            }
             let parts: Vec<Value> = if sep.is_empty() {
                 let chars = s
                     .chars()
@@ -1082,6 +1118,9 @@ fn invoke_string_symbol_hook(
 }
 
 fn pad(s: &str, args: &[Value], start: bool) -> Value {
+    // §22.1.3.17.1 StringPad: maxLength and the filler truncation are in
+    // UTF-16 CODE UNITS ("1".padEnd(3,"🌟") → "1🌟"). A split surrogate
+    // pair becomes U+FFFD under our UTF-8 backing.
     let target = args
         .first()
         .map(|v| v.as_i32().max(0) as usize)
@@ -1091,16 +1130,17 @@ fn pad(s: &str, args: &[Value], start: bool) -> Value {
         .map(to_str)
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| " ".to_string());
-    let cur_len = s.chars().count();
-    if cur_len >= target {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    if units.len() >= target {
         return Value::String(Arc::from(s));
     }
-    let needed = target - cur_len;
-    let mut pad_str = String::new();
-    while pad_str.chars().count() < needed {
-        pad_str.push_str(&pad_char);
+    let needed = target - units.len();
+    let pad_units: Vec<u16> = pad_char.encode_utf16().collect();
+    let mut filler_units: Vec<u16> = Vec::with_capacity(needed);
+    for i in 0..needed {
+        filler_units.push(pad_units[i % pad_units.len()]);
     }
-    let pad_trimmed: String = pad_str.chars().take(needed).collect();
+    let pad_trimmed = String::from_utf16_lossy(&filler_units);
     let out = if start {
         format!("{}{}", pad_trimmed, s)
     } else {

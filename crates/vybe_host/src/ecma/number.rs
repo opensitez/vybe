@@ -415,6 +415,12 @@ fn register_parsers(vm: &mut VM) {
 /// sign, consume the longest radix-valid prefix, return its parsed
 /// value (or NaN if the prefix is empty).
 fn parse_int_ecma(input: &str, radix: u32) -> f64 {
+    // §19.2.5 step 8: a radix outside 2..=36 (0 = auto-detect handled
+    // below) returns NaN — and must never reach char::to_digit, which
+    // PANICS on out-of-range radices.
+    if radix != 0 && !(2..=36).contains(&radix) {
+        return f64::NAN;
+    }
     let trimmed = input.trim_start();
     if trimmed.is_empty() {
         return f64::NAN;

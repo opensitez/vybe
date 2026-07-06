@@ -549,6 +549,8 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_sprintf");
     chunks.push(build_generator_next(imports));
     exports.push("__stdlib_generator_next");
+    chunks.push(build_async_generator_next(imports));
+    exports.push("__stdlib_async_generator_next");
     chunks.push(build_generator_self());
     exports.push("__stdlib_generator_self");
     chunks.push(build_iter_drain(imports));
@@ -713,6 +715,7 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_array_reverse_range" => build_array_reverse_range(imports),
         "__stdlib_sprintf" => crate::emitter::sprintf::build_sprintf(imports),
         "__stdlib_generator_next" => build_generator_next(imports),
+        "__stdlib_async_generator_next" => build_async_generator_next(imports),
         "__stdlib_generator_self" => build_generator_self(),
         "__stdlib_iter_drain" => build_iter_drain(imports),
         "__stdlib_regex_replace_pat_first" => build_regex_replace_pat_first(imports),
@@ -1539,37 +1542,9 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn build_generator_next(imports: &mut Chunk) -> Chunk {
-    use std::sync::Arc;
-
-    let mut c = Chunk::new("__stdlib_generator_next");
-    c.arity = 0;
-    c.local_count = 2; // value(0) + has_more(1)
-    let value_local = 0u16;
-    let has_more_local = 1u16;
-    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
-    let value_key = c.add_constant(Value::String(Arc::from("value")));
-    let done_key = c.add_constant(Value::String(Arc::from("done")));
-
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
-    crate::emitter::generators::emit_next(&mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
-    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
-
-    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-    c.emit_dup(0);
-    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
-    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
-    c.emit_op(Op::DROP, 0);
-    c.emit_dup(0);
-    c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
-    crate::emitter::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
-    c.emit_op(Op::DROP, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
+// Generator DRIVER chunks live with the rest of the generator machinery
+// in `vybe_emitter::generators` — this module only registers them.
+use crate::emitter::generators::{build_async_generator_next, build_generator_next};
 
 fn build_generator_self() -> Chunk {
     use std::sync::Arc;

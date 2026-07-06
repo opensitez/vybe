@@ -280,7 +280,9 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
     }
 
     let bytes = source.as_bytes();
-    let mut out = String::with_capacity(source.len() + 32);
+    // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
+    // scanner only ever branches on ASCII delimiters, so byte-wise copying is safe.
+    let mut out: Vec<u8> = Vec::with_capacity(source.len() + 32);
     let mut index = 0usize;
     let mut state = State::Normal;
 
@@ -290,14 +292,14 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
                 if starts_with_magic_constant(bytes, index, b"__FILE__")
                     && is_identifier_boundary(bytes, index, b"__FILE__".len())
                 {
-                    out.push_str(file_literal);
+                    out.extend_from_slice(file_literal.as_bytes());
                     index += b"__FILE__".len();
                     continue;
                 }
                 if starts_with_magic_constant(bytes, index, b"__DIR__")
                     && is_identifier_boundary(bytes, index, b"__DIR__".len())
                 {
-                    out.push_str(dir_literal);
+                    out.extend_from_slice(dir_literal.as_bytes());
                     index += b"__DIR__".len();
                     continue;
                 }
@@ -320,13 +322,13 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
                     state = State::BlockComment;
                 }
 
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 index += 1;
             }
             State::SingleQuoted => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
+                    out.push(bytes[index + 1]);
                     index += 2;
                     continue;
                 }
@@ -336,9 +338,9 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
                 index += 1;
             }
             State::DoubleQuoted => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
+                    out.push(bytes[index + 1]);
                     index += 2;
                     continue;
                 }
@@ -348,16 +350,16 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
                 index += 1;
             }
             State::LineComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\n' {
                     state = State::Normal;
                 }
                 index += 1;
             }
             State::BlockComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'*' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
-                    out.push('/');
+                    out.push(b'/');
                     index += 2;
                     state = State::Normal;
                     continue;
@@ -367,7 +369,7 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
         }
     }
 
-    out
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
 fn starts_with_magic_constant(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
@@ -592,8 +594,11 @@ impl JsDynamicRuntime {
         }
 
         // §19.2.1 PerformEval: parse first — invalid code throws a
-        // catchable SyntaxError.
-        let module = match vybe_compiler::languages::js::parse(trimmed) {
+        // catchable SyntaxError. parse_source_only keeps statement spans
+        // in the EVAL STRING's own coordinates (the full `parse` prepends
+        // the prelude, which shifted every span and silently broke the
+        // completion-value split below into the no-`return` fallback).
+        let module = match vybe_compiler::languages::js::parse_source_only(trimmed) {
             Ok(module) => module,
             Err(err) => return throw_eval_error(ctx, "SyntaxError", &err),
         };
@@ -614,15 +619,24 @@ impl JsDynamicRuntime {
         // plain assignment — created as a global in the mini-VM and written
         // back below.
         let mut source_text = trimmed.to_string();
+        // Names `var`-declared at eval top level — the ONLY new bindings
+        // §19.2.1.1 lets a sloppy direct eval create in the caller's
+        // environment (let/const/class stay inside eval's own scope).
+        let mut var_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         if !is_strict {
             for s in &module.body {
-                if matches!(
-                    &s.kind,
-                    vybe_compiler::ast::StmtKind::VarDecl {
-                        kind: vybe_compiler::ast::VarDeclKind::Var,
-                        ..
+                if let vybe_compiler::ast::StmtKind::VarDecl {
+                    kind: vybe_compiler::ast::VarDeclKind::Var,
+                    declarations,
+                } = &s.kind
+                {
+                    for d in declarations {
+                        let mut names = std::collections::HashSet::new();
+                        vybe_compiler::compiler::collect_binding_pattern_names_pub(
+                            &d.pattern, &mut names,
+                        );
+                        var_names.extend(names);
                     }
-                ) {
                     if let Some(off) =
                         line_col_to_offset(&source_text, s.span.start_line, s.span.start_col)
                     {
@@ -720,13 +734,39 @@ impl JsDynamicRuntime {
         // §19.2.1: assignments inside eval reach the caller's scope — write
         // non-function globals back. Shared objects were copied by Arc, so
         // in-place mutation is already visible; this covers rebinding and
-        // new bindings (`eval("y = 99")`).
+        // new bindings (`eval("y = 99")`). NEW names escape ONLY when they
+        // were `var`-declared (or bare-assigned) — §19.2.1.1: let/const/
+        // class declared inside eval stay in eval's own environment.
         {
             let outer_vm = unsafe { &mut *self.vm };
+            let let_like: std::collections::HashSet<String> = module
+                .body
+                .iter()
+                .filter_map(|s| match &s.kind {
+                    vybe_compiler::ast::StmtKind::VarDecl { kind, declarations }
+                        if !matches!(kind, vybe_compiler::ast::VarDeclKind::Var) =>
+                    {
+                        let mut names = std::collections::HashSet::new();
+                        for d in declarations {
+                            vybe_compiler::compiler::collect_binding_pattern_names_pub(
+                                &d.pattern, &mut names,
+                            );
+                        }
+                        Some(names)
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect();
             for (k, v) in &eval_vm.globals {
                 let is_function = matches!(v, Value::Object(obj)
                     if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
                 if is_function {
+                    continue;
+                }
+                let lexical = let_like.contains(k) || let_like.contains(&k.to_lowercase());
+                let pre_existing = outer_vm.globals.contains_key(k);
+                if lexical && !pre_existing {
                     continue;
                 }
                 outer_vm.globals.insert(k.clone(), v.clone());

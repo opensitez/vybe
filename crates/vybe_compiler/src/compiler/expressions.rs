@@ -5659,6 +5659,7 @@ impl Compiler {
             ExprKind::ClassExpr {
                 name,
                 parent,
+                interfaces,
                 members,
             } => {
                 let class_name = name
@@ -5677,13 +5678,19 @@ impl Compiler {
                     None
                 };
                 self.defined_globals.insert(class_name.clone());
+                // Register as a defined class too: an anonymous class read back
+                // by name inside a PHP function must be recognised as a class,
+                // otherwise emit_var_get's in-function global guard emits NULL
+                // (PHP globals aren't visible in function scope) and the `new`
+                // constructs null. Class names are language-agnostic here.
+                self.defined_classes.insert(class_name.clone());
                 let parents: Vec<String> = parent_name.into_iter().collect();
                 crate::common::classes::emit::emit_class_from_ast(
                     self,
                     expr.span.clone(),
                     &class_name,
                     &parents,
-                    &[],
+                    interfaces,
                     members,
                     &crate::ast::ClassModifiers::default(),
                     false,

@@ -563,10 +563,13 @@ impl Compiler {
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
         self.seed_shared_global_constants(&mut chunk);
-        // Mark async functions so the WASM emitter can list them in the
-        // `vybe.jspi` custom section. Async generators are still generator
-        // continuations at call time; their async surface is on `.next()`.
-        chunk.is_async = is_async && !is_generator;
+        // `is_async` carries SOURCE truth (async fns AND async generators).
+        // Consumers refine: the JSPI custom-section writer and the VM's
+        // call_async gate both exclude generators (async generators are
+        // continuations at call time — their async surface is `.next()`
+        // returning a promise, which the protocol attach selects on this
+        // flag).
+        chunk.is_async = is_async;
         // Generators: when the source marked the function as a
         // generator (Python `yield`, JS `function*`, C# `yield return`),
         // stamp the chunk so the VM wraps invocations in a

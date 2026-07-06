@@ -13,11 +13,37 @@ use crate::vm::{CallFrame, MAX_FRAMES, VM};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// True when a continuation's entry Function points at an async chunk —
+/// selects the promise-wrapping `next` driver in the protocol attach.
+pub(crate) fn continuation_entry_is_async(chunks: &[crate::chunk::Chunk], entry: &Value) -> bool {
+    if let Value::Object(obj) = entry {
+        if let ObjectKind::Function(f) = &obj.lock().unwrap().kind {
+            return chunks.get(f.chunk_index).map(|c| c.is_async).unwrap_or(false);
+        }
+    }
+    false
+}
+
 pub(crate) fn attach_continuation_protocols(
     properties: &mut HashMap<String, Value>,
     globals: &HashMap<String, Value>,
+    is_async: bool,
 ) {
-    if let Some(next) = globals.get("__vybe_generator_next").cloned() {
+    // §27.6.1.2: an ASYNC generator's `next()` returns a promise-wrapped
+    // IteratorResult — wire the async driver when the entry chunk is
+    // async (falls back to the sync driver if the async stdlib chunk
+    // wasn't bundled).
+    let next_key = if is_async
+        && globals.contains_key("__vybe_async_generator_next")
+    {
+        // Stamp the object so the compiler's inline `.next()` fast path
+        // can defer to this promise-returning driver instead.
+        properties.insert("__vybe_async_gen".into(), Value::Bool(true));
+        "__vybe_async_generator_next"
+    } else {
+        "__vybe_generator_next"
+    };
+    if let Some(next) = globals.get(next_key).cloned() {
         properties.insert("next".into(), next);
     }
     if let Some(iter) = globals.get("__vybe_generator_self").cloned() {
@@ -385,7 +411,13 @@ impl VM {
         // the stack) or suspends at an `await`, in which case only the async
         // frames are captured, the caller receives a pending Promise and
         // KEEPS RUNNING — resumption comes off the event queue (microtask).
-        if !bypass_generator && self.chunks[chunk_index].is_async {
+        if !bypass_generator
+            && self.chunks[chunk_index].is_async
+            && !self.chunks[chunk_index].is_generator
+        {
+            // Async GENERATORS fall through to the continuation branch —
+            // calling one builds the generator object; the async surface
+            // is its promise-returning `next()` (§27.6.1.2).
             let func = func.clone();
             return self.call_async(&func, argc);
         }
@@ -421,7 +453,8 @@ impl VM {
                 type_id: 0,
                 fields: Vec::new(),
             };
-            attach_continuation_protocols(&mut cont.properties, &self.globals);
+            let entry_is_async = self.chunks[chunk_index].is_async;
+            attach_continuation_protocols(&mut cont.properties, &self.globals, entry_is_async);
             if !args.is_empty() {
                 // Stash bound args so the first RESUME can re-push them.
                 let bound = Object {

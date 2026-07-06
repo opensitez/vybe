@@ -9,6 +9,14 @@ use pest_derive::Parser;
 pub(crate) struct JsParser;
 
 /// Parse JavaScript source into the common AST.
+/// Parse ONLY the given source — no prelude prepend, no directive hoist —
+/// so statement spans are in the CALLER's line/column coordinates. For
+/// tooling that does span surgery on user text (eval's completion-value
+/// extraction in vybex/dynamic.rs); execution still compiles via `parse`.
+pub fn parse_source_only(source: &str) -> Result<crate::ast::Module, String> {
+    walker::parse(source)
+}
+
 pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
     let prelude = r#"
 // Function-kind intrinsics (ECMA-262 %AsyncFunction% §27.7.1,

@@ -4271,7 +4271,17 @@ impl VM {
                         fields: Vec::new(),
                     };
                     let mut obj = obj;
-                    crate::calls::attach_continuation_protocols(&mut obj.properties, &self.globals);
+                    let entry_async = match &obj.kind {
+                        ObjectKind::Continuation(cs) => {
+                            crate::calls::continuation_entry_is_async(&self.chunks, &cs.entry)
+                        }
+                        _ => false,
+                    };
+                    crate::calls::attach_continuation_protocols(
+                        &mut obj.properties,
+                        &self.globals,
+                        entry_async,
+                    );
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 _ if op == Op::SUSPEND => {
@@ -4545,9 +4555,19 @@ impl VM {
                                 type_id: 0,
                                 fields: Vec::new(),
                             };
+                            let entry_async = match &new_obj.kind {
+                                ObjectKind::Continuation(cs) => {
+                                    crate::calls::continuation_entry_is_async(
+                                        &self.chunks,
+                                        &cs.entry,
+                                    )
+                                }
+                                _ => false,
+                            };
                             crate::calls::attach_continuation_protocols(
                                 &mut new_obj.properties,
                                 &self.globals,
+                                entry_async,
                             );
                             // Store the bound args as an array property
                             // keyed `__bound_args`; RESUME sees this on

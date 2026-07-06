@@ -720,6 +720,10 @@ pub enum ExprKind {
     ClassExpr {
         name: Option<String>,
         parent: Option<Box<Expression>>,
+        /// Interfaces the (anonymous) class implements. Only PHP populates
+        /// this today (`new class implements I {}`); other languages leave it
+        /// empty, matching the previous hardcoded `&[]`.
+        interfaces: Vec<String>,
         members: Vec<ClassMember>,
     },
     /// `function(...) { }` as an expression: `let f = function() { ... }`

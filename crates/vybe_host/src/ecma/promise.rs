@@ -29,6 +29,13 @@ static PROMISE_REACTION_HOST_IDX: OnceLock<usize> = OnceLock::new();
 // can build bound settlers to adopt a returned promise/thenable's eventual state.
 static SETTLE_FULFILLED_IDX: OnceLock<usize> = OnceLock::new();
 static SETTLE_REJECTED_IDX: OnceLock<usize> = OnceLock::new();
+// §27.2.1.3.2 Promise Resolve Function — resolves THROUGH thenables
+// (unlike __settle_fulfilled, which settles with the raw value). This is
+// what the executor's `resolve` and thenable-job callbacks must be.
+static RESOLVE_IDX: OnceLock<usize> = OnceLock::new();
+// §27.2.2.2 NewPromiseResolveThenableJob — calls thenable.then(res, rej)
+// in a MICROTASK with `this` = thenable.
+static THENABLE_JOB_IDX: OnceLock<usize> = OnceLock::new();
 // Settles a promise with a *forced* (state, value), ignoring the awaited value.
 // Used by `.finally` to preserve the original settlement after awaiting a
 // thenable the finally callback returned.
@@ -122,6 +129,49 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // §27.2.1.3.2 Promise Resolve Function. bound-args=[promise],
+    // runtime-arg=resolution. Resolves THROUGH promises/thenables (adopt
+    // eventual state / queue a thenable job) instead of settling raw.
+    vm.register_host_fn(
+        "ecma:promise",
+        "__resolve",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let value = args.get(1).cloned().unwrap_or(Value::Undefined);
+            resolve_promise_with_value(ctx, &promise, value);
+            Value::Undefined
+        }),
+    );
+
+    // §27.2.2.2 NewPromiseResolveThenableJob. bound-args=[promise,
+    // thenable, then_fn]. Calls then_fn with this=thenable and the
+    // promise's (resolve, reject) functions; a throw rejects.
+    vm.register_host_fn(
+        "ecma:promise",
+        "__thenable_job",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let promise = args.first().cloned().unwrap_or(Value::Undefined);
+            let thenable = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let then_fn = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let res = RESOLVE_IDX
+                .get()
+                .map(|&i| bound_settler(i, promise.clone()))
+                .unwrap_or(Value::Undefined);
+            let rej = SETTLE_REJECTED_IDX
+                .get()
+                .map(|&i| bound_settler(i, promise.clone()))
+                .unwrap_or(Value::Undefined);
+            let saved_this = ctx.current_js_this();
+            ctx.set_js_this(thenable.clone());
+            let outcome = ctx.try_invoke(&then_fn, &[res, rej]);
+            ctx.set_js_this(saved_this);
+            if let Err(exc) = outcome {
+                mutate_promise_state(ctx, &promise, "rejected", exc);
+            }
+            Value::Undefined
+        }),
+    );
+
     // Force-settle a promise with a bound (state, value), ignoring the runtime
     // (awaited) value. bound-args = [promise, state, forced_value].
     vm.register_host_fn(
@@ -167,6 +217,18 @@ pub fn register(vm: &mut VM) {
     let _ = PROMISE_REACTION_HOST_IDX.set(reaction_idx);
     let _ = SETTLE_FULFILLED_IDX.set(resolve_idx);
     let _ = SETTLE_REJECTED_IDX.set(reject_idx);
+    let resolve_through_idx = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__resolve".to_string()))
+        .copied()
+        .expect("__resolve just registered");
+    let _ = RESOLVE_IDX.set(resolve_through_idx);
+    if let Some(&tj) = vm
+        .host_registry
+        .get(&("ecma:promise".to_string(), "__thenable_job".to_string()))
+    {
+        let _ = THENABLE_JOB_IDX.set(tj);
+    }
     if let Some(&preserve_idx) = vm
         .host_registry
         .get(&("ecma:promise".to_string(), "__preserve".to_string()))
@@ -202,7 +264,9 @@ pub fn register(vm: &mut VM) {
                         return promise;
                     }
                 }
-                let resolve_fn = bound_settler(resolve_idx, promise.clone());
+                // §27.2.3.1: resolve is a Promise RESOLVE Function
+                // (resolves through thenables); reject settles raw.
+                let resolve_fn = bound_settler(resolve_through_idx, promise.clone());
                 let reject_fn = bound_settler(reject_idx, promise.clone());
                 ctx.invoke(&executor, &[resolve_fn, reject_fn]);
             }
@@ -215,30 +279,16 @@ pub fn register(vm: &mut VM) {
         "resolve",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let val = args.first().cloned().unwrap_or(Value::Undefined);
+            // §27.2.4.7 PromiseResolve: a native promise passes through;
+            // everything else resolves a fresh promise with the value —
+            // resolve_promise_with_value queues the ThenableJob for
+            // thenables and fulfills plain values directly.
             if is_promise(&val) {
                 return val;
             }
-            // Thenable assimilation per §27.2.1.3.2 PromiseResolve.
-            if let Some(then_fn) = get_then_method(&val) {
-                let promise = make_promise("pending", Value::Undefined);
-                let id = ctx.next_promise_id();
-                if let Value::Object(ref obj) = promise {
-                    obj.lock()
-                        .unwrap()
-                        .properties
-                        .insert("__id".into(), Value::F64(id as f64));
-                }
-                let resolve_fn = bound_settler(resolve_idx, promise.clone());
-                let reject_fn = bound_settler(reject_idx, promise.clone());
-                match ctx.try_invoke(&then_fn, &[resolve_fn, reject_fn.clone()]) {
-                    Ok(_) => {}
-                    Err(exc) => {
-                        mutate_promise_state(ctx, &promise, "rejected", exc);
-                    }
-                }
-                return promise;
-            }
-            make_promise("fulfilled", val)
+            let promise = pending_promise_with_id(ctx);
+            resolve_promise_with_value(ctx, &promise, val);
+            promise
         }),
     );
 
@@ -844,16 +894,28 @@ fn run_reaction(
 /// object itself. This is what makes a handler that returns a still-pending,
 /// later-rejecting promise correctly reject the chain.
 fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Value) {
+    // §27.2.1.3.2 step 6: resolving a promise with ITSELF is a TypeError
+    // rejection ("Chaining cycle detected").
+    if let (Value::Object(p), Value::Object(v)) = (promise, &value) {
+        if Arc::ptr_eq(p, v) {
+            let err = crate::ecma::error::new_error(
+                "TypeError",
+                "Chaining cycle detected for promise",
+            );
+            mutate_promise_state(ctx, promise, "rejected", err);
+            return;
+        }
+    }
     if is_promise(&value) {
         let (state, inner) = read_promise_state(&value);
         match state.as_str() {
             "fulfilled" => resolve_promise_with_value(ctx, promise, inner),
             "rejected" => mutate_promise_state(ctx, promise, "rejected", inner),
             _ => {
-                // Pending: forward `value`'s settlement onto `promise`.
-                if let (Some(&fi), Some(&ri)) =
-                    (SETTLE_FULFILLED_IDX.get(), SETTLE_REJECTED_IDX.get())
-                {
+                // Pending: forward `value`'s settlement onto `promise` —
+                // fulfillment re-resolves (the settled value could itself
+                // be a thenable), rejection forwards raw.
+                if let (Some(&fi), Some(&ri)) = (RESOLVE_IDX.get(), SETTLE_REJECTED_IDX.get()) {
                     let on_f = bound_settler(fi, promise.clone());
                     let on_r = bound_settler(ri, promise.clone());
                     add_reaction(&value, on_f, on_r, pending_promise_with_id(ctx));
@@ -862,19 +924,52 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
         }
         return;
     }
-    // Raw thenable (non-Promise object with a callable `.then`): drive it with
-    // this promise's settle thunks (§27.2.1.3.2 step 12 — the ThenableJob).
-    if let Some(then_fn) = get_then_method(&value) {
-        if let (Some(&fi), Some(&ri)) = (SETTLE_FULFILLED_IDX.get(), SETTLE_REJECTED_IDX.get()) {
-            let on_f = bound_settler(fi, promise.clone());
-            let on_r = bound_settler(ri, promise.clone());
-            if let Err(exc) = ctx.try_invoke(&then_fn, &[on_f, on_r]) {
-                mutate_promise_state(ctx, promise, "rejected", exc);
+    // §27.2.1.3.2 steps 8–13: ONE GetV(resolution, "then"); a throwing
+    // getter rejects; a callable `then` queues a NewPromiseResolveThenableJob
+    // (§27.2.2.2 — runs as a MICROTASK with this = thenable).
+    match get_then(ctx, &value) {
+        Err(exc) => mutate_promise_state(ctx, promise, "rejected", exc),
+        Ok(Some(then_fn)) => {
+            if let Some(&job_idx) = THENABLE_JOB_IDX.get() {
+                let job = bound_settler3(job_idx, promise.clone(), value, then_fn);
+                ctx.queue_microtask(job, Value::Undefined);
             }
-            return;
+        }
+        Ok(None) => mutate_promise_state(ctx, promise, "fulfilled", value),
+    }
+}
+
+/// §27.2.1.3.2 steps 8–9 — GetV(resolution, "then"), exactly once,
+/// honoring an accessor `then` (`__get_then` convention); a throwing
+/// getter surfaces as Err so the caller rejects with the thrown value.
+fn get_then(ctx: &mut HostContext, val: &Value) -> Result<Option<Value>, Value> {
+    let Value::Object(obj) = val else {
+        return Ok(None);
+    };
+    let getter = { obj.lock().unwrap().properties.get("__get_then").cloned() };
+    if let Some(g) = getter {
+        if is_callable(&g) {
+            let arity = match &g {
+                Value::Object(go) => match &go.lock().unwrap().kind {
+                    ObjectKind::Function(f) => f.arity,
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            let saved_this = ctx.current_js_this();
+            ctx.set_js_this(val.clone());
+            let outcome = if arity >= 1 {
+                ctx.try_invoke(&g, &[val.clone()])
+            } else {
+                ctx.try_invoke(&g, &[])
+            };
+            ctx.set_js_this(saved_this);
+            let f = outcome?;
+            return Ok(if is_callable(&f) { Some(f) } else { None });
         }
     }
-    mutate_promise_state(ctx, promise, "fulfilled", value);
+    let then_fn = { obj.lock().unwrap().properties.get("then").cloned() };
+    Ok(then_fn.filter(is_callable))
 }
 
 /// Settle a promise and drain its pending reactions.

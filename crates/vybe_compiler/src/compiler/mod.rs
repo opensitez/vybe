@@ -132,6 +132,10 @@ struct PendingMethodOverload {
 #[derive(Debug, Clone)]
 pub(crate) struct CallSignature {
     param_names: Vec<String>,
+    /// The declared default expression for each param (positionally aligned
+    /// with `param_names`), so named-arg reordering can fill an OMITTED
+    /// optional param with its real default instead of `null`.
+    param_defaults: Vec<Option<Expression>>,
     min_arity: usize,
     has_rest: bool,
 }
@@ -143,6 +147,7 @@ impl CallSignature {
                 .iter()
                 .map(|param| param.name.trim_start_matches('$').to_string())
                 .collect(),
+            param_defaults: params.iter().map(|param| param.default.clone()).collect(),
             min_arity: params
                 .iter()
                 .take_while(|param| param.default.is_none() && !param.is_rest)
@@ -819,6 +824,14 @@ fn collect_declared_names_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
         StmtKind::Labeled { body, .. } => collect_declared_names_in_stmt(body, out),
         _ => {}
     }
+}
+
+/// Public wrapper for tooling (vybex eval's §19.2.1.1 var-name harvest).
+pub fn collect_binding_pattern_names_pub(
+    pat: &crate::ast::BindingPattern,
+    out: &mut HashSet<String>,
+) {
+    collect_binding_pattern_names(pat, out);
 }
 
 fn collect_binding_pattern_names(pat: &crate::ast::BindingPattern, out: &mut HashSet<String>) {
@@ -4977,7 +4990,14 @@ impl Compiler {
     }
 
     fn current_chunk_is_js_async(&self) -> bool {
-        self.profile.async_wraps_body_in_try && self.chunks[self.current].is_async
+        // `is_async` is source truth and includes async GENERATORS, but
+        // their bodies must not promise-wrap returns or convert throws to
+        // rejections: a generator completes/throws through `resume`, and
+        // the §27.6.1.2 promise surface lives in the attached
+        // `__vybe_async_generator_next` driver instead.
+        self.profile.async_wraps_body_in_try
+            && self.chunks[self.current].is_async
+            && !self.chunks[self.current].is_generator
     }
 
     /// Same as `define_local` but with a type hint — sugar around

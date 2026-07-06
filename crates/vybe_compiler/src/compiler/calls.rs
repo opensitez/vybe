@@ -437,6 +437,13 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
 
             None
         }
+        // An array literal receiver (`new[]{1,2,3}.Where(...)`, `{1,2}.Sum()`)
+        // is an `IEnumerable<T>` in .NET, so LINQ resolves against the shared
+        // surface. Gated on `use_dotnet` so non-.NET languages (Ruby `.select`,
+        // JS array HOFs) keep their own array-method semantics.
+        ExprKind::Array(_) if compiler.profile.namespaces.use_dotnet => {
+            Some("IEnumerable".to_string())
+        }
         _ => None,
     }
 }
@@ -2250,10 +2257,32 @@ impl Compiler {
                 continue;
             }
 
-            return slots
-                .into_iter()
-                .map(|arg| arg.unwrap_or_else(|| Argument::positional(Expression::null())))
-                .collect();
+            // Reassemble in positional order. A gap BEFORE the last supplied
+            // arg is an omitted optional param — fill it with its declared
+            // default (not `null`, which the callee would treat as an explicit
+            // value and skip its default). Gaps AFTER the last supplied arg are
+            // truncated, so the callee applies its own defaults exactly as it
+            // would for a positional call with fewer arguments.
+            let last_supplied = slots.iter().rposition(Option::is_some);
+            let mut ordered_args = Vec::with_capacity(slots.len());
+            for (i, slot) in slots.into_iter().enumerate() {
+                match slot {
+                    Some(arg) => ordered_args.push(arg),
+                    None => {
+                        if last_supplied.is_some_and(|last| i < last) {
+                            let default = signature
+                                .param_defaults
+                                .get(i)
+                                .and_then(|d| d.clone());
+                            ordered_args.push(Argument::positional(
+                                default.unwrap_or_else(Expression::null),
+                            ));
+                        }
+                        // trailing gap → drop; callee fills the default
+                    }
+                }
+            }
+            return ordered_args;
         }
 
         args.to_vec()
@@ -4448,15 +4477,31 @@ impl Compiler {
         // fallback for dynamically-typed receivers.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let class_name = resolve_receiver_type_hint(self, object);
-            if let Some(class_name) = class_name {
-                if self
-                    .resolve_pending_class_name_for_type_hint(&class_name)
-                    .is_some()
+            // Resolve the type to look up on the shared .NET surface. A typed
+            // receiver uses its own type (unless it names a user class, which
+            // wins over shared names like `Stack`/`Dictionary`). An *untyped*
+            // receiver on the .NET path falls back to `IEnumerable`, so LINQ
+            // resolves by method name on array literals, generator results,
+            // and cross-language iterables — the adapter drains any iterable
+            // at runtime via `generators.rs`. That single surface replaces the
+            // per-function LINQ entries every .NET profile used to carry. The
+            // fallback is skipped for user-shadowed names and for methods the
+            // runtime collection registry owns at this arity (`List.Count()`).
+            let surface_type: Option<String> = match &class_name {
+                Some(cn) if self.resolve_pending_class_name_for_type_hint(cn).is_some() => None,
+                Some(cn) => Some(Self::normalize_type_hint(cn)),
+                None if self.profile.namespaces.use_dotnet
+                    && !self.direct_receiver_has_own_pending_method(object, field)
+                    && !self.defined_class_methods.contains(&self.canon(field))
+                    && !common::dotnet::surface()
+                        .uses_runtime_collection_dispatch_arity(field, arg_exprs.len() as u8) =>
                 {
-                    // User-defined classes win over shared .NET surface names
-                    // like `Stack`, `Queue`, or `Dictionary`.
-                } else {
-                    let class_name = Self::normalize_type_hint(&class_name);
+                    Some("IEnumerable".to_string())
+                }
+                None => None,
+            };
+            if let Some(class_name) = surface_type {
+                {
                     let surface = common::dotnet::surface();
                     if let Some(target) =
                         surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8)
@@ -5829,6 +5874,17 @@ impl Compiler {
                     self.emit_host_call(is_gen_idx, 1);
                     let gen_if_line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    // ASYNC generators skip this raw fast path — their
+                    // attached `__vybe_async_generator_next` driver returns
+                    // the §27.6.1.2 promise-wrapped IteratorResult (and
+                    // rejects on a body throw); regular method dispatch
+                    // below calls it.
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let async_gen_key = self.str_const("__vybe_async_gen");
+                    self.emit_u16(Op::STRUCT_GET, async_gen_key);
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    self.emit(Op::I32_EQZ);
+                    self.emit(Op::I32_AND);
                     self.chunk().emit_if(gen_if_line);
                     let value_slot = self.define_local("__gen_value");
                     let done_slot = self.define_local("__gen_done");
@@ -10868,7 +10924,10 @@ impl Compiler {
         };
         let saved_result_slot = result_slot.as_ref().map(|(_, saved_rs)| *saved_rs);
 
-        let async_try = if is_async && self.profile.async_wraps_body_in_try {
+        // Same `!is_generator` gate as the declaration/method sites: an
+        // async GENERATOR expression completes/throws through `resume`;
+        // its promise surface is the attached `.next()` driver.
+        let async_try = if is_async && !is_generator && self.profile.async_wraps_body_in_try {
             let line = self.line;
             Some(common::functions::emit_async_body_start(
                 &mut self.chunks[self.current],

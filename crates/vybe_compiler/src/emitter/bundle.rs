@@ -151,6 +151,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
     ("__stdlib_sprintf", "__vybe_sprintf"),
     ("__stdlib_generator_next", "__vybe_generator_next"),
+    ("__stdlib_async_generator_next", "__vybe_async_generator_next"),
     ("__stdlib_generator_self", "__vybe_generator_self"),
     ("__stdlib_iter_drain", "__vybe_iter_drain"),
     // PHP runtime helpers — all inline opcode emitters under
@@ -321,6 +322,9 @@ fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {
     if chunks.iter().any(|chunk| chunk.is_generator) {
         exports.insert("__stdlib_generator_next");
         exports.insert("__stdlib_generator_self");
+        // §27.6.1.2: async generators' `next()` returns a PROMISE-wrapped
+        // IteratorResult — attach picks the async driver for them.
+        exports.insert("__stdlib_async_generator_next");
     }
     exports
 }

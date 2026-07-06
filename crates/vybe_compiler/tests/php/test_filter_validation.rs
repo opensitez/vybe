@@ -86,10 +86,12 @@ echo filter_var('0', FILTER_VALIDATE_BOOLEAN) ? 'yes' : 'no';
     };
 
     filter_sanitize_email_strips_invalid_chars => {
+        // PHP keeps '!' — it is inside the FILTER_SANITIZE_EMAIL allow-set;
+        // only the space is stripped. Verified against PHP 8.4 CLI.
         r#"<?php
 echo filter_var('bad email!', FILTER_SANITIZE_EMAIL);
 "#,
-        ["bademail"]
+        ["bademail!"]
     };
 
     filter_sanitize_url_removes_invalid => {
@@ -123,18 +125,24 @@ echo ($out['a'] === 1 ? '1' : '0') . ($out['b'] === false ? 'f' : 't');
     };
 
     filter_has_var_checks_get_superglobal => {
+        // filter_has_var(INPUT_GET, …) inspects the real request input, not a
+        // runtime-mutated $_GET; under the CLI there is none, so PHP returns
+        // false → 'no'. Verified against PHP 8.4 CLI.
         r#"<?php
 $_GET['probe'] = '1';
 echo filter_has_var(INPUT_GET, 'probe') ? 'has' : 'no';
 "#,
-        ["has"]
+        ["no"]
     };
 
     filter_list_returns_available_filters => {
+        // filter_list() returns filter *names* (strings); comparing the int id
+        // FILTER_VALIDATE_EMAIL with strict in_array is always false → 'missing'.
+        // Verified against PHP 8.4 CLI.
         r#"<?php
 echo in_array(FILTER_VALIDATE_EMAIL, filter_list(), true) ? 'listed' : 'missing';
 "#,
-        ["listed"]
+        ["missing"]
     };
 
     filter_id_by_name_validate_email => {

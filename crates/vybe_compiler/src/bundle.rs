@@ -1448,7 +1448,9 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
     let file_value = php_single_quoted_literal(&absolutize_path(source_path).to_string_lossy());
 
     let bytes = code.as_bytes();
-    let mut out = String::with_capacity(code.len());
+    // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
+    // scanner only branches on ASCII delimiters, so byte-wise copying is safe.
+    let mut out: Vec<u8> = Vec::with_capacity(code.len());
     let mut index = 0usize;
     let mut state = ScanState::Normal;
 
@@ -1456,17 +1458,17 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
         match state {
             ScanState::Normal => {
                 if let Some(next_index) = skip_php_heredoc(bytes, index) {
-                    out.push_str(&code[index..next_index]);
+                    out.extend_from_slice(code[index..next_index].as_bytes());
                     index = next_index;
                     continue;
                 }
                 if matches_magic_token(bytes, index, b"__DIR__") {
-                    out.push_str(&dir_value);
+                    out.extend_from_slice(dir_value.as_bytes());
                     index += "__DIR__".len();
                     continue;
                 }
                 if matches_magic_token(bytes, index, b"__FILE__") {
-                    out.push_str(&file_value);
+                    out.extend_from_slice(file_value.as_bytes());
                     index += "__FILE__".len();
                     continue;
                 }
@@ -1487,41 +1489,41 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
                 {
                     state = ScanState::BlockComment;
                 }
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 index += 1;
             }
             ScanState::SingleQuote => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
                     index += 1;
-                    out.push(bytes[index] as char);
+                    out.push(bytes[index]);
                 } else if bytes[index] == b'\'' {
                     state = ScanState::Normal;
                 }
                 index += 1;
             }
             ScanState::DoubleQuote => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
                     index += 1;
-                    out.push(bytes[index] as char);
+                    out.push(bytes[index]);
                 } else if bytes[index] == b'"' {
                     state = ScanState::Normal;
                 }
                 index += 1;
             }
             ScanState::LineComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\n' {
                     state = ScanState::Normal;
                 }
                 index += 1;
             }
             ScanState::BlockComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if index + 1 < bytes.len() && bytes[index] == b'*' && bytes[index + 1] == b'/' {
                     index += 1;
-                    out.push(bytes[index] as char);
+                    out.push(bytes[index]);
                     state = ScanState::Normal;
                 }
                 index += 1;
@@ -1529,7 +1531,7 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
         }
     }
 
-    out
+    String::from_utf8(out).unwrap_or_else(|_| code.to_string())
 }
 
 enum MixedPhpIncludeSegment<'a> {
@@ -2061,7 +2063,9 @@ fn rewrite_php_execution_operator(source: &str) -> String {
     }
 
     let bytes = source.as_bytes();
-    let mut out = String::with_capacity(source.len());
+    // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
+    // scanner only branches on ASCII delimiters, so byte-wise copying is safe.
+    let mut out: Vec<u8> = Vec::with_capacity(source.len());
     let mut index = 0usize;
     let mut state = State::Normal;
 
@@ -2070,14 +2074,14 @@ fn rewrite_php_execution_operator(source: &str) -> String {
             State::Normal => {
                 if bytes[index] == b'`' {
                     index += 1;
-                    let mut inner = String::new();
+                    let mut inner: Vec<u8> = Vec::new();
 
                     while index < bytes.len() {
                         let byte = bytes[index];
                         if byte == b'\\' && index + 1 < bytes.len() {
-                            let next = bytes[index + 1] as char;
-                            if next == '"' {
-                                inner.push('\\');
+                            let next = bytes[index + 1];
+                            if next == b'"' {
+                                inner.push(b'\\');
                             }
                             inner.push(next);
                             index += 2;
@@ -2088,15 +2092,15 @@ fn rewrite_php_execution_operator(source: &str) -> String {
                             break;
                         }
                         if byte == b'"' {
-                            inner.push('\\');
+                            inner.push(b'\\');
                         }
-                        inner.push(byte as char);
+                        inner.push(byte);
                         index += 1;
                     }
 
-                    out.push_str("shell_exec(\"");
-                    out.push_str(&inner);
-                    out.push_str("\")");
+                    out.extend_from_slice(b"shell_exec(\"");
+                    out.extend_from_slice(&inner);
+                    out.extend_from_slice(b"\")");
                     continue;
                 }
 
@@ -2118,13 +2122,13 @@ fn rewrite_php_execution_operator(source: &str) -> String {
                     state = State::BlockComment;
                 }
 
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 index += 1;
             }
             State::SingleQuoted => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
+                    out.push(bytes[index + 1]);
                     index += 2;
                     continue;
                 }
@@ -2134,9 +2138,9 @@ fn rewrite_php_execution_operator(source: &str) -> String {
                 index += 1;
             }
             State::DoubleQuoted => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                    out.push(bytes[index + 1] as char);
+                    out.push(bytes[index + 1]);
                     index += 2;
                     continue;
                 }
@@ -2146,16 +2150,16 @@ fn rewrite_php_execution_operator(source: &str) -> String {
                 index += 1;
             }
             State::LineComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'\n' {
                     state = State::Normal;
                 }
                 index += 1;
             }
             State::BlockComment => {
-                out.push(bytes[index] as char);
+                out.push(bytes[index]);
                 if bytes[index] == b'*' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
-                    out.push('/');
+                    out.push(b'/');
                     index += 2;
                     state = State::Normal;
                     continue;
@@ -2165,7 +2169,7 @@ fn rewrite_php_execution_operator(source: &str) -> String {
         }
     }
 
-    out
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
 /// Resolve `import { x } from "./file.js"` by parsing the imported file

@@ -535,27 +535,42 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
             if let Some(item) = inner {
                 match item.as_rule() {
                     Rule::normal_param => {
+                        // Grammar: `identifier (":" expr)? ("=" expr)?`. pest
+                        // drops the `:`/`=` tokens, so with a single expression
+                        // we can't tell a type annotation (`x: int`) from a
+                        // default (`x = 2`) by rule alone — disambiguate from
+                        // the source text (does the part after the name start
+                        // with `=`?). With two expressions it's `type = default`.
+                        let param_text = item.as_str().trim_start().to_string();
                         let mut name = String::new();
                         let mut default = None;
                         let mut type_hint = None;
-                        let mut seen_first_expr = false;
+                        let mut exprs = Vec::new();
                         for c in item.into_inner() {
-                            match c.as_rule() {
-                                Rule::identifier => name = c.as_str().to_string(),
-                                _ => {
-                                    if !seen_first_expr {
-                                        // First expression after identifier could be type annotation
-                                        type_hint = Some(c.as_str().to_string());
-                                        seen_first_expr = true;
-                                    } else {
-                                        default = Some(walk_expression(c)?);
-                                    }
-                                }
+                            if c.as_rule() == Rule::identifier && name.is_empty() {
+                                name = c.as_str().to_string();
+                            } else {
+                                exprs.push(c);
                             }
                         }
-                        // If we only saw one expr and there's no "=", it was actually the type hint
-                        // We need to check if there was a default — if type_hint is set but default is not,
-                        // check if the param text had "="
+                        let after_name = param_text
+                            .strip_prefix(name.as_str())
+                            .unwrap_or("")
+                            .trim_start();
+                        match exprs.len() {
+                            2 => {
+                                type_hint = Some(exprs[0].as_str().to_string());
+                                default = Some(walk_expression(exprs.remove(1))?);
+                            }
+                            1 => {
+                                if after_name.starts_with('=') {
+                                    default = Some(walk_expression(exprs.remove(0))?);
+                                } else {
+                                    type_hint = Some(exprs[0].as_str().to_string());
+                                }
+                            }
+                            _ => {}
+                        }
                         params.push(Param {
                             name,
                             type_hint,
