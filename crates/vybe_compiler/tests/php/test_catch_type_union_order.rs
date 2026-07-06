@@ -496,16 +496,19 @@ catch (BadMethodCallException | Error $e) { echo get_class($e); }
         ["Error"]
     };
 
-    catch_throwable_on_builtin_value_error => {
+    out_of_bounds_array_read_yields_null_no_throw => {
+        // PHP 8.4: reading a missing array key raises a Warning and returns
+        // null — it does NOT throw, so `catch (Throwable)` is never entered.
         r#"<?php
+$arr = [1];
 try {
-    $arr = [1];
-    echo $arr[5];
+    $v = $arr[5];
+    echo $v === null ? 'null-no-throw' : 'set';
 } catch (Throwable $t) {
     echo 'caught';
 }
 "#,
-        ["caught"]
+        ["null-no-throw"]
     };
 
     catch_union_parent_interface_and_child_class => {

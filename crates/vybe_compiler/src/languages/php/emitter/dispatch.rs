@@ -126,9 +126,49 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_call(num_idx, 1, line);
             chunks[current].emit_op(vybe_bytecode::opcode::Op::F64_TRUNC, line);
         }
+        // Guarded delegators: PHP throws TypeError when the first argument
+        // isn't an array; the underlying op is the shared `common:*` emit.
+        "php.array_push_g" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_push(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            crate::emitter::dispatch::emit_common("array_push", chunks, current, argc, line);
+        }
+        "php.array_pop_g" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_pop(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            crate::emitter::dispatch::emit_common("array_pop", chunks, current, argc, line);
+        }
+        "php.sort_g" => {
+            // `sort($x)` on a non-array throws (base `\Error` in PHP because
+            // the parameter is by-reference; `TypeError` is an `\Error`
+            // subclass, so `catch (\Error)` matches either way).
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "sort(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            crate::emitter::dispatch::emit_common("php.sort_in_place", chunks, current, argc, line);
+        }
         "php.array_pad" => super::array_adapter::emit_array_pad(chunks, current, argc, line),
         "php.array_map" => super::array_adapter::emit_array_map(chunks, current, argc, line),
-        "php.array_filter" => super::array_adapter::emit_array_filter(chunks, current, argc, line),
+        "php.array_filter" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_filter(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            super::array_adapter::emit_array_filter(chunks, current, argc, line)
+        }
         "php.array_walk_recursive" => {
             super::array_adapter::emit_array_walk_recursive(chunks, current, argc, line)
         }
@@ -136,12 +176,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_fill_keys" => {
             super::array_adapter::emit_array_fill_keys(chunks, current, argc, line)
         }
-        "php.count" => super::array_adapter::emit_php_count(chunks, current, argc, line),
+        "php.count" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::NotScalar,
+                "TypeError",
+                "count(): Argument #1 ($value) must be of type Countable|array",
+                line,
+            );
+            super::array_adapter::emit_php_count(chunks, current, argc, line)
+        }
         "php.json_encode" => {
             super::array_adapter::emit_php_json_encode(chunks, current, argc, line)
         }
-        "php.array_keys" => super::array_adapter::emit_php_array_keys(chunks, current, argc, line),
+        "php.array_keys" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_keys(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            super::array_adapter::emit_php_array_keys(chunks, current, argc, line)
+        }
         "php.array_values" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_values(): Argument #1 ($array) must be of type array",
+                line,
+            );
             super::array_adapter::emit_php_array_values(chunks, current, argc, line)
         }
         "php.array_is_list" => {
@@ -186,14 +248,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::array_adapter::emit_array_replace_recursive(chunks, current, argc, line)
         }
         "php.iterator_to_array" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::NotScalar,
+                "TypeError",
+                "iterator_to_array(): Argument #1 ($iterator) must be of type Traversable|array",
+                line,
+            );
             super::array_adapter::emit_iterator_to_array(chunks, current, argc, line)
         }
         "php.asort" => super::array_adapter::emit_php_asort(chunks, current, argc, line),
         "php.arsort" => super::array_adapter::emit_php_arsort(chunks, current, argc, line),
-        "php.ksort" => super::array_adapter::emit_php_ksort(chunks, current, argc, line),
+        "php.ksort" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "ksort(): Argument #1 ($array) must be of type array",
+                line,
+            );
+            super::array_adapter::emit_php_ksort(chunks, current, argc, line)
+        }
         "php.krsort" => super::array_adapter::emit_php_krsort(chunks, current, argc, line),
         "php.uasort" => super::array_adapter::emit_php_uasort(chunks, current, argc, line),
         "php.uksort" => super::array_adapter::emit_php_uksort(chunks, current, argc, line),
+        // NOTE: `implode([1,2], '-')` should throw in PHP 8 (the array-first
+        // arg order was removed), but the walker (walker.rs ~9445) still
+        // unconditionally swaps 2-arg implode, which both hides the error and
+        // would misfire on the valid `implode('-', [1,2])` order. A guard here
+        // can't distinguish the two post-normalization — the fix belongs in the
+        // walker. Left unguarded for now.
         "php.implode" => super::array_adapter::emit_php_implode(chunks, current, argc, line),
         "php.in_array" => super::array_adapter::emit_php_in_array(chunks, current, argc, line),
         "php.obj_to_array" => {
@@ -356,6 +438,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::php::numeric_adapter::emit_php_is_float(chunks, current, argc, line)
         }
         "php.abs" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::NotArray,
+                "TypeError",
+                "abs(): Argument #1 ($num) must be of type int|float",
+                line,
+            );
             crate::emitter::php::numeric_adapter::emit_php_abs(chunks, current, argc, line)
         }
         "php.intdiv" => {
@@ -562,6 +650,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::php::string_adapter::emit_strcspn(chunks, current, argc, line)
         }
         "php.strlen" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::NotArray,
+                "TypeError",
+                "strlen(): Argument #1 ($string) must be of type string",
+                line,
+            );
             crate::emitter::php::string_adapter::emit_strlen(chunks, current, argc, line)
         }
         "php.count_chars" => {
@@ -714,6 +808,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         ),
         // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
         "php.array_merge" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_merge(): Argument #1 ($arrays) must be of type array",
+                line,
+            );
             crate::emitter::php::array_adapter::emit_php_array_merge(chunks, current, argc, line)
         }
         "php.uniq" => {
@@ -723,6 +823,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::php::array_adapter::emit_php_array_union(chunks, current, argc, line)
         }
         "php.array_slice" => {
+            super::type_guard::guard_arg(
+                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                "TypeError",
+                "array_slice(): Argument #1 ($array) must be of type array",
+                line,
+            );
             crate::emitter::php::array_adapter::emit_php_array_slice(chunks, current, argc, line)
         }
         "php.array_reverse" => {
@@ -898,6 +1004,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.db_prepare" => {
             crate::emitter::php::db_adapter::emit_db_prepare(chunks, current, argc, line)
         }
+        "php.set_error_handler" => super::error_adapter::emit_set_error_handler(chunks, current, argc, line),
+        "php.restore_error_handler" => super::error_adapter::emit_restore_error_handler(chunks, current, argc, line),
+        "php.trigger_error" => super::error_adapter::emit_trigger_error(chunks, current, argc, line),
+        "php.error_get_last" => super::error_adapter::emit_error_get_last(chunks, current, argc, line),
+        "php.error_clear_last" => super::error_adapter::emit_error_clear_last(chunks, current, argc, line),
+        "php.error_reporting" => super::error_adapter::emit_error_reporting(chunks, current, argc, line),
+        "php.set_exception_handler" => super::error_adapter::emit_set_exception_handler(chunks, current, argc, line),
         "php.pdo_statement_fetch_column" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch_column(chunks, current, argc, line),
         "php.pdo_statement_row_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_row_count(chunks, current, argc, line),
         "php.pdo_statement_column_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_column_count(chunks, current, argc, line),

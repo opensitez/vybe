@@ -24,7 +24,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
         Value::Null => chunk.emit_op(Op::NULL, line),
-        Value::BigInt(v) => chunk.emit_i64_const(*v, line),
+        Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
 
@@ -47,11 +47,11 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 pub fn emit_php_int_max(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    push_const(&mut chunks[current], Value::BigInt(i64::MAX), line);
+    push_const(&mut chunks[current], Value::bigint_i64(i64::MAX), line);
 }
 
 pub fn emit_php_int_min(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    push_const(&mut chunks[current], Value::BigInt(i64::MIN), line);
+    push_const(&mut chunks[current], Value::bigint_i64(i64::MIN), line);
 }
 
 pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -122,7 +122,7 @@ pub fn emit_php_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_call(test_bigint, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
-    push_const(chunk, Value::BigInt(0), line);
+    push_const(chunk, Value::bigint_i64(0), line);
     chunk.emit_call(bigint_lt, 2, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);

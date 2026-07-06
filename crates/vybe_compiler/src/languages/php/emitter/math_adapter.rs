@@ -18,7 +18,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
         Value::Null => chunk.emit_op(Op::NULL, line),
-        Value::BigInt(v) => chunk.emit_i64_const(*v, line),
+        Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
 
@@ -99,6 +99,29 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         // Simplification for the test surface: if argc==1, treat the
         // single argument as the values array. PHP semantics agree
         // when called with `min([a, b, c])`.
+        //
+        // PHP 8: `min([])` / `max([])` throw ValueError (they returned `false`
+        // in PHP 7). Guard the empty array before reducing.
+        lget(chunk, base, line);
+        chunk.emit_op(Op::ARRAY_LENGTH, line);
+        push_const(chunk, Value::F64(0.0), line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        let _ = chunk;
+        crate::emitter::php::type_guard::emit_throw_const(
+            chunks,
+            current,
+            "ValueError",
+            if want_lt {
+                "min(): Argument #1 ($value) must contain at least one element"
+            } else {
+                "max(): Argument #1 ($value) must contain at least one element"
+            },
+            line,
+        );
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
         emit_reduce_array(chunk, base, want_lt, line);
         return;
     }

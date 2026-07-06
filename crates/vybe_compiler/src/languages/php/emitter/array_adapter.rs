@@ -20,7 +20,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
         Value::Null => chunk.emit_op(Op::NULL, line),
-        Value::BigInt(v) => chunk.emit_i64_const(*v, line),
+        Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
 
@@ -1284,6 +1284,28 @@ pub fn emit_array_combine(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 
     lset(chunk, values_slot, line);
     lset(chunk, keys_slot, line);
+
+    // PHP 8: `array_combine` throws ValueError (not `false`) when the key and
+    // value arrays differ in length. Uses the shared errors emitter so the
+    // exception is cross-language catchable.
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lget(chunk, values_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::php::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "ValueError",
+        "array_combine(): Argument #1 ($keys) and argument #2 ($values) must have the same number of elements",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
 
     let _ = chunk;
     call_import(chunks, current, "ecma:map", "new", 0, line);

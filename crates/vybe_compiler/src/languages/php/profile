@@ -368,8 +368,8 @@ is_object           = { emit = "intrinsic:php_is_object",        min_args = 1, m
 
 count               = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
-array_push          = { emit = "common:array_push",                min_args = 2, max_args = 255 }
-array_pop           = { emit = "common:array_pop",                 min_args = 1, max_args = 1 }
+array_push          = { emit = "common:php.array_push_g",          min_args = 2, max_args = 255 }
+array_pop           = { emit = "common:php.array_pop_g",           min_args = 1, max_args = 1 }
 end                 = { emit = "common:php.end",                  min_args = 1, max_args = 1 }
 array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
 array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
@@ -426,7 +426,7 @@ key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, ma
 # The walker rewrites `sort($a)` → `$a = __vybe_sort_in_place($a)` etc.
 # (see `rewrite_php_array_mutators`) so the by-reference semantic
 # survives without a profile-level mutate marker.
-sort                = { emit = "common:php.sort_in_place",            min_args = 1, max_args = 2 }
+sort                = { emit = "common:php.sort_g",                   min_args = 1, max_args = 2 }
 rsort               = { emit = "intrinsic:php_rsort",             min_args = 1, max_args = 2 }
 usort               = { emit = "common:php.sort_with_comparator",     min_args = 2, max_args = 2 }
 array_unique        = { emit = "common:php.uniq",                     min_args = 1, max_args = 2 }
@@ -538,13 +538,15 @@ phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_a
 # ── PHP error / INI runtime (no-ops for CLI / web compilation) ──────────────
 # These are runtime configuration calls that don't affect compiled-bytecode
 # behaviour. Stub them so common PHP boilerplate doesn't break at runtime.
-error_reporting     = { emit = "noop",                        min_args = 0, max_args = 1 }
+error_reporting     = { emit = "common:php.error_reporting",     min_args = 0, max_args = 1 }
 ini_set             = { emit = "noop",                        min_args = 2, max_args = 2 }
 ini_get             = { emit = "noop",                        min_args = 1, max_args = 1 }
-set_error_handler   = { emit = "noop",                        min_args = 1, max_args = 2 }
-restore_error_handler = { emit = "noop",                      min_args = 0, max_args = 0 }
-set_exception_handler = { emit = "noop",                      min_args = 1, max_args = 1 }
-trigger_error       = { emit = "noop",                        min_args = 1, max_args = 2 }
+set_error_handler   = { emit = "common:php.set_error_handler",   min_args = 1, max_args = 2 }
+restore_error_handler = { emit = "common:php.restore_error_handler", min_args = 0, max_args = 0 }
+set_exception_handler = { emit = "common:php.set_exception_handler", min_args = 1, max_args = 1 }
+trigger_error       = { emit = "common:php.trigger_error",       min_args = 1, max_args = 2 }
+error_get_last      = { emit = "common:php.error_get_last",      min_args = 0, max_args = 0 }
+error_clear_last    = { emit = "common:php.error_clear_last",    min_args = 0, max_args = 0 }
 register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
 spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 1, max_args = 3 }
 spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }

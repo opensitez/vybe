@@ -1,88 +1,100 @@
-//! Illegal `[]` offset access and `foreach` on non-array types (PHP 8+ TypeErrors).
+//! `[]` offset access and `foreach` on non-array types — real PHP 8.4 semantics.
+//!
+//! Verified against the `php` 8.4 CLI (used purely as a compliance oracle):
+//!   - scalar-offset READS warn and yield `null` (NOT a throw);
+//!   - `null` auto-vivifies to an array on WRITE/append (no throw);
+//!   - scalar-offset WRITE / `unset` / increment throw base `\Error`
+//!     ("Cannot use a scalar value as an array"), NOT `TypeError`;
+//!   - `foreach` on a non-iterable warns and skips the loop (no throw);
+//!   - builtins that reject wrong argument types throw `TypeError`.
+//! Earlier revisions of this file asserted `TypeError` everywhere, which real
+//! PHP does not do — those expectations were corrected to match the CLI.
 
 crate::php_cases! {
-    read_offset_on_null_throws_type_error => {
+    read_offset_on_null_yields_null => {
         r#"<?php
 $x = null;
-try { echo $x[0]; }
-catch (TypeError $e) { echo 'null-read'; }
+$v = $x[0];
+echo $v === null ? 'null' : 'set';
 "#,
-        ["null-read"]
+        ["null"]
     };
 
-    write_offset_on_null_throws_type_error => {
+    write_offset_on_null_does_not_throw => {
         r#"<?php
 $x = null;
 try { $x[0] = 1; echo 'ok'; }
-catch (TypeError $e) { echo 'null-write'; }
+catch (\Throwable $e) { echo 'threw'; }
 "#,
-        ["null-write"]
+        ["ok"]
     };
 
-    append_offset_on_null_throws_type_error => {
+    append_offset_on_null_does_not_throw => {
         r#"<?php
 $x = null;
-try { $x[] = 1; echo 'ok'; }
-catch (TypeError $e) { echo 'null-append'; }
+try { $x[] = 7; echo 'ok'; }
+catch (\Throwable $e) { echo 'threw'; }
 "#,
-        ["null-append"]
+        ["ok"]
     };
 
-    read_offset_on_int_throws_type_error => {
+    read_offset_on_int_yields_null => {
         r#"<?php
-try { echo 42[0]; }
-catch (TypeError $e) { echo 'int-read'; }
+$x = 42;
+$v = $x[0];
+echo $v === null ? 'null' : 'set';
 "#,
-        ["int-read"]
+        ["null"]
     };
 
-    write_offset_on_int_throws_type_error => {
+    write_offset_on_scalar_throws_error => {
         r#"<?php
 $x = 1;
 try { $x[0] = 9; echo 'ok'; }
-catch (TypeError $e) { echo 'int-write'; }
+catch (\Error $e) { echo 'int-write'; }
 "#,
         ["int-write"]
     };
 
-    read_offset_on_float_throws_type_error => {
+    read_offset_on_float_yields_null => {
         r#"<?php
-try { echo 1.5[0]; }
-catch (TypeError $e) { echo 'float-read'; }
+$x = 1.5;
+$v = $x[0];
+echo $v === null ? 'null' : 'set';
 "#,
-        ["float-read"]
+        ["null"]
     };
 
-    read_offset_on_false_throws_type_error => {
+    read_offset_on_false_yields_null => {
         r#"<?php
 $x = false;
-try { echo $x[0]; }
-catch (TypeError $e) { echo 'false-read'; }
+$v = $x[0];
+echo $v === null ? 'null' : 'set';
 "#,
-        ["false-read"]
+        ["null"]
     };
 
-    foreach_on_int_throws_type_error => {
+    foreach_on_int_warns_and_skips => {
         r#"<?php
-try { foreach (1 as $v) { echo $v; } echo 'ok'; }
-catch (TypeError $e) { echo 'foreach-int'; }
+foreach (1 as $v) { echo $v; }
+echo 'done';
 "#,
-        ["foreach-int"]
+        ["done"]
     };
 
-    foreach_on_null_throws_type_error => {
+    foreach_on_null_warns_and_skips => {
         r#"<?php
-try { foreach (null as $v) { echo $v; } echo 'ok'; }
-catch (TypeError $e) { echo 'foreach-null'; }
+foreach (null as $v) { echo $v; }
+echo 'done';
 "#,
-        ["foreach-null"]
+        ["done"]
     };
 
-    unset_offset_on_scalar_throws_type_error => {
+    unset_offset_on_scalar_throws_error => {
         r#"<?php
 $x = 5;
 try { unset($x[0]); echo 'ok'; }
-catch (TypeError $e) { echo 'unset-scalar'; }
+catch (\Error $e) { echo 'unset-scalar'; }
 "#,
         ["unset-scalar"]
     };
@@ -110,10 +122,10 @@ catch (TypeError $e) { echo 'push-str'; }
         ["push-str"]
     };
 
-    array_pop_on_int_throws_type_error => {
+    array_pop_on_int_literal_throws_error => {
         r#"<?php
 try { array_pop(1); echo 'ok'; }
-catch (TypeError $e) { echo 'pop-int'; }
+catch (\Error $e) { echo 'pop-int'; }
 "#,
         ["pop-int"]
     };
@@ -134,7 +146,7 @@ catch (TypeError $e) { echo 'in-array'; }
         ["in-array"]
     };
 
-    count_on_non_countable_string_throws_in_strict_shape => {
+    count_on_non_countable_string_throws => {
         r#"<?php
 try { count('abc'); echo 'ok'; }
 catch (TypeError $e) { echo 'count-str'; }
@@ -151,19 +163,19 @@ catch (TypeError $e) { echo 'iter-int'; }
         ["iter-int"]
     };
 
-    compact_requires_string_var_names => {
+    compact_non_string_name_does_not_throw => {
         r#"<?php
 try { compact(1); echo 'ok'; }
-catch (TypeError $e) { echo 'compact'; }
+catch (\Throwable $e) { echo 'threw'; }
 "#,
-        ["compact"]
+        ["ok"]
     };
 
-    increment_offset_on_int_throws => {
+    increment_offset_on_scalar_throws_error => {
         r#"<?php
 $x = 1;
 try { $x[0]++; echo 'ok'; }
-catch (TypeError $e) { echo 'inc-scalar'; }
+catch (\Error $e) { echo 'inc-scalar'; }
 "#,
         ["inc-scalar"]
     };

@@ -1,4 +1,13 @@
 //! Built-in functions rejecting wrong argument types or shapes at runtime.
+//!
+//! Verified against the `php` 8.4 CLI. Notes on corrected expectations:
+//!   - array/object → string/number is a `TypeError` in every mode;
+//!   - scalar → string IS allowed (weak coercion): `strlen(99)`, `explode(1,..)`,
+//!     `str_contains(1,..)`, `preg_match(1,..)` do NOT throw;
+//!   - `array_combine` length-mismatch and `max([])`/`min([])` throw
+//!     `ValueError` in PHP 8 (they returned `false`/`null` in PHP 7);
+//!   - `sort('literal')` throws base `\Error` (by-ref of a non-variable),
+//!     not `TypeError`.
 
 crate::php_cases! {
     strlen_on_array_throws_type_error => {
@@ -9,12 +18,11 @@ catch (TypeError $e) { echo 'strlen-arr'; }
         ["strlen-arr"]
     };
 
-    strlen_on_int_throws_type_error => {
+    strlen_on_int_coerces_and_returns_length => {
         r#"<?php
-try { strlen(99); echo 'ok'; }
-catch (TypeError $e) { echo 'strlen-int'; }
+echo strlen(99);
 "#,
-        ["strlen-int"]
+        ["2"]
     };
 
     array_merge_on_string_throws_type_error => {
@@ -25,12 +33,12 @@ catch (TypeError $e) { echo 'merge-str'; }
         ["merge-str"]
     };
 
-    array_combine_length_mismatch_returns_false => {
+    array_combine_length_mismatch_throws_value_error => {
         r#"<?php
-$ok = array_combine(['a', 'b'], [1]);
-echo $ok === false ? 'false' : 'map';
+try { array_combine(['a', 'b'], [1]); echo 'ok'; }
+catch (ValueError $e) { echo 'mismatch'; }
 "#,
-        ["false"]
+        ["mismatch"]
     };
 
     array_combine_empty_arrays_returns_empty => {
@@ -57,7 +65,7 @@ catch (TypeError $e) { echo 'filter-obj'; }
         ["filter-obj"]
     };
 
-    implode_glue_must_be_string => {
+    implode_array_glue_swapped_still_joins => {
         r#"<?php
 try { implode([1, 2], '-'); echo 'ok'; }
 catch (TypeError $e) { echo 'implode'; }
@@ -65,20 +73,20 @@ catch (TypeError $e) { echo 'implode'; }
         ["implode"]
     };
 
-    explode_separator_must_be_string => {
+    explode_separator_coerces_scalar => {
         r#"<?php
 try { explode(1, 'a,b'); echo 'ok'; }
 catch (TypeError $e) { echo 'explode'; }
 "#,
-        ["explode"]
+        ["ok"]
     };
 
-    str_contains_haystack_must_be_string => {
+    str_contains_haystack_coerces_scalar => {
         r#"<?php
 try { str_contains(1, 'x'); echo 'ok'; }
 catch (TypeError $e) { echo 'contains'; }
 "#,
-        ["contains"]
+        ["ok"]
     };
 
     str_starts_with_subject_must_be_string => {
@@ -89,20 +97,20 @@ catch (TypeError $e) { echo 'starts'; }
         ["starts"]
     };
 
-    max_on_empty_array_returns_null_in_php8 => {
+    max_on_empty_array_throws_value_error => {
         r#"<?php
-$v = max([]);
-echo $v === null ? 'null' : (string)$v;
+try { max([]); echo 'ok'; }
+catch (ValueError $e) { echo 'max-empty'; }
 "#,
-        ["null"]
+        ["max-empty"]
     };
 
-    min_on_empty_array_returns_null_in_php8 => {
+    min_on_empty_array_throws_value_error => {
         r#"<?php
-$v = min([]);
-echo $v === null ? 'null' : (string)$v;
+try { min([]); echo 'ok'; }
+catch (ValueError $e) { echo 'min-empty'; }
 "#,
-        ["null"]
+        ["min-empty"]
     };
 
     abs_requires_numeric => {
@@ -121,10 +129,10 @@ catch (TypeError $e) { echo 'round-arr'; }
         ["round-arr"]
     };
 
-    sort_on_non_array_throws_type_error => {
+    sort_on_literal_throws_error => {
         r#"<?php
 try { sort('abc'); echo 'ok'; }
-catch (TypeError $e) { echo 'sort-str'; }
+catch (\Error $e) { echo 'sort-str'; }
 "#,
         ["sort-str"]
     };
@@ -161,11 +169,11 @@ catch (TypeError $e) { echo 'values-bool'; }
         ["values-bool"]
     };
 
-    preg_match_pattern_must_be_string => {
+    preg_match_pattern_coerces_scalar => {
         r#"<?php
 try { preg_match(1, 'hay'); echo 'ok'; }
 catch (TypeError $e) { echo 'preg'; }
 "#,
-        ["preg"]
+        ["ok"]
     };
 }

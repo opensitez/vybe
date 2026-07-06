@@ -84,7 +84,9 @@ trigger_error('d', E_USER_WARNING);
 restore_error_handler();
 echo $counts['w'] . $counts['n'] . $counts['d'];
 "#,
-        ["212"]
+        // Triggers: W, N, D, W → w=2, n=1, d=1 (the 4th, "d", is E_USER_WARNING,
+        // not E_USER_DEPRECATED), so the concatenation is "211", not "212".
+        ["211"]
     };
 
     handler_prefixes_message_with_custom_tag => {

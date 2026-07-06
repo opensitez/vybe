@@ -1,44 +1,52 @@
-//! List/array destructuring assignment failures — TypeErrors and null slots only.
+//! List/array destructuring assignment — real PHP 8.4 semantics.
+//!
+//! Verified against the `php` 8.4 CLI: destructuring from a scalar (int, float,
+//! bool, null, string, resource) does NOT throw — every target is assigned
+//! `null`. Destructuring from an object or a Generator throws base `\Error`
+//! ("Cannot use object of type X as array"), NOT `TypeError`. A typed-property
+//! target that receives an incompatible value throws `TypeError`. Missing keys
+//! / short arrays leave `null`. Earlier revisions asserted `TypeError` for the
+//! scalar sources, which real PHP does not do.
 
 crate::php_cases! {
-    list_destructure_from_integer_throws_type_error => {
+    list_destructure_from_integer_assigns_null => {
         r#"<?php
-try { [$a] = 42; echo 'ok'; }
-catch (TypeError $e) { echo 'int-src'; }
+[$a] = 42;
+echo $a === null ? 'null' : 'set';
 "#,
-        ["int-src"]
+        ["null"]
     };
 
-    list_destructure_from_null_throws_type_error => {
+    list_destructure_from_null_assigns_null => {
         r#"<?php
-try { [$a, $b] = null; echo 'ok'; }
-catch (TypeError $e) { echo 'null-src'; }
+[$a, $b] = null;
+echo ($a === null && $b === null) ? 'nulls' : 'set';
 "#,
-        ["null-src"]
+        ["nulls"]
     };
 
-    list_destructure_from_object_throws_type_error => {
+    list_destructure_from_object_throws_error => {
         r#"<?php
 try { [$x] = new stdClass(); echo 'ok'; }
-catch (TypeError $e) { echo 'obj-src'; }
+catch (\Error $e) { echo 'obj-src'; }
 "#,
         ["obj-src"]
     };
 
-    list_destructure_from_false_throws_type_error => {
+    list_destructure_from_false_assigns_null => {
         r#"<?php
-try { [$t] = false; echo 'ok'; }
-catch (TypeError $e) { echo 'false-src'; }
+[$t] = false;
+echo $t === null ? 'null' : 'set';
 "#,
-        ["false-src"]
+        ["null"]
     };
 
-    list_destructure_from_float_throws_type_error => {
+    list_destructure_from_float_assigns_null => {
         r#"<?php
-try { [$f] = 1.5; echo 'ok'; }
-catch (TypeError $e) { echo 'float-src'; }
+[$f] = 1.5;
+echo $f === null ? 'null' : 'set';
 "#,
-        ["float-src"]
+        ["null"]
     };
 
     list_destructure_fewer_source_elements_leaves_null => {
@@ -57,12 +65,12 @@ echo $v === null ? 'missing' : 'found';
         ["missing"]
     };
 
-    nested_list_destructure_requires_array_inner => {
+    nested_list_destructure_from_scalar_inner_assigns_null => {
         r#"<?php
-try { [[$a, $b]] = [1, 2]; echo 'ok'; }
-catch (TypeError $e) { echo 'nested'; }
+[[$a, $b]] = [1, 2];
+echo ($a === null && $b === null) ? 'nulls' : 'set';
 "#,
-        ["nested"]
+        ["nulls"]
     };
 
     list_destructure_empty_array_leaves_all_null => {
@@ -85,22 +93,22 @@ try {
         ["parse"]
     };
 
-    list_destructure_on_resource_throws_type_error => {
+    list_destructure_on_resource_assigns_null => {
         r#"<?php
 $fp = fopen('php://memory', 'r+');
-try { [$r] = $fp; echo 'ok'; }
-catch (TypeError $e) { echo 'res-src'; }
-finally { fclose($fp); }
+[$r] = $fp;
+echo $r === null ? 'null' : 'set';
+fclose($fp);
 "#,
-        ["res-src"]
+        ["null"]
     };
 
-    keyed_destructure_on_scalar_throws_type_error => {
+    keyed_destructure_on_scalar_assigns_null => {
         r#"<?php
-try { ['k' => $v] = 'str'; echo 'ok'; }
-catch (TypeError $e) { echo 'key-scalar'; }
+['k' => $v] = 'str';
+echo $v === null ? 'null' : 'set';
 "#,
-        ["key-scalar"]
+        ["null"]
     };
 
     list_destructure_nested_keyed_inner_missing => {
@@ -109,14 +117,6 @@ catch (TypeError $e) { echo 'key-scalar'; }
 echo $id === null ? 'no-id' : $id;
 "#,
         ["no-id"]
-    };
-
-    list_destructure_spread_from_non_array_throws => {
-        r#"<?php
-try { [$head, ...$rest] = 1; echo 'ok'; }
-catch (TypeError $e) { echo 'spread-int'; }
-"#,
-        ["spread-int"]
     };
 
     list_destructure_typed_property_mismatch_throws => {
@@ -139,11 +139,11 @@ catch (Error $e) { echo 'readonly'; }
         ["readonly"]
     };
 
-    list_destructure_from_generator_not_directly_valid => {
+    list_destructure_from_generator_throws_error => {
         r#"<?php
 function g(): Generator { yield 1; yield 2; }
 try { [$a, $b] = g(); echo 'ok'; }
-catch (TypeError $e) { echo 'gen-src'; }
+catch (\Error $e) { echo 'gen-src'; }
 "#,
         ["gen-src"]
     };
@@ -164,12 +164,11 @@ echo $z === null ? 'null-val' : 'set';
         ["null-val"]
     };
 
-    list_destructure_string_too_short_for_two_slots => {
+    list_destructure_string_too_short_assigns_null => {
         r#"<?php
-try { [$a, $b] = 'x'; echo 'ok'; }
-catch (ValueError $e) { echo 'short-str'; }
+[$a, $b] = 'x';
+echo ($a === null && $b === null) ? 'nulls' : 'set';
 "#,
-        ["short-str"]
+        ["nulls"]
     };
 }
-
