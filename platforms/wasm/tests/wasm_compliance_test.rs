@@ -2211,7 +2211,7 @@ fn bigint_opcode_pushes_i64_bigint() {
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     match vm.run(vec![chunk]).unwrap() {
-        Value::BigInt(n) => assert_eq!(n, 9_000_000_000_000),
+        Value::BigInt(n) => assert_eq!(n.to_i64_wrapping(), 9_000_000_000_000),
         other => panic!("expected BigInt, got {:?}", other),
     }
 }

@@ -55,7 +55,9 @@ pub fn encode_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>
     let promising: Vec<u32> = chunks
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.is_async)
+        // Async GENERATORS are continuations, not JSPI-promising calls —
+        // `is_async` is source truth, so exclude generators here.
+        .filter(|(_, c)| c.is_async && !c.is_generator)
         .map(|(i, _)| (import_base + i) as u32)
         .collect();
 
