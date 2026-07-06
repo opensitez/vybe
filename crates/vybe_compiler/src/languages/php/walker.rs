@@ -917,8 +917,9 @@ class Exception implements Throwable {
     protected $message = "";
     protected $code = 0;
     protected $previous = null;
+    protected $cause = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message; $this->code = $code; $this->previous = $previous;
+        $this->message = $message; $this->code = $code; $this->previous = $previous; $this->cause = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
@@ -933,8 +934,9 @@ class Error implements Throwable {
     protected $message = "";
     protected $code = 0;
     protected $previous = null;
+    protected $cause = null;
     public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message; $this->code = $code; $this->previous = $previous;
+        $this->message = $message; $this->code = $code; $this->previous = $previous; $this->cause = $previous;
     }
     public function getMessage() { return $this->message; }
     public function getCode() { return $this->code; }
@@ -971,12 +973,62 @@ class UnexpectedValueException extends RuntimeException {}
 class JsonException extends Exception {}
 "##;
 
-/// Parse the exception prelude into statements (registering the classes in
-/// the walker's registries as a side effect). Returns `[]` on any error so
-/// a prelude problem never breaks user compilation.
-fn exception_prelude_statements() -> Vec<Statement> {
+/// PHP-source implementations of URL/query helpers that are pure compositions
+/// of already-working string builtins (Layer 3 lives in the target language).
+/// Assignments avoid the `if {…} else {…}` conditional-assignment form, which
+/// currently drops the value inside functions — a single ternary is used
+/// instead. See project_php_url_functions.
+const URL_FUNCTIONS_PRELUDE: &str = r##"
+function parse_url($url, $component = -1) {
+    $pattern = '/^(?:([^:\/?#]+):)?(?:\/\/(?:([^:@\/?#]+)(?::([^@\/?#]*))?@)?([^:\/?#]*)(?::(\d+))?)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/';
+    preg_match($pattern, $url, $m);
+    $r = [];
+    if (isset($m[1]) && $m[1] !== '') $r['scheme'] = $m[1];
+    if (isset($m[2]) && $m[2] !== '') $r['user'] = $m[2];
+    if (isset($m[3]) && $m[3] !== '') $r['pass'] = $m[3];
+    if (isset($m[4]) && $m[4] !== '') $r['host'] = $m[4];
+    if (isset($m[5]) && $m[5] !== '') $r['port'] = (int)$m[5];
+    if (isset($m[6]) && $m[6] !== '') $r['path'] = $m[6];
+    if (isset($m[7]) && $m[7] !== '') $r['query'] = $m[7];
+    if (isset($m[8]) && $m[8] !== '') $r['fragment'] = $m[8];
+    if ($component == -1) return $r;
+    $keys = [0 => 'scheme', 1 => 'host', 2 => 'port', 3 => 'user', 4 => 'pass', 5 => 'path', 6 => 'query', 7 => 'fragment'];
+    $kk = isset($keys[$component]) ? $keys[$component] : null;
+    return ($kk !== null && isset($r[$kk])) ? $r[$kk] : null;
+}
+function __vybe_hbq_pairs($data, $prefix, $np) {
+    $pairs = [];
+    foreach ($data as $k => $v) {
+        $key = ($prefix === '') ? (is_int($k) ? $np . $k : (string)$k) : ($prefix . '[' . $k . ']');
+        if (is_array($v)) {
+            foreach (__vybe_hbq_pairs($v, $key, $np) as $p) $pairs[] = $p;
+        } else {
+            $vv = is_bool($v) ? ($v ? '1' : '0') : $v;
+            $pairs[] = urlencode($key) . '=' . urlencode($vv);
+        }
+    }
+    return $pairs;
+}
+function http_build_query($data, $numeric_prefix = '', $arg_separator = '&', $encoding_type = 1) {
+    $sep = ($arg_separator === '' || $arg_separator === null) ? '&' : $arg_separator;
+    return implode($sep, __vybe_hbq_pairs($data, '', $numeric_prefix));
+}
+function parse_str($string, &$result) {
+    $result = [];
+    foreach (explode('&', $string) as $pair) {
+        if ($pair === '') continue;
+        $kv = explode('=', $pair, 2);
+        $result[urldecode($kv[0])] = isset($kv[1]) ? urldecode($kv[1]) : '';
+    }
+}
+"##;
+
+/// Parse a PHP prelude source into statements (registering any classes in the
+/// walker's registries as a side effect). Returns `[]` on any error so a
+/// prelude problem never breaks user compilation.
+fn parse_prelude(src: &str) -> Vec<Statement> {
     let mut stmts = Vec::new();
-    let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, EXCEPTION_PRELUDE) else {
+    let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, src) else {
         return stmts;
     };
     let Some(program) = pairs.next() else {
@@ -1287,7 +1339,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // as real classes so built-in exceptions use the shared class emitter.
     let body = {
         LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(EXCEPTION_PRELUDE));
-        let mut prelude = exception_prelude_statements();
+        let mut prelude = parse_prelude(EXCEPTION_PRELUDE);
+        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(URL_FUNCTIONS_PRELUDE));
+        prelude.append(&mut parse_prelude(URL_FUNCTIONS_PRELUDE));
         prelude.append(&mut hoisted);
         prelude
     };
@@ -2595,6 +2649,18 @@ fn class_has_method(c: &str, method: &str) -> bool {
     })
 }
 
+/// True if any user-declared class defines a method named `method`. Used to
+/// avoid hijacking a user method (e.g. `Formatter::format`, `Money::add`) with
+/// the DateTime instance-method rewrite: DateTime-only code declares no such
+/// class, so the rewrite still applies there.
+fn any_user_class_has_method(method: &str) -> bool {
+    CLASS_REGISTRY.with(|r| {
+        r.borrow()
+            .values()
+            .any(|m| m.methods.iter().any(|mm| mm.name.eq_ignore_ascii_case(method)))
+    })
+}
+
 /// Extract a class name from an argument that names a class: a string
 /// literal (`'C'`, `C::class`), or a `new C()` expression.
 fn class_name_from_arg(e: &Expression) -> Option<String> {
@@ -2714,6 +2780,11 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
+    // Register the trait's metadata (methods, fields) like a class, so
+    // method-name lookups (e.g. the DateTime-method-hijack guard) see
+    // trait-provided methods on classes that `use` the trait.
+    let meta = extract_class_meta(&name, &[], &[], &ClassModifiers::default(), &members);
+    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
     register_type_kind(&name, "trait");
     Ok(StmtKind::ClassDecl {
         name,
@@ -5631,7 +5702,7 @@ fn apply_postfix(
             // classes that define `format`/`modify`/`diff`/etc. would
             // be rerouted; the trade-off is the same one the exception
             // accessor rewrite above accepts.
-            if !is_fcc {
+            if !is_fcc && !any_user_class_has_method(name.as_str()) {
                 let target_fn: Option<&str> = match name.as_str() {
                     "format" => Some("__php_dt_format"),
                     "getTimestamp" => Some("__php_dt_get_timestamp"),
@@ -7046,52 +7117,21 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             ));
         }
     }
-    // PHP exceptions use positional ctor args `(message, code, previous)`.
-    // Normalize to the common JS-shaped `(message, {code, cause})` so the
-    // shared exception emitter stamps `code`/`cause` onto the canonical
-    // exception object. This keeps cross-language catch + `getPrevious()` /
-    // `getCode()` working: a PHP-thrown exception's cause/code are then
-    // visible to a JS/Python catcher, and vice-versa. `message` stays
-    // positional; `code`/`previous` move into the options object.
-    // PHP SPL exception aliases — normalize to the base recognized name
-    let class_expr = if let ExprKind::Ident(class_name) = &class_expr.kind {
-        let bare = class_name.trim_start_matches('\\');
-        match bare {
-            "InvalidArgumentException" | "BadMethodCallException" | "BadFunctionCallException" => {
-                Expression::with_span(ExprKind::Ident("LogicException".to_string()), span.clone())
-            }
-            _ => class_expr,
-        }
-    } else {
-        class_expr
-    };
-    if let ExprKind::Ident(class_name) = &class_expr.kind {
-        let bare = class_name.trim_start_matches('\\');
-        if crate::emitter::errors::is_exception_type(bare)
-            && !bare.eq_ignore_ascii_case("AggregateError")
-            && args.len() >= 2
-        {
-            let msg = args[0].clone();
-            let mut props: Vec<ObjectProperty> = vec![ObjectProperty::KeyValue {
-                key: Expression::string("code"),
-                value: args[1].value.clone(),
-            }];
-            if let Some(prev) = args.get(2) {
-                props.push(ObjectProperty::KeyValue {
-                    key: Expression::string("cause"),
-                    value: prev.value.clone(),
-                });
-            }
-            let opts = Expression::with_span(ExprKind::Object(props), span.clone());
-            return Ok(Expression::with_span(
-                ExprKind::New {
-                    class: Box::new(class_expr),
-                    args: vec![msg, Argument::positional(opts)],
-                },
-                span,
-            ));
-        }
-    }
+    // PHP exceptions are REAL declared classes (see the exception prelude):
+    // `Exception`/`Error` and every SPL/builtin subclass have a positional
+    // constructor `($message, $code, $previous)` and are always in
+    // `defined_classes`, so `new X(...)` routes through the ordinary
+    // class-constructor path — never the shared JS exception emitter. The args
+    // are passed positionally: the ctor stores `$this->code`/`$this->previous`
+    // (and `$this->cause`), so `getCode()`/`getPrevious()` and exception
+    // chaining work. (Unifying onto the shared emitter regressed methods +
+    // data stamping — deferred; pairs with the tag-based exception redesign.)
+    //
+    // `InvalidArgumentException` / `BadFunctionCallException` /
+    // `BadMethodCallException` keep their own class identity — they are NOT
+    // aliased to `LogicException`, or `get_class`/`instanceof`/`catch` of the
+    // specific type would break.
+
     // SPL data-structure classes are built by an emitter adapter (the
     // `fiber_adapter` model) rather than a user-defined class. Rewrite
     // `new SplStack()` → `__spl_new_splstack()` so it routes there.
@@ -7124,6 +7164,16 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 },
                 span,
             ));
+        }
+        // `ArrayObject` / `ArrayIterator` wrap an array. PHP arrays are Vybe's
+        // native representation, so unwrap to the underlying array — `count()`,
+        // `foreach`, offset access (`$o[$k]`), and `iterator_to_array` then all
+        // work directly. `new ArrayObject($arr)` → `$arr`; no-arg → `[]`.
+        let bare_cn = cn.trim_start_matches('\\');
+        if bare_cn == "ArrayObject" || bare_cn == "ArrayIterator" {
+            return Ok(args.into_iter().next().map(|a| a.value).unwrap_or_else(|| {
+                Expression::with_span(ExprKind::Array(vec![]), span.clone())
+            }));
         }
         let spl_ctor = match cn.trim_start_matches('\\') {
             "SplStack" => Some("__spl_new_splstack"),
@@ -11428,10 +11478,55 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // Returns a consistent value for the same object reference.
         // Rewrite to just return the object itself — strict === comparison
         // will work because Arc::ptr_eq checks pointer identity.
-        "spl_object_id" | "spl_object_hash" if args.len() == 1 => {
+        "spl_object_id" if args.len() == 1 => {
             // Return the object as-is. Two refs to the same object will
             // be === identical, which is all the tests check.
             arg(0)?.kind
+        }
+        "spl_object_hash" if args.len() == 1 => {
+            // PHP `spl_object_hash` returns a 32-char hex string. There is no
+            // host object-identity primitive, so approximate with
+            // `md5(json_encode($obj))` — a stable, non-empty hex string.
+            let obj = arg(0)?;
+            ExprKind::Call {
+                callee: Box::new(Expression::ident("md5")),
+                args: vec![Argument::positional(Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident("json_encode")),
+                        args: vec![Argument::positional(obj)],
+                        optional: false,
+                    },
+                    span.clone(),
+                ))],
+                optional: false,
+            }
+        }
+        // PHP `spl_classes()` — associative array `name => name` of the
+        // registered SPL classes.
+        "spl_classes" if args.is_empty() => {
+            let names = [
+                "AppendIterator", "ArrayIterator", "ArrayObject", "CachingIterator",
+                "CallbackFilterIterator", "DirectoryIterator", "EmptyIterator",
+                "FilesystemIterator", "FilterIterator", "GlobIterator", "InfiniteIterator",
+                "IteratorIterator", "LimitIterator", "MultipleIterator", "NoRewindIterator",
+                "ParentIterator", "RecursiveArrayIterator", "RecursiveCachingIterator",
+                "RecursiveDirectoryIterator", "RecursiveFilterIterator",
+                "RecursiveIteratorIterator", "RecursiveRegexIterator", "RecursiveTreeIterator",
+                "RegexIterator", "SplDoublyLinkedList", "SplFileInfo", "SplFileObject",
+                "SplFixedArray", "SplHeap", "SplMinHeap", "SplMaxHeap", "SplObjectStorage",
+                "SplPriorityQueue", "SplQueue", "SplStack", "SplTempFileObject",
+            ];
+            ExprKind::Array(
+                names
+                    .iter()
+                    .map(|n| ArrayElement {
+                        key: Some(Expression::string(n)),
+                        value: Expression::string(n),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )
         }
         // PHP `preg_replace_callback_array([pat=>cb, ...], $str)` →
         // sequential preg_replace_callback calls.
@@ -11753,42 +11848,167 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 _ => return None,
             };
             let val = arg(0)?;
+            // Leaf builders (capture only `span`); `callf` composes calls via
+            // the enclosing `mk_call`. Keeping the runtime semantics in existing
+            // string builtins means filter_var stays a pure walker desugaring.
+            let slit = |s: &str| {
+                Expression::with_span(ExprKind::Lit(Literal::Str(s.to_string())), span.clone())
+            };
+            let ident = |name: &str| {
+                Expression::with_span(ExprKind::Ident(name.to_string()), span.clone())
+            };
+            let false_lit =
+                || Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone());
+            let callf = |name: &str, cargs: Vec<Expression>| {
+                Expression::with_span(mk_call(ident(name), cargs), span.clone())
+            };
+            // `preg_match(re, v) ? then : false`. vybex's PCRE only recognises
+            // the `/` delimiter, so every pattern below uses it.
+            let validate = |re: &str, then: Expression| -> ExprKind {
+                ExprKind::Ternary {
+                    cond: Box::new(callf("preg_match", vec![slit(re), val.clone()])),
+                    then: Box::new(then),
+                    else_: Box::new(false_lit()),
+                }
+            };
             match filter_id {
                 // FILTER_SANITIZE_FULL_SPECIAL_CHARS / SPECIAL_CHARS
-                522 | 515 => mk_call(
-                    Expression::with_span(
-                        ExprKind::Ident("htmlspecialchars".to_string()),
-                        span.clone(),
-                    ),
-                    vec![val],
+                522 | 515 => mk_call(ident("htmlspecialchars"), vec![val]),
+                // FILTER_VALIDATE_EMAIL
+                274 => validate("/^[^@]+@[^@]+\\.[^@]+$/", val.clone()),
+                // FILTER_VALIDATE_INT → integer string ⇒ intval, else false
+                257 => validate("/^\\s*[+-]?\\d+\\s*$/", callf("intval", vec![val.clone()])),
+                // FILTER_VALIDATE_FLOAT → numeric literal ⇒ floatval, else false.
+                // Uses a float regex (not is_numeric, which is a source-only
+                // walker rewrite and wouldn't resolve when generated here).
+                259 => validate(
+                    "/^\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?\\s*$/",
+                    callf("floatval", vec![val.clone()]),
                 ),
-                // FILTER_VALIDATE_EMAIL → preg_match(regex, v) ? v : false
-                274 => {
-                    let regex = Expression::with_span(
-                        ExprKind::Lit(Literal::Str("/^[^@]+@[^@]+\\.[^@]+$/".to_string())),
-                        span.clone(),
-                    );
-                    let test = Expression::with_span(
-                        mk_call(
-                            Expression::with_span(
-                                ExprKind::Ident("preg_match".to_string()),
-                                span.clone(),
-                            ),
-                            vec![regex, val.clone()],
-                        ),
-                        span.clone(),
-                    );
-                    ExprKind::Ternary {
-                        cond: Box::new(test),
-                        then: Box::new(val),
-                        else_: Box::new(Expression::with_span(
-                            ExprKind::Lit(Literal::Bool(false)),
-                            span.clone(),
-                        )),
-                    }
+                // FILTER_VALIDATE_BOOLEAN → true for the recognised true-set,
+                // false otherwise (matches PHP without FILTER_NULL_ON_FAILURE).
+                258 => validate(
+                    "/^\\s*(1|true|on|yes)\\s*$/i",
+                    Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone()),
+                ),
+                // FILTER_VALIDATE_URL → scheme://non-space
+                273 => validate("/^\\w+:\\/\\/\\S+$/", val.clone()),
+                // FILTER_VALIDATE_IP → IPv4 dotted-quad and/or IPv6, honoring
+                // FILTER_FLAG_IPV4 (0x100000) / FILTER_FLAG_IPV6 (0x200000).
+                275 => {
+                    let flag = match args.get(2).map(|a| &a.value.kind) {
+                        Some(ExprKind::Lit(Literal::Int(n))) => *n,
+                        _ => 0,
+                    };
+                    let ipv4 = "((25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1?\\d?\\d)";
+                    let ipv6 = "([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}";
+                    let want_v4 = flag & 0x100000 != 0;
+                    let want_v6 = flag & 0x200000 != 0;
+                    let re = if want_v6 && !want_v4 {
+                        format!("/^{ipv6}$/")
+                    } else if want_v4 && !want_v6 {
+                        format!("/^{ipv4}$/")
+                    } else {
+                        format!("/^({ipv4}|{ipv6})$/")
+                    };
+                    validate(re.as_str(), val.clone())
                 }
+                // FILTER_SANITIZE_EMAIL → strip chars outside the RFC email set
+                517 => mk_call(
+                    ident("preg_replace"),
+                    vec![
+                        slit("/[^a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~@-]/"),
+                        slit(""),
+                        val,
+                    ],
+                ),
+                // FILTER_SANITIZE_URL → strip non-printable/space chars
+                518 => mk_call(
+                    ident("preg_replace"),
+                    vec![slit("/[^\\x21-\\x7e]/"), slit(""), val],
+                ),
+                // FILTER_SANITIZE_NUMBER_INT → keep digits and sign chars
+                519 => mk_call(
+                    ident("preg_replace"),
+                    vec![slit("/[^0-9+-]/"), slit(""), val],
+                ),
                 _ => return None,
             }
+        }
+        // PHP `filter_has_var($type, $name)` — whether the given input var was
+        // present in the *original request*. Under the CLI there is no request
+        // input, so this is always false (matches PHP CLI).
+        "filter_has_var" if args.len() == 2 => ExprKind::Lit(Literal::Bool(false)),
+        // PHP `filter_id($name)` — map a filter name to its integer id.
+        "filter_id" if args.len() == 1 => {
+            let name = match &args[0].value.kind {
+                ExprKind::Lit(Literal::Str(s)) => s.clone(),
+                _ => return None,
+            };
+            let id: i64 = match name.as_str() {
+                "int" => 257,
+                "boolean" | "bool" => 258,
+                "float" => 259,
+                "validate_regexp" => 272,
+                "validate_url" => 273,
+                "validate_email" => 274,
+                "validate_ip" => 275,
+                "validate_mac" => 276,
+                "validate_domain" => 277,
+                "string" | "stripped" => 513,
+                "encoded" => 514,
+                "special_chars" => 515,
+                "unsafe_raw" => 516,
+                "email" => 517,
+                "url" => 518,
+                "number_int" => 519,
+                "number_float" => 520,
+                "magic_quotes" | "add_slashes" => 521,
+                "full_special_chars" => 522,
+                "callback" => 1024,
+                _ => return None,
+            };
+            ExprKind::Lit(Literal::Int(id))
+        }
+        // PHP `filter_list()` — names of the available filters.
+        "filter_list" if args.is_empty() => {
+            let names = [
+                "int",
+                "boolean",
+                "float",
+                "validate_regexp",
+                "validate_domain",
+                "validate_url",
+                "validate_email",
+                "validate_ip",
+                "validate_mac",
+                "string",
+                "stripped",
+                "encoded",
+                "special_chars",
+                "full_special_chars",
+                "unsafe_raw",
+                "email",
+                "url",
+                "number_int",
+                "number_float",
+                "magic_quotes",
+                "callback",
+            ];
+            ExprKind::Array(
+                names
+                    .iter()
+                    .map(|s| ArrayElement {
+                        key: None,
+                        value: Expression::with_span(
+                            ExprKind::Lit(Literal::Str(s.to_string())),
+                            span.clone(),
+                        ),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )
         }
         // PHP `localeconv()` — locale numeric/monetary formatting info.
         // Vybe runs in the "C" locale; return the standard associative
@@ -12069,7 +12289,7 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // Lower both operands in the walker and reuse the existing
         // `__php_strpos` intrinsic so offset handling and false-on-miss
         // semantics stay centralized.
-        "stripos" if args.len() == 2 => {
+        "stripos" | "mb_stripos" if args.len() == 2 => {
             let lower_call = |index: usize| -> Option<Expression> {
                 Some(Expression::with_span(
                     mk_call(
@@ -12087,7 +12307,7 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 vec![lower_call(0)?, lower_call(1)?],
             )
         }
-        "stripos" if args.len() >= 3 => {
+        "stripos" | "mb_stripos" if args.len() >= 3 => {
             let lower_call = |index: usize| -> Option<Expression> {
                 Some(Expression::with_span(
                     mk_call(
@@ -12327,6 +12547,40 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             Expression::with_span(ExprKind::Ident("strrpos".to_string()), span.clone()),
             vec![arg(0)?, arg(1)?],
         ),
+        // mb_strstr → strstr (Vybe strings are UTF-8). (mb_stripos is folded
+        // into the `stripos` arms above.)
+        "mb_strstr" if args.len() >= 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("strstr".to_string()), span.clone()),
+            (0..args.len().min(3)).filter_map(|i| arg(i)).collect(),
+        ),
+        // mb_convert_encoding($s, to, from) → $s (Vybe strings are UTF-8).
+        "mb_convert_encoding" if !args.is_empty() => arg(0)?.kind,
+        // mb_internal_encoding() → "UTF-8" (getter); with an arg → true (setter).
+        "mb_internal_encoding" if args.is_empty() => {
+            ExprKind::Lit(Literal::Str("UTF-8".to_string()))
+        }
+        "mb_internal_encoding" => ExprKind::Lit(Literal::Bool(true)),
+        // mb_encoding_aliases(...) → the UTF-8 alias list.
+        "mb_encoding_aliases" => ExprKind::Array(vec![
+            ArrayElement {
+                key: None,
+                value: Expression::string("UTF-8"),
+                spread: false,
+                by_ref: false,
+            },
+            ArrayElement {
+                key: None,
+                value: Expression::string("utf-8"),
+                spread: false,
+                by_ref: false,
+            },
+            ArrayElement {
+                key: None,
+                value: Expression::string("utf8"),
+                spread: false,
+                by_ref: false,
+            },
+        ]),
         // mb_detect_encoding → always "UTF-8"
         "mb_detect_encoding" => ExprKind::Lit(Literal::Str("UTF-8".to_string())),
         // mb_check_encoding → always true
@@ -13177,8 +13431,31 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "FILTER_SANITIZE_EMAIL" => ExprKind::Lit(Literal::Int(517)),
         "FILTER_SANITIZE_URL" => ExprKind::Lit(Literal::Int(518)),
         "FILTER_SANITIZE_NUMBER_INT" => ExprKind::Lit(Literal::Int(519)),
+        "FILTER_SANITIZE_NUMBER_FLOAT" => ExprKind::Lit(Literal::Int(520)),
+        "FILTER_VALIDATE_MAC" => ExprKind::Lit(Literal::Int(276)),
+        "FILTER_VALIDATE_DOMAIN" => ExprKind::Lit(Literal::Int(277)),
         "FILTER_DEFAULT" => ExprKind::Lit(Literal::Int(516)),
         "FILTER_FLAG_NONE" => ExprKind::Lit(Literal::Int(0)),
+        "FILTER_FLAG_IPV4" => ExprKind::Lit(Literal::Int(1_048_576)),
+        "FILTER_FLAG_IPV6" => ExprKind::Lit(Literal::Int(2_097_152)),
+        // ── filter_var() input source types ──
+        "INPUT_POST" => ExprKind::Lit(Literal::Int(0)),
+        "INPUT_GET" => ExprKind::Lit(Literal::Int(1)),
+        "INPUT_COOKIE" => ExprKind::Lit(Literal::Int(2)),
+        "INPUT_SERVER" => ExprKind::Lit(Literal::Int(5)),
+        "INPUT_ENV" => ExprKind::Lit(Literal::Int(4)),
+        // ── parse_url() component selectors ──
+        "PHP_URL_SCHEME" => ExprKind::Lit(Literal::Int(0)),
+        "PHP_URL_HOST" => ExprKind::Lit(Literal::Int(1)),
+        "PHP_URL_PORT" => ExprKind::Lit(Literal::Int(2)),
+        "PHP_URL_USER" => ExprKind::Lit(Literal::Int(3)),
+        "PHP_URL_PASS" => ExprKind::Lit(Literal::Int(4)),
+        "PHP_URL_PATH" => ExprKind::Lit(Literal::Int(5)),
+        "PHP_URL_QUERY" => ExprKind::Lit(Literal::Int(6)),
+        "PHP_URL_FRAGMENT" => ExprKind::Lit(Literal::Int(7)),
+        // ── http_build_query() encoding types ──
+        "PHP_QUERY_RFC1738" => ExprKind::Lit(Literal::Int(1)),
+        "PHP_QUERY_RFC3986" => ExprKind::Lit(Literal::Int(2)),
         // ── preg flags ──
         "PREG_GREP_INVERT" => ExprKind::Lit(Literal::Int(1)),
         "PREG_SPLIT_NO_EMPTY" => ExprKind::Lit(Literal::Int(1)),

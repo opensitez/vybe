@@ -23,6 +23,10 @@ string_aware_relational = true      # `<`/`>`/`<=`/`>=`/`<=>` compare strings
                                     # lexicographically, else numeric/dynamic;
                                     # DateTime operands unboxed first.
 supports_autoload = true            # undefined class ctor → spl_autoload_register
+missing_arg_is_undefined = true     # a param default fires only when the arg is
+                                    # OMITTED (padded `undefined`), not when an
+                                    # explicit `null` is passed — `f(x: null)`
+                                    # keeps `null`, doesn't fall back to default.
                                     # callback, then retry.
 buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
                                     # getReturn(); foreach buffers current value.
@@ -336,7 +340,7 @@ base_convert        = { emit = "common:php.base_convert",   min_args = 3, max_ar
 # ── Type conversion ─────────────────────────────────────────────────────────
 
 intval              = { emit = "common:php.intval",   min_args = 1, max_args = 2 }
-floatval            = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
+floatval            = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
 doubleval           = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
 strval              = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max_args = 1 }

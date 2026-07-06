@@ -350,6 +350,33 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, from_slot, line);
     lset(chunk, s_slot, line);
 
+    // PHP 8: `base_convert` bases must be in 2..=36, else ValueError.
+    // bad = from<2 || from>36 || to<2 || to>36
+    for (slot, lo) in [(from_slot, true), (from_slot, false), (to_slot, true), (to_slot, false)] {
+        lget(chunk, slot, line);
+        push_const(chunk, Value::F64(if lo { 2.0 } else { 36.0 }), line);
+        if lo {
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
+        } else {
+            crate::emitter::ops::emit_dyn_gt(chunk, line);
+        }
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    }
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::php::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "ValueError",
+        "base_convert(): base must be between 2 and 36",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
     // s = ("" + s).toLowerCase()
     push_str(chunk, "", line);
     lget(chunk, s_slot, line);

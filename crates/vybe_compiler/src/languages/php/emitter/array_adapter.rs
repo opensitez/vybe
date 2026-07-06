@@ -1138,6 +1138,23 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lset(chunk, size_slot, line);
     lset(chunk, arr_slot, line);
 
+    // PHP 8: `array_chunk` length must be > 0, else ValueError.
+    lget(chunk, size_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::php::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "ValueError",
+        "array_chunk(): Argument #2 ($length) must be greater than 0",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
     // out = []
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, out_slot, line);

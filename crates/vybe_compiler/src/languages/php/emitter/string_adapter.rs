@@ -1373,6 +1373,24 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         push_const(chunk, Value::F64(0.0), line);
         lset(chunk, decimals_slot, line);
     }
+
+    // PHP 8: `number_format` decimals must be >= 0, else ValueError.
+    lget(chunk, decimals_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::php::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "ValueError",
+        "number_format(): Argument #2 ($decimals) must be greater than or equal to 0",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
     // n = +num (numeric coerce)
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
