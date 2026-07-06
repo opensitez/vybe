@@ -1040,6 +1040,7 @@ function parse_str($string, &$result) {
 /// through the common `emit_class` path. Assignments avoid the if/else
 /// conditional-assignment form (see project_php_conditional_assign_bug).
 const CLASS_HELPERS_PRELUDE: &str = r##"
+class stdClass {}
 function __vybe_parent_class($o) {
     if (!is_object($o)) return false;
     $t = isset($o->__types) ? $o->__types : [];
@@ -3252,7 +3253,14 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         return_type = Some(p.as_str().trim_start_matches(':').trim().to_string());
                     }
                     Rule::block_statement => {
-                        body = walk_statement_into_body(p)?;
+                        // Track the method name for `__FUNCTION__`/`__METHOD__`
+                        // inside the body (name precedes the body in grammar).
+                        FUNCTION_STACK.with(|s| s.borrow_mut().push(method_name.clone()));
+                        let walked = walk_statement_into_body(p);
+                        FUNCTION_STACK.with(|s| {
+                            s.borrow_mut().pop();
+                        });
+                        body = walked?;
                         has_body = true;
                     }
                     _ => {}
@@ -6586,14 +6594,21 @@ fn apply_postfix(
             // when the class side is a plain Ident (not Super, not
             // computed) — those use distinct dispatch paths.
             if let ExprKind::StaticAccess { class, member } = &receiver.kind {
-                if let (ExprKind::Ident(_), ExprKind::Ident(method_name)) =
+                if let (ExprKind::Ident(class_name), ExprKind::Ident(method_name)) =
                     (&class.kind, &member.kind)
                 {
-                    let mname = method_name.clone();
-                    let class_expr = (**class).clone();
-                    return Ok(build_magic_call_static_rewrite(
-                        class_expr, mname, args, &span,
-                    ));
+                    // A `$`-prefixed class is a *variable* (`$cls::method()`);
+                    // its class-name string is resolved at runtime, so keep the
+                    // `StaticAccess` shape (the compiler's dynamic-static branch
+                    // handles it). Only literal class names go through the
+                    // static→Member magic-call rewrite.
+                    if !class_name.starts_with('$') {
+                        let mname = method_name.clone();
+                        let class_expr = (**class).clone();
+                        return Ok(build_magic_call_static_rewrite(
+                            class_expr, mname, args, &span,
+                        ));
+                    }
                 }
             }
             Ok(Expression::with_span(
@@ -6790,6 +6805,68 @@ fn php_callable_target_expr(expr: Expression, span: &Span) -> Expression {
         }
         _ => Expression::with_span(expr.kind, span.clone()),
     }
+}
+
+/// Wrap a callable *value* — a string name, `[Class, method]`, or `[obj, method]`
+/// — in a fixed-arity arrow closure so it can be passed to higher-order builtins
+/// (`array_map`/`usort`/`array_filter`/…). A literal callable resolves to a
+/// direct function / method / static call, which sidesteps runtime callable
+/// dispatch and spread-on-method (both currently unsupported). Non-literal
+/// callables (closures, variables) are returned unchanged — those are already
+/// valid callable values. Arrow functions auto-capture, so an `[obj, m]`
+/// receiver in scope is captured into the closure.
+fn php_wrap_callable(cb: Expression, arity: usize, span: &Span) -> Expression {
+    let is_literal_callable = match &cb.kind {
+        ExprKind::Lit(Literal::Str(_)) => true,
+        ExprKind::Array(els) => {
+            els.len() == 2 && matches!(els[1].value.kind, ExprKind::Lit(Literal::Str(_)))
+        }
+        _ => false,
+    };
+    if !is_literal_callable {
+        return cb;
+    }
+    let target = php_callable_target_expr(cb, span);
+    let param_names: Vec<String> = (0..arity).map(|i| format!("__php_cb_a{i}")).collect();
+    let params = param_names
+        .iter()
+        .map(|n| Param {
+            name: n.clone(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        })
+        .collect();
+    let call_args = param_names
+        .iter()
+        .map(|n| {
+            Argument::positional(Expression::with_span(
+                ExprKind::Ident(n.clone()),
+                span.clone(),
+            ))
+        })
+        .collect();
+    let body = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(target),
+            args: call_args,
+            optional: false,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Lambda {
+            params,
+            body: LambdaBody::Expr(Box::new(body)),
+            is_async: false,
+            captures: vec![],
+        },
+        span.clone(),
+    )
 }
 
 fn php_first_class_callable_lambda(callee: Expression, optional: bool, span: &Span) -> Expression {
@@ -10557,41 +10634,26 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             mk_call(iife, vec![])
         }
         // array_map($fn, $arr) — single array
-        "array_map" if args.len() == 2 => {
+        "array_map" if args.len() >= 2 => {
+            // Callback arity = number of input arrays (array_map applies the
+            // callback across N parallel arrays). Wrap literal callables so a
+            // `[Class, m]` / `[obj, m]` / "name" callback becomes a real closure.
+            let arity = args.len() - 1;
             let mut mapped_args = Vec::with_capacity(args.len());
-            let callback = arg(0)?;
-            let callback = if let ExprKind::Lit(Literal::Str(name)) = &callback.kind {
-                let param_name = "__php_array_map_v".to_string();
-                let param_expr =
-                    Expression::with_span(ExprKind::Ident(param_name.clone()), span.clone());
-                let body = Expression::with_span(
-                    mk_call(Expression::ident(name), vec![param_expr]),
-                    span.clone(),
-                );
-                Expression::with_span(
-                    ExprKind::Lambda {
-                        params: vec![Param {
-                            name: param_name,
-                            type_hint: None,
-                            default: None,
-                            pass_by: PassBy::Value,
-                            is_rest: false,
-                            is_kwargs: false,
-                            is_optional: false,
-                            is_nullable: false,
-                        }],
-                        body: LambdaBody::Expr(Box::new(body)),
-                        is_async: false,
-                        captures: vec![],
-                    },
-                    span.clone(),
-                )
-            } else {
-                php_callable_target_expr(callback, span)
-            };
-            mapped_args.push(callback);
+            mapped_args.push(php_wrap_callable(arg(0)?, arity, span));
             mapped_args.extend(args.iter().skip(1).map(|arg| arg.value.clone()));
             mk_call(Expression::ident("array_map"), mapped_args)
+        }
+        // Comparator-taking sorts: `[Class, m]` / `[obj, m]` / "name" → closure.
+        fname @ ("usort" | "uasort" | "uksort") if args.len() == 2 => mk_call(
+            Expression::ident(fname),
+            vec![arg(0)?, php_wrap_callable(arg(1)?, 2, span)],
+        ),
+        // `array_filter($arr, $cb [, $mode])` — default callback arity 1.
+        "array_filter" if args.len() >= 2 => {
+            let mut new_args = vec![arg(0)?, php_wrap_callable(arg(1)?, 1, span)];
+            new_args.extend(args.iter().skip(2).map(|a| a.value.clone()));
+            mk_call(Expression::ident("array_filter"), new_args)
         }
         // ── Dynamic callable helpers ───────────────────────────────────
         // PHP `call_user_func($cb, ...)` and `call_user_func_array($cb, $args)`
@@ -12749,7 +12811,8 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // ARRAY_FILTER_USE_KEY, so both stay on the PHP adapter layer.
         "array_reduce" if args.len() >= 2 => {
             let arr_expr = arg(0)?;
-            let cb = arg(1)?;
+            // Callback is ($carry, $item) — arity 2. Wrap literal callables.
+            let cb = php_wrap_callable(arg(1)?, 2, span);
             let mut call_args = vec![cb];
             if let Some(init) = arg(2) {
                 call_args.push(init);
