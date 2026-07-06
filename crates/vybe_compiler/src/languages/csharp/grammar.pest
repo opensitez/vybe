@@ -668,6 +668,11 @@ new_expression = {
     // C# 3+ implicit-typed array creation: `new[] { 1, 2 }`. The
     // element type is inferred from the initializer.
     new_kw ~ "[" ~ "]" ~ array_initializer
+    |
+    // C# 3+ anonymous type: `new { Name = x, x.Age }`. No type name; the
+    // walker lowers it to a property-bag object, inferring member names for
+    // bare member-access elements (`x.Age` → property `Age`).
+    new_kw ~ anonymous_initializer
     | new_kw ~ type_name_for_new ~ (
         // Multi-bracket forms `new int[3][]`, `new int[3,4]`, `new int[5]`,
         // `new int[]` — a sequence of bracketed dimensions, optionally
@@ -706,6 +711,11 @@ collection_element = {
 object_initializer = { "{" ~ (initializer_member ~ ("," ~ initializer_member)*)? ~ ","? ~ "}" }
 
 initializer_member = { ident_name ~ "=" ~ expression }
+
+// Anonymous-type initializer: each member is either `Name = expr` or a bare
+// expression whose name is inferred (`x.Age` → `Age`, `id` → `id`).
+anonymous_initializer = { "{" ~ (anonymous_member ~ ("," ~ anonymous_member)*)? ~ ","? ~ "}" }
+anonymous_member = { (ident_name ~ "=" ~ !"=")? ~ expression }
 
 call_chain = {
     "?." ~ ident_or_keyword                              // null-conditional member

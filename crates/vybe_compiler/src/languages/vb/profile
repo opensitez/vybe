@@ -577,28 +577,11 @@ addrange       = { emit = "common:dotnet.list_add_range",  min_args = 1, max_arg
 trygetvalue    = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
 containsvalue  = { emit = "host:ecma:array:includes",      min_args = 1, max_args = 1 }
 
-# LINQ surface — bytecode lives in `emitter/dotnet/core/linq_adapter.rs`,
-# shared with the C# profile. VB inherits the implementation by listing
-# the `common:dotnet.linq_*` emit targets here under lower-cased keys
-# (the parser lowercases section keys for case-insensitive languages).
-sum                = { emit = "common:collections.sum",                   min_args = 0, max_args = 0 }
-min                = { emit = "common:collections.min",                   min_args = 0, max_args = 0 }
-max                = { emit = "common:collections.max",                   min_args = 0, max_args = 0 }
-first              = { emit = "common:dotnet.linq_first",                 min_args = 0, max_args = 0 }
-last               = { emit = "common:dotnet.linq_last",                  min_args = 0, max_args = 0 }
-select             = { emit = "common:dotnet.linq_select",                min_args = 1, max_args = 1 }
-average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
-firstordefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
-distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
-skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
-take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
-aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }
-orderbydescending  = { emit = "common:dotnet.linq_order_by_descending",   min_args = 1, max_args = 1 }
-groupby            = { emit = "common:dotnet.linq_group_by",              min_args = 1, max_args = 1 }
-selectmany         = { emit = "common:dotnet.linq_select_many",           min_args = 1, max_args = 1 }
-todictionary       = { emit = "common:dotnet.linq_to_dictionary",         min_args = 2, max_args = 2 }
-zip                = { emit = "common:dotnet.linq_zip",                   min_args = 2, max_args = 2 }
-tolist             = { emit = "common:dotnet.linq_identity",              min_args = 0, max_args = 0 }
+# LINQ surface lives once in the shared .NET component resolver
+# (`platforms/dotnet/.../component_classes_linq.rs`, class `IEnumerable`),
+# resolved by receiver type — or by method name for untyped receivers on the
+# .NET path — so VB declares NO per-function LINQ entries. Same shared surface
+# and `generators.rs`-backed adapters as C#.
 
 # Queue methods
 enqueue        = { emit = "host:ecma:array:push",  min_args = 1, max_args = 1 }

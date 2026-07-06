@@ -5046,6 +5046,16 @@ fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
     None
 }
 
+/// Infer the property name for a bare anonymous-type member: `x.Age` → `Age`,
+/// `id` → `id`, `x?.Name` → `Name`. Falls back to `Item` for other shapes.
+fn infer_anonymous_member_name(expr: &Expression) -> String {
+    match &expr.kind {
+        ExprKind::Member { field, .. } => field.clone(),
+        ExprKind::Ident(name) => name.clone(),
+        _ => "Item".to_string(),
+    }
+}
+
 fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
@@ -11282,6 +11292,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut is_array = false;
     let mut array_init = Vec::new();
     let mut obj_init: Vec<(String, Expression)> = Vec::new();
+    let mut is_anonymous = false;
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -11318,6 +11329,25 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     }
                 }
             }
+            Rule::anonymous_initializer => {
+                is_anonymous = true;
+                for am in p.into_inner() {
+                    if am.as_rule() != Rule::anonymous_member {
+                        continue;
+                    }
+                    let mut name: Option<String> = None;
+                    let mut val = Expression::null();
+                    for mp in am.into_inner() {
+                        match mp.as_rule() {
+                            Rule::ident_name => name = Some(mp.as_str().to_string()),
+                            _ => val = walk_expression(mp).unwrap_or(Expression::null()),
+                        }
+                    }
+                    // Bare members (`x.Age`, `id`) infer their property name.
+                    let field = name.unwrap_or_else(|| infer_anonymous_member_name(&val));
+                    obj_init.push((field, val));
+                }
+            }
             _ => {
                 // Expression inside brackets for array size
                 if let Ok(expr) = walk_expression(p) {
@@ -11328,6 +11358,22 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
         }
+    }
+
+    // Anonymous type `new { Name = x, y.Age }` — lower to the shared object
+    // literal (`ExprKind::Object`), the same path JS `{ Name: x }` uses. Going
+    // through the common object/member/operator resolution avoids the C#
+    // `new object()`-typed IIFE, which recursed on `.Value` (Nullable/boxing)
+    // and `+` overload resolution.
+    if is_anonymous {
+        let props = obj_init
+            .into_iter()
+            .map(|(name, value)| crate::ast::ObjectProperty::KeyValue {
+                key: Expression::string(&name),
+                value,
+            })
+            .collect();
+        return Ok(ExprKind::Object(props));
     }
 
     // `new Dictionary<K,V> { { key, value }, ... }` — IIFE-lower to:

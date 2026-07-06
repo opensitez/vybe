@@ -254,32 +254,16 @@ Count         = [
     { emit = "common:collections.length",     min_args = 0, max_args = 0 },
     { emit = "common:dotnet.linq_count_pred", min_args = 1, max_args = 1 },
 ]
-ToArray       = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
-ToList        = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
 GetType       = { emit = "common:ref_typeof",          min_args = 0, max_args = 0 }
 Equals        = { emit = "common:dyn_eq",              min_args = 1, max_args = 1 }
 
-# LINQ surface — composed bytecode lives in `emitter/dotnet/core/linq_adapter.rs`
-# so VB and C# share one implementation. New entries: add an emit_linq_* fn,
-# wire it in dispatch.rs, then list it here / in vb/profile.
-Sum                = { emit = "common:collections.sum",                   min_args = 0, max_args = 0 }
-Min                = { emit = "common:collections.min",                   min_args = 0, max_args = 0 }
-Max                = { emit = "common:collections.max",                   min_args = 0, max_args = 0 }
-First              = { emit = "common:dotnet.linq_first",                 min_args = 0, max_args = 0 }
-Last               = { emit = "common:dotnet.linq_last",                  min_args = 0, max_args = 0 }
-Select             = { emit = "common:dotnet.linq_select",                min_args = 1, max_args = 1 }
-Average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
-FirstOrDefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
-Distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
-SequenceEqual      = { emit = "common:dotnet.linq_sequence_equal",        min_args = 1, max_args = 1 }
-Skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
-Take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
-Aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }
-OrderByDescending  = { emit = "common:dotnet.linq_order_by_descending",   min_args = 1, max_args = 1 }
-GroupBy            = { emit = "common:dotnet.linq_group_by",              min_args = 1, max_args = 1 }
-SelectMany         = { emit = "common:dotnet.linq_select_many",           min_args = 1, max_args = 1 }
-ToDictionary       = { emit = "common:dotnet.linq_to_dictionary",         min_args = 2, max_args = 2 }
-Zip                = { emit = "common:dotnet.linq_zip",                   min_args = 2, max_args = 2 }
+# LINQ surface lives once in the shared .NET component resolver
+# (`platforms/dotnet/.../component_classes_linq.rs`, class `IEnumerable`).
+# Dispatch resolves it by receiver type — or, for untyped receivers on the
+# .NET path, by method name — so there are NO per-function LINQ entries here.
+# The adapters drain any receiver (array, List<T>, generator, cross-language
+# iterable) through `generators.rs`. Only List/Dictionary mutators that are
+# not `IEnumerable` extension methods remain in the profile.
 AddRange           = { emit = "common:dotnet.list_add_range",             min_args = 1, max_args = 1 }
 EntriesSorted      = { emit = "common:dotnet.sorted_dictionary_entries",  min_args = 0, max_args = 0 }
 

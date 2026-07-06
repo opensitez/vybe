@@ -747,6 +747,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_distinct" => {
             crate::emitter::core::linq_adapter::emit_linq_distinct(chunks, current, line)
         }
+        "dotnet.linq_distinct_by" => {
+            crate::emitter::core::linq_adapter::emit_linq_distinct_by(chunks, current, line)
+        }
+        "dotnet.linq_order_by" => {
+            crate::emitter::core::linq_adapter::emit_linq_order_by(chunks, current, line)
+        }
         "dotnet.linq_sequence_equal" => {
             crate::emitter::core::linq_adapter::emit_linq_sequence_equal(
                 chunks, current, line,
@@ -779,6 +785,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.linq_zip" => {
             crate::emitter::core::linq_adapter::emit_linq_zip(chunks, current, line)
+        }
+        "dotnet.linq_element_at" => {
+            crate::emitter::core::linq_adapter::emit_linq_element_at(chunks, current, line)
+        }
+        "dotnet.linq_element_at_or_default" => {
+            crate::emitter::core::linq_adapter::emit_linq_element_at_or_default(
+                chunks, current, line,
+            )
+        }
+        "dotnet.linq_single" => {
+            crate::emitter::core::linq_adapter::emit_linq_single(chunks, current, line)
+        }
+        "dotnet.linq_single_or_default" => {
+            crate::emitter::core::linq_adapter::emit_linq_single_or_default(chunks, current, line)
+        }
+        "dotnet.linq_max_by" => {
+            crate::emitter::core::linq_adapter::emit_linq_max_by(chunks, current, line)
+        }
+        "dotnet.linq_min_by" => {
+            crate::emitter::core::linq_adapter::emit_linq_min_by(chunks, current, line)
+        }
+        "dotnet.linq_aggregate_no_seed" => {
+            crate::emitter::core::linq_adapter::emit_linq_aggregate_no_seed(chunks, current, line)
+        }
+        "dotnet.linq_append" => {
+            crate::emitter::core::linq_adapter::emit_linq_append(chunks, current, line)
+        }
+        "dotnet.linq_prepend" => {
+            crate::emitter::core::linq_adapter::emit_linq_prepend(chunks, current, line)
+        }
+        "dotnet.linq_sum" => {
+            crate::emitter::core::linq_adapter::emit_linq_sum(chunks, current, line)
+        }
+        "dotnet.linq_count" => {
+            crate::emitter::core::linq_adapter::emit_linq_count(chunks, current, line)
+        }
+        "dotnet.linq_skip_last" => {
+            crate::emitter::core::linq_adapter::emit_linq_skip_last(chunks, current, line)
+        }
+        "dotnet.linq_take_last" => {
+            crate::emitter::core::linq_adapter::emit_linq_take_last(chunks, current, line)
+        }
+        "dotnet.linq_default_if_empty" => {
+            crate::emitter::core::linq_adapter::emit_linq_default_if_empty(chunks, current, line)
         }
 
         // ── Static Array.* helpers — same dotnet/core home as LINQ ──

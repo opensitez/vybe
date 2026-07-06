@@ -32,6 +32,9 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
         let mut exports = component_classes_collections::exports();
         component_classes_linq::apply_linq_registrations(&mut exports);
+        // The `System.Linq.Enumerable` surface, declared once. Any enumerable
+        // receiver falls back to it via `lookup_instance_method`.
+        exports.push(component_classes_linq::enumerable_export());
         exports.extend(component_classes_system::exports());
         exports.extend(component_classes_system_values::exports());
         exports.extend(component_classes_system_version::exports());

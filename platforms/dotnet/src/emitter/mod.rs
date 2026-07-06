@@ -71,6 +71,50 @@ fn is_real_runtime_interface(interface: &str) -> bool {
         && !interface.starts_with("system.")
 }
 
+/// Normalize a source-language receiver type to its descriptor base name.
+/// Returns `(base, is_array)`:
+/// - `"List<int>"` → `("List", false)` (generic args stripped)
+/// - `"int[]"` / `"Integer()"` → `(original, true)` (array shape)
+/// - `"IEnumerable<T>"` → `("IEnumerable", false)`
+fn normalize_receiver_type_name(name: &str) -> (String, bool) {
+    let trimmed = name.trim();
+    // C# `T[]` / `T[,]` and VB `T()` array declarations.
+    if trimmed.ends_with(']') && trimmed.contains('[') {
+        return (trimmed.to_string(), true);
+    }
+    if trimmed.ends_with("()") {
+        return (trimmed.to_string(), true);
+    }
+    // Strip generic arguments: `List<int>` → `List`.
+    let base = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    (base.to_string(), false)
+}
+
+/// True when the (already generic-stripped) type name denotes something that
+/// implements `IEnumerable<T>`, so LINQ resolves against the shared surface.
+fn is_enumerable_type_name(name: &str) -> bool {
+    let short = name.rsplit('.').next().unwrap_or(name);
+    matches!(
+        short.to_ascii_lowercase().as_str(),
+        "ienumerable"
+            | "icollection"
+            | "ilist"
+            | "ireadonlylist"
+            | "ireadonlycollection"
+            | "list"
+            | "arraylist"
+            | "array"
+            | "hashset"
+            | "sortedset"
+            | "queue"
+            | "stack"
+            | "linkedlist"
+            | "concurrentqueue"
+            | "concurrentstack"
+            | "concurrentbag"
+    )
+}
+
 static DOTNET_SURFACE_CACHE: LazyLock<DotnetSurface> = LazyLock::new(build_dotnet_surface);
 
 fn build_dotnet_surface() -> DotnetSurface {
@@ -163,48 +207,74 @@ impl DotnetSurface {
         method_name: &str,
         arg_count: u8,
     ) -> Option<InstanceMethodTarget> {
-        let requested = class_name.trim();
-        let requested_short = requested.rsplit('.').next().unwrap_or(requested);
+        // Normalize the receiver type: strip generic args (`List<int>` →
+        // `List`) so descriptor lookup matches, and detect array/enumerable
+        // shapes (`int[]`, `Integer()`, `IEnumerable<T>`).
+        let (base, is_array) = normalize_receiver_type_name(class_name);
+        let base_short = base.rsplit('.').next().unwrap_or(&base);
+
+        // 1. Method defined directly on the receiver's own class
+        //    (`Dictionary.Add`, `Stack.Push`, …). Skip for bare arrays.
+        if !is_array {
+            if let Some(target) = self.find_instance_method_on(&base, method_name, arg_count) {
+                return Some(target);
+            }
+            if base_short != base {
+                if let Some(target) =
+                    self.find_instance_method_on(base_short, method_name, arg_count)
+                {
+                    return Some(target);
+                }
+            }
+        }
+
+        // 2. `System.Linq.Enumerable` fallback — every enumerable receiver
+        //    (array, `List<T>`, `HashSet<T>`, `Queue<T>`, query result, …)
+        //    resolves LINQ against the single shared `IEnumerable` surface.
+        if is_array || is_enumerable_type_name(base_short) {
+            return self.find_instance_method_on("IEnumerable", method_name, arg_count);
+        }
+        None
+    }
+
+    /// Find an instance method by name + arity on the named descriptor class.
+    fn find_instance_method_on(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        arg_count: u8,
+    ) -> Option<InstanceMethodTarget> {
         self.component_descriptor
             .classes
             .iter()
-            .find(|class| {
-                class.name.eq_ignore_ascii_case(requested)
-                    || class.name.eq_ignore_ascii_case(requested_short)
-            })
+            .find(|class| class.name.eq_ignore_ascii_case(class_name))
             .and_then(|class| {
                 class
                     .methods
                     .iter()
-                    .filter(|method| {
-                        !method.is_static && method.name.eq_ignore_ascii_case(method_name)
+                    // Overload resolution is by exact arity — the adapter class
+                    // declares each overload (`Count()` runtime property vs
+                    // `Count(pred)` LINQ). A missing arity must NOT fall back to
+                    // a different overload; it returns `None` so the caller
+                    // routes on (e.g. `Count()` → runtime collection registry).
+                    .find(|method| {
+                        !method.is_static
+                            && method.name.eq_ignore_ascii_case(method_name)
+                            && method.arity == arg_count
                     })
-                    .find(|method| method.arity == arg_count)
-                    .or_else(|| {
-                        // Backward-compatible fallback for classes that only
-                        // define one method with this name.
-                        class.methods.iter().find(|method| {
-                            !method.is_static && method.name.eq_ignore_ascii_case(method_name)
-                        })
-                    })
-                    .and_then(|method| {
-                        if method.is_static || !method.name.eq_ignore_ascii_case(method_name) {
-                            return None;
-                        }
-                        match &method.body {
-                            MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
-                                module: target.module.clone(),
-                                func: target.name.clone(),
-                                arity: method.arity,
-                            }),
-                            MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
-                                emit: name.clone(),
-                                arity: method.arity,
-                            }),
-                            // UserChunk paths are compiled by the wrapper builder
-                            // (DotnetClass) — not driven through this lookup.
-                            _ => None,
-                        }
+                    .and_then(|method| match &method.body {
+                        MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
+                            module: target.module.clone(),
+                            func: target.name.clone(),
+                            arity: method.arity,
+                        }),
+                        MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
+                            emit: name.clone(),
+                            arity: method.arity,
+                        }),
+                        // UserChunk paths are compiled by the wrapper builder
+                        // (DotnetClass) — not driven through this lookup.
+                        _ => None,
                     })
             })
     }
@@ -215,27 +285,48 @@ impl DotnetSurface {
         method_name: &str,
         arg_count: u8,
     ) -> Option<String> {
-        let requested = class_name.trim();
-        let requested_short = requested.rsplit('.').next().unwrap_or(requested);
+        // Mirror `lookup_instance_method`'s normalization so a `var` holding an
+        // array/`List<T>`/enumerable (`int[]`, `int()`, `List<int>`) resolves
+        // LINQ return types against the shared `IEnumerable` surface — this is
+        // what lets a `var` bound to `xs.Skip(2)` chain into `.First()`.
+        let (base, is_array) = normalize_receiver_type_name(class_name);
+        let base_short = base.rsplit('.').next().unwrap_or(&base);
+
+        if !is_array {
+            if let Some(rt) = self.find_return_type_on(&base, method_name, arg_count) {
+                return Some(rt);
+            }
+            if base_short != base {
+                if let Some(rt) = self.find_return_type_on(base_short, method_name, arg_count) {
+                    return Some(rt);
+                }
+            }
+        }
+        if is_array || is_enumerable_type_name(base_short) {
+            return self.find_return_type_on("IEnumerable", method_name, arg_count);
+        }
+        None
+    }
+
+    fn find_return_type_on(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        arg_count: u8,
+    ) -> Option<String> {
         self.component_descriptor
             .classes
             .iter()
-            .find(|class| {
-                class.name.eq_ignore_ascii_case(requested)
-                    || class.name.eq_ignore_ascii_case(requested_short)
-            })
+            .find(|class| class.name.eq_ignore_ascii_case(class_name))
             .and_then(|class| {
                 class
                     .methods
                     .iter()
-                    .filter(|method| {
-                        !method.is_static && method.name.eq_ignore_ascii_case(method_name)
-                    })
-                    .find(|method| method.arity == arg_count)
-                    .or_else(|| {
-                        class.methods.iter().find(|method| {
-                            !method.is_static && method.name.eq_ignore_ascii_case(method_name)
-                        })
+                    // Exact-arity overload resolution (see `find_instance_method_on`).
+                    .find(|method| {
+                        !method.is_static
+                            && method.name.eq_ignore_ascii_case(method_name)
+                            && method.arity == arg_count
                     })
                     .and_then(|method| {
                         dotnet_instance_method_return_type(&class.name, &method.name)
@@ -381,6 +472,47 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         }
         if method_name.eq_ignore_ascii_case("ToString") {
             return Some("string".into());
+        }
+    }
+    // LINQ deferred (sequence-returning) operators stay `IEnumerable<T>`, so a
+    // chain like `xs.OrderBy(k).Distinct().Where(p)` keeps resolving each step
+    // against the shared surface. Terminal operators (`Count`, `Sum`, `First`,
+    // `ToList`, …) are intentionally excluded — they return scalars/collections.
+    // Normalize the array shape first (`int[]` / `int()` → array) so a `var`
+    // holding an array literal chains as well as an explicit `IEnumerable`.
+    let (base, is_array) = normalize_receiver_type_name(class_name);
+    let base_short = base.rsplit('.').next().unwrap_or(&base);
+    if is_array || is_enumerable_type_name(base_short) {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "where"
+                | "select"
+                | "selectmany"
+                | "distinct"
+                | "distinctby"
+                | "orderby"
+                | "orderbydescending"
+                | "thenby"
+                | "thenbydescending"
+                | "skip"
+                | "skipwhile"
+                | "skiplast"
+                | "take"
+                | "takewhile"
+                | "takelast"
+                | "reverse"
+                | "concat"
+                | "union"
+                | "intersect"
+                | "except"
+                | "append"
+                | "prepend"
+                | "defaultifempty"
+                | "groupby"
+                | "zip"
+                | "asenumerable"
+        ) {
+            return Some("IEnumerable".into());
         }
     }
     None

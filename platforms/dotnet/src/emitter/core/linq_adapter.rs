@@ -22,11 +22,61 @@ use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 use vybe_emitter::collections;
+use vybe_emitter::generators;
 use vybe_emitter::loops;
+use vybe_emitter::ops;
 
 /// Allocate `count` consecutive scratch locals; returns the first slot.
 fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
     chunk.alloc_scratch(count)
+}
+
+/// Drain the receiver in `slot` through the shared ECMA §7.4 iterator protocol
+/// (`emit_spread_iterable`) and store the materialized array back. This is what
+/// lets every LINQ operator work uniformly over arrays, `List<T>`, `yield`
+/// generators, custom `IEnumerable`, and — because the drain is the common
+/// cross-language iterator emitter — iterables produced by any Vybe frontend.
+/// For an array receiver it is effectively identity.
+fn materialize_receiver_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
+/// Bounded counterpart to `materialize_receiver_slot`: for lazy operators
+/// (`Take`, `First`, …) that only need a prefix of the sequence.
+///
+/// A **generator** receiver is drained LAZILY to at most `limit_slot` elements
+/// via the bounded stack-switching take (`generators::emit_take_into_array`),
+/// so it terminates on infinite sequences — C#'s deferred-execution semantics.
+/// Any other iterable is finite by construction and materialized in full; the
+/// caller slices to `limit`. The bounded array is stored back into `slot`.
+fn materialize_bounded_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    slot: u16,
+    limit_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_gen, 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // Generator → bounded lazy drain (safe for infinite sequences).
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit_slot, line);
+    generators::emit_take_into_array(chunks, current, line);
+
+    chunks[current].emit_else(line);
+
+    // Other iterable → full materialization (caller slices to `limit`).
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
 fn emit_import_call(
@@ -37,7 +87,10 @@ fn emit_import_call(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module, name);
+    // Per-chunk import tables: the import must be registered on the SAME chunk
+    // that emits the CALL_IMPORT, or the index is out of range when the adapter
+    // runs in a non-script chunk (e.g. compiled into a `__linq_*` vtable chunk).
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
 }
@@ -45,7 +98,15 @@ fn emit_import_call(
 // ── Pure reductions (no fn arg) ──────────────────────────────────────────
 
 /// `arr.First()` — returns `arr[0]`. Stack: [arr] → [first].
+/// Bounded: a generator only advances once (deferred execution).
 pub fn emit_linq_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 2);
+    let one_slot = arr_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
+    materialize_bounded_slot(chunks, current, arr_slot, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     collections::emit_get(chunks, current, line);
 }
@@ -55,6 +116,8 @@ pub fn emit_linq_last(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = alloc_locals(&mut chunks[current], 1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
@@ -70,6 +133,8 @@ pub fn emit_linq_skip(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, n_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -84,39 +149,66 @@ pub fn emit_linq_take(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, n_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    // Bounded drain: a generator yields at most `n` elements (deferred
+    // execution — terminates on infinite sequences); other iterables
+    // materialize fully and are sliced below.
+    materialize_bounded_slot(chunks, current, arr_slot, n_slot, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
     collections::emit_slice(chunks, current, line);
 }
 
-/// `arr.ToList()` / `arr.ToArray()` — identity. Stack: [arr] → [arr].
-pub fn emit_linq_identity(_chunks: &mut [Chunk], _current: usize, _line: u32) {
-    // arr is already on the stack; no-op.
+/// `arr.ToList()` / `arr.ToArray()` — materialize the sequence into a concrete
+/// array (draining generators / custom iterables). Stack: [seq] → [array].
+pub fn emit_linq_identity(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_spread_iterable(chunks, current, line);
 }
 
 /// `arr.Average()` — `Sum(arr) / Length(arr)`. Stack: [arr] → [number].
 pub fn emit_linq_average(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = alloc_locals(&mut chunks[current], 1);
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_sum(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op(Op::F64_DIV, line);
 }
 
+/// `arr.Sum()` — materialize then sum. Stack: [seq] → [number].
+pub fn emit_linq_sum(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_sum(chunks, current, line);
+}
+
+/// `arr.Count()` — materialize then length. Stack: [seq] → [number].
+pub fn emit_linq_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+}
+
 /// `arr.FirstOrDefault()` — `arr.length === 0 ? default : arr[0]`.
 /// `default` is `0` (numeric) — generalising requires a per-T hook.
 /// Stack: [arr] → [first | 0].
 pub fn emit_linq_first_or_default(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_locals(&mut chunks[current], 1);
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    let arr_slot = alloc_locals(&mut chunks[current], 2);
+    let one_slot = arr_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
+    materialize_bounded_slot(chunks, current, arr_slot, one_slot, line);
 
     // Test arr.length == 0
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
@@ -147,6 +239,7 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     let elem_slot = arr_slot + 3;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
 
     // result = []
     collections::emit_array_new(chunks, current, 0, line);
@@ -176,6 +269,60 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+/// `arr.DistinctBy(keyFn)` — first element for each distinct `keyFn(elem)`.
+/// Stack: [arr, keyFn] → [array]. Dedupes on the projected key (tracked in a
+/// separate `keys` array) while emitting the original elements.
+pub fn emit_linq_distinct_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 7);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let keys_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+    let key_slot = arr_slot + 6;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    // result = []; keys = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // key = keyFn(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+
+    // if keys.indexOf(key) < 0 { keys.push(key); result.push(elem); }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_index_of(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    let if_block = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line); // skip if key already seen
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(if_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 /// `arr.SequenceEqual(other)` — same length and pairwise equal values.
 /// Stack: [arr, other] → [bool].
 pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -190,11 +337,11 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    collections::emit_iter_values(chunks, current, line);
+    collections::emit_spread_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    collections::emit_iter_values(chunks, current, line);
+    collections::emit_spread_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
 
     core_wasm::bool_const(&mut chunks[current], line, true);
@@ -285,10 +432,11 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx_slot = arr_slot + 3;
     let elem_slot = arr_slot + 4;
 
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
 
+    let chunk = &mut chunks[current];
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
 
@@ -329,10 +477,10 @@ pub fn emit_linq_aggregate(chunks: &mut [Chunk], current: usize, line: u32) {
     let acc_slot = arr_slot + 2;
     let idx_slot = arr_slot + 3;
 
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, acc_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
 
     // for elem in arr: acc = fn(acc, elem)
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
@@ -374,6 +522,22 @@ pub fn emit_linq_order_by_descending(chunks: &mut [Chunk], current: usize, line:
     collections::emit_reverse(chunks, current, line);
 }
 
+/// `arr.OrderBy(keyFn)` — ascending stable sort by projected key.
+/// Stack: [arr, keyFn] → [sorted array]. Same `__vybe_sort_by_key` routine as
+/// `OrderByDescending`, without the trailing reverse.
+pub fn emit_linq_order_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    let global = chunks[current].add_constant(Value::String(Arc::from("__vybe_sort_by_key")));
+    let arr_slot = alloc_locals(&mut chunks[current], 2);
+    let fn_slot = arr_slot + 1;
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+}
+
 /// `arr.Select(fn)` — invoke `map` on the receiver.
 /// Stack: [arr, fn] → [array].
 pub fn emit_linq_select(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -387,7 +551,7 @@ pub fn emit_linq_select(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Normalize receiver to an indexable values array.
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    collections::emit_iter_values(chunks, current, line);
+    collections::emit_spread_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
 
     // result = []
@@ -424,7 +588,7 @@ pub fn emit_linq_select_many(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // Normalize receiver to an indexable values array.
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    collections::emit_iter_values(chunks, current, line);
+    collections::emit_spread_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
 
     // result = []
@@ -658,4 +822,326 @@ pub fn emit_linq_zip(chunks: &mut [Chunk], current: usize, line: u32) {
 
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+// ── ElementAt / Single / defaults ────────────────────────────────────────
+
+/// `arr.ElementAt(i)` — `arr[i]`, throwing `ArgumentOutOfRangeException` when
+/// `i` is out of range. Stack: [arr, i] → [elem].
+pub fn emit_linq_element_at(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let idx_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    // if !(i >= 0 && i < len) throw
+    emit_index_in_range(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Index was out of range. Must be non-negative and less than the size of the collection.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "ArgumentOutOfRangeException",
+        line,
+    );
+    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `arr.ElementAtOrDefault(i)` — `arr[i]` when in range, else `default` (`0`).
+/// Stack: [arr, i] → [elem | 0].
+pub fn emit_linq_element_at_or_default(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let idx_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    emit_index_in_range(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+/// Leaves an i32 bool: `idx >= 0 && idx < arr.length`.
+fn emit_index_in_range(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+}
+
+/// `arr.Single()` — the sole element, throwing `InvalidOperationException`
+/// unless the sequence has exactly one. Stack: [arr] → [elem].
+pub fn emit_linq_single(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // if len != 1 throw
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Sequence contains no elements or more than one element.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "InvalidOperationException",
+        line,
+    );
+    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `arr.SingleOrDefault()` — the sole element when the sequence has exactly
+/// one, else `default` (`0`). Stack: [arr] → [elem | 0].
+pub fn emit_linq_single_or_default(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+// ── MaxBy / MinBy ────────────────────────────────────────────────────────
+
+/// `arr.MaxBy(keyFn)` — element whose `keyFn(elem)` is greatest (first on ties).
+/// Stack: [arr, keyFn] → [elem].
+pub fn emit_linq_max_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_by_extreme(chunks, current, line, true);
+}
+
+/// `arr.MinBy(keyFn)` — element whose `keyFn(elem)` is smallest (first on ties).
+/// Stack: [arr, keyFn] → [elem].
+pub fn emit_linq_min_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_by_extreme(chunks, current, line, false);
+}
+
+fn emit_linq_by_extreme(chunks: &mut [Chunk], current: usize, line: u32, want_max: bool) {
+    let base = alloc_locals(&mut chunks[current], 7);
+    let arr_slot = base;
+    let fn_slot = base + 1;
+    let best_slot = base + 2;
+    let bestkey_slot = base + 3;
+    let idx_slot = base + 4;
+    let elem_slot = base + 5;
+    let key_slot = base + 6;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // Normalize receiver to an indexable values array.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // best = arr[0]; bestKey = fn(best)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bestkey_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // key = fn(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+
+    // if key >/< bestKey { best = elem; bestKey = key }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bestkey_slot, line);
+    if want_max {
+        vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    } else {
+        vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    }
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bestkey_slot, line);
+    chunks[current].emit_end(line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
+}
+
+// ── Aggregate without seed / Append / Prepend ────────────────────────────
+
+/// `arr.Aggregate(fn)` (no seed) — fold starting from `arr[0]`.
+/// Stack: [arr, fn] → [acc].
+pub fn emit_linq_aggregate_no_seed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 4);
+    let arr_slot = base;
+    let fn_slot = base + 1;
+    let acc_slot = base + 2;
+    let idx_slot = base + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // Normalize receiver to an indexable values array.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // acc = arr[0]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+
+    // rest = arr.slice(1, len)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    collections::emit_slice(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // for elem in rest: acc = fn(acc, elem)
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    {
+        let elem_local = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, elem_local, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem_local, line);
+        chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
+    }
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
+}
+
+/// `arr.Append(x)` — new sequence `[...arr, x]`. Stack: [arr, x] → [array].
+pub fn emit_linq_append(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let x_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // [...arr].concat([x])
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x_slot, line);
+    collections::emit_array_new(chunks, current, 1, line);
+    collections::emit_concat(chunks, current, line);
+}
+
+/// `arr.Prepend(x)` — new sequence `[x, ...arr]`. Stack: [arr, x] → [array].
+pub fn emit_linq_prepend(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let x_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // [x].concat([...arr])
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x_slot, line);
+    collections::emit_array_new(chunks, current, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    collections::emit_concat(chunks, current, line);
+}
+
+// ── SkipLast / TakeLast / DefaultIfEmpty ─────────────────────────────────
+
+/// Leaves an f64 on the stack: `max(0, arr.length - n)`.
+fn emit_len_minus_n_clamped(chunks: &mut [Chunk], current: usize, arr_slot: u16, n_slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op(Op::F64_FROM_I32, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_MAX, line);
+}
+
+/// `arr.SkipLast(n)` — `arr.slice(0, max(0, len - n))`. Stack: [arr, n] → [array].
+pub fn emit_linq_skip_last(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let n_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    emit_len_minus_n_clamped(chunks, current, arr_slot, n_slot, line);
+    collections::emit_slice(chunks, current, line);
+}
+
+/// `arr.TakeLast(n)` — `arr.slice(max(0, len - n), len)`. Stack: [arr, n] → [array].
+pub fn emit_linq_take_last(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = base;
+    let n_slot = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    emit_len_minus_n_clamped(chunks, current, arr_slot, n_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    collections::emit_slice(chunks, current, line);
+}
+
+/// `arr.DefaultIfEmpty()` — `arr` when non-empty, else `[default]` (`[0]`).
+/// Stack: [arr] → [array].
+pub fn emit_linq_default_if_empty(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_array_new(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_end(line);
 }
