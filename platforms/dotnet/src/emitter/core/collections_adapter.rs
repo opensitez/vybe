@@ -54,6 +54,17 @@ pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Normalize the `IEnumerable<T>` argument in `slot` to an ECMA Set: drain it
+/// to an array via the shared iterator protocol (handles arrays, `List<T>`,
+/// other sets, and generators alike — `ecma:set.new` alone mishandles a Set
+/// argument), then build a Set from that array. Stores the Set back in `slot`.
+fn normalize_arg_to_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    call_import(chunks, current, "ecma:set", "new", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
 fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
@@ -62,6 +73,12 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     let arr_slot = result_slot + 1;
     let idx_slot = result_slot + 2;
     let value_slot = result_slot + 3;
+
+    // C# set methods take any `IEnumerable<T>`; the ECMA set operations require
+    // a set-like operand. Normalize the argument to an ECMA Set via
+    // `new Set(iterable)` (§24.2.1.1) so arrays / lists / generators all work —
+    // pure adaptation, no host or VM change.
+    normalize_arg_to_set(chunks, current, src, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
@@ -223,11 +240,91 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
 }
 
 pub fn emit_hashset_except_with(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_hashset_mutation(chunks, current, "exceptWith", line);
+    // `a.ExceptWith(b)` mutates in place; lower to the non-mutating ECMA
+    // `difference` (returns a NEW set) then clear+refill `a` — the mutating
+    // host `exceptWith` returns void, which the clear+refill pattern misreads
+    // as an empty result.
+    emit_hashset_mutation(chunks, current, "difference", line);
 }
 
 pub fn emit_hashset_symmetric_except_with(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_hashset_mutation(chunks, current, "symmetricExceptWith", line);
+    emit_hashset_mutation(chunks, current, "symmetricDifference", line);
+}
+
+/// Set predicate (`IsSubsetOf`, `IsSupersetOf`, `Overlaps`) over any
+/// `IEnumerable<T>` argument. Normalizes the argument to an ECMA Set (so
+/// arrays / lists / generators work) then calls the host predicate.
+/// Stack: [recv, arg] → [bool].
+fn emit_hashset_predicate(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let src = base + 1;
+    normalize_arg_to_set(chunks, current, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    call_import(chunks, current, "ecma:set", func, 2, line);
+}
+
+pub fn emit_hashset_is_subset_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_predicate(chunks, current, "isSubsetOf", line);
+}
+
+pub fn emit_hashset_is_superset_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_predicate(chunks, current, "isSupersetOf", line);
+}
+
+pub fn emit_hashset_overlaps(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_predicate(chunks, current, "overlaps", line);
+}
+
+/// Composed set relations not exposed as single `ecma:set` calls:
+/// `SetEquals` = `⊆ ∧ ⊇`, `IsProperSubsetOf` = `⊆ ∧ ¬⊇`,
+/// `IsProperSupersetOf` = `⊇ ∧ ¬⊆`. Stack: [recv, arg] → [bool].
+fn emit_hashset_relation(chunks: &mut [Chunk], current: usize, line: u32, rel: &str) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let src = base + 1;
+    normalize_arg_to_set(chunks, current, src, line);
+    let sub_slot = chunks[current].alloc_scratch(2);
+    let sup_slot = sub_slot + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    call_import(chunks, current, "ecma:set", "isSubsetOf", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    call_import(chunks, current, "ecma:set", "isSupersetOf", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sup_slot, line);
+
+    // (a && (negate ? !b : b)), lowered as `a ? <b-term> : false`.
+    let (a_slot, b_slot, negate_b) = match rel {
+        "properSubset" => (sub_slot, sup_slot, true),
+        "properSuperset" => (sup_slot, sub_slot, true),
+        _ => (sub_slot, sup_slot, false), // setEquals
+    };
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    if negate_b {
+        vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    }
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_hashset_set_equals(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_relation(chunks, current, line, "setEquals");
+}
+
+pub fn emit_hashset_is_proper_subset_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_relation(chunks, current, line, "properSubset");
+}
+
+pub fn emit_hashset_is_proper_superset_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_hashset_relation(chunks, current, line, "properSuperset");
 }
 
 pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line: u32) {

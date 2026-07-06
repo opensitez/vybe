@@ -307,6 +307,37 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.hashset_is_subset_of" => {
+            crate::emitter::core::collections_adapter::emit_hashset_is_subset_of(
+                chunks, current, line,
+            )
+        }
+        "dotnet.hashset_is_superset_of" => {
+            crate::emitter::core::collections_adapter::emit_hashset_is_superset_of(
+                chunks, current, line,
+            )
+        }
+        "dotnet.hashset_overlaps" => {
+            crate::emitter::core::collections_adapter::emit_hashset_overlaps(chunks, current, line)
+        }
+        "dotnet.task_wait" => {
+            crate::emitter::core::thread_adapter::emit_task_wait(chunks, current, line)
+        }
+        "dotnet.hashset_set_equals" => {
+            crate::emitter::core::collections_adapter::emit_hashset_set_equals(
+                chunks, current, line,
+            )
+        }
+        "dotnet.hashset_is_proper_subset_of" => {
+            crate::emitter::core::collections_adapter::emit_hashset_is_proper_subset_of(
+                chunks, current, line,
+            )
+        }
+        "dotnet.hashset_is_proper_superset_of" => {
+            crate::emitter::core::collections_adapter::emit_hashset_is_proper_superset_of(
+                chunks, current, line,
+            )
+        }
         "dotnet.linked_list_add_first" => {
             crate::emitter::core::collections_adapter::emit_linked_list_add_first(
                 chunks, current, line,

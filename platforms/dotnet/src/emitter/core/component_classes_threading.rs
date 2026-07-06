@@ -14,6 +14,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("threading.thread_start".into()),
                 ))
+                .with_method(MethodDef::new(
+                    "Wait",
+                    0,
+                    MethodBody::Common("dotnet.task_wait".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Run",
                     1,

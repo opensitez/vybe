@@ -877,6 +877,11 @@ fn emit_core_op(
         // our value type is externref (not exnref), we re-throw through
         // the same tag to stay within the single-tag design.
         _ if op == Op::THROW => {
+            // Internal fixed-width u16 tag immediate → LEB tagidx. The
+            // serialized tag section currently declares only the single
+            // `$vybe_exception` tag, which is what compilers emit; locally
+            // declared foreign tags would need tag-section entries here.
+            let _tag = read_u16(&chunk.code, ip);
             body.push(0x08); // throw
             write_leb128_u32(body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
         }
@@ -1040,7 +1045,7 @@ fn emit_core_op(
             let chunk_idx = read_u16(&chunk.code, ip);
             let uv_count = chunk.code[*ip] as usize;
             *ip += 1;
-            *ip += uv_count * 2; // skip upvalue descriptors
+            *ip += uv_count * 3; // skip upvalue descriptors (u8 is_local + u16 index)
             // Store as table index (i32) for call_indirect — box as externref.
             // chunk_idx is the table index because the element section maps chunks 0..N to table slots.
             body.push(0x41); // i32.const

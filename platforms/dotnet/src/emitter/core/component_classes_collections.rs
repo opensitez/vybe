@@ -254,17 +254,32 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "IsSubsetOf",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "isSubsetOf")),
+                    MethodBody::Common("dotnet.hashset_is_subset_of".into()),
                 ))
                 .with_method(MethodDef::new(
                     "IsSupersetOf",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "isSupersetOf")),
+                    MethodBody::Common("dotnet.hashset_is_superset_of".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Overlaps",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:set", "overlaps")),
+                    MethodBody::Common("dotnet.hashset_overlaps".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SetEquals",
+                    1,
+                    MethodBody::Common("dotnet.hashset_set_equals".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsProperSubsetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_proper_subset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsProperSupersetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_proper_superset_of".into()),
                 )),
         ),
         // `ConcurrentDictionary` is a thread-safe `Dictionary` - same

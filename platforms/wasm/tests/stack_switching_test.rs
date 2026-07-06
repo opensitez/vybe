@@ -90,9 +90,15 @@ fn make_promise(id: u64, state: &str, value: Value) -> Value {
 }
 
 fn emit_try_table_catch_all_start(c: &mut Chunk) -> usize {
+    // Spec encoding: one `catch $vybe:exception` clause (kind 0) — the
+    // handler receives the exception object payload, matching the DROP in
+    // the handlers below. [op, count=1, kind u8, tag u16, offset u16]
+    let tag = c.import_exception_tag("vybe:exception", 1);
     c.emit_op(Op::TRY_TABLE, 0);
     c.emit(1, 0);
-    c.emit(0, 0);
+    c.emit(0, 0); // kind 0 = catch
+    c.emit((tag >> 8) as u8, 0);
+    c.emit((tag & 0xff) as u8, 0);
     let offset_pos = c.current_offset();
     c.emit(0, 0);
     c.emit(0, 0);
