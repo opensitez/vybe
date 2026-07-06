@@ -486,7 +486,14 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:reflect",
         "ownKeys",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // §28.1.10 routes through [[OwnPropertyKeys]] — proxies get
+            // their ownKeys trap (or the target's keys when trapless).
+            if let Some(v) = args.first() {
+                if let Some(result) = crate::ecma::proxy::own_keys_dispatch(ctx, v) {
+                    return result;
+                }
+            }
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
                 let mut keys: Vec<Value> = Vec::new();

@@ -43,7 +43,10 @@ pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
         Value::Null => c.emit_op(Op::NULL, line),
         Value::Undefined => undefined(c, line),
         Value::String(s) => c.emit_string_const(s, line),
-        Value::BigInt(v) => c.emit_i64_const(*v, line),
+        // ToBigInt64 wrap at the wasm boundary (i64.const is 64-bit).
+        // Oversize BigInt literals never reach here — the compiler
+        // lowers them through the string→BigInt() constructor path.
+        Value::BigInt(v) => c.emit_i64_const(v.to_i64_wrapping(), line),
         Value::V128(v) => {
             c.emit_op(Op::V128_CONST, line);
             for b in v {

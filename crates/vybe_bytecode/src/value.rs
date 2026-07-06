@@ -25,8 +25,11 @@ pub enum Value {
     /// JS Symbol — unique identity; description is for debugging only.
     /// Two symbols are `==` only when cloned from the same `Arc<str>`.
     Symbol(Arc<str>),
-    /// JS BigInt — arbitrary precision in theory, i64-range in our VM.
-    BigInt(i64),
+    /// JS BigInt host value — ARBITRARY PRECISION per ECMA-262 §6.1.6.2
+    /// (js-primitive-builtins models bigint as an opaque host type; the
+    /// js-types JS-API converts wasm i64 ⇄ BigInt via ToBigInt64, the
+    /// only place a 64-bit wrap is legal). Arc: clone = refcount bump.
+    BigInt(crate::bigint::BigIntRef),
 }
 
 /// Compact tag identifying the `Value` variant — a small integer that
@@ -149,10 +152,26 @@ impl Value {
         self.to_ecma_int32() as u32
     }
 
+    /// `Value::BigInt` from an i64 (exact — no precision involved).
+    pub fn bigint_i64(n: i64) -> Value {
+        Value::BigInt(Arc::new(crate::bigint::BigIntVal::from_i64(n)))
+    }
+
+    /// `Value::BigInt` from a u64 (exact — ToBigUint64 reading).
+    pub fn bigint_u64(n: u64) -> Value {
+        Value::BigInt(Arc::new(crate::bigint::BigIntVal::from_u64(n)))
+    }
+
+    /// `Value::BigInt` from an owned arbitrary-precision value.
+    pub fn bigint(v: crate::bigint::BigIntVal) -> Value {
+        Value::BigInt(Arc::new(v))
+    }
+
     pub fn as_i64(&self) -> i64 {
         match self {
             Value::I64(n) => *n,
-            Value::BigInt(n) => *n,
+            // ToBigInt64 semantics: wrap modulo 2^64 (JS-API i64 boundary).
+            Value::BigInt(n) => n.to_i64_wrapping(),
             Value::I32(n) => *n as i64,
             Value::F64(n) => *n as i64,
             Value::Bool(b) => {
@@ -213,10 +232,11 @@ impl Value {
     }
 
     /// Unwrap `Value::BigInt(n)` or coerce narrow integers — used by VM
-    /// arithmetic opcodes that route through BigInt.
+    /// arithmetic opcodes that route through BigInt. 64-bit view:
+    /// ToBigInt64 wrap for values beyond i64 (the i64.* ops are 64-bit).
     pub fn as_bigint(&self) -> i64 {
         match self {
-            Value::BigInt(n) => *n,
+            Value::BigInt(n) => n.to_i64_wrapping(),
             Value::I64(n) => *n,
             Value::I32(n) => *n as i64,
             _ => 0,
@@ -280,9 +300,11 @@ impl Value {
             // Symbols have IDENTITY equality — same Arc instance only.
             (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
-            (Value::BigInt(a), Value::I64(b)) | (Value::I64(b), Value::BigInt(a)) => *a == *b,
+            (Value::BigInt(a), Value::I64(b)) | (Value::I64(b), Value::BigInt(a)) => {
+                **a == crate::bigint::BigIntVal::from_i64(*b)
+            }
             (Value::BigInt(a), Value::I32(b)) | (Value::I32(b), Value::BigInt(a)) => {
-                *a == (*b as i64)
+                **a == crate::bigint::BigIntVal::from_i64(*b as i64)
             }
             // Cross-type numeric equality: I32(0) == F64(0.0), etc.
             (Value::I32(a), Value::F64(b)) => (*a as f64) == *b,
@@ -462,6 +484,10 @@ impl fmt::Display for Value {
                         write!(f, "Infinity")
                     }
                 } else if *n == (*n as i64) as f64 && n.abs() < 1e15 {
+                    // NOTE: -0.0 deliberately prints "0" — Display IS the
+                    // §6.1.6.1.20 ToString surface here (String(-0)==="0").
+                    // Node's console shows "-0" via its inspector, which
+                    // would need a console-path formatter, never Display.
                     write!(f, "{}", *n as i64)
                 } else {
                     write!(f, "{}", n)

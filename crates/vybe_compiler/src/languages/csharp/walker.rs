@@ -10446,14 +10446,28 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::char_literal => {
             let s = pair.as_str();
             let inner = &s[1..s.len() - 1];
-            let ch = match inner {
-                "\\n" => '\n',
-                "\\t" => '\t',
-                "\\r" => '\r',
-                "\\0" => '\0',
-                "\\\\" => '\\',
-                "\\'" => '\'',
-                _ => inner.chars().next().unwrap_or('\0'),
+            let ch = if let Some(rest) = inner.strip_prefix('\\') {
+                match rest.chars().next() {
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('r') => '\r',
+                    Some('0') => '\0',
+                    Some('\\') => '\\',
+                    Some('\'') => '\'',
+                    Some('"') => '"',
+                    Some('a') => '\u{7}',
+                    Some('b') => '\u{8}',
+                    Some('f') => '\u{C}',
+                    Some('v') => '\u{B}',
+                    // `\uXXXX`, `\UXXXXXXXX`, `\xX..` — hex code point escapes.
+                    Some('u') | Some('U') | Some('x') => u32::from_str_radix(&rest[1..], 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .unwrap_or('\0'),
+                    _ => rest.chars().next().unwrap_or('\0'),
+                }
+            } else {
+                inner.chars().next().unwrap_or('\0')
             };
             Ok(ExprKind::Lit(Literal::Char(ch)))
         }

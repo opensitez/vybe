@@ -847,6 +847,8 @@ module = "ecma:promise"
 "Number.MIN_SAFE_INTEGER" = -9007199254740991
 "Number.EPSILON"        = 2.220446049250313e-16
 "Number.MAX_VALUE"      = 1.7976931348623157e308
+# Smallest positive denormal (f64::from_bits(1), §21.1.2.9).
+"Number.MIN_VALUE"      = 5e-324
 "Number.POSITIVE_INFINITY" = "Infinity"
 "Number.NEGATIVE_INFINITY" = "-Infinity"
 "Number.NaN"            = "NaN"

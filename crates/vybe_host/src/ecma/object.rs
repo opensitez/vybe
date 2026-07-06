@@ -973,7 +973,7 @@ fn register_construction(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "assign",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let target = match args.first() {
                 Some(t) => t.clone(),
                 None => return Value::Null,
@@ -1032,6 +1032,20 @@ fn register_construction(vm: &mut VM) {
                             }
                         };
                         for (k, v, sym_key) in props {
+                            // §20.1.2.1 step 4c: assign uses [[Set]] with
+                            // throw semantics — a NEW key on a
+                            // non-extensible target throws TypeError.
+                            {
+                                let tgt = t.lock().unwrap();
+                                if !tgt.properties.contains_key(&k) && is_not_extensible(&tgt) {
+                                    drop(tgt);
+                                    ctx.throw_value(crate::ecma::error::new_error(
+                                        "TypeError",
+                                        "Cannot add property, object is not extensible",
+                                    ));
+                                    return Value::Undefined;
+                                }
+                            }
                             if let Some(sym) = sym_key {
                                 track_sym_key(t, sym);
                             } else {
@@ -1076,19 +1090,41 @@ fn register_access(vm: &mut VM) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
                 // ECMA-262 §10.1.5 OrdinarySet — three gates:
-                //   1. Frozen → all writes fail silently (loose mode).
+                //   1. Frozen → writes fail: silently in loose mode,
+                //      TypeError in strict (§13.15.2, caller passes the
+                //      optional 4th `strict` arg).
                 //   2. Sealed / preventExtensions → new keys fail; existing
                 //      keys writable unless also frozen.
                 //   3. `__set_<key>` accessor → call setter instead of
                 //      writing to the property bag.
+                let strict = args
+                    .get(3)
+                    .map(crate::ecma::boolean::to_boolean)
+                    .unwrap_or(false);
                 {
                     let o = obj.lock().unwrap();
                     if o.properties.get(FROZEN_MARK).is_some() {
+                        drop(o);
+                        if strict {
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                "TypeError",
+                                "Cannot assign to read only property of frozen object",
+                            ));
+                            return Value::Undefined;
+                        }
                         return Value::Null;
                     }
                     let not_extensible =
                         matches!(o.properties.get(EXTENSIBLE_MARK), Some(Value::I32(0)));
                     if not_extensible && !o.properties.contains_key(&key) {
+                        drop(o);
+                        if strict {
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                "TypeError",
+                                "Cannot add property, object is not extensible",
+                            ));
+                            return Value::Undefined;
+                        }
                         return Value::Null;
                     }
                 }
@@ -1949,6 +1985,23 @@ fn register_descriptors(vm: &mut VM) {
                     }
                 }
                 let key = key_string(&key_value);
+                // §10.1.6.3: a NEW key on a non-extensible object is
+                // rejected — Object.defineProperty surfaces that as
+                // TypeError (§20.1.2.4; Reflect's form returns false).
+                {
+                    let o = define_obj.lock().unwrap();
+                    let exists = o.properties.contains_key(&key)
+                        || o.properties.contains_key(&format!("__get_{}", key))
+                        || o.properties.contains_key(&format!("__set_{}", key));
+                    if !exists && is_not_extensible(&o) {
+                        drop(o);
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "TypeError",
+                            "Cannot define property, object is not extensible",
+                        ));
+                        return Value::Undefined;
+                    }
+                }
                 // ECMA-262 §10.1: descriptor either has data fields
                 // (`value`, `writable`) or accessor fields (`get`, `set`).
                 // The VM honors `__get_<key>` / `__set_<key>` properties
@@ -2130,45 +2183,60 @@ fn register_descriptors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "getOwnPropertyDescriptor",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
-                let o = obj.lock().unwrap();
-                let getter_key = format!("__get_{}", key);
-                let setter_key = format!("__set_{}", key);
-                if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key)
-                {
-                    let mut desc = Object::new();
-                    desc.properties.insert(
-                        "get".into(),
-                        o.properties
-                            .get(&getter_key)
-                            .cloned()
-                            .unwrap_or(Value::Undefined),
-                    );
-                    desc.properties.insert(
-                        "set".into(),
-                        o.properties
-                            .get(&setter_key)
-                            .cloned()
-                            .unwrap_or(Value::Undefined),
-                    );
-                    desc.properties
-                        .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, &key)));
-                    desc.properties
-                        .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, &key)));
-                    return Value::Object(Arc::new(Mutex::new(desc)));
+                // §10.5.5: proxies answer via their trap (with the
+                // non-configurable invariant enforced) or their target.
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    let target_desc = match &target {
+                        Value::Object(t) => own_property_descriptor(t, &key),
+                        _ => Value::Undefined,
+                    };
+                    if let Some(trap) = proxy_trap(&handler, "getOwnPropertyDescriptor") {
+                        let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+                        let result = invoke_with_explicit_this(
+                            ctx,
+                            &trap,
+                            handler,
+                            &[target.clone(), key_value],
+                        );
+                        // Minimal §10.5.5 step 17 invariant: a
+                        // non-configurable own target property cannot be
+                        // reported missing or with a different value.
+                        let violation = if let Value::Object(td) = &target_desc {
+                            let t = td.lock().unwrap();
+                            let nonconfig = matches!(
+                                t.properties.get("configurable"),
+                                Some(Value::Bool(false))
+                            );
+                            nonconfig
+                                && match (&result, t.properties.get("value")) {
+                                    (Value::Undefined, _) => true,
+                                    (Value::Object(rd), Some(tv)) => rd
+                                        .lock()
+                                        .unwrap()
+                                        .properties
+                                        .get("value")
+                                        .map(|rv| rv != tv)
+                                        .unwrap_or(false),
+                                    _ => false,
+                                }
+                        } else {
+                            false
+                        };
+                        if violation {
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                "TypeError",
+                                "proxy getOwnPropertyDescriptor trap violated its invariant: property is non-configurable on the target",
+                            ));
+                            return Value::Undefined;
+                        }
+                        return result;
+                    }
+                    return target_desc;
                 }
-                if let Some(v) = o.properties.get(&key) {
-                    let mut desc = Object::new();
-                    desc.properties.insert("value".into(), v.clone());
-                    desc.properties.insert("writable".into(), Value::Bool(true));
-                    desc.properties
-                        .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, &key)));
-                    desc.properties
-                        .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, &key)));
-                    return Value::Object(Arc::new(Mutex::new(desc)));
-                }
+                return own_property_descriptor(&obj, &key);
             }
             Value::Undefined
         }),
@@ -2224,6 +2292,55 @@ fn register_descriptors(vm: &mut VM) {
     );
 }
 
+/// §20.1.2.8 core for an ORDINARY object: fresh accessor/data descriptor,
+/// or Undefined when `key` is not an own property. Proxy callers resolve
+/// their target first and pass it here.
+fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
+    let o = obj.lock().unwrap();
+    let getter_key = format!("__get_{}", key);
+    let setter_key = format!("__set_{}", key);
+    // Discriminating data vs accessor in the accessor convention: a real
+    // accessor stores the value BEHIND `__get_<key>` (no plain entry),
+    // while a non-writable data property keeps its plain entry plus a
+    // noop `__set_<key>` guard. Plain entry present ⇒ data descriptor.
+    if let Some(v) = o.properties.get(key) {
+        let mut desc = Object::new();
+        desc.properties.insert("value".into(), v.clone());
+        desc.properties.insert(
+            "writable".into(),
+            Value::Bool(!o.properties.contains_key(&setter_key)),
+        );
+        desc.properties
+            .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
+        desc.properties
+            .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
+        return Value::Object(Arc::new(Mutex::new(desc)));
+    }
+    if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key) {
+        let mut desc = Object::new();
+        desc.properties.insert(
+            "get".into(),
+            o.properties
+                .get(&getter_key)
+                .cloned()
+                .unwrap_or(Value::Undefined),
+        );
+        desc.properties.insert(
+            "set".into(),
+            o.properties
+                .get(&setter_key)
+                .cloned()
+                .unwrap_or(Value::Undefined),
+        );
+        desc.properties
+            .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
+        desc.properties
+            .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
+        return Value::Object(Arc::new(Mutex::new(desc)));
+    }
+    Value::Undefined
+}
+
 // ── Prototype ─────────────────────────────────────────────────────────
 
 fn register_prototype(vm: &mut VM) {
@@ -2248,10 +2365,42 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "setPrototypeOf",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let proto = args.get(1).cloned().unwrap_or(Value::Null);
+                // §10.5.2: trap when present, otherwise the TARGET's
+                // [[Prototype]] changes — never the proxy shell's.
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if let Some(trap) = proxy_trap(&handler, "setPrototypeOf") {
+                        let result =
+                            invoke_with_explicit_this(ctx, &trap, handler, &[target, proto]);
+                        return Value::Bool(crate::ecma::boolean::to_boolean(&result));
+                    }
+                    if let Value::Object(t) = &target {
+                        t.lock().unwrap().properties.insert(PROTO_KEY.into(), proto);
+                        return Value::Bool(true);
+                    }
+                    return Value::Bool(false);
+                }
                 let mut o = obj.lock().unwrap();
+                // §20.1.2.22: a non-extensible target rejects prototype
+                // changes — Object.setPrototypeOf surfaces TypeError
+                // (unless the prototype is unchanged, §10.1.2.1 step 5).
+                if is_not_extensible(&o) {
+                    let unchanged = match (o.properties.get(PROTO_KEY), &proto) {
+                        (Some(cur), p) => cur == p,
+                        (None, Value::Null) => true,
+                        _ => false,
+                    };
+                    if !unchanged {
+                        drop(o);
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "TypeError",
+                            "Object is not extensible",
+                        ));
+                        return Value::Undefined;
+                    }
+                }
                 o.properties.insert(PROTO_KEY.into(), proto);
                 return Value::Bool(true);
             }
@@ -2287,8 +2436,24 @@ fn register_locking(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "freeze",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                // §10.4.5 integer-indexed exotic: a typed array WITH
+                // elements cannot be frozen — its indices can never be
+                // made non-writable — so freeze throws TypeError.
+                {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ta) = &o.kind {
+                        if crate::ecma::typedarray::ta_live_length(ta) > 0 {
+                            drop(o);
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                "TypeError",
+                                "Cannot freeze array buffer views with elements",
+                            ));
+                            return Value::Undefined;
+                        }
+                    }
+                }
                 // Install a no-op setter (`__set_<key>`) for each
                 // existing own property so writes are silently
                 // discarded by the VM's STRUCT_SET accessor dispatch.
@@ -2328,7 +2493,8 @@ fn register_locking(vm: &mut VM) {
                 drop(o);
                 return Value::Object(obj);
             }
-            Value::Null
+            // §20.1.2.7 step 1 (ES2015+): non-object → return it unchanged.
+            args.first().cloned().unwrap_or(Value::Undefined)
         }),
     );
 
@@ -2355,7 +2521,8 @@ fn register_locking(vm: &mut VM) {
                 drop(o);
                 return Value::Object(obj);
             }
-            Value::Null
+            // §20.1.2.20 step 1 (ES2015+): non-object → return it unchanged.
+            args.first().cloned().unwrap_or(Value::Undefined)
         }),
     );
 
@@ -2374,8 +2541,23 @@ fn register_locking(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "preventExtensions",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                // §10.5.4: trap when present, otherwise the TARGET
+                // becomes non-extensible — never the proxy shell.
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if let Some(trap) = proxy_trap(&handler, "preventExtensions") {
+                        invoke_with_explicit_this(ctx, &trap, handler, &[target]);
+                        return Value::Object(obj);
+                    }
+                    if let Value::Object(t) = &target {
+                        t.lock()
+                            .unwrap()
+                            .properties
+                            .insert(EXTENSIBLE_MARK.into(), Value::I32(0));
+                    }
+                    return Value::Object(obj);
+                }
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(EXTENSIBLE_MARK.into(), Value::I32(0));
                 drop(o);
@@ -2388,8 +2570,24 @@ fn register_locking(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "isExtensible",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                // §10.5.3: trap when present, otherwise the TARGET's
+                // extensibility answers.
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if let Some(trap) = proxy_trap(&handler, "isExtensible") {
+                        let result = invoke_with_explicit_this(ctx, &trap, handler, &[target]);
+                        return Value::Bool(crate::ecma::boolean::to_boolean(&result));
+                    }
+                    if let Value::Object(t) = &target {
+                        let o = t.lock().unwrap();
+                        return Value::Bool(!matches!(
+                            o.properties.get(EXTENSIBLE_MARK),
+                            Some(Value::I32(0))
+                        ));
+                    }
+                    return Value::Bool(false);
+                }
                 let o = obj.lock().unwrap();
                 return Value::Bool(!matches!(
                     o.properties.get(EXTENSIBLE_MARK),

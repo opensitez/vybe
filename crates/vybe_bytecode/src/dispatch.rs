@@ -150,15 +150,18 @@ fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
             bytes.copy_from_slice(&buf[abs..abs + 8]);
             Value::F64(f64::from_le_bytes(bytes))
         }
+        // §10.4.5: BigInt64/BigUint64 elements ARE BigInts — the elem
+        // stamp selects the signed/unsigned reading of the 64 bits
+        // (js-types JS-API ToBigInt64 / ToBigUint64).
         TypedElemKind::BigI64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(i64::from_le_bytes(bytes))
+            Value::bigint_i64(i64::from_le_bytes(bytes))
         }
         TypedElemKind::BigU64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(u64::from_le_bytes(bytes) as i64)
+            Value::bigint_u64(u64::from_le_bytes(bytes))
         }
     })
 }
@@ -230,14 +233,18 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
             buf[abs..abs + 8].copy_from_slice(&bytes);
         }
         TypedElemKind::BigI64 => {
+            // §10.4.5 SetValueInBuffer: ToBigInt64 wrap of the value.
             let bits = match value {
+                Value::BigInt(n) => n.to_i64_wrapping(),
                 Value::I64(n) => *n,
                 other => other.as_i32() as i64,
             };
             buf[abs..abs + 8].copy_from_slice(&bits.to_le_bytes());
         }
         TypedElemKind::BigU64 => {
+            // ToBigUint64 wrap.
             let bits = match value {
+                Value::BigInt(n) => n.to_u64_wrapping(),
                 Value::I64(n) => *n as u64,
                 other => other.as_i32() as u64,
             };
@@ -2468,7 +2475,7 @@ impl VM {
                         Value::F64(n) => n as i64,
                         _ => 0,
                     };
-                    self.push(Value::BigInt(n))?;
+                    self.push(Value::bigint_i64(n))?;
                 }
                 _ if op == Op::REF_IS_UNDEFINED => {
                     let v = self.pop();
@@ -2489,7 +2496,7 @@ impl VM {
                         Value::I32(_) => true,
                         Value::I64(n) => *n >= i32::MIN as i64 && *n <= i32::MAX as i64,
                         Value::F64(n) => n.is_finite() && *n == (*n as i32) as f64,
-                        Value::BigInt(n) => *n >= i32::MIN as i64 && *n <= i32::MAX as i64,
+                        Value::BigInt(n) => n.fits_i32(),
                         _ => false,
                     };
                     self.push(wasm_bool(is_i32))?;
@@ -2500,7 +2507,7 @@ impl VM {
                         Value::I32(n) => *n >= 0,
                         Value::I64(n) => *n >= 0 && *n <= u32::MAX as i64,
                         Value::F64(n) => n.is_finite() && *n >= 0.0 && *n == (*n as u32) as f64,
-                        Value::BigInt(n) => *n >= 0 && *n <= u32::MAX as i64,
+                        Value::BigInt(n) => n.fits_u32(),
                         _ => false,
                     };
                     self.push(wasm_bool(is_u32))?;
@@ -2518,7 +2525,7 @@ impl VM {
                         Value::F64(n) => n as u32,
                         Value::I32(n) => n as u32,
                         Value::I64(n) => n as u32,
-                        Value::BigInt(n) => n as u32,
+                        Value::BigInt(n) => n.to_u64_wrapping() as u32,
                         _ => 0,
                     };
                     // u32 stored in i32 slot with its bit pattern preserved.

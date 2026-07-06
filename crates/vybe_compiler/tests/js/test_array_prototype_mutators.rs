@@ -235,9 +235,10 @@ crate::js_cases! {
         ["3,4,5,4,5"]
     };
 
+    // Node-verified: reverse keeps the hole a hole — `1 in a` is false.
     reverse_preserves_holes => {
         r#"const a=[1,,3]; a.reverse(); console.log(1 in a); console.log(a[0]); console.log(a[2]);"#,
-        ["true", "3", "1"]
+        ["false", "3", "1"]
     };
 
     push_return_after_multiple => {
@@ -320,9 +321,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: fill never throws for -Infinity — relativeStart
+    // clamps to 0 (§23.1.3.7), so the whole array fills.
     fill_range_error_negative_start => {
-        r#"try{[1,2,3].fill(0,-Infinity); console.log("ok");}catch(e){console.log(e instanceof RangeError);}"#,
-        ["true"]
+        r#"const a=[1,2,3]; a.fill(0,-Infinity); console.log(a.join(","));"#,
+        ["0,0,0"]
     };
 
     copywithin_on_empty => {
@@ -335,9 +338,11 @@ crate::js_cases! {
         ["1", "1"]
     };
 
+    // Node-verified: splice CLAMPS start to length (§23.1.3.31) — no
+    // hole padding; the result is [1,9].
     splice_beyond_length_inserts_at_end => {
         r#"const a=[1]; a.splice(5,0,9); console.log(a.join(","));"#,
-        ["1,,,,,9"]
+        ["1,9"]
     };
 
     pop_shortens_length_by_one => {
@@ -350,9 +355,11 @@ crate::js_cases! {
         ["2"]
     };
 
+    // Node-verified: generic push on an array-like WORKS (§23.1.3.23 is
+    // generic) — it sets o[0] and bumps length; no TypeError.
     push_on_array_like_object_fails => {
-        r#"const o={length:0, push:Array.prototype.push}; try{o.push(1); console.log("ok");}catch(e){console.log(e instanceof TypeError);}"#,
-        ["true"]
+        r#"const o={length:0, push:Array.prototype.push}; o.push(1); console.log(o[0]);console.log(o.length);"#,
+        ["1", "1"]
     };
 
     sort_compare_fn_returns_non_number => {
@@ -390,9 +397,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: the hole at index 1 survives the pop — `1 in a`
+    // is false.
     pop_on_sparse_array => {
         r#"const a=[1,,3]; console.log(a.pop()); console.log(1 in a);"#,
-        ["3", "true"]
+        ["3", "false"]
     };
 
     shift_on_sparse_array => {
@@ -400,9 +409,11 @@ crate::js_cases! {
         ["undefined", "2,3"]
     };
 
+    // Node-verified: sort moves undefined to the END (§23.1.3.30) —
+    // a[0] is 1, not undefined.
     sort_all_undefined_stable => {
         r#"const a=[undefined,1,undefined]; a.sort(); console.log(a[0]===undefined); console.log(a[2]);"#,
-        ["true", "undefined"]
+        ["false", "undefined"]
     };
 
     reverse_two_elements => {

@@ -81,6 +81,14 @@ fn target_get(target: &Value, key: &str) -> Value {
                         return v.get(i).cloned().unwrap_or(Value::Undefined);
                     }
                 }
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    if key == "length" {
+                        return Value::F64(crate::ecma::typedarray::ta_live_length(ta) as f64);
+                    }
+                    if let Ok(i) = key.parse::<usize>() {
+                        return crate::ecma::typedarray::read_element(ta, i);
+                    }
+                }
             }
             crate::ecma::object::proto_walk_get(obj, key).unwrap_or(Value::Undefined)
         }
@@ -130,7 +138,8 @@ fn target_set(target: &Value, key: &str, val: Value) {
 fn key_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        Value::Symbol(text) => text.to_string(),
+        // Symbol-keyed properties are stored under the Display form
+        // ("Symbol(desc)") — same convention as ecma:reflect/object.
         _ => format!("{}", value),
     }
 }
@@ -449,10 +458,10 @@ pub fn register(vm: &mut VM) {
             if let Some(trap) = get_trap(&handler, "set") {
                 if is_callable(&trap) {
                     let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                    return Value::Bool(
-                        call_trap(ctx, &handler, &trap, &[target, key_value, val, receiver])
-                            .as_bool(),
-                    );
+                    // §10.5.9 step 6: ToBoolean(trap result), not === true.
+                    let result =
+                        call_trap(ctx, &handler, &trap, &[target, key_value, val, receiver]);
+                    return Value::Bool(crate::ecma::boolean::to_boolean(&result));
                 }
             }
             target_set(&target, &key, val);
@@ -481,9 +490,9 @@ pub fn register(vm: &mut VM) {
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "has") {
                 if is_callable(&trap) {
-                    return Value::Bool(
-                        call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool(),
-                    );
+                    // §10.5.7 step 6: ToBoolean(trap result), not === true.
+                    let result = call_trap(ctx, &handler, &trap, &[target, key_value]);
+                    return Value::Bool(crate::ecma::boolean::to_boolean(&result));
                 }
             }
             Value::Bool(target_has(&target, &key))
@@ -511,9 +520,9 @@ pub fn register(vm: &mut VM) {
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "deleteProperty") {
                 if is_callable(&trap) {
-                    return Value::Bool(
-                        call_trap(ctx, &handler, &trap, &[target, key_value]).as_bool(),
-                    );
+                    // §10.5.10 step 6: ToBoolean(trap result), not === true.
+                    let result = call_trap(ctx, &handler, &trap, &[target, key_value]);
+                    return Value::Bool(crate::ecma::boolean::to_boolean(&result));
                 }
             }
             Value::Bool(target_delete(&target, &key))

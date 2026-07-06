@@ -5042,7 +5042,10 @@ impl Compiler {
             }
             Value::String(ref s) => c.emit_string_const(s, l),
             Value::BigInt(v) => {
-                c.emit_i64_const(v, l);
+                // AST BigInt literals always fit i64 (oversize literals
+                // are normalized to BigInt("…") by the walker), so the
+                // ToBigInt64 wrap here is lossless.
+                c.emit_i64_const(v.to_i64_wrapping(), l);
                 let idx = c.add_import("wasm:js-bigint", "fromI64");
                 c.emit_call(idx, 1, l);
             }
@@ -7882,6 +7885,10 @@ impl Compiler {
                 // The walker emits `Empty` for newlines between statements;
                 // they don't terminate the directive prologue.
                 StmtKind::Empty => continue,
+                // The JS walker HOISTS function declarations above the
+                // directive prologue (parse-time reorder), so a decl here
+                // says nothing about the prologue's textual position.
+                StmtKind::FunctionDecl { .. } => continue,
                 StmtKind::Expr(e) => match &e.kind {
                     ExprKind::Lit(Literal::Str(v)) => {
                         if v == "use strict" {
@@ -12847,12 +12854,21 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
-                    crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
-                        &mut self.chunks,
-                        self.current,
-                        line,
-                    );
-                    self.emit(Op::DROP); // adapter leaves [value] on stack
+                    if self.in_strict {
+                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch_bool(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit_strict_set_failure_check()?;
+                    } else {
+                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit(Op::DROP); // adapter leaves [value] on stack
+                    }
                     return Ok(());
                 }
                 let tmp = self.define_local("__tmp");
@@ -12977,7 +12993,14 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(field_name.as_str())));
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let set_idx = self.import("ecma:object", "set");
-                    self.chunk().emit_call(set_idx, 3, line);
+                    if self.in_strict {
+                        // §13.15.2: strict assignment failures throw — the
+                        // host's OrdinarySet gates read this 4th arg.
+                        inst!(self, core_wasm::bool_const, true);
+                        self.chunk().emit_call(set_idx, 4, line);
+                    } else {
+                        self.chunk().emit_call(set_idx, 3, line);
+                    }
                     self.emit(Op::DROP);
                     self.restore_js_this(saved_this);
                 } else {
@@ -13363,12 +13386,21 @@ impl Compiler {
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
-                    crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
-                        &mut self.chunks,
-                        self.current,
-                        line,
-                    );
-                    self.emit(Op::DROP);
+                    if self.in_strict {
+                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch_bool(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit_strict_set_failure_check()?;
+                    } else {
+                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.emit(Op::DROP);
+                    }
                     return Ok(());
                 }
                 // PHP `$arr[] = v` — empty bracket with null index is the
@@ -14063,6 +14095,59 @@ impl Compiler {
         }
         let line = self.line;
         self.chunk().emit_end(line);
+    }
+
+    /// §13.15.2 strict-mode assignment: a false [[Set]] result throws
+    /// TypeError. Consumes the Bool left by the strict proxy set dispatch.
+    fn emit_strict_set_failure_check(&mut self) -> Result<(), String> {
+        let line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.emit(Op::I32_EQZ);
+        self.chunk().emit_if(line);
+        self.emit_const(Value::String(Arc::from(
+            "'set' on proxy: trap returned falsish",
+        )));
+        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+        common::errors::emit_throw(self.chunk(), line);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    /// `++`/`--` step. ECMA §13.4: ToNumeric keeps the operand's numeric
+    /// type — a BigInt operand steps by 1n (result stays BigInt), anything
+    /// else by Number 1. Profiles without BigInt keep the plain number
+    /// path byte-for-byte.
+    pub(crate) fn emit_step_by_one(&mut self, add: bool) {
+        if self.profile.has_ecma_bigint {
+            let slot = self.define_local("__step_v");
+            self.emit_u16(Op::LOCAL_SET, slot);
+            let test_bi = self.import("wasm:js-bigint", "test");
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_host_call(test_bi, 1);
+            let line = self.line;
+            self.chunk().emit_if_value(line);
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_const(Value::F64(1.0));
+            let bi = self.import("ecma:bigint", if add { "add" } else { "sub" });
+            self.emit_host_call(bi, 2);
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_const(Value::F64(1.0));
+            if add {
+                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            } else {
+                self.emit(Op::F64_SUB);
+            }
+            self.chunk().emit_end(line);
+        } else {
+            self.emit_const(Value::F64(1.0));
+            if add {
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            } else {
+                self.emit(Op::F64_SUB);
+            }
+        }
     }
 
     /// JS profile: ToPrimitive(hint=number) on both operands. Used
@@ -15752,8 +15837,20 @@ impl Compiler {
                     let obj_slot = self.define_local("__js_len_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let length_key = self.str_const("length");
-                    self.emit_u16(Op::STRUCT_GET, length_key);
+                    if self.uses_proxy {
+                        // `.length` must fire the proxy get trap like any
+                        // other member read (the dotted form normalizes to
+                        // __len__ and would otherwise bypass §10.5.8).
+                        self.emit_const(Value::String(Arc::from("length")));
+                        crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                    } else {
+                        let length_key = self.str_const("length");
+                        self.emit_u16(Op::STRUCT_GET, length_key);
+                    }
                     // §10.1.8.1 OrdinaryGet: a missing own `length` walks
                     // the prototype chain like any other key (e.g.
                     // AsyncFunction.prototype.length inherits

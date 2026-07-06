@@ -80,7 +80,7 @@ pub(crate) fn typed_array_name(elem: TypedElemKind) -> &'static str {
 pub(crate) fn zero_value(elem: TypedElemKind) -> Value {
     match elem {
         TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
-        TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::BigInt(0),
+        TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(0),
         _ => Value::I32(0),
     }
 }
@@ -161,12 +161,12 @@ pub(crate) fn read_element(ta: &TypedArrayState, i: usize) -> Value {
         TypedElemKind::BigI64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::BigInt(i64::from_le_bytes(bytes))
+            Value::bigint_i64(i64::from_le_bytes(bytes))
         }
         TypedElemKind::BigU64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::BigInt(u64::from_le_bytes(bytes) as i64)
+            Value::bigint_u64(u64::from_le_bytes(bytes))
         }
     }
 }
@@ -226,8 +226,9 @@ pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             buf[abs..abs + 8].copy_from_slice(&bytes);
         }
         TypedElemKind::BigI64 => {
+            // §10.4.5 SetValueInBuffer: ToBigInt64 wrap of the value.
             let val = match v {
-                Value::BigInt(n) => *n as i64,
+                Value::BigInt(n) => n.to_i64_wrapping(),
                 Value::I64(n) => *n,
                 other => other.as_i32() as i64,
             };
@@ -235,8 +236,9 @@ pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             buf[abs..abs + 8].copy_from_slice(&bytes);
         }
         TypedElemKind::BigU64 => {
+            // ToBigUint64 wrap.
             let val = match v {
-                Value::BigInt(n) => *n as u64,
+                Value::BigInt(n) => n.to_u64_wrapping(),
                 Value::I64(n) => *n as u64,
                 other => other.as_i32() as u64,
             };

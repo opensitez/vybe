@@ -528,7 +528,7 @@ impl Compiler {
             ExprKind::Lit(lit) => match lit {
                 Literal::Int(n) => self.emit_const(Value::F64(*n as f64)),
                 Literal::Float(n) => self.emit_const(Value::F64(*n)),
-                Literal::BigInt(n) => self.emit_const(Value::BigInt(*n)),
+                Literal::BigInt(n) => self.emit_const(Value::bigint_i64(*n)),
                 Literal::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
                 Literal::Char(c) => {
                     self.emit_const(Value::String(Arc::from(c.to_string().as_str())))
@@ -1226,11 +1226,7 @@ impl Compiler {
                         if *op == UnaryOp::PostInc {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_const(Value::F64(1.0));
-                        {
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
-                        };
+                        self.emit_step_by_one(true);
                         if *op == UnaryOp::PreInc {
                             inst!(self, core_wasm::dup);
                         }
@@ -1241,8 +1237,7 @@ impl Compiler {
                         if *op == UnaryOp::PostDec {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_const(Value::F64(1.0));
-                        self.emit(Op::F64_SUB);
+                        self.emit_step_by_one(false);
                         if *op == UnaryOp::PreDec {
                             inst!(self, core_wasm::dup);
                         }
@@ -3625,6 +3620,16 @@ impl Compiler {
                             } else {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, args.len() as u8);
+                                // §20.5: JS error instances — pure-WASM
+                                // prototype link + own-name removal.
+                                if self.profile.ecma_new_dispatch && module == "ecma:error" {
+                                    let line = self.line;
+                                    crate::emitter::errors::emit_finish_js_error_instance(
+                                        self.chunk(),
+                                        &func,
+                                        line,
+                                    );
+                                }
                             }
                             return Ok(());
                         }

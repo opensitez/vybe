@@ -66,14 +66,16 @@ crate::js_cases! {
         ["false"]
     };
 
+    // Node-verified: Object.defineProperty THROWS TypeError on failure
+    // (§20.1.2.4); it never returns false — that's Reflect.defineProperty.
     define_property_on_non_extensible_fails_for_new_key => {
-        r#"const o=Object.preventExtensions({}); console.log(Object.defineProperty(o,"x",{value:1,configurable:true,enumerable:true,writable:true}));"#,
-        ["false"]
+        r#"const o=Object.preventExtensions({}); try{Object.defineProperty(o,"x",{value:1,configurable:true,enumerable:true,writable:true});}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     define_property_on_sealed_fails_for_new_key => {
-        r#"const o=Object.seal({}); console.log(Object.defineProperty(o,"n",{value:1,configurable:true,enumerable:true,writable:true}));"#,
-        ["false"]
+        r#"const o=Object.seal({}); try{Object.defineProperty(o,"n",{value:1,configurable:true,enumerable:true,writable:true});}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     delete_on_sealed_property_fails => {
@@ -111,14 +113,17 @@ crate::js_cases! {
         ["false"]
     };
 
+    // Node-verified: Object.assign uses [[Set]] with throw semantics —
+    // a new key on a non-extensible target throws TypeError (§20.1.2.1),
+    // it does not skip silently.
     object_assign_to_non_extensible_skips_new_keys => {
-        r#"const o=Object.preventExtensions({}); Object.assign(o,{a:1}); console.log("a" in o);"#,
-        ["false"]
+        r#"const o=Object.preventExtensions({}); try{Object.assign(o,{a:1});}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     object_assign_to_sealed_skips_new_keys => {
-        r#"const o=Object.seal({}); Object.assign(o,{b:2}); console.log("b" in o);"#,
-        ["false"]
+        r#"const o=Object.seal({}); try{Object.assign(o,{b:2});}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     json_stringify_on_frozen_object => {
@@ -136,14 +141,17 @@ crate::js_cases! {
         ["false"]
     };
 
+    // Node-verified: since ES2015, seal/freeze on a non-object is a
+    // NO-OP returning the argument (§20.1.2.20/§20.1.2.7 step 1) — the
+    // ES5 TypeError is gone.
     seal_non_object_throws => {
-        r#"try{Object.seal(1);}catch(e){console.log(e instanceof TypeError);}"#,
-        ["true"]
+        r#"console.log(Object.seal(1));"#,
+        ["1"]
     };
 
     freeze_null_throws => {
-        r#"try{Object.freeze(null);}catch(e){console.log(e instanceof TypeError);}"#,
-        ["true"]
+        r#"console.log(Object.freeze(null));"#,
+        ["null"]
     };
 
     prevent_extensions_on_function_allowed => {
@@ -181,9 +189,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    // Node-verified: Object.setPrototypeOf on a non-extensible target
+    // THROWS TypeError (§20.1.2.22); false is Reflect.setPrototypeOf.
     set_prototype_on_non_extensible_fails => {
-        r#"const o=Object.preventExtensions({}); console.log(Object.setPrototypeOf(o,{}));"#,
-        ["false"]
+        r#"const o=Object.preventExtensions({}); try{Object.setPrototypeOf(o,{});}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     array_buffer_not_freezable_as_object => {
@@ -191,8 +201,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: FREEZING a typed array with elements throws
+    // TypeError immediately ("Cannot freeze array buffer views with
+    // elements") — integer-indexed elements can't be made non-writable.
     typed_array_freeze_blocks_length_change_via_methods => {
-        r#"const a=Object.freeze(new Uint8Array([1])); try{a.sort(); console.log("ok");}catch(e){console.log(e instanceof TypeError);}"#,
+        r#"try{Object.freeze(new Uint8Array([1]));}catch(e){console.log(e instanceof TypeError);}"#,
         ["true"]
     };
 }

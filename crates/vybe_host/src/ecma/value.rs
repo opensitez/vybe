@@ -298,7 +298,7 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
             }
             _ => Value::Undefined,
         },
-        Value::BigInt(n) => dispatch_bigint(*n, method, args),
+        Value::BigInt(n) => dispatch_bigint(n, method, args),
         Value::Object(obj) => {
             if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
                 return tagged;
@@ -512,30 +512,14 @@ fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
     }
 }
 
-fn dispatch_bigint(n: i64, method: &str, args: &[Value]) -> Value {
+fn dispatch_bigint(n: &vybe_bytecode::bigint::BigIntVal, method: &str, args: &[Value]) -> Value {
     match method {
         "toString" => {
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
-            if radix == 10 || radix < 2 || radix > 36 {
-                return Value::String(Arc::from(format!("{}", n).as_str()));
-            }
-            let negative = n < 0;
-            let mut v = (n as i128).unsigned_abs();
-            if v == 0 {
-                return Value::String(Arc::from("0"));
-            }
-            let mut out = String::new();
-            while v > 0 {
-                let digit = (v % radix as u128) as u32;
-                out.insert(0, char::from_digit(digit, radix).unwrap_or('?'));
-                v /= radix as u128;
-            }
-            if negative {
-                out.insert(0, '-');
-            }
-            Value::String(Arc::from(out.as_str()))
+            let radix = if (2..=36).contains(&radix) { radix } else { 10 };
+            Value::String(Arc::from(n.to_string_radix(radix).as_str()))
         }
-        "valueOf" => Value::BigInt(n),
+        "valueOf" => Value::bigint(n.clone()),
         _ => Value::Undefined,
     }
 }
@@ -2774,7 +2758,7 @@ fn dispatch_tagged_object(
             }
         } else if tag == "BigInt" {
             if let Some(Value::BigInt(value)) = primitive {
-                return Some(dispatch_bigint(value, method, args));
+                return Some(dispatch_bigint(value.as_ref(), method, args));
             }
         } else if tag == "Symbol" {
             if let Some(Value::Symbol(desc)) = primitive.as_ref() {

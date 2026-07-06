@@ -385,15 +385,15 @@ fn js_symbol_equals_traps_on_non_symbol_non_null() {
 #[test]
 fn js_bigint_test_recognises_bigint() {
     assert_eq!(
-        call_import("wasm:js-bigint", "test", vec![Value::BigInt(42)]).as_i32(),
+        call_import("wasm:js-bigint", "test", vec![Value::bigint_i64(42)]).as_i32(),
         1
     );
     assert_eq!(
-        call_import("wasm:js-bigint", "test", vec![Value::BigInt(0)]).as_i32(),
+        call_import("wasm:js-bigint", "test", vec![Value::bigint_i64(0)]).as_i32(),
         1
     );
     assert_eq!(
-        call_import("wasm:js-bigint", "test", vec![Value::BigInt(-1)]).as_i32(),
+        call_import("wasm:js-bigint", "test", vec![Value::bigint_i64(-1)]).as_i32(),
         1
     );
     assert_eq!(

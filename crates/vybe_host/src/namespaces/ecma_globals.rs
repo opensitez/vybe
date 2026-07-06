@@ -24,17 +24,24 @@ pub fn register(vm: &mut VM) {
         crate::ecma::object::track_nonenum(proto, "constructor");
         crate::ecma::object::track_nonenum(proto, "constructor");
     }
-    for name in &[
-        "toString",
-        "toLocaleString",
-        "valueOf",
-        "hasOwnProperty",
-        "propertyIsEnumerable",
-        "isPrototypeOf",
+    // §20.1.3: the values stored ON %Object.prototype% are the RAW
+    // intrinsics. A borrowed `Object.prototype.hasOwnProperty.call(o, k)`
+    // must NOT consult `o`'s own override — override dispatch belongs to
+    // ordinary property lookup on the receiver, which finds the own
+    // method before ever reaching the prototype (the override-checking
+    // `ecma:object.hasOwnProperty` exists for the compiler's direct
+    // value_methods dispatch, where no runtime lookup happens).
+    for (name, registry_name) in &[
+        ("toString", "toString"),
+        ("toLocaleString", "toLocaleString"),
+        ("valueOf", "valueOf"),
+        ("hasOwnProperty", "hasOwnPropertyIntrinsic"),
+        ("propertyIsEnumerable", "propertyIsEnumerable"),
+        ("isPrototypeOf", "isPrototypeOf"),
     ] {
         let idx = *vm
             .host_registry
-            .get(&("ecma:object".to_string(), (*name).to_string()))
+            .get(&("ecma:object".to_string(), (*registry_name).to_string()))
             .expect("ecma:object prototype method must be registered");
         set_prop(
             &object_proto,
@@ -556,6 +563,31 @@ pub fn register(vm: &mut VM) {
     if !matches!(regexp, Value::Null) {
         set_prop(&regexp, "name", Value::String(Arc::from("RegExp")));
         set_prop(&regexp, "test", host_fn_ref(vm, "ecma:regexp", "test"));
+        // §22.2.6: %RegExp.prototype% — instances link to it via
+        // `__proto__` (stamped in ecma:regexp.new), so getPrototypeOf /
+        // isPrototypeOf identity holds. The prototype carries the
+        // receiver-shaped instance methods (the registered host fns take
+        // the regex as arg 0, exactly what receiver_host_fn_ref prepends).
+        let regexp_proto = crate::ecma::regexp::shared_regexp_prototype();
+        set_constructor_once(&regexp_proto, regexp.clone());
+        if let Value::Object(p) = &regexp_proto {
+            crate::ecma::object::track_nonenum(p, "constructor");
+        }
+        for name in &["exec", "test", "toString"] {
+            let idx = *vm
+                .host_registry
+                .get(&("ecma:regexp".to_string(), (*name).to_string()))
+                .expect("ecma:regexp prototype method must be registered");
+            set_prop(
+                &regexp_proto,
+                name,
+                receiver_host_fn_ref("ecma:regexp", name, idx),
+            );
+            if let Value::Object(p) = &regexp_proto {
+                crate::ecma::object::track_nonenum(p, name);
+            }
+        }
+        set_prop(&regexp, "prototype", regexp_proto);
         vm.globals.insert("RegExp".to_string(), regexp.clone());
         vm.globals.insert("regexp".to_string(), regexp);
     }

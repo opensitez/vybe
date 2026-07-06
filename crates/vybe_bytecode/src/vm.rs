@@ -2222,6 +2222,6 @@ pub(crate) fn dyn_truthy(v: &Value) -> bool {
         Value::WeakRef(w) => w.upgrade().is_some(),
         Value::V128(b) => b.iter().any(|&x| x != 0),
         Value::Symbol(_) => true,
-        Value::BigInt(n) => *n != 0,
+        Value::BigInt(n) => !n.is_zero(),
     }
 }

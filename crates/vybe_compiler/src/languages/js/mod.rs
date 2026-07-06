@@ -56,6 +56,44 @@ var __vybe_ordinary_has_instance = function(v) {
 Object.defineProperty(Function.prototype, Symbol.hasInstance, { value: __vybe_ordinary_has_instance, writable: false, enumerable: false, configurable: true });
 Object.defineProperty(Function, Symbol.hasInstance, { value: __vybe_ordinary_has_instance, writable: false, enumerable: false, configurable: true });
 
+// §20.5.3 %Error.prototype% + §20.5.6.3 NativeError prototypes — declared
+// here in JS so the whole prototype chain is pure WASM state. Bare
+// `Error`/`TypeError`/… resolve to the canonical `__ctor_<Name>` anchors;
+// the `ecma:error` host constructors link every error they mint to these
+// same per-VM objects, so host-minted and compiled errors share one chain.
+// Runs unguarded: the ctor anchors are per-VM.
+// NOTE: the toString value below MUST stay an ANONYMOUS function — a
+// named function expression whose name collides with a universal method
+// name ("toString") poisons compile-time bookkeeping and breaks later
+// object-literal method emission (generator methods vanish).
+var __vybe_wire_error_proto = function(C, parentProto, name) {
+    const proto = Object.create(parentProto);
+    Object.defineProperty(proto, "constructor", { value: C, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(proto, "name", { value: name, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(proto, "message", { value: "", writable: true, enumerable: false, configurable: true });
+    C.prototype = proto;
+    return proto;
+};
+var __vybe_error_proto_root = __vybe_wire_error_proto(Error, Object.prototype, "Error");
+// §20.5.3.4 Error.prototype.toString
+Object.defineProperty(__vybe_error_proto_root, "toString", { value: function () {
+    let n = this.name;
+    n = n === undefined ? "Error" : "" + n;
+    let m = this.message;
+    m = m === undefined ? "" : "" + m;
+    if (n === "") return m;
+    if (m === "") return n;
+    return n + ": " + m;
+}, writable: true, enumerable: false, configurable: true });
+__vybe_wire_error_proto(TypeError, __vybe_error_proto_root, "TypeError");
+__vybe_wire_error_proto(RangeError, __vybe_error_proto_root, "RangeError");
+__vybe_wire_error_proto(ReferenceError, __vybe_error_proto_root, "ReferenceError");
+__vybe_wire_error_proto(SyntaxError, __vybe_error_proto_root, "SyntaxError");
+__vybe_wire_error_proto(URIError, __vybe_error_proto_root, "URIError");
+__vybe_wire_error_proto(EvalError, __vybe_error_proto_root, "EvalError");
+__vybe_wire_error_proto(AggregateError, __vybe_error_proto_root, "AggregateError");
+
+
 if (!globalThis.__vybe_js_prelude_done) {
     globalThis.__vybe_js_prelude_done = true;
 
@@ -256,7 +294,30 @@ if (!globalThis.__vybe_js_prelude_done) {
     }
 }
 "#;
-    let full_source = format!("{};\n{}", prelude, source);
+    // §11.2.1: the user's directive prologue must govern the module even
+    // though the prelude is textually prepended — hoist "use strict" to
+    // the very front so the compiler's prologue scan (which stops at the
+    // first non-directive statement) still sees it.
+    let user_is_strict = {
+        let mut t = source;
+        loop {
+            let trimmed = t.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("//") {
+                t = rest.split_once('\n').map(|x| x.1).unwrap_or("");
+            } else if let Some(rest) = trimmed.strip_prefix("/*") {
+                t = rest.split_once("*/").map(|x| x.1).unwrap_or("");
+            } else {
+                t = trimmed;
+                break;
+            }
+        }
+        t.starts_with("\"use strict\"") || t.starts_with("'use strict'")
+    };
+    let full_source = if user_is_strict {
+        format!("\"use strict\";\n{};\n{}", prelude, source)
+    } else {
+        format!("{};\n{}", prelude, source)
+    };
     walker::parse(&full_source)
 }
 

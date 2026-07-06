@@ -77,7 +77,8 @@ fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
         Value::Undefined => crate::emitter::expressions::emit_undefined(chunk, line),
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),
-        Value::I64(value) | Value::BigInt(value) => chunk.emit_i64_const(value, line),
+        Value::I64(value) => chunk.emit_i64_const(value, line),
+        Value::BigInt(value) => chunk.emit_i64_const(value.to_i64_wrapping(), line),
         Value::F64(value) => chunk.emit_f64_const(value, line),
         Value::String(value) | Value::Symbol(value) => chunk.emit_string_const(&value, line),
         Value::Object(_) | Value::WeakRef(_) | Value::V128(_) => {

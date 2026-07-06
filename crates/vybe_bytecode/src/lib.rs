@@ -1,3 +1,4 @@
+pub mod bigint;
 pub mod chunk;
 pub mod opcode;
 pub mod type_recorder;
@@ -27,6 +28,7 @@ pub use chunk::{Chunk, Import};
 pub use error::VMError;
 pub use event_loop::EventLoop;
 pub use module_record::{ExportEntry, ModuleKind, ModuleRecord, ModuleRequest, ModuleStatus};
+pub use bigint::{BigIntRef, BigIntVal};
 pub use opcode::Op;
 pub use typedef::{FieldDef, Method, ResourceTable, TypeDef, TypeRegistry};
 pub use value::Value;

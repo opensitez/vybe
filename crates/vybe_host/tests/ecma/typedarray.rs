@@ -124,14 +124,14 @@ fn set_then_get_round_trips_value() {
 #[test]
 fn bigint64_get_returns_bigint_primitive() {
     let ta = bi64ns("newWithLength", vec![Value::I32(1)]);
-    bi64ns("set", vec![ta.clone(), Value::I32(0), Value::BigInt(-7)]);
-    assert_eq!(bi64ns("get", vec![ta, Value::I32(0)]), Value::BigInt(-7));
+    bi64ns("set", vec![ta.clone(), Value::I32(0), Value::bigint_i64(-7)]);
+    assert_eq!(bi64ns("get", vec![ta, Value::I32(0)]), Value::bigint_i64(-7));
 }
 
 #[test]
 fn biguint64_zero_default_is_bigint_primitive() {
     let ta = bu64ns("newWithLength", vec![Value::I32(1)]);
-    assert_eq!(bu64ns("get", vec![ta, Value::I32(0)]), Value::BigInt(0));
+    assert_eq!(bu64ns("get", vec![ta, Value::I32(0)]), Value::bigint_i64(0));
 }
 
 // ── Uint8Array — values are modulo 256 (unsigned byte wrap) ──────────────────
@@ -270,11 +270,11 @@ fn bigint64_from_reads_bigint_primitives() {
     assert_eq!(bi64ns("length", vec![ta.clone()]), Value::I32(3));
     assert_eq!(
         bi64ns("get", vec![ta.clone(), Value::I32(1)]),
-        Value::BigInt(-1)
+        Value::bigint_i64(-1)
     );
     assert_eq!(
         bi64ns("get", vec![ta, Value::I32(2)]),
-        Value::BigInt(i64::MAX)
+        Value::bigint_i64(i64::MAX)
     );
 }
 

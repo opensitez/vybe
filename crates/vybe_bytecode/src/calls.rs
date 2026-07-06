@@ -44,7 +44,7 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
     if abs + bpe > buf.len() {
         return match ta.elem {
             TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
-            TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::I64(0),
+            TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(0),
             _ => Value::I32(0),
         };
     }
@@ -73,15 +73,18 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
             bytes.copy_from_slice(&buf[abs..abs + 8]);
             Value::F64(f64::from_le_bytes(bytes))
         }
+        // §10.4.5: BigInt64/BigUint64 elements ARE BigInts — the elem
+        // stamp picks the signed/unsigned reading of the same 64 bits
+        // (js-types JS-API: ToBigInt64 / ToBigUint64).
         TypedElemKind::BigI64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(i64::from_le_bytes(bytes))
+            Value::bigint_i64(i64::from_le_bytes(bytes))
         }
         TypedElemKind::BigU64 => {
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buf[abs..abs + 8]);
-            Value::I64(u64::from_le_bytes(bytes) as i64)
+            Value::bigint_u64(u64::from_le_bytes(bytes))
         }
     }
 }

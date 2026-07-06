@@ -754,7 +754,7 @@ fn register_dataview(vm: &mut VM) {
         i64,
         i64::from_le_bytes,
         i64::from_be_bytes,
-        |v| Value::BigInt(v)
+        |v| Value::bigint_i64(v)
     );
     getter_multibyte!(
         "getBigUint64",
@@ -762,7 +762,7 @@ fn register_dataview(vm: &mut VM) {
         u64,
         u64::from_le_bytes,
         u64::from_be_bytes,
-        |v| Value::BigInt(v as i64)
+        |v| Value::bigint_u64(v)
     );
     getter_multibyte!(
         "getFloat32",
@@ -863,7 +863,8 @@ fn register_dataview(vm: &mut VM) {
         8,
         |v: Option<&Value>| v
             .map(|x| match x {
-                Value::BigInt(n) | Value::I64(n) => *n,
+                Value::BigInt(n) => n.to_i64_wrapping(),
+                Value::I64(n) => *n,
                 other => other.as_i32() as i64,
             })
             .unwrap_or(0),
@@ -876,7 +877,8 @@ fn register_dataview(vm: &mut VM) {
         8,
         |v: Option<&Value>| v
             .map(|x| match x {
-                Value::BigInt(n) | Value::I64(n) => *n as u64,
+                Value::BigInt(n) => n.to_u64_wrapping(),
+                Value::I64(n) => *n as u64,
                 other => other.as_i32() as u64,
             })
             .unwrap_or(0),
@@ -1332,9 +1334,9 @@ pub fn dispatch_dataview_method(
                 } else {
                     i64::from_be_bytes(arr)
                 };
-                return Some(Value::BigInt(v));
+                return Some(Value::bigint_i64(v));
             }
-            Some(Value::BigInt(0))
+            Some(Value::bigint_i64(0))
         }
         "getBigUint64" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
@@ -1348,9 +1350,9 @@ pub fn dispatch_dataview_method(
                 } else {
                     u64::from_be_bytes(arr)
                 };
-                return Some(Value::BigInt(v as i64));
+                return Some(Value::bigint_u64(v));
             }
-            Some(Value::BigInt(0))
+            Some(Value::bigint_i64(0))
         }
         "setInt8" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
@@ -1441,7 +1443,8 @@ pub fn dispatch_dataview_method(
             let val = args
                 .get(1)
                 .map(|x| match x {
-                    Value::BigInt(n) | Value::I64(n) => *n,
+                    Value::BigInt(n) => n.to_i64_wrapping(),
+                    Value::I64(n) => *n,
                     other => other.as_i32() as i64,
                 })
                 .unwrap_or(0);

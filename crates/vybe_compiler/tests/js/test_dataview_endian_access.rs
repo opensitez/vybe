@@ -57,8 +57,8 @@ crate::js_cases! {
         ["-42n"]
     };
 
-    // Node-verified: prints with `n`. Currently limited by Value::BigInt(i64)
-    // — u64::MAX round-trips as -1n until the wider backing lands.
+    // Node-verified: prints with `n`. Exact — BigInt is arbitrary
+    // precision (u64::MAX round-trips via the ToBigUint64 reading).
     dataview_get_biguint64_large => {
         r#"const b=new ArrayBuffer(8); const v=new DataView(b); v.setBigUint64(0, 18446744073709551615n, true); console.log(v.getBigUint64(0, true));"#,
         ["18446744073709551615n"]

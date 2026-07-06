@@ -118,7 +118,7 @@ fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result
     match primitive {
         // ECMA-262 §21.1.1.1: Number(bigint) converts to the nearest f64.
         // Throwing TypeError here is wrong — that only applies to mixed arithmetic.
-        Value::BigInt(n) => Ok(n as f64),
+        Value::BigInt(n) => Ok(n.to_f64()),
         Value::Symbol(_) => Err(crate::ecma::error::new_error(
             "TypeError",
             "Cannot convert a Symbol value to a number",
@@ -487,6 +487,18 @@ fn parse_float_ecma(input: &str) -> f64 {
 // convention. JS callers route `(42).toFixed(2)` through Vybe's
 // compiler as `ecma:number.toFixed(42, 2)`.
 
+/// §6.1.6.1.20 Number::toString for non-finite values — "Infinity",
+/// "-Infinity", "NaN" (Rust's Display prints "inf"/"NaN").
+fn js_nonfinite_str(n: f64) -> String {
+    if n.is_nan() {
+        "NaN".to_string()
+    } else if n > 0.0 {
+        "Infinity".to_string()
+    } else {
+        "-Infinity".to_string()
+    }
+}
+
 fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:number",
@@ -507,6 +519,12 @@ fn register_prototype(vm: &mut VM) {
                 return Value::Undefined;
             }
             let digits = digits_f as usize;
+            // §21.1.3.3 step 6: non-finite → ToString ("Infinity", not
+            // Rust's "inf"); -0 formats as "0" (§6.1.6.1.20).
+            if !n.is_finite() {
+                return s_val(&js_nonfinite_str(n));
+            }
+            let n = if n == 0.0 { 0.0 } else { n };
             s_val(&format!("{:.1$}", n, digits))
         }),
     );
@@ -628,6 +646,10 @@ fn register_prototype(vm: &mut VM) {
                     return Value::Undefined;
                 }
             }
+            // §21.1.3.2 step 6: non-finite → ToString.
+            if !n.is_finite() {
+                return s_val(&js_nonfinite_str(n));
+            }
             let raw = match args.get(1) {
                 Some(Value::F64(d)) => format!("{:.1$e}", n, *d as usize),
                 Some(Value::I32(d)) => format!("{:.1$e}", n, *d as usize),
@@ -663,24 +685,26 @@ fn register_prototype(vm: &mut VM) {
                 return Value::Undefined;
             }
             let prec = prec_f as usize;
+            // §21.1.3.5 step 9: non-finite → ToString.
+            if !n.is_finite() {
+                return s_val(&js_nonfinite_str(n));
+            }
             if n == 0.0 {
                 if prec <= 1 {
                     return s_val("0");
                 }
                 return s_val(&format!("0.{:0<1$}", "", prec - 1));
             }
-            let abs_n = n.abs();
-            let e = abs_n.log10().floor() as i32;
+            // The exponent must come from the value AFTER rounding to
+            // `prec` significant digits ((9.99).toPrecision(1) rounds to
+            // 10 → e=1 ≥ 1 → "1e+1") — so derive it from the rounded
+            // exponential form, not log10 of the raw value.
+            let raw = format!("{:.1$e}", n, prec - 1);
+            let (mantissa, exp_str) = raw.split_once('e').unwrap_or((raw.as_str(), "0"));
+            let e: i32 = exp_str.parse().unwrap_or(0);
             if e >= prec as i32 || e < -6 {
-                // exponential notation
-                let raw = format!("{:.1$e}", n, prec - 1);
-                let parts: Vec<&str> = raw.splitn(2, 'e').collect();
-                if parts.len() == 2 {
-                    let exp: i32 = parts[1].parse().unwrap_or(0);
-                    let sign = if exp >= 0 { "+" } else { "" };
-                    return s_val(&format!("{}e{}{}", parts[0], sign, exp));
-                }
-                return s_val(&raw);
+                let sign = if e >= 0 { "+" } else { "" };
+                return s_val(&format!("{}e{}{}", mantissa, sign, e));
             }
             let decimal_places = ((prec as i32 - 1 - e).max(0)) as usize;
             s_val(&format!("{:.1$}", n, decimal_places))

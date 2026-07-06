@@ -71,9 +71,11 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: includes uses SameValueZero (§23.1.3.16) — unlike
+    // indexOf, it DOES find NaN.
     array_includes_nan_false => {
         r#"console.log([NaN].includes(NaN));"#,
-        ["false"]
+        ["true"]
     };
 
     array_find_returns_first_match => {
@@ -121,9 +123,10 @@ crate::js_cases! {
         ["6"]
     };
 
+    // Node-verified: 0-3-2-1 = -6 (right-to-left fold, §23.1.3.25).
     array_reduceright_fold => {
         r#"console.log([1,2,3].reduceRight((a,b)=>a-b,0));"#,
-        ["0"]
+        ["-6"]
     };
 
     array_some_short_circuits => {
@@ -216,9 +219,11 @@ crate::js_cases! {
         ["3"]
     };
 
+    // Node-verified: concat spreads only ARRAYS (§23.1.3.1
+    // IsConcatSpreadable) — a string is appended whole.
     array_concat_spreads_strings => {
         r#"console.log([1].concat("ab").join(","));"#,
-        ["1,a,b"]
+        ["1,ab"]
     };
 
     array_find_on_empty_undefined => {

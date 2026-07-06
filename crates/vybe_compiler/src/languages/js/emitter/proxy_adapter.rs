@@ -69,6 +69,16 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, value_local, line);
 }
 
+/// Strict-mode Proxy `set` dispatch. Stack: [obj, key, value] → [bool] —
+/// the [[Set]] success flag is LEFT on the stack so the caller can apply
+/// the §13.15.2 strict-assignment TypeError check.
+pub fn emit_proxy_set_dispatch_bool(chunks: &mut [Chunk], current: usize, line: u32) {
+    let set_idx = add_import(chunks, current, "ecma:proxy", "set");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, set_idx, line);
+    chunk.emit(3, line);
+}
+
 /// Proxy `has` trap dispatch. Stack: [obj, key] → [bool]. Used by `in`.
 pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
     let has_idx = add_import(chunks, current, "ecma:proxy", "has");

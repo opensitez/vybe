@@ -182,6 +182,29 @@ impl Compiler {
     /// `this != null`, since a nested super's completion point isn't
     /// statically known.
     #[allow(clippy::too_many_arguments)]
+    /// Emit the parent constructor VALUE for class wiring. Bound parents
+    /// (user classes, locals, globals) resolve normally; unbound intrinsic
+    /// exception parents (`extends Error` / `extends RangeError` …) resolve
+    /// through the canonical `__ctor_<Name>` anchors — the bare names are
+    /// compile-time bindings, not vm globals, so a plain GLOBAL_GET yields
+    /// null and silently breaks the prototype chain.
+    fn emit_parent_ctor_value(&mut self, parent_name: &str) {
+        let pname = self.canon(parent_name);
+        let bound = self.scope().resolve(parent_name).is_some()
+            || self.defined_globals.contains(&pname)
+            || self.defined_classes.contains(&pname);
+        if !bound
+            && self.profile.ecma_error_object_shape
+            && common::errors::is_exception_type(parent_name)
+            && !self.shadows_builtin_type(parent_name)
+        {
+            let key = self.str_const(&format!("__ctor_{parent_name}"));
+            self.emit_u16(Op::GLOBAL_GET, key);
+        } else {
+            self.emit_var_get(&pname);
+        }
+    }
+
     fn emit_derived_ctor_stamps(
         &mut self,
         name: &str,
@@ -637,6 +660,13 @@ impl Compiler {
             self.emit_var_get(name);
             let callee_key = self.str_const("callee");
             self.emit_u16(Op::STRUCT_SET, callee_key);
+            self.emit(Op::DROP);
+            // §10.4.4.6: arguments objects report "[object Arguments]" —
+            // stamp the tag the host's object_to_string_tag reads.
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.chunk().emit_string_const("Arguments", 0);
+            let type_key = self.str_const("__type");
+            self.emit_u16(Op::STRUCT_SET, type_key);
             self.emit(Op::DROP);
             Some(slot)
         } else {
@@ -2354,6 +2384,23 @@ impl Compiler {
                                 self.emit_u8(Op::CALL_REF, user_arity);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
+                        } else if self.profile.ecma_error_object_shape
+                            && common::errors::is_exception_type(parent_name)
+                            && !self.shadows_builtin_type(parent_name)
+                        {
+                            // §15.7.14 default derived ctor over an intrinsic
+                            // error parent: super(message) — construct through
+                            // the canonical exception shape so message/chain
+                            // match a directly-constructed parent error.
+                            self.emit_u16(Op::LOCAL_GET, 0);
+                            self.emit(Op::REF_IS_NULL);
+                            self.chunks[self.current].emit_if_value(line);
+                            self.emit_const(Value::String(Arc::from("")));
+                            self.chunks[self.current].emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, 0);
+                            self.chunks[self.current].emit_end(line);
+                            self.emit_js_exception_ctor_from_message_value(parent_name)?;
+                            self.emit_u16(Op::LOCAL_SET, this_slot);
                         } else {
                             let canon_name = self.canon(name);
                             common::classes::emit_new_typed_object(
@@ -2846,8 +2893,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, proto_local);
 
             if let Some(parent_name) = parent {
-                let pname = self.canon(parent_name);
-                self.emit_var_get(&pname);
+                self.emit_parent_ctor_value(parent_name);
                 let parent_proto_key = self.str_const("prototype");
                 self.emit_u16(Op::STRUCT_GET, parent_proto_key);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
@@ -2888,9 +2934,8 @@ impl Compiler {
             // base classes (C.bind / C.call / C.apply resolve through it).
             if self.class_prototype_dispatch() {
                 if let Some(parent_name) = parent {
-                    let pname = self.canon(parent_name);
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
-                    self.emit_var_get(&pname);
+                    self.emit_parent_ctor_value(parent_name);
                     let proto_link_key = self.str_const("__proto__");
                     self.emit_u16(Op::STRUCT_SET, proto_link_key);
                     self.emit(Op::DROP);

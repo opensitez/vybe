@@ -456,6 +456,25 @@ pub(crate) fn invoke_with_explicit_this(
     this_arg: Value,
     args: &[Value],
 ) -> Value {
+    // §10.5.12 [[Call]] on a proxy: the apply trap fires with thisArg
+    // (or the target is invoked with it when trapless). Reaches here via
+    // Function.prototype.call/apply/bind on proxy-wrapped functions.
+    if let Value::Object(obj) = target {
+        if let Some((proxy_target, handler)) = crate::ecma::object::proxy_target_and_handler(obj) {
+            if let Some(trap) = crate::ecma::object::proxy_trap(&handler, "apply") {
+                let args_arr = Value::Object(Arc::new(Mutex::new(
+                    vybe_bytecode::value::Object::new_array(args.to_vec()),
+                )));
+                return invoke_with_explicit_this(
+                    ctx,
+                    &trap,
+                    handler,
+                    &[proxy_target, this_arg, args_arr],
+                );
+            }
+            return invoke_with_explicit_this(ctx, &proxy_target, this_arg, args);
+        }
+    }
     match target {
         Value::Object(obj)
             if matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(_))

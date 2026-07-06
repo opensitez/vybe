@@ -220,9 +220,10 @@ crate::js_cases! {
         ["true", "false"]
     };
 
+    // Node-verified: 4 significant digits of -123.456 → "-123.5".
     number_toprecision_on_negative => {
         r#"console.log((-123.456).toPrecision(4));"#,
-        ["-123"]
+        ["-123.5"]
     };
 
     number_tofixed_on_scientific => {
@@ -260,9 +261,11 @@ crate::js_cases! {
         ["12.00000000"]
     };
 
+    // Node-verified: isPrototypeOf on a PRIMITIVE is false (§20.1.3.3
+    // — no boxing; primitives are not in any prototype chain).
     boolean_prototype_is_boolean => {
         r#"console.log(Boolean.prototype.isPrototypeOf(true));"#,
-        ["true"]
+        ["false"]
     };
 
     boolean_prototype_on_object => {
@@ -270,9 +273,10 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: false — primitives are not boxed (§20.1.3.3).
     number_prototype_is_number => {
         r#"console.log(Number.prototype.isPrototypeOf(42));"#,
-        ["true"]
+        ["false"]
     };
 
     number_prototype_on_object => {

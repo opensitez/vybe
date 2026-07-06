@@ -57,8 +57,8 @@ crate::js_cases! {
         ["1n", "-1n"]
     };
 
-    // Node-verified: prints with `n`. Currently limited by Value::BigInt(i64)
-    // — u64::MAX round-trips as -1n until the wider backing lands.
+    // Node-verified: prints with `n`. Exact — BigInt is arbitrary
+    // precision (u64::MAX round-trips via the ToBigUint64 reading).
     biguint64array_large_bigint => {
         r#"const a=new BigUint64Array([18446744073709551615n]); console.log(a[0]);"#,
         ["18446744073709551615n"]

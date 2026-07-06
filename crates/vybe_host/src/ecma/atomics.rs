@@ -136,7 +136,7 @@ fn atomic_store_bytes(
 /// smaller lanes in Numbers.
 fn lane_value(bpe: usize, n: i64) -> Value {
     if bpe == 8 {
-        Value::BigInt(n)
+        Value::bigint_i64(n)
     } else {
         Value::I32(n as i32)
     }
@@ -144,7 +144,9 @@ fn lane_value(bpe: usize, n: i64) -> Value {
 
 fn arg_i64(args: &[Value], idx: usize) -> i64 {
     match args.get(idx) {
-        Some(Value::BigInt(n)) | Some(Value::I64(n)) => *n,
+        // ToBigInt64 wrap for the 64-bit lane.
+        Some(Value::BigInt(n)) => n.to_i64_wrapping(),
+        Some(Value::I64(n)) => *n,
         Some(v) => v.as_i32() as i64,
         None => 0,
     }

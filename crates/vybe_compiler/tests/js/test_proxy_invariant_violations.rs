@@ -76,9 +76,12 @@ crate::js_cases! {
         ["false"]
     };
 
+    // Node-verified: §10.5.5 — reporting a DIFFERENT value for a
+    // non-configurable own target property throws TypeError (the trap
+    // result is not silently replaced by the target's descriptor).
     proxy_non_configurable_invariant_on_get_descriptor => {
-        r#"const t={}; Object.defineProperty(t,"x",{value:1,configurable:false}); const p=new Proxy(t,{getOwnPropertyDescriptor(){return {value:2,configurable:false,enumerable:true,writable:true};}}); console.log(Object.getOwnPropertyDescriptor(p,"x").value);"#,
-        ["1"]
+        r#"const t={}; Object.defineProperty(t,"x",{value:1,configurable:false}); const p=new Proxy(t,{getOwnPropertyDescriptor(){return {value:2,configurable:false,enumerable:true,writable:true};}}); try{Object.getOwnPropertyDescriptor(p,"x");}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
     };
 
     proxy_revocable_stops_forwarding_after_revoke => {

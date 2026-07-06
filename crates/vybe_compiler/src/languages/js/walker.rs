@@ -3188,16 +3188,29 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // strip `_` separators and trailing `n`
             let s_owned: String = raw.chars().filter(|c| *c != '_').collect();
             let s = s_owned.trim_end_matches('n');
-            let n = if s.starts_with("0x") || s.starts_with("0X") {
-                i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?
+            let parsed = if s.starts_with("0x") || s.starts_with("0X") {
+                i64::from_str_radix(&s[2..], 16).ok()
             } else if s.starts_with("0o") || s.starts_with("0O") {
-                i64::from_str_radix(&s[2..], 8).map_err(|e| format!("{}", e))?
+                i64::from_str_radix(&s[2..], 8).ok()
             } else if s.starts_with("0b") || s.starts_with("0B") {
-                i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?
+                i64::from_str_radix(&s[2..], 2).ok()
             } else {
-                s.parse().unwrap_or(0)
+                s.parse().ok()
             };
-            Ok(ExprKind::Lit(Literal::BigInt(n)))
+            match parsed {
+                Some(n) => Ok(ExprKind::Lit(Literal::BigInt(n))),
+                // BigInt literals are ARBITRARY precision (§12.9.3) — a
+                // literal past i64 normalizes to the spec-identical
+                // `BigInt("digits")` constructor form (walker's job:
+                // normalize syntax; the host parses exactly).
+                None => Ok(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Ident("BigInt".into()))),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                        Literal::Str(s.to_string()),
+                    )))],
+                    optional: false,
+                }),
+            }
         }
         Rule::numeric_literal => {
             // ES2021 numeric separator: strip `_` from digits before parsing

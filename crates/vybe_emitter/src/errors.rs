@@ -51,6 +51,31 @@ pub fn emit_exception_constructor(
     chunk.emit_op(Op::DROP, line);
 }
 
+/// §20.5: finish a JS error instance minted by an `ecma:error.*`
+/// constructor — link [[Prototype]] to the canonical ctor's `prototype`
+/// (wired by the JS prelude on the `__ctor_<Kind>` anchor) and drop the
+/// host's own `name` stamp: per spec `name` is a prototype property
+/// (`new Error("x").hasOwnProperty("name")` is false), and with the
+/// chain in place it resolves through the prototype.
+/// Stack: [err] → [err]
+pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
+    // err.__proto__ = <kind ctor>.prototype
+    crate::instructions::core_wasm::dup(chunk, line); // [err, err]
+    let ctor_key = chunk.add_constant(Value::String(Arc::from(format!("__ctor_{kind}").as_str())));
+    chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [err, err, ctor]
+    let proto_key = chunk.add_constant(Value::String(Arc::from("prototype")));
+    chunk.emit_op_u16(Op::STRUCT_GET, proto_key, line); // [err, err, proto]
+    let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
+    chunk.emit_op_u16(Op::STRUCT_SET, link_key, line); // [err, err]
+    chunk.emit_op(Op::DROP, line); // [err]
+    // delete err.name — own stamp off, prototype `name` takes over
+    crate::instructions::core_wasm::dup(chunk, line); // [err, err]
+    chunk.emit_string_const("name", line); // [err, err, "name"]
+    let del = chunk.add_import("ecma:object", "delete");
+    chunk.emit_call(del, 2, line); // [err, bool]
+    chunk.emit_op(Op::DROP, line); // [err]
+}
+
 /// Standard exception type names shared across all languages.
 /// Maps language-specific names to a canonical set.
 pub fn canonical_exception_name(name: &str) -> &str {
@@ -149,7 +174,10 @@ pub fn is_exception_type(name: &str) -> bool {
         | "runtimeexception" | "logicexception" | "domainexception"
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
         | "rangeexception" | "underflowexception"
-        | "unexpectedvalueexception"
+        | "unexpectedvalueexception" | "invalidargumentexception"
+        | "badfunctioncallexception" | "badmethodcallexception"
+        | "arithmeticerror" | "compileerror" | "parseerror" | "assertionerror"
+        | "jsonexception"
         | "unhandledmatcherror" | "divisionbyzeroerror" | "argumentcounterror"
         | "errorexception"
         // JS

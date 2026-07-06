@@ -692,7 +692,18 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "isArray",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| Value::Bool(array_of(args, 0).is_some())),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            // §7.2.2 IsArray: a proxy is an Array when its target is.
+            let mut v = args.first().cloned().unwrap_or(Value::Undefined);
+            while let Value::Object(obj) = &v {
+                match crate::ecma::object::proxy_target_and_handler(obj) {
+                    Some((target, _)) => v = target,
+                    None => break,
+                }
+            }
+            let probe = [v];
+            Value::Bool(array_of(&probe, 0).is_some())
+        }),
     );
 }
 
@@ -932,22 +943,25 @@ fn register_property_access(vm: &mut VM) {
 fn register_mutators(vm: &mut VM) {
     // push(arr, v) -> i32 new_length
     //
-    // Guards against frozen arrays: a frozen array's length cannot
-    // change, so push is a no-op and returns the current length. The
-    // spec says TypeError — we'll upgrade to a throw when host-side
-    // exception dispatch lands.
+    // §23.1.3.23: push defines a NEW index, so a frozen or sealed
+    // (non-extensible) array throws TypeError — in any mode.
     vm.register_host_fn(
         "ecma:array",
         "push",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let values = &args[1..];
             if let Some(arr) = array_of(args, 0) {
-                if is_frozen(&arr) {
+                let blocked = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind {
-                        return Value::I32(v.len() as i32);
-                    }
-                    return Value::I32(0);
+                    o.properties.get(FROZEN_MARK).is_some()
+                        || crate::ecma::object::is_not_extensible(&o)
+                };
+                if blocked {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "TypeError",
+                        "Cannot add property, object is not extensible",
+                    ));
+                    return Value::Undefined;
                 }
                 let mut o = arr.lock().unwrap();
                 let old_len = match &o.kind {
@@ -1102,7 +1116,12 @@ fn register_mutators(vm: &mut VM) {
         "splice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            // §23.1.3.31: when deleteCount is OMITTED, everything from
+            // start to the end is removed (explicit undefined means 0).
+            let del = match args.get(2) {
+                None => usize::MAX,
+                Some(v) => v.as_i32().max(0) as usize,
+            };
             let items: Vec<Value> = args.iter().skip(3).cloned().collect();
             let mut deleted = Vec::new();
             if let Some(arr) = array_of(args, 0) {
@@ -1114,7 +1133,7 @@ fn register_mutators(vm: &mut VM) {
                     } else {
                         (start as usize).min(len)
                     };
-                    let end = (idx + del).min(len);
+                    let end = idx.saturating_add(del).min(len);
                     for _ in idx..end {
                         deleted.push(v.remove(idx));
                     }
@@ -1171,9 +1190,38 @@ fn register_mutators(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let compare_fn = args.get(1).cloned();
+                // §23.1.3.30 step 1: a comparator that is an object but
+                // not callable throws TypeError. (Non-object/absent
+                // comparators fall through to the default sort.)
+                if let Some(Value::Object(cf)) = &compare_fn {
+                    let callable = {
+                        let c = cf.lock().unwrap();
+                        matches!(
+                            c.kind,
+                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                        ) || c.properties.contains_key("__fn_return")
+                    };
+                    if !callable {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "TypeError",
+                            "The comparison function must be either a function or undefined",
+                        ));
+                        return Value::Undefined;
+                    }
+                }
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
+                        // Sort writes every index — a frozen array throws
+                        // TypeError (sealed still allows index writes).
+                        if o.properties.get(FROZEN_MARK).is_some() {
+                            drop(o);
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                "TypeError",
+                                "Cannot assign to read only property of frozen array",
+                            ));
+                            return Value::Undefined;
+                        }
                         let mut values = v.clone();
                         drop(o);
                         values.sort_by(|a, b| {
@@ -1250,6 +1298,15 @@ fn register_mutators(vm: &mut VM) {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
             let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
             let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.7 relative indexing: negative counts from the end;
+            // i64 math so a saturated -Infinity cast can't overflow.
+            let norm = |x: i32, len: i32| -> usize {
+                if x < 0 {
+                    ((len as i64) + (x as i64)).max(0) as usize
+                } else {
+                    x.min(len) as usize
+                }
+            };
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
                 match &o.kind {
@@ -1258,8 +1315,8 @@ fn register_mutators(vm: &mut VM) {
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut v) = o.kind {
                             let len = v.len() as i32;
-                            let s = start.max(0).min(len) as usize;
-                            let e = end.max(0).min(len) as usize;
+                            let s = norm(start, len);
+                            let e = norm(end, len);
                             for i in s..e {
                                 v[i] = val.clone();
                             }
@@ -1274,8 +1331,8 @@ fn register_mutators(vm: &mut VM) {
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta) as i32;
-                        let s = start.max(0).min(live) as usize;
-                        let e = end.max(0).min(live) as usize;
+                        let s = norm(start, live);
+                        let e = norm(end, live);
                         for i in s..e {
                             write_element(ta, i, &val);
                         }
@@ -1295,13 +1352,21 @@ fn register_mutators(vm: &mut VM) {
             let target = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
             let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            // §23.1.3.4 relative indexing — same normalization as fill.
+            let norm = |x: i32, len: i32| -> usize {
+                if x < 0 {
+                    ((len as i64) + (x as i64)).max(0) as usize
+                } else {
+                    x.min(len) as usize
+                }
+            };
             if let Some(arr) = array_of(args, 0) {
                 let mut o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref mut v) = o.kind {
                     let len = v.len() as i32;
-                    let t = target.max(0).min(len) as usize;
-                    let s = start.max(0).min(len) as usize;
-                    let e = end.max(0).min(len) as usize;
+                    let t = norm(target, len);
+                    let s = norm(start, len);
+                    let e = norm(end, len).max(s);
                     let slice: Vec<Value> = v[s..e].iter().cloned().collect();
                     let max_copy = (len as usize - t).min(slice.len());
                     v[t..t + max_copy].clone_from_slice(&slice[..max_copy]);

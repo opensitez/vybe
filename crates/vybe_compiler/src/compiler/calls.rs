@@ -1999,6 +1999,18 @@ impl Compiler {
                 let enum_key = self.str_const("enumerable");
                 self.emit_u16(Op::STRUCT_SET, enum_key);
                 self.emit(Op::DROP);
+                // §20.5 instance property descriptors are
+                // { writable: true, enumerable: false, configurable: true } —
+                // omitting these lets defineProperty default them to false,
+                // which (a) violates the spec shape and (b) makes the own
+                // `name` stamp undeletable for the prototype-chain finisher.
+                for flag in ["writable", "configurable"] {
+                    inst!(self, core_wasm::dup);
+                    self.emit_const(Value::Bool(true));
+                    let flag_key = self.str_const(flag);
+                    self.emit_u16(Op::STRUCT_SET, flag_key);
+                    self.emit(Op::DROP);
+                }
                 self.emit_host_call(define_prop_idx, 3);
                 self.emit(Op::DROP);
             }
@@ -2068,6 +2080,12 @@ impl Compiler {
         }
 
         self.emit_u16(Op::LOCAL_GET, exc_tmp);
+        if self.profile.ecma_error_object_shape {
+            // §20.5: link [[Prototype]] to the prelude-wired
+            // `__ctor_<Kind>.prototype` and drop the own `name` stamp —
+            // instances resolve `name`/`toString` through the chain.
+            crate::emitter::errors::emit_finish_js_error_instance(self.chunk(), type_name, line);
+        }
         Ok(())
     }
 
@@ -3245,8 +3263,16 @@ impl Compiler {
                 if self.try_compile_builtin(&compound, &arg_exprs)? {
                     return Ok(());
                 }
-                // Component model fallback: try dotnet resolver for System.* chains
-                if self.try_compile_dotnet_component_call(&parts, &arg_exprs)? {
+                // Component model fallback: try dotnet resolver for System.*
+                // chains. Gated on the profile's dotnet resolver (VB/C#/Java)
+                // — on JS this hijacked calls like `text.matchAll(re)` into
+                // phantom `ecma:string.matchall` imports (receiver dropped,
+                // method lowercased). A user binding on the leading ident
+                // shadows namespace resolution in any language.
+                if self.profile.namespaces.use_dotnet_resolver
+                    && !self.has_accessible_local_binding(&parts[0])
+                    && self.try_compile_dotnet_component_call(&parts, &arg_exprs)?
+                {
                     return Ok(());
                 }
             }

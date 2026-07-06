@@ -109,7 +109,7 @@ fn to_bool_true_bool_is_true() {
 #[test]
 fn to_bool_bigint_zero_is_false() {
     let r = run(|c| {
-        push(c, Value::BigInt(0));
+        push(c, Value::bigint_i64(0));
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -118,7 +118,7 @@ fn to_bool_bigint_zero_is_false() {
 #[test]
 fn to_bool_bigint_nonzero_is_true() {
     let r = run(|c| {
-        push(c, Value::BigInt(-1));
+        push(c, Value::bigint_i64(-1));
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -237,8 +237,8 @@ fn eq_null_and_undefined_are_equal() {
 #[test]
 fn eq_same_bigints() {
     let r = run(|c| {
-        push(c, Value::BigInt(42));
-        push(c, Value::BigInt(42));
+        push(c, Value::bigint_i64(42));
+        push(c, Value::bigint_i64(42));
         ops::emit_dyn_eq(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -247,8 +247,8 @@ fn eq_same_bigints() {
 #[test]
 fn eq_different_bigints() {
     let r = run(|c| {
-        push(c, Value::BigInt(1));
-        push(c, Value::BigInt(2));
+        push(c, Value::bigint_i64(1));
+        push(c, Value::bigint_i64(2));
         ops::emit_dyn_eq(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -347,14 +347,14 @@ fn lt_strings_lexicographic() {
 #[test]
 fn lt_bigints() {
     let r = run(|c| {
-        push(c, Value::BigInt(1));
-        push(c, Value::BigInt(2));
+        push(c, Value::bigint_i64(1));
+        push(c, Value::bigint_i64(2));
         ops::emit_dyn_lt(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
     let r2 = run(|c| {
-        push(c, Value::BigInt(5));
-        push(c, Value::BigInt(2));
+        push(c, Value::bigint_i64(5));
+        push(c, Value::bigint_i64(2));
         ops::emit_dyn_lt(c, 0);
     });
     assert_eq!(r2.as_i32(), 0);
@@ -363,8 +363,8 @@ fn lt_bigints() {
 #[test]
 fn ge_bigints() {
     let r = run(|c| {
-        push(c, Value::BigInt(10));
-        push(c, Value::BigInt(10));
+        push(c, Value::bigint_i64(10));
+        push(c, Value::bigint_i64(10));
         ops::emit_dyn_ge(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -405,8 +405,8 @@ fn add_string_and_number_coerces() {
 #[test]
 fn add_bigints() {
     let r = run(|c| {
-        push(c, Value::BigInt(10));
-        push(c, Value::BigInt(32));
+        push(c, Value::bigint_i64(10));
+        push(c, Value::bigint_i64(32));
         ops::emit_dyn_add(c, 0);
     });
     assert_eq!(r.as_i64(), 42);
@@ -426,7 +426,7 @@ fn neg_number() {
 #[test]
 fn neg_bigint() {
     let r = run(|c| {
-        push(c, Value::BigInt(7));
+        push(c, Value::bigint_i64(7));
         ops::emit_dyn_neg(c, 0);
     });
     assert_eq!(r.as_i64(), -7);

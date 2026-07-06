@@ -241,7 +241,14 @@ fn serialize_json_value(
             ctx.throw_value(err);
             return None;
         }
-        Value::Object(obj) => serialize_object(ctx, obj, state),
+        Value::Object(obj) => {
+            // §25.5.2.2 reads through the proxy's [[Get]]/[[OwnPropertyKeys]]
+            // — with no traps that is exactly the target.
+            if let Some((target, _)) = crate::ecma::object::proxy_target_and_handler(obj) {
+                return serialize_json_value(ctx, &target, state, in_array);
+            }
+            serialize_object(ctx, obj, state)
+        }
     }
 }
 
