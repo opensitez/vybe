@@ -52,6 +52,9 @@ use std::cell::RefCell;
 // can't reach class-level constants/static members.
 thread_local! {
     static CLASS_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    // Current function/method name, for `__FUNCTION__` / `__METHOD__`. Pushed
+    // around each function/method body walk in `walk_function_decl`.
+    static FUNCTION_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // Tracks `use TraitName;` per class. Walker captures the trait name
     // when it sees `use_trait` inside a class member; the post-pass in
     // `parse()` reads this to copy trait members into the using class.
@@ -121,6 +124,10 @@ struct ClassMeta {
     parent: Option<String>,
     interfaces: Vec<String>,
     is_abstract: bool,
+    // Tracked for reflection / future final-extends enforcement (the current
+    // final tests exercise it through `eval()`, i.e. a runtime path).
+    #[allow(dead_code)]
+    is_final: bool,
     methods: Vec<MethodMeta>,
     fields: Vec<FieldMeta>,
 }
@@ -451,6 +458,10 @@ fn pop_class_context() {
 
 fn current_class_name() -> Option<String> {
     CLASS_STACK.with(|s| s.borrow().last().cloned())
+}
+
+fn current_function_name() -> Option<String> {
+    FUNCTION_STACK.with(|s| s.borrow().last().cloned())
 }
 
 #[allow(dead_code)]
@@ -1023,6 +1034,20 @@ function parse_str($string, &$result) {
 }
 "##;
 
+/// PHP-source class-introspection helpers that read the *common* object
+/// metadata stamped by the shared class emitter (`__type`, `__types`) rather
+/// than any PHP-specific bookkeeping — so they stay correct for objects built
+/// through the common `emit_class` path. Assignments avoid the if/else
+/// conditional-assignment form (see project_php_conditional_assign_bug).
+const CLASS_HELPERS_PRELUDE: &str = r##"
+function __vybe_parent_class($o) {
+    if (!is_object($o)) return false;
+    $t = isset($o->__types) ? $o->__types : [];
+    $n = count($t);
+    return ($n >= 2) ? $t[$n - 2] : false;
+}
+"##;
+
 /// Parse a PHP prelude source into statements (registering any classes in the
 /// walker's registries as a side effect). Returns `[]` on any error so a
 /// prelude problem never breaks user compilation.
@@ -1342,6 +1367,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         let mut prelude = parse_prelude(EXCEPTION_PRELUDE);
         LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(URL_FUNCTIONS_PRELUDE));
         prelude.append(&mut parse_prelude(URL_FUNCTIONS_PRELUDE));
+        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(CLASS_HELPERS_PRELUDE));
+        prelude.append(&mut parse_prelude(CLASS_HELPERS_PRELUDE));
         prelude.append(&mut hoisted);
         prelude
     };
@@ -2331,7 +2358,14 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 return_type = Some(p.as_str().trim_start_matches(':').trim().to_string());
             }
             Rule::block_statement => {
-                body = walk_statement_into_body(p)?;
+                // Name precedes the body in the grammar, so it is set here.
+                // Track it for `__FUNCTION__` / `__METHOD__` inside the body.
+                FUNCTION_STACK.with(|s| s.borrow_mut().push(name.clone()));
+                let walked = walk_statement_into_body(p);
+                FUNCTION_STACK.with(|s| {
+                    s.borrow_mut().pop();
+                });
+                body = walked?;
             }
             _ => {}
         }
@@ -2575,6 +2609,7 @@ fn extract_class_meta(
         parent: parents.first().cloned(),
         interfaces: interfaces.to_vec(),
         is_abstract: modifiers.is_abstract,
+        is_final: modifiers.is_sealed,
         methods,
         fields,
     }
@@ -3488,15 +3523,12 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
         }
         Rule::kw_parent => ExprKind::Super,
         Rule::kw_static => {
-            // PHP `static::X` (late static binding) resolves to the
-            // calling class at runtime — same `$this` slot that the
-            // static-method dispatch puts the class object into. Walk
-            // `static` to `This` so `static::X` becomes
-            // `StaticAccess { class: This, member: X }`. The compiler
-            // then emits `LOCAL_GET this; STRUCT_GET "X"` — for static
-            // method calls dispatched via `Class.method()` (Member
-            // shape), the `$this` slot holds the class object, so
-            // STRUCT_GET on it returns the class const / static field.
+            // PHP `static::X` (late static binding) resolves to the calling
+            // class at runtime — same `$this` slot that the static-method
+            // dispatch puts the class object into. Walk `static` to `This`;
+            // `static::$prop` (static-property read) is specialised in
+            // `static_access_op` to resolve against the class object, since a
+            // static field lives on the class, not the instance.
             ExprKind::This
         }
 
@@ -6038,6 +6070,89 @@ fn apply_postfix(
                         span.clone(),
                     ));
                 }
+                // `$obj::class` / `(new C())::class` (PHP 8) — the class name of
+                // a runtime object: read the emitter-stamped `__type`, falling
+                // back to `constructor.name`. Same shape as `get_class($obj)`.
+                let type_prop = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(receiver.clone()),
+                        field: "__type".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let ctor_name = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(receiver),
+                                field: "constructor".to_string(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        )),
+                        field: "name".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::NullCoalesce,
+                        left: Box::new(type_prop),
+                        right: Box::new(ctor_name),
+                    },
+                    span.clone(),
+                ));
+            }
+            // `static::$prop` / `$this::$prop` — a static property lives on the
+            // *class*, not the instance. `static`/`$this` walked to `This`,
+            // which in an instance method is the instance (no static fields).
+            // Resolve the class object at runtime — the class itself in a
+            // static method (`$this` slot holds it) or `$this.constructor` in
+            // an instance method — and read the static field off it.
+            if matches!(inner_pair.as_rule(), Rule::variable)
+                && matches!(receiver.kind, ExprKind::This)
+            {
+                let this_e = Expression::with_span(ExprKind::This, span.clone());
+                let typeof_this = Expression::with_span(
+                    ExprKind::TypeOf(Box::new(this_e.clone())),
+                    span.clone(),
+                );
+                let is_fn = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(typeof_this),
+                        right: Box::new(Expression::with_span(
+                            ExprKind::Lit(Literal::Str("function".to_string())),
+                            span.clone(),
+                        )),
+                    },
+                    span.clone(),
+                );
+                let ctor_member = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(this_e.clone()),
+                        field: "constructor".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let class_obj = Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(is_fn),
+                        then: Box::new(this_e),
+                        else_: Box::new(ctor_member),
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::StaticAccess {
+                        class: Box::new(class_obj),
+                        member: Box::new(Expression::ident(&name)),
+                    },
+                    span.clone(),
+                ));
             }
             // Reflection visibility constants
             if let ExprKind::Ident(cn) = &receiver.kind {
@@ -6978,7 +7093,6 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         _ => {}
                     }
                 }
-                let _ = interfaces; // walker doesn't enforce interface contracts
                 args = ctor_args;
                 // PHP names anonymous classes `class@anonymous...`; matching
                 // that lets `get_class()` / anonymity checks behave like PHP.
@@ -6991,6 +7105,9 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     ExprKind::ClassExpr {
                         name: Some(anon_name),
                         parent: parent.map(Box::new),
+                        // Carry `implements I1, I2` so the shared emitter stamps
+                        // them into `__types` (instanceof, interface-typed use).
+                        interfaces,
                         members,
                     },
                     span.clone(),
@@ -12045,7 +12162,15 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                     None => ExprKind::Lit(Literal::Bool(false)),
                 }
             }
-            _ => return None,
+            // Object (or runtime value): read the parent from the common
+            // `__types` inheritance chain stamped by the shared class emitter.
+            _ => mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("__vybe_parent_class".to_string()),
+                    span.clone(),
+                ),
+                vec![arg(0)?],
+            ),
         },
         "get_class_methods" if args.len() == 1 => match &args[0].value.kind {
             ExprKind::Lit(Literal::Str(c)) if class_is_registered(c) => {
@@ -13363,6 +13488,25 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "PHP_OS" => ExprKind::Lit(Literal::Str("Darwin".to_string())),
         "PHP_OS_FAMILY" => ExprKind::Lit(Literal::Str("Darwin".to_string())),
         "PHP_MAXPATHLEN" => ExprKind::Lit(Literal::Int(4096)),
+        // ── Magic class constant — resolved to the enclosing class/trait name
+        // at walk time (CLASS_STACK). Empty string outside a class, per PHP.
+        "__CLASS__" | "__TRAIT__" => {
+            ExprKind::Lit(Literal::Str(current_class_name().unwrap_or_default()))
+        }
+        "__LINE__" => ExprKind::Lit(Literal::Int(span.start_line as i64)),
+        // `__FUNCTION__` — the (unqualified) function/method name.
+        "__FUNCTION__" => {
+            ExprKind::Lit(Literal::Str(current_function_name().unwrap_or_default()))
+        }
+        // `__METHOD__` — `Class::method` inside a class, else the function name.
+        "__METHOD__" => {
+            let func = current_function_name().unwrap_or_default();
+            let qualified = match current_class_name() {
+                Some(cls) if !func.is_empty() => format!("{cls}::{func}"),
+                _ => func,
+            };
+            ExprKind::Lit(Literal::Str(qualified))
+        }
         // ── PHP integer / float limits ──
         "PHP_INT_MAX" => ExprKind::Lit(Literal::BigInt(i64::MAX)),
         "PHP_INT_MIN" => ExprKind::Lit(Literal::BigInt(i64::MIN)),
