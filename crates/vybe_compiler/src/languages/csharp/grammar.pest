@@ -376,8 +376,12 @@ expression_list = { expression ~ ("," ~ expression)* }
 // ── Foreach ─────────────────────────────────────────────────────────────────
 
 foreach_statement = {
-    "foreach" ~ "(" ~ (var_kw | type_name) ~ foreach_target ~ in_kw ~ expression ~ ")" ~ statement
+    // `await foreach (...)` — async-stream consumption. The optional marker
+    // flags the loop `is_async` so it drains via the shared async-iterator
+    // path (`Symbol.asyncIterator`), exactly like JS `for await (...)`.
+    foreach_await_marker? ~ "foreach" ~ "(" ~ (var_kw | type_name) ~ foreach_target ~ in_kw ~ expression ~ ")" ~ statement
 }
+foreach_await_marker = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 foreach_target = { foreach_tuple_target | ident_name }
 foreach_tuple_target = { "(" ~ ident_name ~ ("," ~ ident_name)+ ~ ","? ~ ")" }

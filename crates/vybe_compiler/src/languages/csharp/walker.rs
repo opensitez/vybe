@@ -9281,9 +9281,11 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut tuple_target: Option<Vec<String>> = None;
     let mut iter = Expression::null();
     let mut body = Vec::new();
+    let mut is_async = false;
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::foreach_await_marker => is_async = true,
             Rule::var_kw => {}
             Rule::type_name => explicit_type_hint = Some(p.as_str().to_string()),
             Rule::foreach_target => {
@@ -9402,7 +9404,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         of: true, // foreach is like for-of
         else_body: None,
-        is_async: false,
+        is_async, // `await foreach` → drains via the shared async-iterator path
     })
 }
 
