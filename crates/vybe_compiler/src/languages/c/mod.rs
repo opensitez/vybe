@@ -1,5 +1,5 @@
 pub mod emitter;
-mod walker;
+pub(crate) mod walker;
 
 use pest_derive::Parser;
 

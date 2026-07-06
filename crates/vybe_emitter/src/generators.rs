@@ -438,7 +438,7 @@ pub fn emit_entry_control(
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
     let value_key = chunk.add_constant(Value::String(Arc::from("value")));
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
-    chunk.emit_op(Op::THROW, line);
+    crate::errors::emit_throw(chunk, line);
 
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
@@ -497,7 +497,7 @@ pub fn emit_resume_dispatch(
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     let value_key = chunk.add_constant(Value::String(Arc::from("value")));
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
-    chunk.emit_op(Op::THROW, line);
+    crate::errors::emit_throw(chunk, line);
 
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);

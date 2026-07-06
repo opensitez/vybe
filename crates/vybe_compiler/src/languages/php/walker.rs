@@ -55,6 +55,9 @@ thread_local! {
     // Current function/method name, for `__FUNCTION__` / `__METHOD__`. Pushed
     // around each function/method body walk in `walk_function_decl`.
     static FUNCTION_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    // Current namespace, for `__NAMESPACE__`. Pushed around a braced
+    // `namespace Foo { ... }` body walk.
+    static NAMESPACE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // Tracks `use TraitName;` per class. Walker captures the trait name
     // when it sees `use_trait` inside a class member; the post-pass in
     // `parse()` reads this to copy trait members into the using class.
@@ -462,6 +465,10 @@ fn current_class_name() -> Option<String> {
 
 fn current_function_name() -> Option<String> {
     FUNCTION_STACK.with(|s| s.borrow().last().cloned())
+}
+
+fn current_namespace() -> Option<String> {
+    NAMESPACE_STACK.with(|s| s.borrow().last().cloned())
 }
 
 #[allow(dead_code)]
@@ -1517,11 +1524,25 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                 match p.as_rule() {
                     Rule::qualified_name => name = p.as_str().to_string(),
                     Rule::block_statement => {
+                        // `name` precedes the body — track it so `__NAMESPACE__`
+                        // inside resolves to the fully-qualified namespace.
+                        let ns = name.trim_start_matches('\\').to_string();
+                        NAMESPACE_STACK.with(|s| s.borrow_mut().push(ns));
+                        let mut walked = Ok(());
                         for s in p.into_inner() {
-                            if let Some(st) = walk_statement(s)? {
-                                body.push(st);
+                            match walk_statement(s) {
+                                Ok(Some(st)) => body.push(st),
+                                Ok(None) => {}
+                                Err(e) => {
+                                    walked = Err(e);
+                                    break;
+                                }
                             }
                         }
+                        NAMESPACE_STACK.with(|s| {
+                            s.borrow_mut().pop();
+                        });
+                        walked?;
                     }
                     _ => {}
                 }
@@ -6597,11 +6618,10 @@ fn apply_postfix(
                 if let (ExprKind::Ident(class_name), ExprKind::Ident(method_name)) =
                     (&class.kind, &member.kind)
                 {
-                    // A `$`-prefixed class is a *variable* (`$cls::method()`);
-                    // its class-name string is resolved at runtime, so keep the
-                    // `StaticAccess` shape (the compiler's dynamic-static branch
-                    // handles it). Only literal class names go through the
-                    // static→Member magic-call rewrite.
+                    // A `$`-prefixed class is a *variable* (`$cls::method()`)
+                    // resolved at runtime — keep the `StaticAccess` shape so the
+                    // compiler's dynamic-static branch handles it. Only literal
+                    // class names go through the static→Member magic-call rewrite.
                     if !class_name.starts_with('$') {
                         let mname = method_name.clone();
                         let class_expr = (**class).clone();
@@ -13557,6 +13577,10 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
             ExprKind::Lit(Literal::Str(current_class_name().unwrap_or_default()))
         }
         "__LINE__" => ExprKind::Lit(Literal::Int(span.start_line as i64)),
+        // `__NAMESPACE__` — the current namespace name ("" in global scope).
+        "__NAMESPACE__" => {
+            ExprKind::Lit(Literal::Str(current_namespace().unwrap_or_default()))
+        }
         // `__FUNCTION__` — the (unqualified) function/method name.
         "__FUNCTION__" => {
             ExprKind::Lit(Literal::Str(current_function_name().unwrap_or_default()))

@@ -129,7 +129,7 @@ pub fn emit_catch(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, r, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, err_slot, line);
-    chunk.emit_op(Op::THROW, line);
+    crate::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
 }
 

@@ -1936,7 +1936,7 @@ fn is_php_builtin_constant_name(name: &str) -> bool {
 }
 
 impl Compiler {
-    fn strip_global_namespace_prefix(name: &str) -> String {
+    pub(crate) fn strip_global_namespace_prefix(name: &str) -> String {
         let trimmed = name.trim();
         let lower = trimmed.to_ascii_lowercase();
         if lower.starts_with("global::") {
@@ -8192,11 +8192,11 @@ impl Compiler {
         };
         if let Some(slot) = found_local {
             self.scopes[parent].mark_captured(slot);
-            return Some(self.scopes[scope_idx].add_upvalue(slot as u8, true));
+            return Some(self.scopes[scope_idx].add_upvalue(slot, true));
         }
         // Recurse up
         if let Some(uv) = self.resolve_upvalue(parent, name) {
-            return Some(self.scopes[scope_idx].add_upvalue(uv, false));
+            return Some(self.scopes[scope_idx].add_upvalue(uv as u16, false));
         }
         None
     }

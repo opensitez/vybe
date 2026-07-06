@@ -1912,7 +1912,9 @@ impl VM {
                     let mut upvalues: Vec<Arc<Mutex<Upvalue>>> = Vec::with_capacity(uv_count);
                     for _ in 0..uv_count {
                         let is_local = self.read_byte() != 0;
-                        let index = self.read_byte() as usize;
+                        // u16 like every other slot operand — a parent
+                        // frame can have far more than 255 locals.
+                        let index = self.read_u16() as usize;
                         if is_local {
                             let base = self.frame().base;
                             let uv = self.capture_upvalue(base + index);
@@ -2878,30 +2880,71 @@ impl VM {
                     self.push(Value::Null)?;
                 }
 
-                // -- Exceptions (WASM exception proposal) --
+                // -- Exceptions (WASM exception-handling proposal, final) --
                 _ if op == Op::TRY_START => {
+                    // Legacy region form: behaves as a one-clause
+                    // `try_table (catch $vybe:exception ...)` — the payload
+                    // (exception object) is delivered to the handler.
                     let catch_offset = self.read_u16() as i16;
                     let _finally_offset = self.read_u16(); // reserved for finally
-                    let f = self.frame();
-                    let catch_ip = (f.ip as i64 + catch_offset as i64) as usize;
+                    let (frame_ip, frame_chunk) = {
+                        let f = self.frame();
+                        (f.ip, f.chunk_index)
+                    };
+                    let catch_ip = (frame_ip as i64 + catch_offset as i64) as usize;
+                    self.try_group_counter += 1;
                     self.exception_handlers.push(ExceptionHandler {
                         catch_ip,
-                        _chunk_index: f.chunk_index,
+                        _chunk_index: frame_chunk,
                         stack_depth: self.stack.len(),
                         frame_depth: self.frames.len(),
                         label_depth: self.label_stack.len(),
-                        tag: 0, // catch-all
+                        kind: crate::vm::CATCH_KIND_CATCH,
+                        tag_entity: 0,
+                        group: self.try_group_counter,
                     });
                 }
                 _ if op == Op::TRY_END => {
-                    // Normal exit from try block — pop the handler
-                    self.exception_handlers.pop();
+                    // Normal exit from the try block — remove the WHOLE
+                    // clause group of the innermost try_table.
+                    if let Some(top) = self.exception_handlers.last() {
+                        let group = top.group;
+                        while self
+                            .exception_handlers
+                            .last()
+                            .is_some_and(|h| h.group == group)
+                        {
+                            self.exception_handlers.pop();
+                        }
+                    }
                 }
-                _ if op == Op::THROW || op == Op::THROW_REF => {
+                _ if op == Op::THROW => {
+                    // Spec `throw <tagidx>`: the tag index immediate selects
+                    // the tag entity; the payload (per the tag's signature
+                    // arity) is popped off the stack.
+                    let tag_idx = self.read_u16();
+                    let chunk_index = self.frame().chunk_index;
+                    let entity = self.resolve_chunk_tag(chunk_index, tag_idx)?;
+                    let arity = self.tag_entities[entity].arity as usize;
+                    let mut payload = Vec::with_capacity(arity);
+                    for _ in 0..arity {
+                        payload.push(self.pop());
+                    }
+                    payload.reverse();
+                    self.raise_exception(entity, payload, 0)?;
+                }
+                _ if op == Op::THROW_REF => {
+                    // Spec `throw_ref`: rethrow the exception an exnref
+                    // refers to — same tag identity, same payload.
                     let val = self.pop();
-                    self.raise_exception_value(val)?;
+                    let (entity, payload) = Self::unpack_exnref(&val).ok_or_else(|| {
+                        VMError::new("throw_ref: operand is not an exnref")
+                    })?;
+                    self.raise_exception(entity, payload, 0)?;
                 }
                 _ if op == Op::RETHROW => {
+                    // Legacy EH rethrow — carries the exception object as a
+                    // value; re-raises through the vybe:exception tag.
                     let chunk_idx = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
                     let _depth = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip);
@@ -2918,26 +2961,43 @@ impl VM {
                     self.raise_exception_value_skipping(val, depth as usize)?;
                 }
                 _ if op == Op::TRY_TABLE => {
-                    // WASM EH Phase 4: [try_table, u8 handler_count, then for each: u8 tag, u16 offset]
-                    // Tag 0 = catch-all. Tag N = typed catch for exception_tags[N].
-                    // Handlers are pushed in reverse order so the most specific (first) handler
-                    // is on top of the stack and checked first during throw.
-                    let handler_count = self.read_byte() as usize;
-                    let mut handlers = Vec::new();
-                    for _ in 0..handler_count {
-                        let tag = self.read_byte();
+                    // Spec try_table. Internal fixed-width encoding:
+                    //   [try_table, u8 clause_count, per clause:
+                    //    u8 kind (0=catch 1=catch_ref 2=catch_all 3=catch_all_ref),
+                    //    u16 tag_idx (ignored for catch_all kinds),
+                    //    u16 offset (forward from the end of this clause)]
+                    // Matching is TAG IDENTITY only — clauses are tried in
+                    // order (pushed reversed so the first clause is on top).
+                    let clause_count = self.read_byte() as usize;
+                    let chunk_index = self.frame().chunk_index;
+                    self.try_group_counter += 1;
+                    let group = self.try_group_counter;
+                    let mut handlers = Vec::with_capacity(clause_count);
+                    for _ in 0..clause_count {
+                        let kind = self.read_byte();
+                        let tag_idx = self.read_u16();
                         let offset = self.read_u16();
                         let ip = self.frame().ip + offset as usize;
+                        let tag_entity = if kind == crate::vm::CATCH_KIND_CATCH
+                            || kind == crate::vm::CATCH_KIND_CATCH_REF
+                        {
+                            self.resolve_chunk_tag(chunk_index, tag_idx)?
+                        } else {
+                            0 // unused for catch_all kinds
+                        };
                         handlers.push(ExceptionHandler {
                             catch_ip: ip,
                             stack_depth: self.stack.len(),
                             frame_depth: self.frames.len(),
                             label_depth: self.label_stack.len(),
-                            _chunk_index: self.frame().chunk_index,
-                            tag,
+                            _chunk_index: chunk_index,
+                            kind,
+                            tag_entity,
+                            group,
                         });
                     }
-                    // Push in reverse so first handler is checked first (it's on top)
+                    // Push in reverse so the FIRST clause is on top (spec:
+                    // "catch clauses are tried in the order they appear").
                     for h in handlers.into_iter().rev() {
                         self.exception_handlers.push(h);
                     }

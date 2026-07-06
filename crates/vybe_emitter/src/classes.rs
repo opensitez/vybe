@@ -652,15 +652,14 @@ pub fn emit_store_constructor_with_upvalues(
     class_name: &str,
     ctor_chunk_idx: usize,
     local_slot: u16,
-    upvalues: &[(bool, u8)],
+    upvalues: &[(bool, u16)],
     case_sensitive: bool,
     line: u32,
 ) {
     chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
     chunk.emit(upvalues.len() as u8, line);
     for (is_local, index) in upvalues {
-        chunk.emit(if *is_local { 1 } else { 0 }, line);
-        chunk.emit(*index, line);
+        crate::functions::emit_closure_upvalue(chunk, *is_local, *index, line);
     }
     chunk.emit_op_u16(Op::LOCAL_TEE, local_slot, line);
     // Store under original name (case-sensitive lookup)

@@ -10,6 +10,22 @@ pub struct Import {
     pub name: String,
 }
 
+/// A spec EH tag declaration (exception-handling proposal tag section):
+/// `(tag $t (param ...))`. Identity is the DECLARATION — two entries are
+/// distinct tags even with equal names/arities. `debug_name` only feeds
+/// diagnostics and import/export naming; `arity` is the payload count of
+/// the tag's function-type signature (result type must be empty per spec).
+#[derive(Debug, Clone)]
+pub struct TagDecl {
+    pub debug_name: String,
+    pub arity: u8,
+    /// `true` for tag IMPORTS: per spec, imports resolve to an existing
+    /// tag entity by name at instantiation (same name ⇒ same entity —
+    /// this is how `vybe:exception` is shared across chunks/modules).
+    /// `false` for local declarations, which are always fresh entities.
+    pub imported: bool,
+}
+
 /// Property descriptor per ECMA-262 §6.2.4 — represented using WASM Annotations proposal.
 /// Format: (@ecma262 descriptor field_name writable enumerable configurable)
 /// Serialized as flags byte in custom section: bit 0=writable, bit 1=enumerable, bit 2=configurable
@@ -158,7 +174,14 @@ pub struct Chunk {
     /// Exception tag table — maps tag index to type name for typed exception handling.
     /// Tag 0 = catch-all (matches any exception).
     /// Tag N = matches exceptions whose type is `exception_tags[N]` or a subtype.
+    /// LEGACY: superseded by `tags` (spec EH tag section); removed once the
+    /// name-matching catch path is gone.
     pub exception_tags: Vec<String>,
+    /// Spec EH tag section (exception-handling proposal): each entry is a
+    /// FRESH tag entity — identity is the declaration, `debug_name` is
+    /// metadata only (import/export naming), never used for matching.
+    /// `arity` is the payload value count (the tag's signature params).
+    pub tags: Vec<TagDecl>,
     /// Type imports — types from other components this chunk needs.
     /// Each entry is (interface_name, type_name).
     pub type_imports: Vec<(String, String)>,
@@ -241,6 +264,7 @@ impl Chunk {
             imports: Vec::new(),
             types: Vec::new(),
             exception_tags: Vec::new(),
+            tags: Vec::new(),
             type_imports: Vec::new(),
             type_exports: Vec::new(),
             global_inits: Vec::new(),
@@ -278,8 +302,41 @@ impl Chunk {
         (self.imports.len() - 1) as u16
     }
 
+    /// Declare a spec EH tag (exception-handling proposal tag section) and
+    /// return its index. Every declaration is a FRESH entity — no
+    /// deduplication: per spec, tags are "created fresh" and identity is
+    /// the declaration itself, not the name. `debug_name` is metadata for
+    /// diagnostics and import/export naming only.
+    pub fn declare_exception_tag(&mut self, debug_name: impl Into<String>, arity: u8) -> u16 {
+        self.tags.push(TagDecl {
+            debug_name: debug_name.into(),
+            arity,
+            imported: false,
+        });
+        (self.tags.len() - 1) as u16
+    }
+
+    /// Import a tag by name (spec tag import): resolves to the SAME entity
+    /// as every other import of that name at load time. Deduplicated within
+    /// the chunk — importing the same name twice is the same tag either way.
+    pub fn import_exception_tag(&mut self, name: impl Into<String>, arity: u8) -> u16 {
+        let name = name.into();
+        for (i, t) in self.tags.iter().enumerate() {
+            if t.imported && t.debug_name == name {
+                return i as u16;
+            }
+        }
+        self.tags.push(TagDecl {
+            debug_name: name,
+            arity,
+            imported: true,
+        });
+        (self.tags.len() - 1) as u16
+    }
+
     /// Add an exception tag and return its index.
     /// Tag 0 = catch-all. Tag N = typed catch for exceptions matching `type_name`.
+    /// LEGACY name-matching table — see `declare_exception_tag`.
     pub fn add_exception_tag(&mut self, type_name: impl Into<String>) -> u8 {
         let name = type_name.into();
         // Deduplicate

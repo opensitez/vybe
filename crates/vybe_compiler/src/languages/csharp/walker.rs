@@ -4603,6 +4603,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::while_statement => walk_while(pair)?,
         Rule::do_while_statement => walk_do_while(pair)?,
         Rule::switch_statement => walk_switch(pair)?,
+        Rule::goto_statement => walk_goto(pair)?,
+        Rule::labeled_statement => walk_labeled(pair)?,
         Rule::return_statement => walk_return(pair)?,
         Rule::yield_statement => walk_yield_stmt(pair)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
@@ -9408,6 +9410,35 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
+fn walk_goto(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    // goto_target = { ("case" ~ expression) | "default" | ident_name }.
+    // Prefer the `ident_name` child (`goto label`); fall back to raw text for
+    // `goto case N` / `goto default` (switch jumps).
+    let mut label = String::new();
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::goto_target {
+            label = p.as_str().trim().to_string();
+            for inner in p.into_inner() {
+                if inner.as_rule() == Rule::ident_name {
+                    label = inner.as_str().to_string();
+                }
+            }
+        }
+    }
+    Ok(StmtKind::GoTo(label))
+}
+
+fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    // labeled_statement = { ident_name ~ ":" } — a standalone label marker that
+    // the shared relooper (`lower_c_gotos`) splits the body on.
+    let label = pair
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::ident_name)
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    Ok(StmtKind::Label(label))
+}
+
 fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond = walk_expression(inner.next().ok_or("while: no cond")?)?;
@@ -13259,7 +13290,13 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn walk_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
-    pair.into_inner().map(walk_statement).collect()
+    let body: Vec<Statement> = pair
+        .into_inner()
+        .map(walk_statement)
+        .collect::<Result<_, _>>()?;
+    // Lower `goto`/labels to structured control flow via the shared relooper
+    // (C `goto` uses the identical pass). No-op when the body has no labels.
+    Ok(crate::languages::c::walker::lower_c_gotos(body))
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {

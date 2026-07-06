@@ -307,10 +307,10 @@ impl Compiler {
                 .get(parent_scope_idx)?
                 .locals
                 .iter()
-                .find(|local| local.slot == upvalue.index as u16)
+                .find(|local| local.slot == upvalue.index)
                 .map(|local| local.name.clone())
         } else {
-            self.captured_name_for_upvalue(parent_scope_idx, upvalue.index)
+            self.captured_name_for_upvalue(parent_scope_idx, upvalue.index as u8)
         }
     }
 
@@ -332,14 +332,22 @@ impl Compiler {
                 .resolve(capture_name)
                 .or_else(|| self.scope().resolve_ci(capture_name))
             {
-                self.chunks[self.current].emit(1, line);
-                self.chunks[self.current].emit(slot as u8, line);
+                common::functions::emit_closure_upvalue(
+                    &mut self.chunks[self.current],
+                    true,
+                    slot,
+                    line,
+                );
                 continue;
             }
             if self.scopes.len() > 1 {
                 if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, capture_name) {
-                    self.chunks[self.current].emit(0, line);
-                    self.chunks[self.current].emit(uv, line);
+                    common::functions::emit_closure_upvalue(
+                        &mut self.chunks[self.current],
+                        false,
+                        uv as u16,
+                        line,
+                    );
                     continue;
                 }
             }
@@ -1005,8 +1013,12 @@ impl Compiler {
         } else if let Some(shared_slot) = parent_shared_env_slot {
             // Parent has a shared env — pass it directly as the upvalue.
             common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, 1, line);
-            self.chunks[self.current].emit(1, line);
-            self.chunks[self.current].emit(shared_slot as u8, line);
+            common::functions::emit_closure_upvalue(
+                &mut self.chunks[self.current],
+                true,
+                shared_slot,
+                line,
+            );
         } else {
             let mut env_slots: Vec<u16> = Vec::new();
             for (i, uv) in uvs.iter().enumerate() {
@@ -1033,8 +1045,12 @@ impl Compiler {
             let env_slot = self.define_local(&format!("__closure_env_{}", func_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
             common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, 1, line);
-            self.chunks[self.current].emit(1, line);
-            self.chunks[self.current].emit(env_slot as u8, line);
+            common::functions::emit_closure_upvalue(
+                &mut self.chunks[self.current],
+                true,
+                env_slot,
+                line,
+            );
         }
         if uses_js_arguments {
             self.emit_stamp_rest_metadata_on_stack(0);
@@ -2072,8 +2088,12 @@ impl Compiler {
                     line,
                 );
                 for uv in helper_upvalues {
-                    cc.chunks[cc.current].emit(if uv.is_local { 1 } else { 0 }, line);
-                    cc.chunks[cc.current].emit(uv.index, line);
+                    common::functions::emit_closure_upvalue(
+                        &mut cc.chunks[cc.current],
+                        uv.is_local,
+                        uv.index,
+                        line,
+                    );
                 }
             };
 
@@ -2858,7 +2878,7 @@ impl Compiler {
         self.current = saved_cur;
 
         let ctor_local = self.define_local(&format!("__{}_ctor", name));
-        let uv_pairs: Vec<(bool, u8)> = ctor_upvalues
+        let uv_pairs: Vec<(bool, u16)> = ctor_upvalues
             .iter()
             .map(|uv| (uv.is_local, uv.index))
             .collect();

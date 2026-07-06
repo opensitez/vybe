@@ -134,8 +134,11 @@ fn make_stack_overflow_error() -> Value {
 }
 
 impl VM {
+    /// Legacy raise — every value-shaped throw (host `throw_value`, RETHROW,
+    /// VM-internal errors) is a `throw` of the host `vybe:exception` tag
+    /// (entity 0) with the value as its 1-ary payload.
     pub(crate) fn raise_exception_value(&mut self, val: Value) -> Result<(), VMError> {
-        self.raise_exception_value_skipping(val, 0)
+        self.raise_exception(0, vec![val], 0)
     }
 
     pub(crate) fn raise_exception_value_skipping(
@@ -143,30 +146,51 @@ impl VM {
         val: Value,
         skip_handlers: usize,
     ) -> Result<(), VMError> {
+        self.raise_exception(0, vec![val], skip_handlers)
+    }
+
+    /// Spec EH throw: find the innermost matching catch clause by TAG
+    /// IDENTITY (exception-handling proposal — "catch clauses use a tag to
+    /// identify the thrown exception"; the payload is NEVER inspected),
+    /// unwind to it, and deliver per the clause kind:
+    ///   catch          → payload values
+    ///   catch_ref      → payload values, exnref
+    ///   catch_all      → nothing
+    ///   catch_all_ref  → exnref
+    /// No clause anywhere → the exception escapes as a runtime error.
+    pub(crate) fn raise_exception(
+        &mut self,
+        tag_entity: usize,
+        payload: Vec<Value>,
+        skip_handlers: usize,
+    ) -> Result<(), VMError> {
+        use crate::vm::{
+            CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL, CATCH_KIND_CATCH_ALL_REF, CATCH_KIND_CATCH_REF,
+        };
         let mut matched_idx = None;
         let search_len = self.exception_handlers.len().saturating_sub(skip_handlers);
         for i in (0..search_len).rev() {
             let handler = &self.exception_handlers[i];
-            if handler.tag == 0 {
+            let matches = match handler.kind {
+                CATCH_KIND_CATCH_ALL | CATCH_KIND_CATCH_ALL_REF => true,
+                CATCH_KIND_CATCH | CATCH_KIND_CATCH_REF => handler.tag_entity == tag_entity,
+                _ => false,
+            };
+            if matches {
                 matched_idx = Some(i);
                 break;
             }
-            let tag_idx = handler.tag as usize;
-            let tag_name = self
-                .chunks
-                .get(handler._chunk_index)
-                .and_then(|c| c.exception_tags.get(tag_idx))
-                .cloned()
-                .unwrap_or_default();
-            if !tag_name.is_empty() {
-                let matches = self.test_type(&val, &tag_name.to_lowercase())
-                    || self.exception_value_matches(&val, &tag_name);
-                if matches {
-                    matched_idx = Some(i);
-                    break;
-                }
-            }
         }
+
+        // The user-facing escape value: for the language exception tag the
+        // payload IS the exception object; foreign tags surface as exnref.
+        let escape_value = |payload: &[Value], entity: usize| -> Value {
+            if entity == 0 {
+                payload.first().cloned().unwrap_or(Value::Null)
+            } else {
+                Self::pack_exnref(entity, payload.to_vec())
+            }
+        };
 
         if let Some(idx) = matched_idx {
             let handler = self.exception_handlers[idx].clone();
@@ -178,12 +202,20 @@ impl VM {
             // outer loop's host-call site, which CAN unwind cleanly.
             if let Some(&floor) = self.exec_floors.last() {
                 if handler.frame_depth < floor {
+                    let val = escape_value(&payload, tag_entity);
                     self.last_exception = Some(val.clone());
                     let stack = self.capture_call_stack();
                     return Err(VMError::new(format!("{}", val)).with_stack(stack));
                 }
             }
-            self.exception_handlers.truncate(idx);
+            // Remove the matched clause AND its sibling clauses (same
+            // try_table group), plus everything nested above them.
+            let group = handler.group;
+            let mut group_start = idx;
+            while group_start > 0 && self.exception_handlers[group_start - 1].group == group {
+                group_start -= 1;
+            }
+            self.exception_handlers.truncate(group_start);
             while self.frames.len() > handler.frame_depth {
                 let base = self.frames.last().unwrap().base;
                 self.close_upvalues(base);
@@ -195,7 +227,25 @@ impl VM {
             // handler's frame (e.g. a loop re-entering this try) mis-target.
             self.label_stack.truncate(handler.label_depth);
             self.stack.truncate(handler.stack_depth);
-            self.push(val)?;
+            match handler.kind {
+                CATCH_KIND_CATCH => {
+                    for v in payload {
+                        self.push(v)?;
+                    }
+                }
+                CATCH_KIND_CATCH_REF => {
+                    let exn = Self::pack_exnref(tag_entity, payload.clone());
+                    for v in payload {
+                        self.push(v)?;
+                    }
+                    self.push(exn)?;
+                }
+                CATCH_KIND_CATCH_ALL => {} // spec: no values pushed
+                CATCH_KIND_CATCH_ALL_REF => {
+                    self.push(Self::pack_exnref(tag_entity, payload))?;
+                }
+                _ => {}
+            }
             let f = self.frame_mut();
             f.ip = handler.catch_ip;
             Ok(())
@@ -212,12 +262,57 @@ impl VM {
                 }
             }
             self.resume_fiber_with(ac.caller_fiber, None)?;
-            self.raise_exception_value(val)
+            self.raise_exception(tag_entity, payload, 0)
         } else {
+            let val = escape_value(&payload, tag_entity);
             self.last_exception = Some(val.clone());
             let stack = self.capture_call_stack();
-            Err(VMError::new(format!("{}", val)).with_stack(stack))
+            let msg = if tag_entity == 0 {
+                format!("{}", val)
+            } else {
+                let tag_name = self
+                    .tag_entities
+                    .get(tag_entity)
+                    .map(|t| t.debug_name.as_str())
+                    .unwrap_or("?");
+                format!("uncaught exception (tag {tag_entity} '{tag_name}')")
+            };
+            Err(VMError::new(msg).with_stack(stack))
         }
+    }
+
+    /// Internal exnref representation: an opaque object carrying the tag
+    /// entity + payload so `throw_ref` can rethrow the EXACT exception.
+    /// (Spec exnref is an opaque reference type; its internal shape is
+    /// engine-private, like our fixed-width operand encoding.)
+    pub(crate) fn pack_exnref(tag_entity: usize, payload: Vec<Value>) -> Value {
+        let mut obj = crate::value::Object::new();
+        obj.properties
+            .insert("__exnref_tag".into(), Value::I32(tag_entity as i32));
+        obj.properties.insert(
+            "__exnref_payload".into(),
+            Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
+                crate::value::Object::new_array(payload),
+            ))),
+        );
+        Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)))
+    }
+
+    /// Reverse of `pack_exnref`. `None` when the value is not an exnref.
+    pub(crate) fn unpack_exnref(val: &Value) -> Option<(usize, Vec<Value>)> {
+        let Value::Object(obj) = val else { return None };
+        let o = obj.lock().unwrap();
+        let Some(Value::I32(tag)) = o.properties.get("__exnref_tag") else {
+            return None;
+        };
+        let Some(Value::Object(arr)) = o.properties.get("__exnref_payload") else {
+            return None;
+        };
+        let a = arr.lock().unwrap();
+        let ObjectKind::Array(items) = &a.kind else {
+            return None;
+        };
+        Some((*tag as usize, items.clone()))
     }
 
     #[allow(dead_code)]

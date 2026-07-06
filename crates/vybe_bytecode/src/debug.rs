@@ -134,10 +134,11 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             )
         }
         OperandFormat::Closure => {
-            // ref_func: u16 func_index, u8 upvalue_count, then pairs
+            // ref_func: u16 func_index, u8 upvalue_count, then
+            // (u8 is_local + u16 index) descriptors
             let func_idx = chunk.read_u16(operand_start);
             let uv_count = chunk.code.get(operand_start + 2).copied().unwrap_or(0) as usize;
-            let total = 3 + uv_count * 2;
+            let total = 3 + uv_count * 3;
             (
                 format!("Closure func={} upvalues={}", func_idx, uv_count),
                 operand_start + total,
@@ -157,11 +158,25 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             )
         }
         OperandFormat::TryTable => {
-            // try_table: u8 count, then count × (u8 tag + u16 offset)
+            // try_table: u8 count, then count × (u8 kind + u16 tag + u16 offset)
             let count = chunk.code.get(operand_start).copied().unwrap_or(0) as usize;
-            let total = 1 + count * 3;
+            let total = 1 + count * 5;
+            let mut clauses = Vec::with_capacity(count);
+            for i in 0..count {
+                let base = operand_start + 1 + i * 5;
+                let kind = chunk.code.get(base).copied().unwrap_or(0);
+                let tag = chunk.read_u16(base + 1);
+                let name = match kind {
+                    0 => format!("catch tag={tag}"),
+                    1 => format!("catch_ref tag={tag}"),
+                    2 => "catch_all".to_string(),
+                    3 => "catch_all_ref".to_string(),
+                    k => format!("kind{k}?"),
+                };
+                clauses.push(name);
+            }
             (
-                format!("try_table handlers={}", count),
+                format!("try_table [{}]", clauses.join(", ")),
                 operand_start + total,
             )
         }

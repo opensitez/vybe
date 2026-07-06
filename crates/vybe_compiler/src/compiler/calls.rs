@@ -2362,6 +2362,67 @@ impl Compiler {
             return Ok(());
         }
 
+        // PHP fully-qualified function call `\App\f()` — user namespaces are
+        // flattened to the last segment, so `App\f` resolves to the function
+        // `f`. Only when the leading segment isn't a host-package namespace
+        // root (those keep their full path for Component-Model dispatch) and
+        // the last segment is a known function.
+        if self.is_php_profile() {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name.contains('\\') {
+                    let last = name.rsplit('\\').next().unwrap_or(name);
+                    let first = name.split('\\').next().unwrap_or("");
+                    if !first.is_empty()
+                        && !self.profile.is_namespace_root(&first.to_lowercase())
+                        && self.defined_functions.contains(&self.canon(last))
+                    {
+                        let new_callee = Expression::with_span(
+                            ExprKind::Ident(last.to_string()),
+                            callee.span.clone(),
+                        );
+                        return self.compile_call(&new_callee, args);
+                    }
+                }
+            }
+        }
+
+        // PHP `$cls::method(...)` — `$cls` is a variable holding a class-name
+        // string (a `$`-prefixed Ident). Resolve it to the class object at
+        // runtime (static members live there) and dispatch, mirroring `new $c`.
+        // The static-call machinery below assumes a compile-time class name.
+        if self.is_php_profile() {
+            if let ExprKind::StaticAccess { class, member } = &callee.kind {
+                if let (ExprKind::Ident(cname), ExprKind::Ident(method)) =
+                    (&class.kind, &member.kind)
+                {
+                    // `$cls::method()` — variable class, literal method. (A
+                    // dynamic *method* name `$cls::$m()` needs dynamic member
+                    // access on the class object, which is a separate broken
+                    // path — even `$o->$prop` reads empty — so it is not handled
+                    // here.)
+                    if cname.starts_with('$') && !method.starts_with('$') {
+                        self.compile_expr(class)?;
+                        let cls_slot = self.define_local("__php_dyn_static_cls");
+                        self.emit_u16(Op::LOCAL_SET, cls_slot);
+                        self.emit_php_dynamic_class_name_resolution(cls_slot, None);
+                        // [class] → struct_get method → [fn]. Methods compile
+                        // with `$this` in slot 0, so push the class object as the
+                        // implicit receiver before the args.
+                        self.emit_u16(Op::LOCAL_GET, cls_slot);
+                        let m = self.canon(method);
+                        let midx = self.str_const(&m);
+                        self.emit_u16(Op::STRUCT_GET, midx);
+                        self.emit_u16(Op::LOCAL_GET, cls_slot);
+                        for a in args {
+                            self.compile_expr(&a.value)?;
+                        }
+                        self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         if self.profile.supports_dynamic_import {
             if let ExprKind::Ident(name) = &callee.kind {
                 if name == "__js_dynamic_import" {
@@ -6033,7 +6094,10 @@ impl Compiler {
                     } else {
                         self.compile_expr(&arg_exprs[0])?;
                     }
-                    self.emit(Op::THROW);
+                    {
+                        let line = self.line;
+                        crate::emitter::errors::emit_throw(self.chunk(), line);
+                    }
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
 
@@ -10677,7 +10741,7 @@ impl Compiler {
             for (i, uv) in uvs.iter().enumerate() {
                 if let Some(name) = uv_names[i].clone() {
                     let slot = if uv.is_local {
-                        uv.index as u16
+                        uv.index
                     } else {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
@@ -10698,8 +10762,12 @@ impl Compiler {
             let env_slot = self.define_local(&format!("__closure_env_factory_{}", factory_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
             common::functions::emit_ref_func(&mut self.chunks[self.current], factory_idx, 1, line);
-            self.chunks[self.current].emit(1, line);
-            self.chunks[self.current].emit(env_slot as u8, line);
+            common::functions::emit_closure_upvalue(
+                &mut self.chunks[self.current],
+                true,
+                env_slot,
+                line,
+            );
         }
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
@@ -11014,8 +11082,12 @@ impl Compiler {
             // The inner function's closure_env_names was pre-seeded from
             // parent_shared_env_names, so indices match.
             common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 1, line);
-            self.chunks[self.current].emit(1, line); // is_local = true
-            self.chunks[self.current].emit(shared_slot as u8, line);
+            common::functions::emit_closure_upvalue(
+                &mut self.chunks[self.current],
+                true,
+                shared_slot,
+                line,
+            );
         } else {
             // No shared env — build a per-closure env (original path).
             let mut env_slots: Vec<u16> = Vec::new();
@@ -11025,7 +11097,7 @@ impl Compiler {
                     let slot = if uv.is_local {
                         let by_value = parent_locals
                             .iter()
-                            .find(|l| l.slot == uv.index as u16)
+                            .find(|l| l.slot == uv.index)
                             .map(|l| {
                                 self.capture_by_value_vars
                                     .iter()
@@ -11033,13 +11105,13 @@ impl Compiler {
                             })
                             .unwrap_or(false);
                         if by_value {
-                            let orig_slot = uv.index as u16;
+                            let orig_slot = uv.index;
                             self.emit_u16(Op::LOCAL_GET, orig_slot);
                             let snap = self.define_local(&format!("__snap_{}_{}", name, ci));
                             self.emit_u16(Op::LOCAL_SET, snap);
                             snap
                         } else {
-                            uv.index as u16
+                            uv.index
                         }
                     } else {
                         let parent_env = self.closure_env_slot();
@@ -11062,8 +11134,12 @@ impl Compiler {
             let env_slot = self.define_local(&format!("__closure_env_{}", ci));
             self.emit_u16(Op::LOCAL_SET, env_slot);
             common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 1, line);
-            self.chunks[self.current].emit(1, line); // is_local = true
-            self.chunks[self.current].emit(env_slot as u8, line);
+            common::functions::emit_closure_upvalue(
+                &mut self.chunks[self.current],
+                true,
+                env_slot,
+                line,
+            );
         }
         if self.profile.has_function_prototype_bind {
             let length = params

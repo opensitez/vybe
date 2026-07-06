@@ -251,7 +251,7 @@ opcode_category! {
     [0x03] r#loop => U8, "loop";
     [0x04] if_blk => U8, "if";
     [0x05] else_blk => None, "else";
-    [0x08] throw => None, "throw";
+    [0x08] throw => U16, "throw";
     [0x09] rethrow => U32Leb, "rethrow";
     [0x0A] throw_ref => None, "throw_ref";
     [0x0B] end => None, "end";

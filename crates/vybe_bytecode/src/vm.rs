@@ -449,7 +449,24 @@ pub enum ResumeMode {
     Iterator,
 }
 
-/// Exception handler entry — pushed by try_start, popped by try_end or catch.
+/// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
+pub(crate) const CATCH_KIND_CATCH: u8 = 0;
+pub(crate) const CATCH_KIND_CATCH_REF: u8 = 1;
+pub(crate) const CATCH_KIND_CATCH_ALL: u8 = 2;
+pub(crate) const CATCH_KIND_CATCH_ALL_REF: u8 = 3;
+
+/// A resolved tag ENTITY — spec EH tag identity. Entity 0 is always the
+/// host-provided `vybe:exception` tag (arity 1: the exception object),
+/// which every legacy `raise_exception_value` throw uses; chunk-local
+/// declarations create fresh entities at load, imports resolve by name.
+#[derive(Debug, Clone)]
+pub(crate) struct TagEntity {
+    pub(crate) debug_name: String,
+    pub(crate) arity: u8,
+}
+
+/// Exception handler entry — pushed per catch clause by `try_table`,
+/// popped (as a group) by TRY_END or on catch.
 #[derive(Debug, Clone)]
 pub(crate) struct ExceptionHandler {
     /// Instruction pointer to jump to on catch.
@@ -466,9 +483,15 @@ pub(crate) struct ExceptionHandler {
     /// stale label entry that corrupts `br` depths on subsequent execution
     /// (e.g. a try/catch re-entered each loop iteration).
     pub(crate) label_depth: usize,
-    /// Exception tag index (0 = catch-all, N = typed catch for tag N).
-    /// References chunk.exception_tags[tag] for the type name.
-    pub(crate) tag: u8,
+    /// Clause kind: CATCH_KIND_* (catch / catch_ref / catch_all / catch_all_ref).
+    pub(crate) kind: u8,
+    /// Resolved tag ENTITY id — matching is `thrown_entity == tag_entity`,
+    /// nothing else (spec: tag identity; the payload is never inspected).
+    /// Unused for the catch_all kinds.
+    pub(crate) tag_entity: usize,
+    /// All clauses of one `try_table` share a group id, so a catch or
+    /// TRY_END removes the whole table's clauses together.
+    pub(crate) group: u64,
 }
 
 /// A language-agnostic bytecode virtual machine.
@@ -503,6 +526,18 @@ pub struct VM {
     pub(crate) import_table: Vec<ImportTarget>,
     /// Exception handler stack (WASM exception proposal).
     pub(crate) exception_handlers: Vec<ExceptionHandler>,
+    /// Resolved tag ENTITIES (spec EH): identity is the index. Entity 0 is
+    /// the host-provided `vybe:exception` tag every legacy raise uses.
+    pub(crate) tag_entities: Vec<TagEntity>,
+    /// Per-chunk resolution: chunk tag index → entity id. Built at load:
+    /// imports resolve by name to a shared entity, local declarations are
+    /// fresh ("created fresh each time" — spec tag section).
+    pub(crate) chunk_tag_maps: Vec<Vec<usize>>,
+    /// Monotonic group id for try_table clause groups.
+    pub(crate) try_group_counter: u64,
+    /// Name → entity for IMPORTED tags only (spec: imports resolve by
+    /// name; local declarations never enter this registry).
+    pub(crate) imported_tag_registry: HashMap<String, usize>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
     /// WASM GC-style type definitions with vtable method dispatch.
@@ -728,6 +763,13 @@ impl VM {
             modules: HashMap::new(),
             import_table: Vec::<ImportTarget>::new(),
             exception_handlers: Vec::new(),
+            tag_entities: vec![TagEntity {
+                debug_name: "vybe:exception".into(),
+                arity: 1,
+            }],
+            chunk_tag_maps: Vec::new(),
+            try_group_counter: 0,
+            imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
             memory: SharedMemory::default(),
@@ -1581,7 +1623,7 @@ impl VM {
                             ip += 4 + 2 + 1; // 4 opcode + 2 func_idx + 1 uv_count
                             if ip - 1 < code.len() {
                                 let uv_count = code[ip - 1] as usize;
-                                ip += uv_count * 2;
+                                ip += uv_count * 3; // u8 is_local + u16 index
                             }
                             continue;
                         }
@@ -1705,7 +1747,7 @@ impl VM {
                             ip += 4 + 1;
                             if ip - 1 < code.len() {
                                 let uv_count = code[ip - 1] as usize;
-                                ip += uv_count * 2;
+                                ip += uv_count * 3; // u8 is_local + u16 index
                             }
                             continue;
                         }
@@ -2084,6 +2126,62 @@ impl VM {
     pub(crate) fn get_constant(&self, index: u16) -> Value {
         let f = self.frame();
         self.chunks[f.chunk_index].constants[index as usize].clone()
+    }
+
+    /// Resolve a chunk-level tag index to its tag ENTITY (spec EH identity).
+    /// Maps are built lazily so every chunk-installation path is covered.
+    pub(crate) fn resolve_chunk_tag(
+        &mut self,
+        chunk_index: usize,
+        tag_idx: u16,
+    ) -> Result<usize, VMError> {
+        if self.chunk_tag_maps.len() < self.chunks.len() {
+            self.resolve_chunk_tags();
+        }
+        self.chunk_tag_maps
+            .get(chunk_index)
+            .and_then(|m| m.get(tag_idx as usize))
+            .copied()
+            .ok_or_else(|| {
+                VMError::new(format!(
+                    "unknown exception tag index {tag_idx} in chunk {chunk_index}"
+                ))
+            })
+    }
+
+    /// Build tag→entity maps for chunks that don't have one yet (spec EH
+    /// instantiation): LOCAL declarations mint fresh entities — "created
+    /// fresh each time" — while IMPORTS resolve by name to a shared entity
+    /// (entity 0 is the host-provided `vybe:exception` tag).
+    pub(crate) fn resolve_chunk_tags(&mut self) {
+        while self.chunk_tag_maps.len() < self.chunks.len() {
+            let ci = self.chunk_tag_maps.len();
+            let decls = self.chunks[ci].tags.clone();
+            let mut map = Vec::with_capacity(decls.len());
+            for decl in decls {
+                let entity = if decl.imported {
+                    if let Some(&id) = self.imported_tag_registry.get(&decl.debug_name) {
+                        id
+                    } else {
+                        self.tag_entities.push(TagEntity {
+                            debug_name: decl.debug_name.clone(),
+                            arity: decl.arity,
+                        });
+                        let id = self.tag_entities.len() - 1;
+                        self.imported_tag_registry.insert(decl.debug_name, id);
+                        id
+                    }
+                } else {
+                    self.tag_entities.push(TagEntity {
+                        debug_name: decl.debug_name,
+                        arity: decl.arity,
+                    });
+                    self.tag_entities.len() - 1
+                };
+                map.push(entity);
+            }
+            self.chunk_tag_maps.push(map);
+        }
     }
 
     pub(crate) fn resolve_chunk_import(

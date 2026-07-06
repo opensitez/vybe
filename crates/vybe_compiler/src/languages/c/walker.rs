@@ -10446,7 +10446,7 @@ impl Walker {
     }
 }
 
-fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
+pub(crate) fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
     let mut label_to_block: HashMap<String, i64> = HashMap::new();
     let mut blocks: Vec<Vec<Statement>> = vec![Vec::new()];
 

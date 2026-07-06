@@ -399,53 +399,5 @@ impl VM {
         }
     }
 
-    /// Check if an exception value matches a tag name.
-    /// Works for: string exceptions (by content), objects with __type or __exception_type,
-    /// and cross-language name matching (e.g., "ValueError", "TypeError").
-    pub(crate) fn exception_value_matches(&self, val: &Value, tag_name: &str) -> bool {
-        let tag_lower = tag_name.to_lowercase();
-        match val {
-            Value::String(s) => {
-                // String exceptions: match if the string contains the tag name
-                // e.g., throw "ValueError: invalid input" matches tag "ValueError"
-                let s_lower = s.to_lowercase();
-                s_lower.starts_with(&tag_lower) || s_lower.contains(&tag_lower)
-            }
-            Value::Object(o) => {
-                let ob = o.lock().unwrap();
-                // Check __exception_type property (set by language-specific throw)
-                if let Some(et) = ob.properties.get("__exception_type") {
-                    let et_str = format!("{}", et).to_lowercase();
-                    if et_str == tag_lower {
-                        return true;
-                    }
-                }
-                // Check __type property
-                if let Some(t) = ob.properties.get("__type") {
-                    let t_str = format!("{}", t).to_lowercase();
-                    if t_str == tag_lower {
-                        return true;
-                    }
-                }
-                // Check "name" property (JS Error convention)
-                if let Some(n) = ob.properties.get("name") {
-                    let n_str = format!("{}", n).to_lowercase();
-                    if n_str == tag_lower {
-                        return true;
-                    }
-                }
-                // Check "message" property as fallback
-                if let Some(m) = ob.properties.get("message") {
-                    let m_str = format!("{}", m).to_lowercase();
-                    if m_str.starts_with(&tag_lower) {
-                        return true;
-                    }
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-
     // -- Execute --
 }

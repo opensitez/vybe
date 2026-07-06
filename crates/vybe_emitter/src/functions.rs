@@ -91,6 +91,18 @@ pub fn emit_ref_func(chunk: &mut Chunk, func_chunk_idx: usize, upvalue_count: u8
     chunk.emit(upvalue_count, line);
 }
 
+/// One closure upvalue descriptor following `emit_ref_func`:
+/// `is_local` flag byte + u16 index (big-endian, like every other u16
+/// operand). For `is_local` the index is the PARENT LOCAL SLOT (u16 to
+/// match `Local.slot` — a u8 here once truncated slot 1321 to 41 and
+/// silently captured garbage); otherwise it is the parent's upvalue
+/// list position.
+pub fn emit_closure_upvalue(chunk: &mut Chunk, is_local: bool, index: u16, line: u32) {
+    chunk.emit(if is_local { 1 } else { 0 }, line);
+    chunk.emit((index >> 8) as u8, line);
+    chunk.emit((index & 0xff) as u8, line);
+}
+
 /// Store a function as a global variable.
 /// Caller must have closure_ref on stack (from emit_ref_func).
 /// Stack before: [closure_ref]  Stack after: []

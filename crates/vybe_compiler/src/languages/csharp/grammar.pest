@@ -247,7 +247,9 @@ interface_operator_declaration = {
 // ── Enum ────────────────────────────────────────────────────────────────────
 
 enum_declaration = {
-    class_modifiers ~ "enum" ~ ident_name ~ ("{" ~ enum_member_list? ~ ","? ~ "}")
+    // Optional underlying type: `enum E : byte { ... }`. The values are still
+    // plain integers at runtime, so the walker ignores the base type.
+    class_modifiers ~ "enum" ~ ident_name ~ (":" ~ type_name)? ~ ("{" ~ enum_member_list? ~ ","? ~ "}")
 }
 
 enum_member_list = { enum_member ~ ("," ~ enum_member)* }
@@ -276,6 +278,11 @@ statement = _{
     empty_statement
     | block_statement
     | checked_statement
+    // `label:` prefix — lowered to `StmtKind::Labeled`, the same structured
+    // control-flow path C `goto`/labels use. Before the declaration/expression
+    // arms so the `ident :` prefix is recognized as a label.
+    | labeled_statement
+    | goto_statement
     // `var (a, b) = f();` — tuple deconstruction declaration. Listed
     // before `local_var_declaration` so the `(` token is committed to
     // the deconstruction parse before the general `var name = expr;`
@@ -382,6 +389,17 @@ foreach_statement = {
     foreach_await_marker? ~ "foreach" ~ "(" ~ (var_kw | type_name) ~ foreach_target ~ in_kw ~ expression ~ ")" ~ statement
 }
 foreach_await_marker = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// `goto label;`, `goto case <expr>;`, `goto default;`. The walker lowers the
+// label form via the relooper (structured control flow); `goto case`/`default`
+// are switch-scoped jumps.
+goto_kw = @{ "goto" ~ !(ASCII_ALPHANUMERIC | "_") }
+goto_statement = { goto_kw ~ goto_target ~ ";" }
+goto_target = { ("case" ~ expression) | "default" | ident_name }
+// `label:` — a standalone label (goto target). Kept separate from the
+// following statement so the relooper sees a flat `StmtKind::Label` marker,
+// matching C's `lower_c_gotos` block-splitting.
+labeled_statement = { ident_name ~ ":" ~ !":" }
 
 foreach_target = { foreach_tuple_target | ident_name }
 foreach_tuple_target = { "(" ~ ident_name ~ ("," ~ ident_name)+ ~ ","? ~ ")" }

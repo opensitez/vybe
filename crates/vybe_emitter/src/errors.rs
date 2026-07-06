@@ -107,13 +107,34 @@ pub fn canonical_exception_name(name: &str) -> &str {
     }
 }
 
+/// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
+pub const CATCH_KIND_CATCH: u8 = 0;
+pub const CATCH_KIND_CATCH_REF: u8 = 1;
+pub const CATCH_KIND_CATCH_ALL: u8 = 2;
+pub const CATCH_KIND_CATCH_ALL_REF: u8 = 3;
+
+/// The shared language-exception tag (single-tag design, like every wasm
+/// toolchain): payload arity 1 — the exception object. Imported by name so
+/// all chunks/modules resolve to the SAME tag entity.
+pub const EXCEPTION_TAG_NAME: &str = "vybe:exception";
+
+/// Import the language-exception tag on `chunk` and return its tag index.
+pub fn exception_tag(chunk: &mut Chunk) -> u16 {
+    chunk.import_exception_tag(EXCEPTION_TAG_NAME, 1)
+}
+
 /// Emit the start of a try block. Returns the offset_pos to patch later.
-/// Layout: [try_table, u8 handler_count=1, u8 tag=0, u16 catch_offset]
+/// Spec `try_table` with one `catch $vybe:exception` clause — the handler
+/// receives the exception object (the tag's payload). Internal fixed-width
+/// layout: [try_table, u8 clause_count=1, u8 kind, u16 tag, u16 offset].
 /// Stack: unchanged
 pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
-    chunk.emit_op(Op::TRY_TABLE, line); // real WASM Phase 4 EH opcode
-    chunk.emit(1u8, line); // handler_count = 1
-    chunk.emit(0u8, line); // tag = 0 (catch-all)
+    let tag = exception_tag(chunk);
+    chunk.emit_op(Op::TRY_TABLE, line);
+    chunk.emit(1u8, line); // clause_count = 1
+    chunk.emit(CATCH_KIND_CATCH, line); // catch (payload delivered)
+    chunk.emit((tag >> 8) as u8, line);
+    chunk.emit((tag & 0xff) as u8, line);
     let offset_pos = chunk.current_offset();
     chunk.emit(0u8, line); // catch offset hi (placeholder)
     chunk.emit(0u8, line); // catch offset lo (placeholder)
@@ -140,9 +161,14 @@ pub fn patch_catch(chunk: &mut Chunk, offset_pos: usize) {
 }
 
 /// Emit a throw — takes the exception value from TOS.
+/// Spec `throw <tagidx>`: the tag immediate selects the language-exception
+/// tag; the object on the stack is its 1-ary payload.
 /// Stack before: [exception_value]  Stack after: diverges
 pub fn emit_throw(chunk: &mut Chunk, line: u32) {
+    let tag = exception_tag(chunk);
     chunk.emit_op(Op::THROW, line);
+    chunk.emit((tag >> 8) as u8, line);
+    chunk.emit((tag & 0xff) as u8, line);
 }
 
 /// Returns true if `name` (case-insensitive) is one of the known

@@ -17,7 +17,10 @@ pub struct Local {
 
 #[derive(Debug, Clone)]
 pub struct UpvalueDesc {
-    pub index: u8,
+    /// For `is_local`: the parent frame's LOCAL SLOT (u16 to match
+    /// `Local.slot` — chunks routinely exceed 255 locals). Otherwise:
+    /// the parent's upvalue-list position.
+    pub index: u16,
     pub is_local: bool,
 }
 
@@ -162,7 +165,7 @@ impl Scope {
         self.depth -= 1;
     }
 
-    pub fn add_upvalue(&mut self, index: u8, is_local: bool) -> u8 {
+    pub fn add_upvalue(&mut self, index: u16, is_local: bool) -> u8 {
         for (i, uv) in self.upvalues.iter().enumerate() {
             if uv.index == index && uv.is_local == is_local {
                 return i as u8;

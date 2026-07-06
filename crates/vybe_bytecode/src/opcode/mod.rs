@@ -219,14 +219,16 @@ impl OperandFormat {
             Self::Closure => {
                 let uv_count_pos = operand_start + 2;
                 let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
-                2 + 1 + uv_count * 2
+                // u16 func_idx + u8 count + per-upvalue (u8 is_local + u16 index)
+                2 + 1 + uv_count * 3
             }
             Self::SlI32 => leb_i32_size(code, operand_start),
             Self::SlI64 => leb_i64_size(code, operand_start),
             Self::BrTable => br_table_size(code, operand_start),
             Self::TryTable => {
+                // u8 clause_count + per clause (u8 kind + u16 tag + u16 offset)
                 let count = code.get(operand_start).copied().unwrap_or(0) as usize;
-                1 + count * 3
+                1 + count * 5
             }
             fmt => fmt.fixed_size(),
         }

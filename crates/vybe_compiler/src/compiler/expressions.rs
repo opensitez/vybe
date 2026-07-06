@@ -28,7 +28,7 @@ impl Compiler {
 
     /// Like [`Self::emit_constructor_global_ref`] but resolves a primary
     /// constructor global then an optional fallback before autoloading.
-    fn emit_dynamic_constructor_global_ref(
+    pub(crate) fn emit_dynamic_constructor_global_ref(
         &mut self,
         primary_ctor_global: &str,
         fallback_ctor_global: Option<&str>,
@@ -249,7 +249,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let value_key = self.str_const("value");
         self.emit_u16(Op::STRUCT_GET, value_key);
-        self.emit(Op::THROW);
+        {
+            let line = self.line;
+            crate::emitter::errors::emit_throw(self.chunk(), line);
+        }
 
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -333,7 +336,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let value_key = self.str_const("value");
         self.emit_u16(Op::STRUCT_GET, value_key);
-        self.emit(Op::THROW);
+        {
+            let line = self.line;
+            crate::emitter::errors::emit_throw(self.chunk(), line);
+        }
 
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -3301,7 +3307,7 @@ impl Compiler {
                             line,
                         );
                         crate::emitter::errors::emit_exception_new_finalize(chunk, "Error", line);
-                        chunk.emit_op(Op::THROW, line);
+                        crate::emitter::errors::emit_throw(chunk, line);
                         return Ok(());
                     }
                     if self.defined_classes.contains(&canon_type) {
@@ -3673,7 +3679,11 @@ impl Compiler {
                     }
 
                     if self.is_php_profile() {
+                        // A `$`-prefixed Ident is a *variable* (`new $c`), not a
+                        // class name — its runtime string value is resolved to a
+                        // constructor by the dynamic fall-through below.
                         if let ExprKind::Ident(name) = &class.kind {
+                          if !name.starts_with('$') {
                             let autoload_name =
                                 Self::strip_global_namespace_prefix(name).to_string();
                             let ctor_base = autoload_name
@@ -3692,6 +3702,7 @@ impl Compiler {
                             }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
+                          }
                         }
                     }
                 }
@@ -3711,7 +3722,59 @@ impl Compiler {
                     return Ok(());
                 }
 
-                // User-defined class constructor
+                // User-defined class constructor. For PHP `new $c` the class
+                // designator is a runtime value; if it is a class-name string,
+                // resolve it to the class's constructor before invoking (mirrors
+                // the dynamic *function*-name resolution). Non-string values
+                // (already a constructor, e.g. `new static`) pass through.
+                if self.is_php_profile() {
+                    self.compile_expr(class)?;
+                    let class_slot = self.define_local("__php_new_dynamic_class");
+                    self.emit_u16(Op::LOCAL_SET, class_slot);
+                    self.emit_php_dynamic_class_name_resolution(class_slot, Some(args.len()));
+                    // If the resolution left a string (no known class matched),
+                    // the class does not exist — PHP throws a catchable `Error`.
+                    self.emit_u16(Op::LOCAL_GET, class_slot);
+                    {
+                        let l = self.line;
+                        crate::emitter::instructions::host::CapabilityContext::get()
+                            .functions
+                            .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
+                    }
+                    self.emit_const(Value::String(Arc::from("string")));
+                    {
+                        let l = self.line;
+                        crate::emitter::ops::emit_dyn_eq(self.chunk(), l);
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+                    }
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    {
+                        // Construct a real `Error` instance via its constructor
+                        // (like `new Error(msg)`), so it is a proper Error and
+                        // `catch (\Error)` matches — `emit_exception_new_finalize`
+                        // canonicalises "Error" to "Exception", which would make
+                        // it uncatchable as Error.
+                        self.emit_dynamic_constructor_global_ref(
+                            "Error$arity1",
+                            Some("Error"),
+                            "Error",
+                        );
+                        self.emit_const(Value::String(Arc::from("Class not found")));
+                        self.emit_u8(Op::CALL_REF, 1);
+                        {
+            let line = self.line;
+            crate::emitter::errors::emit_throw(self.chunk(), line);
+        }
+                    }
+                    self.chunk().emit_end(line);
+                    self.emit_u16(Op::LOCAL_GET, class_slot);
+                    for a in args {
+                        self.compile_expr(&a.value)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    return Ok(());
+                }
                 self.compile_expr(class)?;
                 for a in args {
                     self.compile_expr(&a.value)?;
