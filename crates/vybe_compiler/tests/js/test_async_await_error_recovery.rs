@@ -162,8 +162,11 @@ crate::js_cases! {
         ["st"]
     };
 
+    // Node-verified: `async get` is a SyntaxError — accessors cannot be
+    // async. The awaitable-getter concept in valid JS: the getter
+    // returns a rejecting promise, so `await o.val` rejects.
     async_getter_await_rejection => {
-        r#"async function main(){const o={async get val(){throw "getter";}};try{console.log(await o.val);}catch(e){console.log(e);}}main();"#,
+        r#"async function main(){const o={get val(){return Promise.reject("getter");}};try{console.log(await o.val);}catch(e){console.log(e);}}main();"#,
         ["getter"]
     };
 
@@ -702,8 +705,10 @@ crate::js_cases! {
         ["9"]
     };
 
+    // Node-verified: the original had an unbalanced extra `)()` — a
+    // SyntaxError. Valid form: await the async IIFE once.
     async_iife_error_in_promise_constructor => {
-        r#"async function main(){try{await(async()=>await new Promise((_,r)=>r("ctor")))())();}catch(e){console.log(e);}}main();"#,
+        r#"async function main(){try{await (async()=>await new Promise((_,r)=>r("ctor")))();}catch(e){console.log(e);}}main();"#,
         ["ctor"]
     };
 
@@ -772,8 +777,11 @@ crate::js_cases! {
         ["e:only"]
     };
 
+    // Node-verified: the original nested a second `try` with no
+    // catch/finally of its own — a SyntaxError. Valid single
+    // try/catch/finally inside the async IIFE.
     async_iife_nested_try_finally_on_error => {
-        r#"async function main(){const o=[];await(async()=>{try{try{await Promise.reject("a");}catch(e){o.push(e);}finally{o.push("f");}})();console.log(o.join(","));}main();"#,
+        r#"async function main(){const o=[];await (async()=>{try{await Promise.reject("a");}catch(e){o.push(e);}finally{o.push("f");}})();console.log(o.join(","));}main();"#,
         ["a,f"]
     };
 

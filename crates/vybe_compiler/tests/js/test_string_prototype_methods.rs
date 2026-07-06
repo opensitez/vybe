@@ -25,9 +25,10 @@ crate::js_cases! {
         [""]
     };
 
+    // Node-verified: swapped (1,3) → chars at indices 1..3 = "bc".
     substring_swaps_arguments => {
         r#"console.log("abcdef".substring(3,1));"#,
-        ["bcd"]
+        ["bc"]
     };
 
     substring_negative_treated_as_zero => {
@@ -245,13 +246,17 @@ crate::js_cases! {
         [""]
     };
 
+    // Node-verified: "Ab" DOES contain lowercase "b" at index 1; the
+    // case-sensitivity concept needs "B" as the needle.
     indexof_case_sensitive => {
-        r#"console.log("Ab".indexOf("b"));"#,
+        r#"console.log("Ab".indexOf("B"));"#,
         ["-1"]
     };
 
+    // Node-verified: "Ab".includes("b") is true (b at index 1) — the
+    // case-sensitive miss needs "B".
     includes_case_sensitive => {
-        r#"console.log("Ab".includes("b"));"#,
+        r#"console.log("Ab".includes("B"));"#,
         ["false"]
     };
 
@@ -305,9 +310,11 @@ crate::js_cases! {
         ["-1"]
     };
 
+    // Node-verified: a negative fromIndex clamps to 0 (§22.1.3.11), and
+    // "a" IS at index 0 → 0.
     lastindexof_from_negative_index => {
         r#"console.log("abcabc".lastIndexOf("a",-2));"#,
-        ["-1"]
+        ["0"]
     };
 
     includes_position_beyond_length => {
@@ -485,8 +492,10 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: position 2 IS "c", so startsWith("c",2) is true;
+    // the past-the-end concept needs position 3.
     startswith_at_end_position_false => {
-        r#"console.log("abc".startsWith("c",2));"#,
+        r#"console.log("abc".startsWith("c",3));"#,
         ["false"]
     };
 

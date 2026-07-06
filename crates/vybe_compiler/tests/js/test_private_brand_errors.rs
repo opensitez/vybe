@@ -76,8 +76,12 @@ crate::js_cases! {
         ["a", "b"]
     };
 
+    // Node-verified: the original (`const {#x} = c` outside the class)
+    // is an EARLY SyntaxError — unparseable, not a catchable TypeError.
+    // The runtime-testable concept: reading a declared private FIELD on
+    // a non-instance fails the brand check with TypeError (§8.3.6).
     destructuring_private_field_outside_class_throws => {
-        r#"class C{#x=1;} const c=new C(); try{const{#x}=c;}catch(e){console.log(e instanceof TypeError);}"#,
+        r#"class C{ #x=1; static read(o){ return o.#x; } } try{ C.read({}); }catch(e){ console.log(e instanceof TypeError); }"#,
         ["true"]
     };
 

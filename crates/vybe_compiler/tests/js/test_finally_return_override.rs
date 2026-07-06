@@ -66,8 +66,12 @@ crate::js_cases! {
         ["up"]
     };
 
+    // Node-verified: the original put `catch` AFTER `finally` — a
+    // SyntaxError (§14.15: try-catch, try-finally, or try-catch-finally,
+    // in that order). Valid form: an OUTER try/catch receives the
+    // rethrow after the inner finally runs.
     finally_runs_after_catch_rethrow => {
-        r#"let o=[];try{try{throw 1;}catch(e){o.push("c");throw e;}}finally{o.push("f");}catch{o.push("o");}console.log(o.join(","));"#,
+        r#"let o=[]; try{ try{ try{ throw 1; }catch(e){ o.push("c"); throw e; } }finally{ o.push("f"); } }catch(x){ o.push("o"); } console.log(o.join(","));"#,
         ["c,f,o"]
     };
 

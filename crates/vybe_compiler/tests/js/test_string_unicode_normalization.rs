@@ -162,8 +162,10 @@ crate::js_cases! {
     };
 
     string_at_on_emoji_index => {
+        // §22.1.3.1: at() indexes UTF-16 code units — at(1) is the high
+        // surrogate alone, length 1 (node-verified).
         r#"console.log("x😀y".at(1).length);"#,
-        ["2"]
+        ["1"]
     };
 
     string_concat_with_unicode => {

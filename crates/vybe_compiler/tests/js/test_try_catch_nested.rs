@@ -377,11 +377,16 @@ console.log(o.join(","));"#,
         ["t,fi,fo"]
     };
 
+    // Node-verified: the original put `catch` AFTER `finally` — a
+    // SyntaxError (§14.15). Valid form: outer try/catch around the
+    // try/finally that wraps the rethrowing catch.
     nested_inner_finally_on_rethrow => {
         r#"let o=[];
-try{try{throw 1;}catch(e){o.push("c");throw e;}}
-finally{o.push("f");}
-catch(e){o.push("o");}
+try{
+  try{
+    try{ throw 1; }catch(e){ o.push("c"); throw e; }
+  }finally{ o.push("f"); }
+}catch(e){ o.push("o"); }
 console.log(o.join(","));"#,
         ["c,f,o"]
     };

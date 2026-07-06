@@ -86,9 +86,11 @@ crate::js_cases! {
         ["31"]
     };
 
+    // Node-verified: numeric separators are LITERAL-only syntax — a
+    // runtime string "1_000" is not a StringNumericLiteral → NaN (§7.1.4.1).
     number_from_string_with_underscores_separators => {
         r#"console.log(Number("1_000"));"#,
-        ["1000"]
+        ["NaN"]
     };
 
     number_isfinite_on_infinity => {
@@ -156,9 +158,12 @@ crate::js_cases! {
         ["true"]
     };
 
+    // Node-verified: the value exceeds 2^53, so the f64 result rounds to
+    // 9007199254741000 — which IS the precision truncation the test name
+    // describes.
     parseint_very_large_string_truncates_precision => {
         r#"console.log(parseInt("9007199254740999"));"#,
-        ["9007199254740999"]
+        ["9007199254741000"]
     };
 
     parsefloat_negative_infinity => {

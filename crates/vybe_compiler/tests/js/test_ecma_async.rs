@@ -90,7 +90,9 @@ demo();
 console.log("after");
 "#,
     );
-    assert_eq!(out, vec!["before", "start", "end", "after"]);
+    // §27.7.5.3 Await: the continuation after `await` is a microtask —
+    // the caller's synchronous "after" prints before "end" (node-verified).
+    assert_eq!(out, vec!["before", "start", "after", "end"]);
 }
 
 #[test]

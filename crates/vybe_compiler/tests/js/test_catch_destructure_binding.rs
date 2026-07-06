@@ -86,8 +86,12 @@ crate::js_cases! {
         ["42"]
     };
 
+    // Node-verified: the original used TWO catch clauses (a SyntaxError —
+    // §14.15 allows one). The intended concept in valid JS: destructuring
+    // the catch parameter invokes the getter, whose throw escapes to an
+    // OUTER catch.
     catch_destructure_object_getter_throw => {
-        r#"try{throw{get msg(){throw new Error("getter");}};}catch({msg}){console.log("skip");}catch(e){console.log(e.message);}"#,
+        r#"try{ try{ throw {get msg(){throw new Error("getter");}}; } catch({msg}){ console.log("skip"); } }catch(e){ console.log(e.message); }"#,
         ["getter"]
     };
 }
