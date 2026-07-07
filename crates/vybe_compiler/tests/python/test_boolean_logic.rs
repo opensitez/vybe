@@ -54,7 +54,7 @@ fn not_false_returns_true() {
 fn and_short_circuit_skips_right_operand() {
     assert_eq!(
         run_python("def boom():\n    print('boom')\n    return True\nprint(False and boom())\n",),
-        vec!["false"]
+        vec!["False"]
     );
 }
 
@@ -62,7 +62,7 @@ fn and_short_circuit_skips_right_operand() {
 fn or_short_circuit_skips_right_operand() {
     assert_eq!(
         run_python("def boom():\n    print('boom')\n    return True\nprint(True or boom())\n",),
-        vec!["true"]
+        vec!["True"]
     );
 }
 

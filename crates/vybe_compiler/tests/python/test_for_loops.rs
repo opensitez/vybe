@@ -307,5 +307,5 @@ fn for_list_continue_skips_all_multiples_of_three() {
 
 #[test]
 fn run_python_one_for_range_len_via_sum() {
-    assert_eq!(run_python_one("print(sum([1 for x in range(4)]))\n"), "6");
+    assert_eq!(run_python_one("print(sum([1 for x in range(4)]))\n"), "4");
 }

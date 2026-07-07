@@ -1982,6 +1982,14 @@ impl Compiler {
         let line = self.line;
         common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
 
+        // Canonical ancestor chain (`except LookupError:` catching KeyError).
+        // NOT for `throwable_is_root` profiles (PHP/Java): their
+        // Error/Exception branches are siblings and their constructors stamp
+        // their own `__types`.
+        if !self.profile.throwable_is_root {
+            common::errors::emit_stamp_exception_ancestors(self.chunk(), type_name, line);
+        }
+
         let exc_tmp = self.define_local("__exc_tmp");
         self.emit_u16(Op::LOCAL_SET, exc_tmp);
 

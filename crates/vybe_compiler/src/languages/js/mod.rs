@@ -17,8 +17,11 @@ pub fn parse_source_only(source: &str) -> Result<crate::ast::Module, String> {
     walker::parse(source)
 }
 
-pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
-    let prelude = r#"
+/// The JS runtime prelude — intrinsics, Error prototypes, Map/Set wrappers,
+/// `Symbol.hasInstance`, … — textually the first thing every module runs.
+/// Constant across all programs, so it is parsed ONCE (see `prelude_body`)
+/// rather than re-parsed on every `parse` call.
+const JS_PRELUDE: &str = r#"
 // Function-kind intrinsics (ECMA-262 %AsyncFunction% §27.7.1,
 // %GeneratorFunction% §27.3.1, %AsyncGeneratorFunction% §27.4.1). These
 // declarations MUST be top-level (unguarded): user function declarations
@@ -302,8 +305,27 @@ if (!globalThis.__vybe_js_prelude_done) {
     }
 }
 "#;
+/// Parsed AST of [`JS_PRELUDE`], built once per PROCESS and cloned per call.
+/// The prelude is identical for every program, so re-parsing its ~284 lines
+/// on every `parse` (7000× in the test suite) was pure waste — the dominant
+/// per-test cost. A process-global cache is essential: the test harness
+/// spawns a fresh thread per test, so a thread-local cache would be cold on
+/// every test and re-parse anyway. Cloning the cached AST is far cheaper
+/// than re-parsing.
+fn prelude_body() -> Vec<crate::ast::Statement> {
+    static CACHE: std::sync::OnceLock<Vec<crate::ast::Statement>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            walker::parse(JS_PRELUDE)
+                .expect("JS prelude must parse")
+                .body
+        })
+        .clone()
+}
+
+pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
     // §11.2.1: the user's directive prologue must govern the module even
-    // though the prelude is textually prepended — hoist "use strict" to
+    // though the prelude runs first — surface a "use strict" directive at
     // the very front so the compiler's prologue scan (which stops at the
     // first non-directive statement) still sees it.
     let user_is_strict = {
@@ -321,12 +343,24 @@ if (!globalThis.__vybe_js_prelude_done) {
         }
         t.starts_with("\"use strict\"") || t.starts_with("'use strict'")
     };
-    let full_source = if user_is_strict {
-        format!("\"use strict\";\n{};\n{}", prelude, source)
-    } else {
-        format!("{};\n{}", prelude, source)
-    };
-    walker::parse(&full_source)
+
+    // Parse ONLY the (small) user source, then splice in the cached prelude:
+    // [ "use strict"?, prelude…, source… ]. Semantically identical to the old
+    // textual prepend (the prelude defines globals the source references by
+    // name at compile/runtime, never by AST identity), but skips re-parsing
+    // the constant prelude every call.
+    let mut module = walker::parse(source)?;
+    let prelude = prelude_body();
+    let mut body = Vec::with_capacity(prelude.len() + module.body.len() + 1);
+    if user_is_strict {
+        body.push(crate::ast::Statement::new(crate::ast::StmtKind::Expr(
+            crate::ast::Expression::string("use strict"),
+        )));
+    }
+    body.extend(prelude);
+    body.append(&mut module.body);
+    module.body = body;
+    Ok(module)
 }
 
 /// Embedded profile TOML source.

@@ -72,7 +72,7 @@ pub fn register(vm: &mut VM) {
                 if matches!(pa, Value::String(_) | Value::Symbol(_))
                     || matches!(pb, Value::String(_) | Value::Symbol(_))
                 {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "TypeError",
                         "Cannot convert a Symbol value to a string",
                     ));
@@ -338,8 +338,10 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                     crate::ecma::arraybuffer::dispatch_arraybuffer_method(obj.clone(), method, args)
                         .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args))
                 }
-                8 => crate::ecma::arraybuffer::dispatch_dataview_method(obj.clone(), method, args)
-                    .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
+                8 => {
+                    crate::ecma::arraybuffer::dispatch_dataview_method(ctx, obj.clone(), method, args)
+                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args))
+                }
                 _ => dispatch_plain_object(ctx, obj.clone(), method, args),
             }
         }
@@ -533,7 +535,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
             // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
             if !(2..=36).contains(&radix) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "RangeError",
                     "toString() radix must be between 2 and 36",
                 ));
@@ -566,7 +568,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
             let digits_i = args.first().map(|v| v.as_i32()).unwrap_or(0);
             if !(0..=100).contains(&digits_i) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "RangeError",
                     "toFixed() digits argument must be between 0 and 100",
                 ));
@@ -580,7 +582,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if let Some(d) = args.first() {
                 let di = d.as_i32();
                 if !(0..=100).contains(&di) {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "RangeError",
                         "toExponential() argument must be between 0 and 100",
                     ));
@@ -610,7 +612,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 None => return Value::String(Arc::from(format!("{}", n).as_str())),
             };
             if !(1..=100).contains(&prec_i) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "RangeError",
                     "toPrecision() argument must be between 1 and 100",
                 ));
@@ -708,7 +710,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "includes" => {
             if regex_pattern(args.first()).is_some() {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "TypeError",
                     "First argument to String.prototype.includes must not be a RegExp",
                 ));
@@ -829,7 +831,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 None | Some(Value::Undefined) => "NFC",
                 Some(Value::String(form)) => form.as_ref(),
                 Some(other) => {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -845,7 +847,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 "NFKC" => s.nfkc().collect::<String>(),
                 "NFKD" => s.nfkd().collect::<String>(),
                 _ => {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -881,7 +883,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // (NaN → 0 via ToIntegerOrInfinity).
             let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
             if n < 0.0 || (n.is_infinite() && n > 0.0) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "RangeError",
                     "Invalid count value",
                 ));
@@ -2580,23 +2582,25 @@ fn dispatch_typed_array(
             }
             Value::Object(obj)
         }
+        // §23.2.3.19/.36/.7: keys/values/entries return an Array Iterator
+        // (with `.next()`), NOT a plain array.
         "keys" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
                 let ks: Vec<Value> = (0..live as i32).map(Value::I32).collect();
-                return make_array(ks);
+                return crate::ecma::array::make_array_iterator(ks);
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "values" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
                 let vs: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
-                return make_array(vs);
+                return crate::ecma::array::make_array_iterator(vs);
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "entries" => {
             let o = obj.lock().unwrap();
@@ -2605,9 +2609,9 @@ fn dispatch_typed_array(
                 let entries: Vec<Value> = (0..live)
                     .map(|i| make_array(vec![Value::I32(i as i32), read_element(ta, i)]))
                     .collect();
-                return make_array(entries);
+                return crate::ecma::array::make_array_iterator(entries);
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         _ => Value::Undefined,
     }
@@ -3221,13 +3225,30 @@ pub(crate) fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Valu
             return result;
         }
     }
+    // Canonical exception objects (the shared cross-language exception
+    // shape) stringify as their MESSAGE — Python `str(e)`, f"{e}" etc.
+    // JS errors never reach this fallback: Error.prototype.toString
+    // (§20.5.3.4) resolves through the prototype in the method loop above.
+    let (tag, exc_message) = {
+        let o = obj.lock().unwrap();
+        (
+            o.properties.get("__type").map(|t| format!("{}", t)),
+            o.properties
+                .get("__exception_type")
+                .map(|_| o.properties.get("message").cloned()),
+        )
+    };
+    if let Some(message) = exc_message {
+        let msg = match message {
+            Some(Value::String(s)) => s.to_string(),
+            Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
+            Some(other) => format!("{}", other),
+        };
+        return Value::String(Arc::from(msg.as_str()));
+    }
     // Class instances with a `__type` tag get the spec-shaped
     // `[object <Name>]` rather than `[object]` (the Vybe Display
     // default for Ordinary).
-    let tag = {
-        let o = obj.lock().unwrap();
-        o.properties.get("__type").map(|t| format!("{}", t))
-    };
     match tag {
         Some(t) if !t.is_empty() => Value::String(Arc::from(format!("[object {}]", t).as_str())),
         _ => Value::String(Arc::from("[object Object]")),
@@ -3291,7 +3312,7 @@ fn dispatch_weakmap(
             let key = args.first().cloned().unwrap_or(Value::Undefined);
             let val = args.get(1).cloned().unwrap_or(Value::Undefined);
             if !matches!(key, Value::Object(_)) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "TypeError",
                     "Invalid value used as weak map key",
                 ));
@@ -3390,7 +3411,7 @@ fn dispatch_weakset(
         "add" => {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
             if !matches!(v, Value::Object(_)) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "TypeError",
                     "Invalid value used in weak set",
                 ));

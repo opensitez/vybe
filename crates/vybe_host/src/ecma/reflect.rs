@@ -36,7 +36,7 @@ use vybe_bytecode::{HostContext, VM, Value};
 // TypeError". Thrown as a real error object so `e instanceof TypeError`
 // holds in the catcher.
 fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error("TypeError", message));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
     Value::Undefined
 }
 

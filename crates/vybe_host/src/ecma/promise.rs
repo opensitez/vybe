@@ -898,7 +898,7 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
     // rejection ("Chaining cycle detected").
     if let (Value::Object(p), Value::Object(v)) = (promise, &value) {
         if Arc::ptr_eq(p, v) {
-            let err = crate::ecma::error::new_error(
+            let err = crate::ecma::error::new_error(ctx, 
                 "TypeError",
                 "Chaining cycle detected for promise",
             );

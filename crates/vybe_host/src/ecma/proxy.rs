@@ -144,12 +144,12 @@ fn key_string(value: &Value) -> String {
     }
 }
 
-fn make_type_error(message: &str) -> Value {
-    crate::ecma::error::new_error("TypeError", message)
+fn make_type_error(ctx: &HostContext, message: &str) -> Value {
+    crate::ecma::error::new_error(ctx, "TypeError", message)
 }
 
 fn throw_revoked(ctx: &mut HostContext) -> Value {
-    ctx.throw_value(make_type_error(
+    ctx.throw_value(make_type_error(ctx, 
         "Cannot perform operation on a revoked proxy",
     ));
     Value::Undefined
@@ -290,7 +290,7 @@ fn construct_dispatch_inner(
                 if matches!(result, Value::Object(_)) {
                     return result;
                 }
-                ctx.throw_value(make_type_error(
+                ctx.throw_value(make_type_error(ctx, 
                     "Proxy construct trap must return an object",
                 ));
                 return Value::Undefined;
@@ -360,7 +360,7 @@ fn construct_dispatch_inner(
             )
         };
         if non_ctor {
-            ctx.throw_value(make_type_error(&format!(
+            ctx.throw_value(make_type_error(ctx, &format!(
                 "{} is not a constructor",
                 fn_name
             )));

@@ -98,7 +98,7 @@ fn clone_object(
         // object / map / set cloners, so a function nested anywhere aborts the
         // whole clone, matching the spec and browsers.
         KindTag::Function | KindTag::HostFunction | KindTag::Continuation => {
-            Err(crate::ecma::error::new_error(
+            Err(crate::ecma::error::new_error_flat(
                 "DataCloneError",
                 "could not be cloned (functions are not structured-cloneable)",
             ))

@@ -73,7 +73,7 @@ fn while_condition_uses_comparison_chain() {
 fn while_iterates_list_pop_from_end() {
     assert_eq!(
         run_python_one("xs = [1, 2, 3]\nwhile xs:\n print(xs.pop())\n"),
-        "1"
+        "3\n2\n1"
     );
 }
 
@@ -89,7 +89,7 @@ fn while_reads_input_sentinel_pattern() {
 fn do_while_emulated_with_first_run() {
     assert_eq!(
         run_python_one("n = 0\nwhile True:\n n += 1\n print(n)\n if n >= 2:\n  break\n"),
-        "1"
+        "1\n2"
     );
 }
 
@@ -105,7 +105,7 @@ fn while_truthy_empty_list_stops() {
 fn while_truthy_nonempty_string_iterates_chars() {
     assert_eq!(
         run_python_one("s = 'ab'\ni = 0\nwhile i < len(s):\n print(s[i])\n i += 1\n"),
-        "a"
+        "a\nb"
     );
 }
 
@@ -134,7 +134,7 @@ fn while_membership_scan_finds_target() {
 fn while_else_not_run_on_return_emulated() {
     assert_eq!(
         run_python_one("n = 1\nwhile n:\n print('loop')\n break\nelse:\n print('else')\nprint('after')\n"),
-        "loop"
+        "loop\nafter"
     );
 }
 
@@ -171,7 +171,7 @@ fn while_short_circuit_and_in_condition() {
 fn while_short_circuit_or_keeps_looping() {
     assert_eq!(
         run_python_one("a = 0\nb = 1\nc = 0\nwhile a or b:\n c += 1\n b = 0\n if c == 2:\n  break\nprint(c)\n"),
-        "2"
+        "1"
     );
 }
 
@@ -235,7 +235,7 @@ fn while_waits_until_predicate_true() {
 fn while_modulo_cycle_detects_period() {
     assert_eq!(
         run_python_one("n = 1\nsteps = 0\nwhile steps < 4:\n n = (n * 3) % 7\n steps += 1\nprint(n)\n"),
-        "6"
+        "4"
     );
 }
 
@@ -264,7 +264,7 @@ fn while_removes_matching_elements() {
 fn while_zip_two_lists_manually() {
     assert_eq!(
         run_python_one("a = [1, 2]\nb = [3, 4]\ni = 0\nwhile i < len(a):\n print(a[i] + b[i])\n i += 1\n"),
-        "4"
+        "4\n6"
     );
 }
 
@@ -272,7 +272,7 @@ fn while_zip_two_lists_manually() {
 fn while_enumerate_manual_index_value() {
     assert_eq!(
         run_python_one("xs = ['x', 'y']\ni = 0\nwhile i < len(xs):\n print(str(i) + xs[i])\n i += 1\n"),
-        "0x"
+        "0x\n1y"
     );
 }
 

@@ -8,6 +8,7 @@ name = "csharp"
 extensions = ["cs"]
 
 [compiler]
+reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
 function_return = "explicit"
 self_keyword = "this"
 base_keyword = "base"

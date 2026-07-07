@@ -239,7 +239,7 @@ fn enumerate_in_for_loop() {
 fn zip_in_for_loop() {
     assert_eq!(
         run_python_one("for a, b in zip([1, 2], [10, 20]):\n print(a + b)\n"),
-        "11"
+        "11\n22"
     );
 }
 

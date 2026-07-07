@@ -1472,14 +1472,24 @@ fn register_enums(vm: &mut VM) {
     // Register base Exception type and common subtypes.
     // These enable `ref_test` and typed catch across all languages.
     //
-    // Hierarchy:
-    //   Exception (root)
-    //     Error (JS)
-    //       TypeError, RangeError, SyntaxError, ReferenceError, URIError
-    //     ValueError, KeyError, ... (Python/.NET — direct under Exception)
+    // Each language's exception hierarchy is DISTINCT — do NOT merge them
+    // under one root. Two independent roots are registered here:
+    //   Error (root)          — JS/ECMA §20.5: NativeErrors extend Error;
+    //                           there is NO `Exception` in JS, and `Error`'s
+    //                           [[Prototype]] parent is `Object`, so `Error`
+    //                           is the root of its hierarchy.
+    //   Exception (root)      — Python/.NET/Ruby: `ValueError`, `KeyError`,
+    //                           `ArgumentException`, … extend Exception.
+    // `Error` is NOT a subtype of `Exception` — that was a cross-language
+    // catch shortcut that violated §20.5 (and PHP, where Error/Exception are
+    // siblings under Throwable). A language with a different model (PHP
+    // Throwable root; Python BaseException root) declares it in its own
+    // prelude, which overrides these defaults via `load_type_table`.
+    // Cross-language catch (`catch (Exception)` seeing a JS `Error`) is a
+    // deliberate mapping concern, not a subtype edge that corrupts either
+    // language's real hierarchy.
     let exc_base = vm.type_registry.register(TypeDef::new("Exception"));
-    let mut error_td = TypeDef::new("Error");
-    error_td.parent = Some(exc_base);
+    let mut error_td = TypeDef::new("Error"); // ROOT — no parent (§20.5)
     // Per ECMA-262 §20.5:
     // - message: writable, non-enumerable, configurable (own property on instances)
     // - name: writable, non-enumerable, configurable (dynamic property, not a typed field)
@@ -1522,16 +1532,17 @@ fn register_enums(vm: &mut VM) {
         vm.type_registry.register(td);
     }
 
-    // JS error subtypes — inherit from Error (per ECMA-262 §20.5.5).
-    // TypeError is also used by Python for type errors; keep it under
-    // Error so JS `instanceof Error` works while still being catchable
-    // as Exception (Error's parent) in cross-language code.
+    // ECMA-262 §20.5.5 NativeError types + §20.5.7 AggregateError — all
+    // inherit directly from `Error` (the root). `TypeError` is shared with
+    // PHP/Python type errors, which also root it under `Error`.
     let js_error_types = [
         "TypeError",
         "RangeError",
         "SyntaxError",
         "ReferenceError",
         "URIError",
+        "EvalError",
+        "AggregateError",
     ];
     for name in &js_error_types {
         let mut td = TypeDef::new(name);

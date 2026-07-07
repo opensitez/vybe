@@ -187,6 +187,16 @@ pub fn is_exception_type(name: &str) -> bool {
         | "runtimeerror" | "stopiteration" | "attributeerror"
         | "zerodivisionerror" | "filenotfounderror" | "importerror"
         | "notimplementederror" | "overflowerror" | "ioerror" | "oserror"
+        | "baseexception" | "keyboardinterrupt" | "systemexit" | "generatorexit"
+        | "lookuperror" | "unicodeerror" | "unicodedecodeerror" | "unicodeencodeerror"
+        | "floatingpointerror" | "recursionerror" | "eoferror" | "memoryerror"
+        | "buffererror" | "systemerror" | "modulenotfounderror" | "unboundlocalerror"
+        | "indentationerror" | "taberror" | "stopasynciteration"
+        | "permissionerror" | "timeouterror" | "fileexistserror"
+        | "isadirectoryerror" | "notadirectoryerror" | "blockingioerror"
+        | "brokenpipeerror" | "connectionerror" | "connectionreseterror"
+        | "connectionrefusederror" | "connectionabortederror" | "processlookuperror"
+        | "environmenterror" | "interruptederror" | "childprocesserror"
         // .NET / VB / C#
         | "systemexception" | "applicationexception" | "argumentexception" | "argumentnullexception"
         | "invalidoperationexception" | "notimplementedexception"
@@ -267,6 +277,150 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_string_const(original, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// Canonical exception ancestor chains — the Python-shaped tree used by
+/// non-`throwable_is_root` profiles (Python/.NET/Ruby). The first entry
+/// is the type itself; each subsequent entry is a base class a typed
+/// catch may name. `throwable_is_root` languages (PHP/Java, whose
+/// `Error`/`Exception` are SIBLING branches) stamp their own chains and
+/// must NOT use this table.
+pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
+    match canonical_exception_name(name) {
+        // BaseException-only branch (deliberately NOT under Exception)
+        "KeyboardInterrupt" => &["KeyboardInterrupt", "BaseException"],
+        "SystemExit" => &["SystemExit", "BaseException"],
+        "GeneratorExit" => &["GeneratorExit", "BaseException"],
+        "BaseException" => &["BaseException"],
+        "Exception" => &["Exception", "BaseException"],
+        // LookupError branch
+        "KeyError" => &["KeyError", "LookupError", "Exception", "BaseException"],
+        "IndexError" => &["IndexError", "LookupError", "Exception", "BaseException"],
+        "LookupError" => &["LookupError", "Exception", "BaseException"],
+        // ArithmeticError branch
+        "ZeroDivisionError" => &[
+            "ZeroDivisionError",
+            "ArithmeticError",
+            "Exception",
+            "BaseException",
+        ],
+        "OverflowError" => &["OverflowError", "ArithmeticError", "Exception", "BaseException"],
+        "FloatingPointError" => &[
+            "FloatingPointError",
+            "ArithmeticError",
+            "Exception",
+            "BaseException",
+        ],
+        "ArithmeticError" => &["ArithmeticError", "Exception", "BaseException"],
+        // RuntimeError branch
+        "NotImplementedError" => &[
+            "NotImplementedError",
+            "RuntimeError",
+            "Exception",
+            "BaseException",
+        ],
+        "RecursionError" => &["RecursionError", "RuntimeError", "Exception", "BaseException"],
+        "RuntimeError" => &["RuntimeError", "Exception", "BaseException"],
+        // OSError branch (IOError/EnvironmentError are aliases in Py3)
+        "FileNotFoundError" => &["FileNotFoundError", "OSError", "Exception", "BaseException"],
+        "PermissionError" => &["PermissionError", "OSError", "Exception", "BaseException"],
+        "TimeoutError" => &["TimeoutError", "OSError", "Exception", "BaseException"],
+        "FileExistsError" => &["FileExistsError", "OSError", "Exception", "BaseException"],
+        "IsADirectoryError" => &["IsADirectoryError", "OSError", "Exception", "BaseException"],
+        "NotADirectoryError" => &["NotADirectoryError", "OSError", "Exception", "BaseException"],
+        "BlockingIOError" => &["BlockingIOError", "OSError", "Exception", "BaseException"],
+        "ConnectionError" => &["ConnectionError", "OSError", "Exception", "BaseException"],
+        "BrokenPipeError" => &[
+            "BrokenPipeError",
+            "ConnectionError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
+        "ConnectionResetError" => &[
+            "ConnectionResetError",
+            "ConnectionError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
+        "ConnectionRefusedError" => &[
+            "ConnectionRefusedError",
+            "ConnectionError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
+        "ConnectionAbortedError" => &[
+            "ConnectionAbortedError",
+            "ConnectionError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
+        "ProcessLookupError" => &["ProcessLookupError", "OSError", "Exception", "BaseException"],
+        "InterruptedError" => &["InterruptedError", "OSError", "Exception", "BaseException"],
+        "ChildProcessError" => &["ChildProcessError", "OSError", "Exception", "BaseException"],
+        "IOError" | "OSError" | "EnvironmentError" => &["OSError", "Exception", "BaseException"],
+        // ValueError branch (Unicode* extend ValueError)
+        "UnicodeDecodeError" => &[
+            "UnicodeDecodeError",
+            "UnicodeError",
+            "ValueError",
+            "Exception",
+            "BaseException",
+        ],
+        "UnicodeEncodeError" => &[
+            "UnicodeEncodeError",
+            "UnicodeError",
+            "ValueError",
+            "Exception",
+            "BaseException",
+        ],
+        "UnicodeError" => &["UnicodeError", "ValueError", "Exception", "BaseException"],
+        "ValueError" => &["ValueError", "Exception", "BaseException"],
+        // NameError / ImportError / SyntaxError branches
+        "UnboundLocalError" => &["UnboundLocalError", "NameError", "Exception", "BaseException"],
+        "NameError" => &["NameError", "Exception", "BaseException"],
+        "ModuleNotFoundError" => &[
+            "ModuleNotFoundError",
+            "ImportError",
+            "Exception",
+            "BaseException",
+        ],
+        "ImportError" => &["ImportError", "Exception", "BaseException"],
+        "IndentationError" => &["IndentationError", "SyntaxError", "Exception", "BaseException"],
+        "TabError" => &[
+            "TabError",
+            "IndentationError",
+            "SyntaxError",
+            "Exception",
+            "BaseException",
+        ],
+        "StopAsyncIteration" => &["StopAsyncIteration", "Exception", "BaseException"],
+        _ => &[],
+    }
+}
+
+/// Stamp `__types` with the canonical ancestor chain so typed catches
+/// match base classes (`except LookupError:` catching a `KeyError`).
+/// The multi-catch guard walks this array — same mechanism user classes
+/// use via shared class emission. Unknown types get
+/// `[canonical, "Exception", "BaseException"]`.
+/// Stack: `[obj]` → `[obj]`
+pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u32) {
+    let canon = canonical_exception_name(exc_name);
+    let chain = exception_ancestors(exc_name);
+    let fallback = [canon, "Exception", "BaseException"];
+    let chain: &[&str] = if chain.is_empty() { &fallback } else { chain };
+    chunk.emit_dup(line);
+    for name in chain {
+        chunk.emit_string_const(name, line);
+    }
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, chain.len() as u16, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__types")));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 

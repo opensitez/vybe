@@ -277,6 +277,17 @@ pub struct LanguageProfile {
     /// `Exception` is the root and `catch (Exception)` catches everything.
     pub throwable_is_root: bool,
 
+    /// How reflection/runtime type identity names are formed. Each language
+    /// owns its type namespace — this must NOT be hardcoded to one language's
+    /// scheme. `Native` (default) keeps a type's own name (`Throwable`,
+    /// `Error`), so a language's real hierarchy — and its exception `__types`
+    /// chain — is preserved. `Dotnet` qualifies under `System.` and applies
+    /// .NET BCL primitive naming (`int`→`Int32`), for C#/VB reflection.
+    /// Historically this was hardcoded to `Dotnet` for every language, which
+    /// force-flattened e.g. PHP's sibling `Error`/`Exception` into .NET's
+    /// single `System.Exception` root — the bug this replaces.
+    pub reflection_type_naming: ReflectionTypeNaming,
+
     /// PHP: relational operators (`<`/`>`/`<=`/`>=`/`<=>`) compare two
     /// strings lexicographically and otherwise fall back to numeric/dynamic
     /// comparison (DateTime operands are unboxed first). When false, the
@@ -479,6 +490,23 @@ pub enum ReturnStyle {
     LastExpression,
 }
 
+/// How a language forms reflection / runtime type-identity names. Owned by
+/// the profile so each language keeps its own type namespace — see
+/// [`Profile::reflection_type_naming`]. Extend with a new variant when a
+/// language needs a distinct scheme (e.g. a `java.lang.*` root).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReflectionTypeNaming {
+    /// A type keeps its own name (`Throwable`, `Error`, `MyClass`). No forced
+    /// namespace, no BCL primitive remap. Default for every language except
+    /// the .NET family — this is what preserves each language's real
+    /// exception hierarchy in its `__types` chain.
+    #[default]
+    Native,
+    /// .NET BCL scheme: qualify under `System.` and map primitives
+    /// (`int`→`Int32`, `string`→`String`, …). C#/VB reflection expects this.
+    Dotnet,
+}
+
 /// Definition of a builtin function's compilation.
 #[derive(Debug, Clone)]
 pub struct BuiltinDef {
@@ -605,7 +633,32 @@ impl LanguageProfile {
 }
 
 /// Parse a TOML profile source into a LanguageProfile.
+/// Parse a language profile, caching the result. Profiles are constant
+/// `&'static str` (via `include_str!`), but every test re-parses the ~900-line
+/// TOML — a per-test cost EVERY language pays (Python/C# have no prelude to
+/// cache, so this is their main lever). Keyed by the source's (ptr, len),
+/// which is stable and unique for `&'static str`; cloning a `LanguageProfile`
+/// is far cheaper than re-parsing TOML + rebuilding its tables.
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    // Keyed by CONTENT (not pointer): correct even if a caller passes a
+    // dynamically-built profile string. Hashing ~900 chars is still far
+    // cheaper than re-parsing the TOML and rebuilding the profile's tables.
+    static CACHE: OnceLock<Mutex<HashMap<String, LanguageProfile>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(p) = cache.lock().unwrap().get(src) {
+        return Ok(p.clone());
+    }
+    let parsed = parse_profile_uncached(src)?;
+    cache
+        .lock()
+        .unwrap()
+        .insert(src.to_string(), parsed.clone());
+    Ok(parsed)
+}
+
+fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     use toml::Value;
 
     let root: Value =
@@ -740,6 +793,16 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .get("throwable_is_root")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let reflection_type_naming = match compiler
+        .get("reflection_type_naming")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("dotnet") => ReflectionTypeNaming::Dotnet,
+        // Default (and explicit "native"): each language owns its type names.
+        _ => ReflectionTypeNaming::Native,
+    };
     let supports_private_fields = compiler
         .get("supports_private_fields")
         .and_then(|v| v.as_bool())
@@ -1240,6 +1303,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         throwable_is_root,
+        reflection_type_naming,
         supports_private_fields,
         has_function_prototype_bind,
         has_function_constructor,

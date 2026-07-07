@@ -179,8 +179,10 @@ accessor = {
 
 // Event: event EventHandler Click;
 event_declaration = {
-    "event" ~ type_name ~ ident_name ~ ";"
+    // Field-like `event T E;` OR custom accessors `event T E { add {…} remove {…} }`.
+    "event" ~ type_name ~ ident_name ~ (";" | "{" ~ event_accessor+ ~ "}")
 }
+event_accessor = { ("add" | "remove") ~ block_statement }
 
 // Method: ReturnType Name(params) { body }
 // Generic methods may declare per-method `where` constraints which we
@@ -231,7 +233,9 @@ interface_member = {
         interface_operator_declaration
         | type_name ~ (
         ident_name ~ (
-            generic_params? ~ "(" ~ param_list? ~ ")" ~ where_clauses? ~ ";" // method
+            // method — `;` (abstract) OR a default body (C# 8 default interface
+            // methods: `T M() => expr;` or `T M() { ... }`).
+            generic_params? ~ "(" ~ param_list? ~ ")" ~ where_clauses? ~ (expression_body | block_statement | ";")
             | "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"       // property
         )
         | "this" ~ "[" ~ param_list ~ "]" ~ "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"
@@ -342,7 +346,7 @@ tuple_deconstruction_decl = {
 }
 
 tuple_binding_list = {
-    "(" ~ tuple_binding_pattern ~ ("," ~ tuple_binding_pattern)+ ~ ")"
+    "(" ~ tuple_binding_pattern ~ ("," ~ tuple_binding_pattern)* ~ ")"
 }
 
 tuple_binding_pattern = {
@@ -581,9 +585,12 @@ switch_expr_postfix = {
 switch_arm = {
     switch_pattern ~ ("when" ~ expression)? ~ "=>" ~ expression
 }
-switch_pattern = {
+switch_pattern = { switch_pat_and ~ ("or" ~ switch_pat_and)* }
+switch_pat_and = { switch_pat_primary ~ ("and" ~ switch_pat_primary)* }
+switch_pat_primary = {
     "_" ~ !(ASCII_ALPHANUMERIC | "_")
     | (">=" | "<=" | ">" | "<") ~ expression
+    | var_kw ~ ident_name
     | type_name ~ ident_name
     | expression
 }

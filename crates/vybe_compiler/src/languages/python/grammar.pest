@@ -350,7 +350,7 @@ primary = {
     "(" ~ comp_for_arg ~ ")"            // generator expression: (x for x in y)
     | "(" ~ expression_list? ~ ")"      // tuple/grouping/empty tuple
     | "[" ~ list_inner ~ "]"             // list or list comprehension
-    | "{" ~ dict_or_set_inner? ~ "}"      // dict, set, or comprehension (empty = empty dict)
+    | "{" ~ dict_or_set_inner ~ "}"       // dict, set, or comprehension (empty {} = empty dict)
     | fstring
     | yield_expr
     | star_expr
@@ -381,6 +381,7 @@ dict_or_set_inner = {
     "**" ~ expression ~ dict_rest                        // dict starting with **
     | expression ~ ":" ~ expression ~ dict_comp_or_rest    // dict starting with key:value
     | expression ~ set_comp_or_rest                        // set or set comprehension
+    | ""                                                   // empty {} → empty dict
 }
 
 dict_comp_or_rest = {

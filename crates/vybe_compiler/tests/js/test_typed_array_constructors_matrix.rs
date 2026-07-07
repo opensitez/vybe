@@ -190,7 +190,10 @@ crate::js_cases! {
     };
 
     uint8array_prototype_is_typed_array => {
-        r#"console.log(Uint8Array.prototype[Symbol.toStringTag]);"#,
+        // §23.2.3.38: the `Symbol.toStringTag` getter returns the typed-array
+        // name for an INSTANCE, but `undefined` for the prototype itself
+        // (not a typed array). Test the instance (node-verified).
+        r#"console.log(new Uint8Array(1)[Symbol.toStringTag]);"#,
         ["Uint8Array"]
     };
 

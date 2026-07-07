@@ -138,7 +138,9 @@ fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
         TypedElemKind::U32 => {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&buf[abs..abs + 4]);
-            Value::I32(u32::from_le_bytes(bytes) as i32)
+            // Uint32 spans [0, 2^32) — beyond i32 — so surface as an F64
+            // JS number (e.g. 4294967295), not a wrapped i32.
+            Value::F64(u32::from_le_bytes(bytes) as f64)
         }
         TypedElemKind::F32 => {
             let mut bytes = [0u8; 4];
@@ -221,8 +223,16 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
             buf[abs..abs + 4].copy_from_slice(&bytes);
         }
         TypedElemKind::U32 => {
-            let bytes = (value.as_i32() as u32).to_le_bytes();
-            buf[abs..abs + 4].copy_from_slice(&bytes);
+            // §7.1.7 ToUint32: truncate toward zero, reduce mod 2^32. Using
+            // `as_i32()` here saturated large numbers (4294967295 → i32::MAX);
+            // ToUint32 must wrap instead.
+            let n = value.as_f64();
+            let u = if n.is_finite() {
+                n.trunc().rem_euclid(4294967296.0) as u32
+            } else {
+                0
+            };
+            buf[abs..abs + 4].copy_from_slice(&u.to_le_bytes());
         }
         TypedElemKind::F32 => {
             let bytes = (value.as_f64() as f32).to_le_bytes();

@@ -1039,7 +1039,7 @@ fn register_construction(vm: &mut VM) {
                                 let tgt = t.lock().unwrap();
                                 if !tgt.properties.contains_key(&k) && is_not_extensible(&tgt) {
                                     drop(tgt);
-                                    ctx.throw_value(crate::ecma::error::new_error(
+                                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                         "TypeError",
                                         "Cannot add property, object is not extensible",
                                     ));
@@ -1111,7 +1111,7 @@ fn register_access(vm: &mut VM) {
                     if o.properties.get(FROZEN_MARK).is_some() {
                         drop(o);
                         if strict {
-                            ctx.throw_value(crate::ecma::error::new_error(
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                 "TypeError",
                                 "Cannot assign to read only property of frozen object",
                             ));
@@ -1124,7 +1124,7 @@ fn register_access(vm: &mut VM) {
                     if not_extensible && !o.properties.contains_key(&key) {
                         drop(o);
                         if strict {
-                            ctx.throw_value(crate::ecma::error::new_error(
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                 "TypeError",
                                 "Cannot add property, object is not extensible",
                             ));
@@ -2000,7 +2000,7 @@ fn register_descriptors(vm: &mut VM) {
                         || o.properties.contains_key(&format!("__set_{}", key));
                     if !exists && is_not_extensible(&o) {
                         drop(o);
-                        ctx.throw_value(crate::ecma::error::new_error(
+                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
                             "TypeError",
                             "Cannot define property, object is not extensible",
                         ));
@@ -2057,7 +2057,7 @@ fn register_descriptors(vm: &mut VM) {
                 {
                     let mut o = define_obj.lock().unwrap();
                     if o.properties.contains_key(&key) && is_nonconfig(&o, &key) {
-                        ctx.throw_value(crate::ecma::error::new_error(
+                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
                             "TypeError",
                             "Cannot redefine property",
                         ));
@@ -2231,7 +2231,7 @@ fn register_descriptors(vm: &mut VM) {
                             false
                         };
                         if violation {
-                            ctx.throw_value(crate::ecma::error::new_error(
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                 "TypeError",
                                 "proxy getOwnPropertyDescriptor trap violated its invariant: property is non-configurable on the target",
                             ));
@@ -2404,7 +2404,7 @@ fn register_prototype(vm: &mut VM) {
                     };
                     if !unchanged {
                         drop(o);
-                        ctx.throw_value(crate::ecma::error::new_error(
+                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
                             "TypeError",
                             "Object is not extensible",
                         ));
@@ -2456,7 +2456,7 @@ fn register_locking(vm: &mut VM) {
                     if let ObjectKind::TypedArray(ta) = &o.kind {
                         if crate::ecma::typedarray::ta_live_length(ta) > 0 {
                             drop(o);
-                            ctx.throw_value(crate::ecma::error::new_error(
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                 "TypeError",
                                 "Cannot freeze array buffer views with elements",
                             ));

@@ -6,7 +6,9 @@
 //!
 //! - `channels` — shared channel AST lowering helpers.
 //! - `classes` — class normalisation (see `classnormalization.md`).
+//! - `tuples` — named-tuple normalisation onto one canonical runtime shape.
 
 pub mod channels;
 pub mod classes;
 pub mod events;
+pub mod tuples;

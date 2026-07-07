@@ -572,6 +572,20 @@ fn dv_read_bytes(dv: &Arc<Mutex<Object>>, offset: i32, count: usize) -> Option<V
     Some(bytes[abs..abs + count].to_vec())
 }
 
+/// §25.3.1.1/.2 bounds predicate: is a `count`-byte access at `offset` fully
+/// inside the view? A negative offset is out of bounds (matches ToIndex
+/// §7.1.22 rejecting negatives). Used to raise RangeError before a get/set.
+fn dv_in_bounds(dv: &Arc<Mutex<Object>>, offset: i32, count: usize) -> bool {
+    let Some((bytes_arc, base, view_len)) = dv_resolve(dv) else {
+        return false;
+    };
+    if offset < 0 || (offset as usize + count) > view_len {
+        return false;
+    }
+    let bytes = bytes_arc.lock().unwrap();
+    base + offset as usize + count <= bytes.len()
+}
+
 fn dv_write_bytes(dv: &Arc<Mutex<Object>>, offset: i32, payload: &[u8]) -> bool {
     let Some((bytes_arc, base, view_len)) = dv_resolve(dv) else {
         return false;
@@ -698,7 +712,7 @@ fn register_dataview(vm: &mut VM) {
             vm.register_host_fn(
                 "ecma:dataview",
                 $name,
-                Box::new(|_ctx, args| {
+                Box::new(|ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let little_endian = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
                     if let Some(dv) = is_dataview(args, 0) {
@@ -708,6 +722,17 @@ fn register_dataview(vm: &mut VM) {
                             let val: $ty = if little_endian { $le(arr) } else { $be(arr) };
                             return $wrap(val);
                         }
+                        // §25.3.1.1 GetViewValue step 8: getIndex + elementSize
+                        // > viewSize → RangeError. A negative offset is also a
+                        // RangeError via ToIndex (§7.1.22). `dv_read_bytes`
+                        // returns None for both.
+                        let err = crate::ecma::error::new_error(
+                            ctx,
+                            "RangeError",
+                            "Offset is outside the bounds of the DataView",
+                        );
+                        ctx.throw_value(err);
+                        return Value::Undefined;
                     }
                     $wrap(<$ty>::default())
                 }),
@@ -812,13 +837,22 @@ fn register_dataview(vm: &mut VM) {
             vm.register_host_fn(
                 "ecma:dataview",
                 $name,
-                Box::new(|_ctx, args| {
+                Box::new(|ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let val: $ty = $val_extract(args.get(2));
                     let little_endian = args.get(3).map(|v| v.as_i32()).unwrap_or(0) != 0;
                     let bytes = if little_endian { val.$le() } else { val.$be() };
                     if let Some(dv) = is_dataview(args, 0) {
-                        dv_write_bytes(&dv, offset, &bytes);
+                        // §25.3.1.2 SetViewValue: out-of-bounds (or negative
+                        // offset via ToIndex) → RangeError.
+                        if !dv_write_bytes(&dv, offset, &bytes) {
+                            let err = crate::ecma::error::new_error(
+                                ctx,
+                                "RangeError",
+                                "Offset is outside the bounds of the DataView",
+                            );
+                            ctx.throw_value(err);
+                        }
                     }
                     Value::Null
                 }),
@@ -1216,10 +1250,37 @@ pub fn dispatch_arraybuffer_method(
 /// Dispatches instance method calls on DataView objects.
 /// `args[0]` = the DataView object; remaining args are user-supplied.
 pub fn dispatch_dataview_method(
+    ctx: &mut vybe_bytecode::HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],
 ) -> Option<Value> {
+    // §25.3.1.1 GetViewValue / §25.3.1.2 SetViewValue: bounds-check the
+    // access up front — `getIndex + elementSize > viewSize`, or a negative
+    // offset (via ToIndex §7.1.22), is a RangeError. Done once here so the
+    // per-method arms below need no per-call guard.
+    let elem_size = match method {
+        "getInt8" | "getUint8" | "setInt8" | "setUint8" => Some(1),
+        "getInt16" | "getUint16" | "setInt16" | "setUint16" => Some(2),
+        "getInt32" | "getUint32" | "getFloat32" | "setInt32" | "setUint32" | "setFloat32" => {
+            Some(4)
+        }
+        "getFloat64" | "getBigInt64" | "getBigUint64" | "setFloat64" | "setBigInt64"
+        | "setBigUint64" => Some(8),
+        _ => None,
+    };
+    if let Some(size) = elem_size {
+        let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+        if !dv_in_bounds(&obj, offset, size) {
+            let err = crate::ecma::error::new_error(
+                ctx,
+                "RangeError",
+                "Offset is outside the bounds of the DataView",
+            );
+            ctx.throw_value(err);
+            return Some(Value::Undefined);
+        }
+    }
     match method {
         "getInt8" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);

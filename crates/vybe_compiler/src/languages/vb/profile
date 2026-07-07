@@ -7,6 +7,7 @@ name = "vb"
 extensions = ["vb"]
 
 [compiler]
+reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
 function_return = "result_slot"        # VB uses FunctionName = value AND Return
 result_slot_name = "__result__"        # internal — not user-visible (VB users
                                        # write `FunctionName := X`, not

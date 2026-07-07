@@ -457,6 +457,11 @@ pub struct Compiler {
     /// even though the VM's TRY_START handler currently ignores the
     /// reserved finally offset operand.
     active_finally_blocks: Vec<FinallyAction>,
+    /// Indices into `active_finally_blocks` whose try's runtime handler has
+    /// FIRED (we are compiling that try's catch-arms section). A `throw`
+    /// inside a catch arm inlines exactly these — the runtime can no longer
+    /// run them — and leaves live-handler finallys to the runtime.
+    fired_finally_indices: Vec<usize>,
     /// Nesting depth of the catch body currently being compiled.
     catch_depth: usize,
     /// JS async-function wrapper try depth currently active for the
@@ -2022,6 +2027,7 @@ impl Compiler {
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
+            fired_finally_indices: Vec::new(),
             catch_depth: 0,
             active_async_try_depth: 0,
             uses_proxy: false,
@@ -3602,6 +3608,8 @@ impl Compiler {
         type_name: &str,
         parent_runtime_name: Option<&str>,
     ) -> String {
+        use crate::profile::ReflectionTypeNaming;
+
         let global_stripped = Self::strip_global_namespace_prefix(type_name);
         let trimmed = global_stripped.trim().trim_end_matches('?').trim();
         let mut without_generics = String::with_capacity(trimmed.len());
@@ -3614,35 +3622,55 @@ impl Compiler {
                 _ => {}
             }
         }
-        let normalized = match without_generics.trim() {
-            "int" | "Int32" => "Int32",
-            "uint" | "UInt32" => "UInt32",
-            "long" | "Int64" => "Int64",
-            "ulong" | "UInt64" => "UInt64",
-            "short" | "Int16" => "Int16",
-            "ushort" | "UInt16" => "UInt16",
-            "byte" | "Byte" => "Byte",
-            "sbyte" | "SByte" => "SByte",
-            "float" | "Single" => "Single",
-            "double" | "Double" => "Double",
-            "decimal" | "Decimal" => "Decimal",
-            "bool" | "Boolean" => "Boolean",
-            "char" | "Char" => "Char",
-            "string" | "String" => "String",
-            "object" | "Object" => "Object",
-            other => other,
-        };
-        let normalized = normalized
-            .strip_prefix("System.System.")
-            .unwrap_or(normalized);
-        if let Some(parent) = parent_runtime_name {
-            let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
-            return format!("{parent}.{leaf}");
-        }
-        if normalized.starts_with("System.") {
-            normalized.to_string()
-        } else {
-            format!("System.{}", normalized)
+        let base = without_generics.trim();
+
+        match self.profile.reflection_type_naming {
+            // Native: the type keeps its own name. This is what preserves
+            // each language's real hierarchy — PHP `Throwable` stays
+            // `Throwable`, not `System.Throwable`, so its exception `__types`
+            // chain reflects PHP's model (sibling `Error`/`Exception`), never
+            // .NET's single `System.Exception` root. Nested types still
+            // qualify under their declaring type.
+            ReflectionTypeNaming::Native => {
+                if let Some(parent) = parent_runtime_name {
+                    let leaf = base.rsplit('.').next().unwrap_or(base).trim();
+                    format!("{parent}.{leaf}")
+                } else {
+                    base.to_string()
+                }
+            }
+            // .NET BCL scheme (C#/VB): map primitives and root under `System.`.
+            ReflectionTypeNaming::Dotnet => {
+                let normalized = match base {
+                    "int" | "Int32" => "Int32",
+                    "uint" | "UInt32" => "UInt32",
+                    "long" | "Int64" => "Int64",
+                    "ulong" | "UInt64" => "UInt64",
+                    "short" | "Int16" => "Int16",
+                    "ushort" | "UInt16" => "UInt16",
+                    "byte" | "Byte" => "Byte",
+                    "sbyte" | "SByte" => "SByte",
+                    "float" | "Single" => "Single",
+                    "double" | "Double" => "Double",
+                    "decimal" | "Decimal" => "Decimal",
+                    "bool" | "Boolean" => "Boolean",
+                    "char" | "Char" => "Char",
+                    "string" | "String" => "String",
+                    "object" | "Object" => "Object",
+                    other => other,
+                };
+                let normalized = normalized
+                    .strip_prefix("System.System.")
+                    .unwrap_or(normalized);
+                if let Some(parent) = parent_runtime_name {
+                    let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
+                    format!("{parent}.{leaf}")
+                } else if normalized.starts_with("System.") {
+                    normalized.to_string()
+                } else {
+                    format!("System.{}", normalized)
+                }
+            }
         }
     }
 
@@ -4855,16 +4883,30 @@ impl Compiler {
     }
 
     fn emit_throw_through_finally(&mut self) -> Result<(), String> {
-        if self.active_finally_blocks.is_empty() {
+        // Inline ONLY the finallys whose try handler already fired (their
+        // sequenced finally would be skipped by this throw). Finallys with
+        // LIVE runtime handlers (enclosing try bodies) are run by the
+        // runtime on unwind — inlining them here executed them twice.
+        if self.fired_finally_indices.is_empty() {
             let line = self.line;
             common::errors::emit_throw(self.chunk(), line);
             return Ok(());
         }
-        // Save the exception, run finally blocks, then re-throw.
-        // Mirrors emit_return_through_finally but for exceptions.
+        // Save the exception, run the fired finallys (innermost first),
+        // then re-throw. Mirrors emit_return_through_finally's slicing so
+        // control-flow statements INSIDE a finally see the right stack.
         let exc_slot = self.define_local("__throw_finally_exc");
         self.emit_u16(Op::LOCAL_SET, exc_slot);
-        self.emit_active_finally_blocks()?;
+        let fired = self.fired_finally_indices.clone();
+        let original = self.active_finally_blocks.clone();
+        for &idx in fired.iter().rev() {
+            if idx >= original.len() {
+                continue;
+            }
+            self.active_finally_blocks = original[..idx].to_vec();
+            self.emit_finally_action(&original[idx])?;
+        }
+        self.active_finally_blocks = original;
         self.emit_u16(Op::LOCAL_GET, exc_slot);
         let line = self.line;
         common::errors::emit_throw(self.chunk(), line);
@@ -9890,6 +9932,18 @@ impl Compiler {
                 }
                 self.chunk().emit_br(0, line);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
+                // Entering this try's catch-arms section: ITS runtime handler
+                // has fired, so ITS finally (sequenced after the arms) is the
+                // one a `throw` inside an arm must inline — enclosing trys'
+                // finallys still have LIVE handlers and must NOT be inlined
+                // (the runtime runs them; inlining doubled the finally).
+                let fired_finally = if finally.is_some() && !catches.is_empty() {
+                    let idx = self.active_finally_blocks.len() - 1;
+                    self.fired_finally_indices.push(idx);
+                    true
+                } else {
+                    false
+                };
                 if catches.is_empty() {
                     if let Some(exc_slot) = finally_exc_slot {
                         self.emit_u16(Op::LOCAL_SET, exc_slot);
@@ -9936,7 +9990,9 @@ impl Compiler {
                         let exception_catches_all = !self.profile.throwable_is_root;
                         let is_catch_all = types.is_empty()
                             || types.iter().any(|t| {
-                                *t == "Throwable" || (exception_catches_all && *t == "Exception")
+                                *t == "Throwable"
+                                    || (exception_catches_all
+                                        && (*t == "Exception" || *t == "BaseException"))
                             });
 
                         let arm_match_slot = self.define_local("__catch_arm_match");
@@ -9953,98 +10009,25 @@ impl Compiler {
                                     }
                                 }
 
-                                // Match if __exception_type === ty
+                                // Single identity test per candidate type:
+                                // `REF_TEST` → `test_type` resolves type-registry
+                                // subtype (the real class hierarchy — now that the
+                                // host registers Error/Exception as distinct roots
+                                // per §20.5, PHP's sibling model via its prelude,
+                                // etc.), `__type`/`__types` chain, and prototype
+                                // identity. One unified mechanism, no per-language
+                                // branching, no stamp string-compares.
                                 for expected in &expected_names {
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
-                                    let key = self.str_const("__exception_type");
-                                    self.chunks[self.current].emit_op_u16(
-                                        Op::STRUCT_GET,
-                                        key,
-                                        line,
-                                    );
-                                    inst!(self, core_wasm::string_const, expected);
-                                    {
-                                        let line = self.line;
-                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                                    };
+                                    let idx = self.str_const(expected);
+                                    self.chunks[self.current].emit_op_u16(Op::REF_TEST, idx, line);
                                     {
                                         let line = self.line;
                                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                                     };
                                     self.chunk().emit_if(line);
                                     inst!(self, core_wasm::bool_const, true);
-                                    self.emit_u16(Op::LOCAL_SET, arm_match_slot);
-                                    self.chunk().emit_end(line);
-                                }
-                                // Or match if __type === ty (user class extends
-                                // Exception — its ctor stamps __type via the
-                                // class infrastructure but inherits
-                                // __exception_type from the base ctor; checking
-                                // both lets `catch (AppException)` find
-                                // `throw new AppException(...)`).
-                                for expected in &expected_names {
-                                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                                    let line = self.line;
-                                    let key = self.str_const("__type");
-                                    self.chunks[self.current].emit_op_u16(
-                                        Op::STRUCT_GET,
-                                        key,
-                                        line,
-                                    );
-                                    inst!(self, core_wasm::string_const, expected);
-                                    {
-                                        let line = self.line;
-                                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                                    };
-                                    {
-                                        let line = self.line;
-                                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                                    };
-                                    self.chunk().emit_if(line);
-                                    inst!(self, core_wasm::bool_const, true);
-                                    self.emit_u16(Op::LOCAL_SET, arm_match_slot);
-                                    self.chunk().emit_end(line);
-                                }
-                                // Or match any name in the cross-language
-                                // inheritance chain stamped by shared class
-                                // emission. This lets `catch (BaseError)`
-                                // match `throw new NotFoundError(...)`.
-                                for expected in &expected_names {
-                                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                                    let line = self.line;
-                                    let types_key = self.str_const("__types");
-                                    self.chunks[self.current].emit_op_u16(
-                                        Op::STRUCT_GET,
-                                        types_key,
-                                        line,
-                                    );
-                                    self.emit(Op::REF_IS_NULL);
-                                    self.chunk().emit_if_value(line);
-                                    inst!(self, core_wasm::bool_const, false);
-                                    self.chunk().emit_else(line);
-                                    self.emit_u16(Op::LOCAL_GET, exc_slot);
-                                    let types_key = self.str_const("__types");
-                                    self.chunks[self.current].emit_op_u16(
-                                        Op::STRUCT_GET,
-                                        types_key,
-                                        line,
-                                    );
-                                    let expected_const =
-                                        Value::String(Arc::from(expected.as_str()));
-                                    self.emit_const(expected_const);
-                                    common::collections::emit_contains(
-                                        &mut self.chunks,
-                                        self.current,
-                                        line,
-                                    );
-                                    self.chunk().emit_end(line);
-                                    {
-                                        let line = self.line;
-                                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                                    };
-                                    self.chunk().emit_if(line);
-                                    self.emit_const(Value::Bool(true));
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
                                     self.chunk().emit_end(line);
                                 }
@@ -10127,6 +10110,9 @@ impl Compiler {
                 self.chunk().emit_end(line);
                 self.chunk().patch_block(after_try_block);
                 self.label_depth -= 1;
+                if fired_finally {
+                    self.fired_finally_indices.pop();
+                }
                 if finally.is_some() {
                     self.active_finally_blocks.pop();
                 }
@@ -11833,10 +11819,27 @@ impl Compiler {
                 self.emit(Op::I32_EQZ);
                 let line = self.line;
                 self.chunk().emit_if(line);
+                // Raise a CANONICAL AssertionError (same construction as
+                // `raise AssertionError(msg)`), not a bare string — typed
+                // `except AssertionError:` matches through the shared shape.
+                self.emit_u16(Op::STRUCT_NEW, 0);
+                inst!(self, core_wasm::dup);
                 if let Some(m) = msg {
                     self.compile_expr(m)?;
                 } else {
                     self.emit_const(Value::String(Arc::from("Assertion failed")));
+                }
+                common::errors::emit_exception_new_finalize(
+                    &mut self.chunks[self.current],
+                    "AssertionError",
+                    line,
+                );
+                if !self.profile.throwable_is_root {
+                    common::errors::emit_stamp_exception_ancestors(
+                        &mut self.chunks[self.current],
+                        "AssertionError",
+                        line,
+                    );
                 }
                 common::errors::emit_throw(&mut self.chunks[self.current], line);
                 self.chunk().emit_end(line);

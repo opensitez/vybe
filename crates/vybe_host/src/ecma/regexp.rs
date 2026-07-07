@@ -475,12 +475,12 @@ fn validate_pattern(pattern: &str, flags: &str) -> Result<(), String> {
 }
 
 fn throw_syntax_error(ctx: &mut HostContext, message: &str) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error("SyntaxError", message));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "SyntaxError", message));
     Value::Null
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error("TypeError", message));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
     Value::Null
 }
 

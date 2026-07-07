@@ -120,8 +120,10 @@ crate::js_cases! {
     };
 
     dataview_overlapping_int8_reads_from_int16_write => {
+        // setInt16(0x0102, littleEndian) stores low byte first: byte0=0x02,
+        // byte1=0x01 → getInt8(0)=2, getInt8(1)=1 (node-verified).
         r#"const v=new DataView(new ArrayBuffer(2)); v.setInt16(0,0x0102,true); console.log(v.getInt8(0));console.log(v.getInt8(1));"#,
-        ["1", "2"]
+        ["2", "1"]
     };
 
     dataview_instanceof_dataview => {
@@ -135,7 +137,10 @@ crate::js_cases! {
     };
 
     dataview_set_float32_big_endian_differs_from_little => {
-        r#"const v=new DataView(new ArrayBuffer(4)); v.setFloat32(0,1,true); const le=v.getFloat32(0,true); v.setFloat32(0,1,false); const be=v.getFloat32(0,false); console.log(le!==be);"#,
+        // Endianness shows up when the WRITE and READ disagree: store as
+        // little-endian, read back as big-endian → different value. (Writing
+        // and reading with the SAME endianness always round-trips to 1.0.)
+        r#"const v=new DataView(new ArrayBuffer(4)); v.setFloat32(0,1,true); const le=v.getFloat32(0,true); const be=v.getFloat32(0,false); console.log(le!==be);"#,
         ["true"]
     };
 

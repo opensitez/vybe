@@ -15,11 +15,18 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+# Route bracket reads/writes (`d['k']`, `d['k'] = v`) through the dynamic
+# collection-key path (string keys → struct_get/set, numeric → array_get/set)
+# instead of the numeric-only ARRAY_GET path. Without this, `d['a']` coerces
+# the string key to f64 and traps. Same flag JS uses.
+dynamic_member_access = true
 materialize_bool_results = true
-# Python `arr[-1]` returns the last element. Compiler emits a
-# normalize-before-index sequence (`if i < 0: i = len + i`) when
-# this is set. JS/VB/C# leave it false — they return undefined.
-negative_index_wraps = true
+# NOTE: Python's `a[-1]` (offset-from-end) is NOT handled by the shared
+# `negative_index_wraps` compiler flag — that flag blindly emits `key < 0`
+# on every subscript and traps on string dict keys (`d['a']`). Instead the
+# Python walker normalizes from-end offsets (see `python_index_operand`),
+# the same way C# rewrites `arr[^N]`. Keeping this a walker concern leaves
+# the shared compiler generic and lets dict string keys pass through.
 # Route `return a, b` / `a, b = f()` through WASM multi-value — a
 # uniform-tuple-return function gets chunk.result_arity = N set and
 # callers destructure straight off the stack instead of materialising
@@ -39,6 +46,10 @@ uses_normalize_class = true
 # ── Internal operators (emitter adapters) ────────────────────────────────────
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
 __pymul__       = { emit = "common:python.pymul",            min_args = 2, max_args = 2 }
+# From-end offset normalization for subscripts (`a[-1]` → `a[len-1]`), applied
+# by the walker's `python_index_operand`. Safe for dict keys (only wraps
+# negative numbers on sequences).
+__py_from_end__ = { emit = "common:python.from_end",         min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -270,9 +281,13 @@ copy            = { emit = "common:python.copy",            min_args = 0, max_ar
 # Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —
 # portable Component Model imports, one handler.
-keys            = { emit = "common:dict.keys",               min_args = 0, max_args = 0 }
-values          = { emit = "common:dict.values",             min_args = 0, max_args = 0 }
-items           = { emit = "common:dict.items",              min_args = 0, max_args = 0 }
+# A Python dict IS a JS object under the hood — route keys/values/items to the
+# native Object.* enumeration (insertion-ordered), like Dart/Go. This drops the
+# `__keys`-array engine (`common:dict.*`) that was inconsistent between literal
+# and built dicts. items→entries yields [k,v] pairs (tuple repr handled elsewhere).
+keys            = { emit = "host:ecma:object:keys",          min_args = 0, max_args = 0 }
+values          = { emit = "host:ecma:object:values",        min_args = 0, max_args = 0 }
+items           = { emit = "host:ecma:object:entries",       min_args = 0, max_args = 0 }
 get             = { emit = "common:python.get",              min_args = 1, max_args = 2 }
 update          = { emit = "common:python.update",         min_args = 1, max_args = 1 }
 setdefault      = { emit = "common:python.setdefault",              min_args = 1, max_args = 2 }

@@ -59,6 +59,67 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Python from-end index normalization. Stack: `[obj, idx]` → `[normalized_idx]`.
+///
+/// `a[-1]` is "one from the end", not a real negative index: when `obj` is a
+/// sequence (array or string) and `idx` is a negative number, this returns
+/// `len(obj) + idx`; otherwise `idx` is returned unchanged so dict string/other
+/// keys pass straight through. The `< 0` test is guarded behind an `isNumber`
+/// check so a string key never hits numeric coercion — that guard is why this
+/// replaces the shared `negative_index_wraps` flag (which trapped on `d['a']`).
+pub fn emit_from_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let obj = base;
+    let idx = base + 1;
+
+    // if isNumber(idx)  (short-circuits the `< 0` test for string keys)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // if idx < 0
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // if isArray(obj) → len(obj) + idx
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_len_plus(chunks, current, obj, idx, line);
+    chunks[current].emit_else(line);
+    // else if isString(obj) → len(obj) + idx
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_len_plus(chunks, current, obj, idx, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line); // idx >= 0 → unchanged
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line); // not a number → unchanged (dict/other key)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_end(line);
+}
+
+/// `len(obj) + idx` — helper for the from-end wrap. Stack: `[]` → `[value]`.
+fn emit_len_plus(chunks: &mut [Chunk], current: usize, obj: u16, idx: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    emit_length(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
+}
+
 pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
@@ -267,13 +328,16 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         return;
     } else {
-        let keys_key = chunks[current]
-            .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        // Dispatch on isArray, NOT `__keys` presence: a Python dict is a plain
+        // JS object with no `__keys`, so a keys-based check misclassifies it as
+        // a list. `list.pop(i)` splices; `dict.pop(k[, default])` reads the
+        // value then removes the property natively via `ecma:object.delete`.
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-        chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
-        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        call_import(chunks, current, "ecma:array", "isArray", 1, line);
+        crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
 
+        // list.pop(i): value = recv[i]; remove_at(recv, i); value
         let index = base + 1;
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
@@ -288,6 +352,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
         chunks[current].emit_else(line);
 
+        // dict.pop(k[, default]): value = recv[k]
         let key = base + 1;
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
@@ -297,74 +362,66 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
         chunks[current].emit_if(line);
+        // missing key → default (or null)
         if argc >= 3 {
             chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
         } else {
             chunks[current].emit_op(Op::NULL, line);
         }
-
         chunks[current].emit_else(line);
+        // present → delete the property natively and return the value
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
-        dict::emit_method_delete(chunks, current, line);
+        call_import(chunks, current, "ecma:object", "delete", 2, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_end(line);
+
         chunks[current].emit_end(line);
     }
 }
 
 pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Polymorphic `len`: string → char length, array → element count,
+    // Set/Map → `.size`, otherwise (dict/object) → `Object.keys(o).length`.
+    // Uses the object's native property enumeration (a Python dict IS a JS
+    // object) — no `__keys` array, so literal and built dicts count the same.
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
     let size_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
 
+    // isString(recv) → string length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     strings::emit_length(&mut chunks[current], line);
-
     chunks[current].emit_else(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::DROP, line);
+    // isArray(recv) → element count
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_len(chunks, current, line);
-
     chunks[current].emit_else(line);
 
+    // has `.size` (Set/Map) → use it, else Object.keys(recv).length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::DROP, line); // drop null `.size`
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
-
-    chunks[current].emit_else(line);
-    collections::emit_len(chunks, current, line);
-    chunks[current].emit_end(line);
-
     chunks[current].emit_end(line);
 }

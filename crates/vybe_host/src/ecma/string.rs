@@ -661,7 +661,7 @@ fn register_search_ops(vm: &mut VM) {
         "includes",
         Box::new(|ctx, args| {
             if is_regexp_value(args.get(1)) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "TypeError",
                     "First argument to String.prototype.includes must not be a RegExp",
                 ));
@@ -789,7 +789,7 @@ fn register_modify_ops(vm: &mut VM) {
             // RangeError (NaN → 0 via ToIntegerOrInfinity).
             let n = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
             if n < 0.0 || (n.is_infinite() && n > 0.0) {
-                ctx.throw_value(crate::ecma::error::new_error(
+                ctx.throw_value(crate::ecma::error::new_error(ctx, 
                     "RangeError",
                     "Invalid count value",
                 ));
@@ -947,7 +947,7 @@ fn register_normalize(vm: &mut VM) {
                 None | Some(Value::Undefined) => "NFC",
                 Some(Value::String(form)) => form.as_ref(),
                 Some(other) => {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -963,7 +963,7 @@ fn register_normalize(vm: &mut VM) {
                 "NFKC" => input.nfkc().collect::<String>(),
                 "NFKD" => input.nfkd().collect::<String>(),
                 _ => {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -1042,7 +1042,7 @@ fn register_uri(vm: &mut VM) {
             match decode_uri_string(&s) {
                 Ok(decoded) => s_val(&decoded),
                 Err(message) => {
-                    ctx.throw_value(crate::ecma::error::new_error("URIError", message));
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, "URIError", message));
                     Value::Undefined
                 }
             }
@@ -1088,7 +1088,7 @@ fn register_uri(vm: &mut VM) {
             match decode_uri_string(&s) {
                 Ok(decoded) => s_val(&decoded),
                 Err(message) => {
-                    ctx.throw_value(crate::ecma::error::new_error("URIError", message));
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, "URIError", message));
                     Value::Undefined
                 }
             }
@@ -1276,7 +1276,7 @@ fn latin1_string(bytes: &[u8]) -> String {
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) {
-    ctx.throw_value(crate::ecma::error::new_error("TypeError", message));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
 }
 
 fn register_base64(vm: &mut VM) {

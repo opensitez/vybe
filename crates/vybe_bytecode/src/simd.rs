@@ -259,6 +259,46 @@ impl VM {
     /// Test if a value matches a type name (used by ref_test, ref_cast, br_on_cast).
     /// Supports: WASM GC type_id lookup, __type string matching, __types array
     /// (JS class inheritance chain), and __control_type for GUI controls.
+    /// §7.3.19 OrdinaryHasInstance, name-free: is `<target>.prototype` in
+    /// `val`'s `__proto__` chain, by object identity? Resolves the target's
+    /// prototype ONLY from the `__ctor_<target>` anchor — the convention the
+    /// JS prelude wires for its canonical constructors. Deliberately does NOT
+    /// fall back to a bare `<target>` global: a language whose classes are
+    /// bare globals (e.g. PHP) carries its real hierarchy in the type registry
+    /// + `__types`, and a bare-global lookup there mis-resolves sibling error
+    /// classes (PHP `Error`/`Exception` both implement `Throwable`). No anchor
+    /// ⇒ no-op, and the registry/stamp checks in `test_type` stand.
+    pub(crate) fn proto_chain_has(&self, val: &Value, target_name: &str) -> bool {
+        let target_proto = self
+            .globals
+            .get(&format!("__ctor_{target_name}"))
+            .and_then(|ctor| {
+                if let Value::Object(c) = ctor {
+                    c.lock().unwrap().properties.get("prototype").cloned()
+                } else {
+                    None
+                }
+            });
+        let Some(Value::Object(target_proto)) = target_proto else {
+            return false;
+        };
+        let mut current = match val {
+            Value::Object(o) => o.lock().unwrap().properties.get("__proto__").cloned(),
+            _ => return false,
+        };
+        // Bounded walk — a corrupt cyclic chain must not spin forever.
+        for _ in 0..1024 {
+            let Some(Value::Object(proto)) = current else {
+                return false;
+            };
+            if std::sync::Arc::ptr_eq(&proto, &target_proto) {
+                return true;
+            }
+            current = proto.lock().unwrap().properties.get("__proto__").cloned();
+        }
+        false
+    }
+
     pub(crate) fn test_type(&self, val: &Value, target_name: &str) -> bool {
         // ── WASM GC abstract heap types (spec §6.2) ───────────────
         // Bottom types: always false for any non-null value.
@@ -377,6 +417,17 @@ impl VM {
                             return true;
                         }
                     }
+                }
+
+                // §7.3.19 OrdinaryHasInstance: walk the object's `__proto__`
+                // chain looking for `<target>.prototype` BY OBJECT IDENTITY —
+                // the spec-true, name-free type test. Requires the constructor
+                // anchor `__ctor_<target>` (or the bare global `<target>`) to
+                // carry a `prototype`; when absent (non-JS profiles, non-class
+                // targets) this is a no-op and the stamp checks above stand.
+                drop(ob);
+                if self.proto_chain_has(val, target_name) {
+                    return true;
                 }
 
                 target_name.eq_ignore_ascii_case("object")

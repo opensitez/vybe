@@ -200,7 +200,22 @@ fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option
     );
 }
 
-pub(crate) fn new_error(kind: &str, message: &str) -> Value {
+/// §20.5 one-population constructor: every host-thrown error links the
+/// SAME per-VM `__ctor_<Kind>.prototype` chain compiled `new TypeError()`
+/// uses, so host-minted and compiled errors are indistinguishable
+/// (`instanceof`, prototype `name`, §20.5.3.4 toString). Stamps are still
+/// dual-written for the legacy readers until the Phase-5 sweep.
+pub(crate) fn new_error(ctx: &HostContext, kind: &str, message: &str) -> Value {
+    let mut obj = Object::new();
+    stamp_error_object(&mut obj, kind, message, None);
+    link_error_prototype(ctx, &mut obj, kind);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+/// Stamps-only error for the rare helper with NO HostContext in reach
+/// (deep recursion internals). Every throw-site constructor must use
+/// `new_error` — an unlinked error is the two-populations bug.
+pub(crate) fn new_error_flat(kind: &str, message: &str) -> Value {
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, message, None);
     Value::Object(Arc::new(Mutex::new(obj)))

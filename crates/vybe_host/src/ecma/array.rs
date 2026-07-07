@@ -284,7 +284,7 @@ pub(crate) fn set_array_length(object: &mut Object, new_len: usize) {
 pub(crate) fn apply_js_array_length(ctx: &mut HostContext, object: &mut Object, value: &Value) {
     match parse_js_array_length(value) {
         Ok(new_len) => set_array_length(object, new_len),
-        Err(message) => ctx.throw_value(crate::ecma::error::new_error("RangeError", message)),
+        Err(message) => ctx.throw_value(crate::ecma::error::new_error(ctx, "RangeError", message)),
     }
 }
 
@@ -484,7 +484,7 @@ fn register_constructors(vm: &mut VM) {
                     match parse_js_array_length(&args[0]) {
                         Ok(length) => make_holey_array(length),
                         Err(message) => {
-                            ctx.throw_value(crate::ecma::error::new_error("RangeError", message));
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, "RangeError", message));
                             Value::Undefined
                         }
                     }
@@ -957,7 +957,7 @@ fn register_mutators(vm: &mut VM) {
                         || crate::ecma::object::is_not_extensible(&o)
                 };
                 if blocked {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "TypeError",
                         "Cannot add property, object is not extensible",
                     ));
@@ -1202,7 +1202,7 @@ fn register_mutators(vm: &mut VM) {
                         ) || c.properties.contains_key("__fn_return")
                     };
                     if !callable {
-                        ctx.throw_value(crate::ecma::error::new_error(
+                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
                             "TypeError",
                             "The comparison function must be either a function or undefined",
                         ));
@@ -1216,7 +1216,7 @@ fn register_mutators(vm: &mut VM) {
                         // TypeError (sealed still allows index writes).
                         if o.properties.get(FROZEN_MARK).is_some() {
                             drop(o);
-                            ctx.throw_value(crate::ecma::error::new_error(
+                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                                 "TypeError",
                                 "Cannot assign to read only property of frozen array",
                             ));

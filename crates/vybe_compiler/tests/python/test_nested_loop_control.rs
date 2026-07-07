@@ -26,7 +26,7 @@ fn break_outer_via_flag_pattern() {
         run_python_one(
             "out = []\nfor i in range(3):\n for j in range(3):\n  if i == 1 and j == 1:\n   out.append('stop')\n   break\n  out.append(i)\n else:\n  continue\n break\nprint(out)\n"
         ),
-        "[0, 0, 0, 'stop']"
+        "[0, 0, 0, 1, 'stop']"
     );
 }
 
@@ -44,7 +44,7 @@ fn for_else_skipped_when_inner_breaks() {
         run_python_one(
             "for i in range(2):\n for j in range(2):\n  if j == 1:\n   break\nelse:\n print('no')\n"
         ),
-        ""
+        "no"
     );
 }
 
@@ -94,7 +94,7 @@ fn continue_in_inner_while_inside_for() {
         run_python_one(
             "out = []\nfor x in [1, 2]:\n y = 0\n while y < 4:\n  y += 1\n  if y == 2:\n   continue\n  out.append(x + y)\nprint(out)\n"
         ),
-        "[3, 4, 5, 5, 6, 7]"
+        "[2, 4, 5, 3, 5, 6]"
     );
 }
 
@@ -144,7 +144,7 @@ fn while_else_after_inner_break_prevents_outer_else() {
         run_python_one(
             "n = 0\nwhile n < 2:\n m = 0\n while m < 2:\n  if m == 1:\n   break\n  m += 1\n else:\n  print('inner')\n  n += 1\n  continue\n break\nelse:\n print('outer')\n"
         ),
-        "inner"
+        ""
     );
 }
 
@@ -244,6 +244,6 @@ fn nested_for_else_break_on_last_outer_iteration() {
         run_python_one(
             "out = []\nfor i in range(3):\n for j in range(2):\n  if i == 2 and j == 1:\n   break\n  out.append(i)\n else:\n  out.append(99)\nprint(out)\n"
         ),
-        "[0, 0, 99, 1, 1, 99, 2, 2]"
+        "[0, 0, 99, 1, 1, 99, 2]"
     );
 }

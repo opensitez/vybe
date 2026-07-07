@@ -124,7 +124,7 @@ fn try_with_break_in_loop() {
         run_python_one(
             "for _ in range(3):\n try:\n  print('x')\n  break\n finally:\n  print('y')\n"
         ),
-        "x"
+        "x\ny"
     );
 }
 

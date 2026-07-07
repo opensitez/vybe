@@ -142,11 +142,9 @@ pub(crate) fn read_element(ta: &TypedArrayState, i: usize) -> Value {
         TypedElemKind::U32 => {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&buf[abs..abs + 4]);
-            // u32 stored as i32 on the wire; unsigned interpretation
-            // is the language's job. Matches ECMA-262 §23.2.3 which
-            // treats Uint32Array elements as i32-representable only
-            // via tostring/coercion at the JS side.
-            Value::I32(u32::from_le_bytes(bytes) as i32)
+            // Uint32 spans [0, 2^32) — beyond i32 — so surface as an F64
+            // JS number (e.g. 4294967295), not a wrapped i32.
+            Value::F64(u32::from_le_bytes(bytes) as f64)
         }
         TypedElemKind::F32 => {
             let mut bytes = [0u8; 4];
@@ -212,7 +210,14 @@ pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             buf[abs..abs + 4].copy_from_slice(&bytes);
         }
         TypedElemKind::U32 => {
-            let val = v.as_i32() as u32;
+            // §7.1.7 ToUint32: truncate toward zero, mod 2^32. `as_i32()`
+            // saturated large numbers (4294967295 → i32::MAX); wrap instead.
+            let n = v.as_f64();
+            let val = if n.is_finite() {
+                n.trunc().rem_euclid(4294967296.0) as u32
+            } else {
+                0
+            };
             let bytes = val.to_le_bytes();
             buf[abs..abs + 4].copy_from_slice(&bytes);
         }
@@ -1339,16 +1344,18 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
     vm.register_host_fn(
         module,
         "keys",
+        // §23.2.3.19: returns an Array Iterator (with `.next()`), NOT a plain
+        // array — `make_array_iterator` wraps the materialized snapshot.
         Box::new(move |_ctx, args| {
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
                     let ks: Vec<Value> = (0..live as i32).map(Value::I32).collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(ks))));
+                    return crate::ecma::array::make_array_iterator(ks);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }),
     );
 
@@ -1361,10 +1368,10 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
                     let vs: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(vs))));
+                    return crate::ecma::array::make_array_iterator(vs);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }),
     );
 
@@ -1384,10 +1391,10 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                             ]))))
                         })
                         .collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(es))));
+                    return crate::ecma::array::make_array_iterator(es);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }),
     );
 

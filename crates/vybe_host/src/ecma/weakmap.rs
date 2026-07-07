@@ -88,7 +88,7 @@ pub fn key_ptr_find(keys: &[Value], key: &Value) -> Option<usize> {
 }
 
 fn throw_invalid_weakmap_key(ctx: &mut HostContext) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error(
+    ctx.throw_value(crate::ecma::error::new_error(ctx, 
         "TypeError",
         "Invalid value used as weak map key",
     ));
@@ -96,7 +96,7 @@ fn throw_invalid_weakmap_key(ctx: &mut HostContext) -> Value {
 }
 
 fn throw_invalid_weakset_value(ctx: &mut HostContext) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error(
+    ctx.throw_value(crate::ecma::error::new_error(ctx, 
         "TypeError",
         "Invalid value used in weak set",
     ));

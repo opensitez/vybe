@@ -1452,6 +1452,29 @@ fn walk_del(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .filter(|p| is_expression_rule(p.as_rule()))
         .map(walk_expression)
         .collect::<Result<Vec<_>, _>>()?;
+
+    // `del obj[key]` (single, non-slice) → `obj.pop(key)`. Python `del` and
+    // `.pop()` remove identically (both raise on a missing key/index), and
+    // `.pop()` already works for dicts AND lists — whereas `StmtKind::Delete`'s
+    // dict branch (`dict::emit_method_delete`) is broken on dict literals (they
+    // don't populate the `__keys` array it relies on). Slices, bare names, and
+    // multi-target dels keep the existing Delete path.
+    if let [target] = exprs.as_slice() {
+        if let ExprKind::Index { object, index, .. } = &target.kind {
+            if !matches!(index.kind, ExprKind::Slice { .. } | ExprKind::Range { .. }) {
+                let pop = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: "pop".into(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional((**index).clone())],
+                    optional: false,
+                });
+                return Ok(StmtKind::Expr(pop));
+            }
+        }
+    }
     Ok(StmtKind::Delete(exprs))
 }
 
@@ -2547,16 +2570,20 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                     Rule::subscript => {
-                        let index = walk_subscript_expr(children.into_iter().next().unwrap())?;
+                        let index = Expression::new(walk_subscript_expr(
+                            children.into_iter().next().unwrap(),
+                        )?);
+                        let index = python_index_operand(&expr, index);
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
-                            index: Box::new(Expression::new(index)),
+                            index: Box::new(index),
                             null_safe: false,
                         });
                     }
                     _ => {
                         // Fallback: try to walk as expression
                         let val = walk_expression(children.into_iter().next().unwrap())?;
+                        let val = python_index_operand(&expr, val);
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(val),
@@ -2651,6 +2678,29 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 }
 
 // ── Subscript ───────────────────────────────────────────────────────────────
+
+/// Wrap a scalar subscript index in the from-end offset normalizer
+/// `__py_from_end__` so `a[-1]` reads one-from-the-end (like C#'s `arr[^N]`).
+/// Skips keys that can never be a from-end offset: string literals (dict keys),
+/// non-negative integer literals, and slices/ranges (the slice path already
+/// offsets from the end). The normalizer is a runtime no-op unless the index is
+/// a negative number on a sequence, so dict lookups stay direct.
+fn python_index_operand(object: &Expression, index: Expression) -> Expression {
+    match &index.kind {
+        ExprKind::Lit(Literal::Str(_)) => return index,
+        ExprKind::Lit(Literal::Int(n)) if *n >= 0 => return index,
+        ExprKind::Slice { .. } | ExprKind::Range { .. } => return index,
+        _ => {}
+    }
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__py_from_end__")),
+        args: vec![
+            Argument::positional(object.clone()),
+            Argument::positional(index),
+        ],
+        optional: false,
+    })
+}
 
 fn walk_subscript_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let text = pair.as_str().trim();
@@ -2823,7 +2873,10 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 
     // ── Dict literal or set literal ──────────────────────────────────────
-    let mut is_dict = false;
+    // Python quirk: empty `{}` is an empty DICT, not a set (`set()` is the
+    // empty set). Without this, `{}` became `ExprKind::Set([])` and `d[k]=v`
+    // never created enumerable object properties.
+    let mut is_dict = inner.is_empty();
     for p in &inner {
         match p.as_rule() {
             Rule::dict_comp_or_rest | Rule::dict_rest | Rule::dict_entry => is_dict = true,

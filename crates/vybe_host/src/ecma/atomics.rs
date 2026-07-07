@@ -54,7 +54,7 @@ fn ta_length_and_shared(args: &[Value], idx: usize) -> Option<(usize, bool)> {
 fn check_atomic_bounds(ctx: &mut HostContext, args: &[Value], idx: usize) -> bool {
     if let Some((len, _)) = ta_length_and_shared(args, 0) {
         if idx >= len {
-            ctx.throw_value(crate::ecma::error::new_error(
+            ctx.throw_value(crate::ecma::error::new_error(ctx, 
                 "RangeError",
                 "Atomics access index out of bounds",
             ));
@@ -308,7 +308,7 @@ pub fn register(vm: &mut VM) {
             // still requires a SharedArrayBuffer backing.
             if let Some((_, shared)) = ta_length_and_shared(args, 0) {
                 if !shared {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "TypeError",
                         "Atomics.wait requires a SharedArrayBuffer",
                     ));
@@ -353,7 +353,7 @@ pub fn register(vm: &mut VM) {
             let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
             if let Some((_, shared)) = ta_length_and_shared(args, 0) {
                 if !shared {
-                    ctx.throw_value(crate::ecma::error::new_error(
+                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
                         "TypeError",
                         "Atomics.waitAsync requires a SharedArrayBuffer",
                     ));

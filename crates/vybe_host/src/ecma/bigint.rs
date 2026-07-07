@@ -45,7 +45,7 @@ fn big(v: BigIntVal) -> Value {
 }
 
 fn throw_range(ctx: &mut HostContext, msg: &str) -> Value {
-    ctx.throw_value(crate::ecma::error::new_error("RangeError", msg));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "RangeError", msg));
     Value::Undefined
 }
 
@@ -60,7 +60,7 @@ pub fn register(vm: &mut VM) {
                 return match BigIntVal::parse(text) {
                     Some(n) => big(n),
                     None => {
-                        ctx.throw_value(crate::ecma::error::new_error(
+                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
                             "SyntaxError",
                             &format!("Cannot convert {} to a BigInt", text),
                         ));

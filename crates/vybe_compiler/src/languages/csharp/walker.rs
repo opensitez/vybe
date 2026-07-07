@@ -11,6 +11,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut body = Vec::new();
     let mut imports = Vec::new();
     let mut pending_attributes: Vec<Expression> = Vec::new();
+    // Fresh capture per parse (thread-local persists across calls).
+    INTERFACE_DEFAULTS.with(|d| d.borrow_mut().clear());
+    CUSTOM_EVENTS.with(|s| s.borrow_mut().clear());
+    NAMED_TUPLE_VARS.with(|m| m.borrow_mut().clear());
 
     for top in pairs {
         let inner = match top.as_rule() {
@@ -87,6 +91,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
     };
     rewrite_using_imports(&mut module);
+    inject_interface_defaults(&mut module.body);
     lower_csharp_using_declarations(&mut module.body);
     rewrite_set_algebra_bool_calls(&mut module.body);
     rewrite_explicit_interface_accesses(&mut module);
@@ -1132,7 +1137,82 @@ fn rewrite_record_uses_in_statement(
                 scopes.pop();
             }
         }
+        StmtKind::Assign { targets, value } => {
+            rewrite_record_uses_in_expr(value, record_shapes, scopes);
+            for target in targets.iter_mut() {
+                rewrite_record_uses_in_expr(target, record_shapes, scopes);
+            }
+            // `(x, y) = recordOrDeconstructValue;` — assignment-form deconstruction.
+            // Rewrite the RHS into a positional field-array so the existing array
+            // destructure path handles it. Guarded on the value being a known
+            // record/Deconstruct type, so tuple RHS is left untouched.
+            if targets.len() == 1 {
+                if let Some(names) = destructure_target_names(&targets[0]) {
+                    if let Some(record_type) = infer_record_type(value, record_shapes, scopes) {
+                        if let Some(shape) = record_shapes.get(&record_type) {
+                            if shape.positional_fields.len() == names.len() {
+                                let obj = value.clone();
+                                let values = shape
+                                    .positional_fields
+                                    .iter()
+                                    .map(|field| ArrayElement {
+                                        key: None,
+                                        value: Expression::new(ExprKind::Member {
+                                            object: Box::new(obj.clone()),
+                                            field: field.clone(),
+                                            null_safe: false,
+                                        }),
+                                        spread: false,
+                                        by_ref: false,
+                                    })
+                                    .collect();
+                                let patterns = names
+                                    .iter()
+                                    .map(|n| {
+                                        if n == "_" {
+                                            ArrayPatternElem::Hole
+                                        } else {
+                                            ArrayPatternElem::Pattern(
+                                                BindingPattern::Ident(n.clone()),
+                                                None,
+                                            )
+                                        }
+                                    })
+                                    .collect();
+                                targets[0] = Expression::new(ExprKind::Destructure(
+                                    DestructurePattern::Array(patterns),
+                                ));
+                                *value = Expression::new(ExprKind::Array(values));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// Leaf identifier names of a deconstruction assignment target, whether it is a
+/// tuple-literal LHS (`(x, y)`) or an already-lowered array destructure pattern.
+fn destructure_target_names(target: &Expression) -> Option<Vec<String>> {
+    match &target.kind {
+        ExprKind::Tuple(items) => items
+            .iter()
+            .map(|e| match &e.kind {
+                ExprKind::Ident(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect(),
+        ExprKind::Destructure(DestructurePattern::Array(patterns)) => patterns
+            .iter()
+            .map(|p| match p {
+                ArrayPatternElem::Hole => Some("_".to_string()),
+                ArrayPatternElem::Pattern(BindingPattern::Ident(n), _) => Some(n.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
     }
 }
 
@@ -1486,6 +1566,9 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
                 let BindingPattern::Ident(name) = &decl.pattern else {
                     continue;
                 };
+                if let Some(named) = decl.init.as_ref().and_then(named_tuple_arity) {
+                    NAMED_TUPLE_VARS.with(|m| m.borrow_mut().insert(name.clone(), named));
+                }
                 if let Some(arity) = decl
                     .init
                     .as_ref()
@@ -1515,7 +1598,20 @@ fn rewrite_tuple_uses_in_statement(stmt: &mut Statement, scopes: &mut Vec<HashMa
             rewrite_tuple_uses_in_expr(target, scopes);
             rewrite_tuple_uses_in_expr(value, scopes);
         }
-        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+        StmtKind::Block(body) => {
+            // `var (x, y) = t;` where `t` holds a tuple lowers (in the walker) to a
+            // `t.Deconstruct(out x, out y)` block. Tuples are runtime arrays with no
+            // Deconstruct, so rewrite to a plain array-destructure binding when the
+            // receiver is a known tuple.
+            if let Some(rewritten) = rewrite_tuple_deconstruction_block(body, scopes) {
+                stmt.kind = rewritten;
+            } else {
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(body, scopes);
+                scopes.pop();
+            }
+        }
+        StmtKind::NamespaceDecl { body, .. } => {
             scopes.push(HashMap::new());
             rewrite_tuple_uses_in_statements(body, scopes);
             scopes.pop();
@@ -1835,6 +1931,80 @@ fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Op
         ExprKind::Cast { expr, .. } => infer_tuple_arity(expr, scopes),
         _ => None,
     }
+}
+
+use crate::common::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
+
+/// A `var (a, b) = t;` where `t` is a tuple-valued expression lowers to a block
+/// ending in `t.Deconstruct(out a, out b)`. Tuples carry no `Deconstruct`, so
+/// convert the block to an array-destructure binding. For a positional tuple
+/// the receiver is already a runtime array (`var [a, b] = t;`); for a named
+/// tuple (a keyed object) read `Item1..ItemN` positionally so it rejoins the
+/// same shared array-destructure primitive.
+fn rewrite_tuple_deconstruction_block(
+    body: &[Statement],
+    scopes: &[HashMap<String, usize>],
+) -> Option<StmtKind> {
+    let StmtKind::Expr(expr) = &body.last()?.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "Deconstruct" {
+        return None;
+    }
+
+    let named_arity = named_tuple_arity(object).or_else(|| match &object.kind {
+        ExprKind::Ident(name) => NAMED_TUPLE_VARS.with(|m| m.borrow().get(name).copied()),
+        _ => None,
+    });
+    let (arity, is_named) = match named_arity {
+        Some(a) => (a, true),
+        None => (infer_tuple_arity(object, scopes)?, false),
+    };
+    if arity != args.len() {
+        return None;
+    }
+
+    let patterns = args
+        .iter()
+        .map(|arg| match &arg.value.kind {
+            ExprKind::Ident(name) if name.starts_with("__discard_") => ArrayPatternElem::Hole,
+            ExprKind::Ident(name) => {
+                ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+            }
+            _ => ArrayPatternElem::Hole,
+        })
+        .collect();
+
+    let init = if is_named {
+        let values = (0..arity)
+            .map(|i| ArrayElement {
+                key: None,
+                value: named_tuple_positional_read((**object).clone(), i),
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        Expression::new(ExprKind::Array(values))
+    } else {
+        (**object).clone()
+    };
+
+    Some(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Array(patterns),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
 }
 
 fn build_tuple_runtime_equality(left: &Expression, right: &Expression, arity: usize) -> Expression {
@@ -4288,21 +4458,36 @@ fn expr_dotted_name(expr: &Expression) -> Option<String> {
 }
 
 fn synthesize_exception_classes() -> Vec<Statement> {
-    let names = [
-        "Exception",
-        "InvalidOperationException",
-        "ArgumentException",
-        "ArgumentNullException",
-        "ArgumentOutOfRangeException",
-        "DivideByZeroException",
-        "FormatException",
-        "NotImplementedException",
-        "NotSupportedException",
-        "NullReferenceException",
-        "OverflowException",
-        "IndexOutOfRangeException",
+    // The real .NET `System.Exception` hierarchy as `(class, parent)`, parents
+    // before children so class-install order is valid. Empty parent = root.
+    // Modeling the tree (not a flat list) is what makes typed catch match up
+    // the hierarchy (`catch (SystemException)` catches an `ArgumentException`)
+    // via the class-identity path.
+    let hierarchy: &[(&str, &str)] = &[
+        ("Exception", ""),
+        ("SystemException", "Exception"),
+        ("ApplicationException", "Exception"),
+        ("AggregateException", "Exception"),
+        ("ArithmeticException", "SystemException"),
+        ("ArgumentException", "SystemException"),
+        ("InvalidOperationException", "SystemException"),
+        ("FormatException", "SystemException"),
+        ("NotImplementedException", "SystemException"),
+        ("NotSupportedException", "SystemException"),
+        ("NullReferenceException", "SystemException"),
+        ("IndexOutOfRangeException", "SystemException"),
+        ("KeyNotFoundException", "SystemException"),
+        ("TimeoutException", "SystemException"),
+        ("DivideByZeroException", "ArithmeticException"),
+        ("OverflowException", "ArithmeticException"),
+        ("ArgumentNullException", "ArgumentException"),
+        ("ArgumentOutOfRangeException", "ArgumentException"),
+        ("ObjectDisposedException", "InvalidOperationException"),
     ];
-    names.into_iter().map(synthesize_exception_class).collect()
+    hierarchy
+        .iter()
+        .map(|(name, parent)| synthesize_exception_class(name, parent))
+        .collect()
 }
 
 fn synthesize_attribute_classes() -> Vec<Statement> {
@@ -4406,7 +4591,7 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
     )
 }
 
-fn synthesize_exception_class(name: &str) -> Statement {
+fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
     let span = Span::default();
     // Per-type constructor signatures per ECMA-335 / .NET BCL:
     //   ArgumentNullException(paramName)              → ParamName=paramName
@@ -4499,14 +4684,16 @@ fn synthesize_exception_class(name: &str) -> Statement {
         )
     };
 
-    let mut members = vec![ClassMember::Field {
-        name: "Message".into(),
-        type_hint: Some("string".into()),
+    let mk_field = |fname: &str| ClassMember::Field {
+        name: fname.into(),
+        type_hint: None,
         init: None,
         modifiers: Modifiers::default(),
         with_events: false,
         array_bounds: None,
-    }];
+    };
+    // `Message` + `InnerException` on every node (harmless if inherited too).
+    let mut members = vec![mk_field("Message"), mk_field("InnerException")];
     if needs_param_name {
         members.push(ClassMember::Field {
             name: "ParamName".into(),
@@ -4517,6 +4704,16 @@ fn synthesize_exception_class(name: &str) -> Statement {
             array_bounds: None,
         });
     }
+    // Parameterless ctor so the implicit `base()` chain up the hierarchy always
+    // resolves (each parent has a 0-arg ctor). The typed ctors set their own
+    // fields on `this`; `base()` runs the parent's 0-arg ctor.
+    members.push(ClassMember::Constructor {
+        params: Vec::new(),
+        body: vec![assign_extype.clone()],
+        base_args: None,
+        initializer_target: crate::ast::ConstructorInitializerTarget::Base,
+        visibility: Visibility::Public,
+    });
     members.push(ClassMember::Constructor {
         params,
         body,
@@ -4533,11 +4730,30 @@ fn synthesize_exception_class(name: &str) -> Statement {
             visibility: Visibility::Public,
         });
     }
+    if !needs_param_name {
+        // `(message, innerException)` — .NET's exception-chaining ctor, so
+        // `throw new Exception("wrap", e)` preserves `e` as `.InnerException`.
+        members.push(ClassMember::Constructor {
+            params: vec![mk_param("msg"), mk_param("inner")],
+            body: vec![
+                assign("Message", "msg"),
+                assign("InnerException", "inner"),
+                assign_extype.clone(),
+            ],
+            base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        });
+    }
 
     Statement::with_span(
         StmtKind::ClassDecl {
             name: name.into(),
-            parents: Vec::new(),
+            parents: if parent.is_empty() {
+                Vec::new()
+            } else {
+                vec![parent.into()]
+            },
             interfaces: Vec::new(),
             members,
             modifiers: ClassModifiers::default(),
@@ -4680,6 +4896,24 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                         // the compiler routes through vybe:gui:bindEvent like VB does.
                         if matches!(compound_op, CompoundOp::Add | CompoundOp::Sub) {
                             if let ExprKind::Member { object, field, .. } = &target.kind {
+                                // Custom event: `obj.E += h` → `obj.add_E(h)`,
+                                // `-= h` → `obj.remove_E(h)`.
+                                if CUSTOM_EVENTS.with(|s| s.borrow().contains(field)) {
+                                    let accessor = if matches!(compound_op, CompoundOp::Add) {
+                                        format!("add_{}", field)
+                                    } else {
+                                        format!("remove_{}", field)
+                                    };
+                                    return StmtKind::Expr(Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: accessor,
+                                            null_safe: false,
+                                        })),
+                                        args: vec![Argument::positional((**right).clone())],
+                                        optional: false,
+                                    }));
+                                }
                                 if crate::common::events::is_known_gui_event_field(field)
                                     && crate::common::events::is_event_handler_expr(&right)
                                 {
@@ -6079,7 +6313,17 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                             if looks_like_csharp_interface_type(&type_str) {
                                 interfaces.push(type_str);
                             } else {
-                                parents.push(type_str);
+                                // Normalize a fully-qualified base class to its
+                                // leaf name (`System.Exception` → `Exception`)
+                                // so `class X : System.Exception` resolves to
+                                // the synthesized short-named class.
+                                parents.push(
+                                    type_str
+                                        .rsplit('.')
+                                        .next()
+                                        .unwrap_or(&type_str)
+                                        .to_string(),
+                                );
                             }
                             first = false;
                         } else {
@@ -7419,7 +7663,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         Rule::explicit_interface_property_declaration | Rule::property_declaration => {
             walk_property(mp, mods)
         }
-        Rule::event_declaration => walk_event(mp).map(|m| vec![m]),
+        Rule::event_declaration => walk_event(mp),
         Rule::explicit_interface_method_declaration | Rule::method_declaration => {
             walk_method(mp, mods).map(|m| vec![m])
         }
@@ -7678,22 +7922,92 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
     Ok(out)
 }
 
-fn walk_event(pair: Pair<Rule>) -> Result<ClassMember, String> {
+thread_local! {
+    // Names of events declared with custom `add`/`remove` accessors, so
+    // `obj.E += h` / `-= h` route to `obj.add_E(h)` / `obj.remove_E(h)`.
+    static CUSTOM_EVENTS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+thread_local! {
+    // Vars initialized from a *named* tuple literal (`var t = (X: 2, Y: 3);`),
+    // mapped to their positional arity. Named tuples lower to a keyed object
+    // (so `.X` by-name access works through LINQ lambdas without type
+    // inference), so positional deconstruction reads `Item1..ItemN` back onto
+    // the shared array-destructure primitive.
+    static NAMED_TUPLE_VARS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn make_event_accessor(method_name: &str, body: Vec<Statement>) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: method_name.into(),
+            params: vec![Param {
+                name: "value".into(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+        },
+        Span::default(),
+    )))
+}
+
+fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut name = String::new();
     let mut type_hint = None;
+    let mut add_body: Option<Vec<Statement>> = None;
+    let mut remove_body: Option<Vec<Statement>> = None;
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
+            Rule::event_accessor => {
+                let is_add = p.as_str().trim_start().starts_with("add");
+                let body = p
+                    .into_inner()
+                    .find(|x| x.as_rule() == Rule::block_statement)
+                    .map(walk_body)
+                    .transpose()?
+                    .unwrap_or_default();
+                if is_add {
+                    add_body = Some(body);
+                } else {
+                    remove_body = Some(body);
+                }
+            }
             _ => {}
         }
     }
-    Ok(ClassMember::Event {
-        name,
+    let mut members = vec![ClassMember::Event {
+        name: name.clone(),
         type_hint,
         params: Vec::new(),
         visibility: Visibility::Public,
-    })
+    }];
+    if add_body.is_some() || remove_body.is_some() {
+        // Custom accessors: `value` in each body is the handler param.
+        CUSTOM_EVENTS.with(|s| s.borrow_mut().insert(name.clone()));
+        if let Some(b) = add_body {
+            members.push(make_event_accessor(&format!("add_{}", name), b));
+        }
+        if let Some(b) = remove_body {
+            members.push(make_event_accessor(&format!("remove_{}", name), b));
+        }
+    }
+    Ok(members)
 }
 
 /// Walk every statement in a catch body and rewrite bare `throw;`
@@ -8611,6 +8925,96 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
 
 // ── Interface ───────────────────────────────────────────────────────────────
 
+thread_local! {
+    // Default interface method bodies captured during the walk, keyed by
+    // interface name. Consumed by `inject_interface_defaults` after the module
+    // is assembled — the defaults become ordinary injected class methods, so
+    // `InterfaceMember` stays signatures-only and no shared AST changes.
+    static INTERFACE_DEFAULTS: std::cell::RefCell<std::collections::HashMap<String, Vec<ClassMember>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// If an `interface_member` carries a default body (`T M() => e;` / `{ ... }`),
+/// build it as an ordinary `ClassMember::Method` for injection into implementers.
+fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMember>, String> {
+    let mut ret_type = None;
+    let mut mname = String::new();
+    let mut params = Vec::new();
+    let mut body: Option<Vec<Statement>> = None;
+    for p in member.into_inner() {
+        match p.as_rule() {
+            Rule::type_name => ret_type = Some(p.as_str().to_string()),
+            Rule::ident_name => mname = p.as_str().to_string(),
+            Rule::param_list => params = walk_params(p)?,
+            Rule::expression_body => {
+                if let Some(e) = p.into_inner().next() {
+                    body = Some(vec![Statement::new(StmtKind::Return(Some(walk_expression(e)?)))]);
+                }
+            }
+            Rule::block_statement => body = Some(walk_body(p)?),
+            _ => {}
+        }
+    }
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let is_sub = ret_type.as_deref() == Some("void");
+    Ok(Some(ClassMember::Method(Box::new(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: mname,
+            params,
+            return_type: ret_type,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub,
+        },
+        Span::default(),
+    )))))
+}
+
+fn class_member_method_name(m: &ClassMember) -> Option<String> {
+    if let ClassMember::Method(stmt) = m {
+        if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+            return Some(name.clone());
+        }
+    }
+    None
+}
+
+/// Copy each interface's default methods into implementing classes that don't
+/// already declare them (override wins) — C# 8 default interface methods as
+/// pure walker normalization onto the existing class-method machinery.
+fn inject_interface_defaults(statements: &mut [Statement]) {
+    let defaults = INTERFACE_DEFAULTS.with(|d| d.borrow().clone());
+    if defaults.is_empty() {
+        return;
+    }
+    for stmt in statements.iter_mut() {
+        if let StmtKind::ClassDecl {
+            interfaces, members, ..
+        } = &mut stmt.kind
+        {
+            let existing: std::collections::HashSet<String> =
+                members.iter().filter_map(class_member_method_name).collect();
+            for iface in interfaces.iter() {
+                let leaf = iface.rsplit('.').next().unwrap_or(iface);
+                if let Some(dms) = defaults.get(leaf) {
+                    for dm in dms {
+                        if let Some(n) = class_member_method_name(dm) {
+                            if !existing.contains(&n) {
+                                members.push(dm.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
@@ -8628,12 +9032,20 @@ fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<St
                 }
             }
             Rule::interface_body => {
+                let mut defaults: Vec<ClassMember> = Vec::new();
                 for m in p.into_inner() {
                     if m.as_rule() == Rule::interface_member {
+                        if let Ok(Some(dm)) = extract_interface_default_method(m.clone()) {
+                            defaults.push(dm);
+                        }
                         if let Ok(member) = walk_interface_member(m) {
                             members.push(member);
                         }
                     }
+                }
+                if !defaults.is_empty() {
+                    INTERFACE_DEFAULTS
+                        .with(|d| d.borrow_mut().insert(name.clone(), defaults));
                 }
             }
             _ => {}
@@ -9791,7 +10203,18 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let mut when_filter: Option<Expression> = None;
                 for cp in p.into_inner() {
                     match cp.as_rule() {
-                        Rule::type_name => types.push(cp.as_str().to_string()),
+                        // Normalize a fully-qualified catch type to its class
+                        // name (`System.ArgumentNullException` → `ArgumentNull-
+                        // Exception`) so it matches the synthesized short-named
+                        // exception class the guard/identity path resolves.
+                        Rule::type_name => types.push(
+                            cp.as_str()
+                                .rsplit('.')
+                                .next()
+                                .unwrap_or(cp.as_str())
+                                .trim()
+                                .to_string(),
+                        ),
                         Rule::ident_name => var_name = Some(cp.as_str().to_string()),
                         Rule::catch_when_filter => {
                             // Inner is just an `expression`.
@@ -10854,21 +11277,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             if has_names {
-                let mut props = Vec::new();
-                for (i, (name, value)) in parsed.iter().enumerate() {
-                    let item_key = format!("Item{}", i + 1);
-                    props.push(ObjectProperty::KeyValue {
-                        key: Expression::string(&item_key),
-                        value: value.clone(),
-                    });
-                    if let Some(n) = name {
-                        props.push(ObjectProperty::KeyValue {
-                            key: Expression::string(n),
-                            value: value.clone(),
-                        });
-                    }
-                }
-                Ok(ExprKind::Object(props))
+                // Named tuples lower to the shared canonical shape so a C#
+                // named tuple is the same runtime value as one from any other
+                // language. See `crate::common::tuples`.
+                Ok(crate::common::tuples::build_named_tuple(parsed))
             } else {
                 let elems: Vec<Expression> = parsed.into_iter().map(|(_, e)| e).collect();
                 Ok(ExprKind::Tuple(elems))
@@ -12247,6 +12659,55 @@ fn build_switch_pattern_cond(
     subject: Expression,
     pattern: Pair<Rule>,
 ) -> Result<Expression, String> {
+    // switch_pattern = switch_pat_and ("or" switch_pat_and)* ; each
+    // switch_pat_and = switch_pat_primary ("and" switch_pat_primary)*.
+    let span = subject.span.clone();
+    let mut or_cond: Option<Expression> = None;
+    for and_pat in pattern
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::switch_pat_and)
+    {
+        let mut and_cond: Option<Expression> = None;
+        for prim in and_pat
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::switch_pat_primary)
+        {
+            let c = build_switch_primary_cond(subject.clone(), prim)?;
+            and_cond = Some(match and_cond {
+                None => c,
+                Some(prev) => Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(prev),
+                        right: Box::new(c),
+                    },
+                    span.clone(),
+                ),
+            });
+        }
+        let and_cond = and_cond.unwrap_or_else(|| {
+            Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone())
+        });
+        or_cond = Some(match or_cond {
+            None => and_cond,
+            Some(prev) => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(prev),
+                    right: Box::new(and_cond),
+                },
+                span.clone(),
+            ),
+        });
+    }
+    Ok(or_cond
+        .unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span)))
+}
+
+fn build_switch_primary_cond(
+    subject: Expression,
+    pattern: Pair<Rule>,
+) -> Result<Expression, String> {
     let pat_src = pattern.as_str().trim();
     let span = subject.span.clone();
     // Relational pattern: `>= 90`, `<= 50`, `< 0`, `> 0`.
@@ -12283,8 +12744,10 @@ fn build_switch_pattern_cond(
         }
         // Type pattern: `int i`, `string s` (with binding) or constant.
         let mut inner_pairs: Vec<Pair<Rule>> = pattern.into_inner().collect();
-        // `type_name ~ ident_name` — type pattern with binding.
-        if inner_pairs.len() >= 2
+        // `var x` — always matches (the binding is emitted separately).
+        if !inner_pairs.is_empty() && inner_pairs[0].as_rule() == Rule::var_kw {
+            cond = Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone());
+        } else if inner_pairs.len() >= 2
             && inner_pairs[0].as_rule() == Rule::type_name
             && inner_pairs[1].as_rule() == Rule::ident_name
         {
@@ -12335,18 +12798,47 @@ fn build_switch_pattern_binding(
     subject: Expression,
     pattern: Pair<Rule>,
 ) -> Result<Option<Statement>, String> {
-    let inner_pairs: Vec<Pair<Rule>> = pattern.into_inner().collect();
-    if inner_pairs.len() >= 2
-        && inner_pairs[0].as_rule() == Rule::type_name
-        && inner_pairs[1].as_rule() == Rule::ident_name
+    // Descend switch_pattern → switch_pat_and → switch_pat_primary; the first
+    // binding pattern (`T x` or `var x`) supplies the arm's bound variable.
+    for and_pat in pattern
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::switch_pat_and)
     {
-        let type_name = inner_pairs[0].as_str().trim().to_string();
-        let binding_name = inner_pairs[1].as_str().trim().to_string();
-        return Ok(Some(build_type_pattern_binding_stmt(
-            subject,
-            type_name,
-            binding_name,
-        )));
+        for prim in and_pat
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::switch_pat_primary)
+        {
+            let inner: Vec<Pair<Rule>> = prim.into_inner().collect();
+            if inner.len() >= 2
+                && inner[0].as_rule() == Rule::type_name
+                && inner[1].as_rule() == Rule::ident_name
+            {
+                let type_name = inner[0].as_str().trim().to_string();
+                let binding_name = inner[1].as_str().trim().to_string();
+                return Ok(Some(build_type_pattern_binding_stmt(
+                    subject.clone(),
+                    type_name,
+                    binding_name,
+                )));
+            }
+            // `var x` — bind `x = subject`.
+            if inner.len() >= 2
+                && inner[0].as_rule() == Rule::var_kw
+                && inner[1].as_rule() == Rule::ident_name
+            {
+                let name = inner[1].as_str().trim().to_string();
+                return Ok(Some(Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: None,
+                        init: Some(subject.clone()),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                })));
+            }
+        }
     }
     Ok(None)
 }
@@ -14757,7 +15249,7 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
     let is_int = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(floor_call),
-        right: Box::new(expr),
+        right: Box::new(expr.clone()),
     });
 
     let number_branch = Expression::new(ExprKind::Ternary {
@@ -14768,14 +15260,24 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
         )))),
     });
 
+    // Non-primitive: a class instance. `GetType().Name` is the runtime class
+    // name, read from the instance's `__type` stamp (`obj.__type ?? "Object"`).
+    let inst_type = Expression::new(ExprKind::Member {
+        object: Box::new(expr.clone()),
+        field: "__type".into(),
+        null_safe: false,
+    });
+    let object_name = Expression::new(ExprKind::Ternary {
+        cond: Box::new(inst_type.clone()),
+        then: Box::new(inst_type),
+        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Object".into())))),
+    });
     let bool_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(is_boolean),
         then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
             "Boolean".into(),
         )))),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "Object".into(),
-        )))),
+        else_: Box::new(object_name),
     });
 
     let num_or_bool = Expression::new(ExprKind::Ternary {

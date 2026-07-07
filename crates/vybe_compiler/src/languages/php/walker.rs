@@ -1059,6 +1059,28 @@ function __vybe_parent_class($o) {
 /// Parse a PHP prelude source into statements (registering any classes in the
 /// walker's registries as a side effect). Returns `[]` on any error so a
 /// prelude problem never breaks user compilation.
+/// The combined PHP prelude AST (exception hierarchy + URL helpers + class
+/// helpers), parsed ONCE per process and cloned per call. Re-parsing these
+/// constant preludes on every `parse` (thousands of times in the suite) was
+/// pure waste; a process-global cache (the test harness spawns a fresh thread
+/// per test, so a thread-local one would be cold every test) parses them a
+/// single time. Cloning the cached AST is far cheaper than re-parsing.
+fn cached_php_prelude() -> Vec<Statement> {
+    static CACHE: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(EXCEPTION_PRELUDE));
+            let mut prelude = parse_prelude(EXCEPTION_PRELUDE);
+            LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(URL_FUNCTIONS_PRELUDE));
+            prelude.append(&mut parse_prelude(URL_FUNCTIONS_PRELUDE));
+            LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(CLASS_HELPERS_PRELUDE));
+            prelude.append(&mut parse_prelude(CLASS_HELPERS_PRELUDE));
+            LINE_STARTS.with(|s| s.borrow_mut().clear());
+            prelude
+        })
+        .clone()
+}
+
 fn parse_prelude(src: &str) -> Vec<Statement> {
     let mut stmts = Vec::new();
     let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, src) else {
@@ -1370,13 +1392,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     // Prepend the core exception hierarchy (Throwable/Error/Exception + SPL)
     // as real classes so built-in exceptions use the shared class emitter.
+    // The preludes are constant, so they are parsed ONCE (see
+    // `cached_php_prelude`) rather than re-parsed on every `parse` call.
     let body = {
-        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(EXCEPTION_PRELUDE));
-        let mut prelude = parse_prelude(EXCEPTION_PRELUDE);
-        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(URL_FUNCTIONS_PRELUDE));
-        prelude.append(&mut parse_prelude(URL_FUNCTIONS_PRELUDE));
-        LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(CLASS_HELPERS_PRELUDE));
-        prelude.append(&mut parse_prelude(CLASS_HELPERS_PRELUDE));
+        let mut prelude = cached_php_prelude();
         prelude.append(&mut hoisted);
         prelude
     };

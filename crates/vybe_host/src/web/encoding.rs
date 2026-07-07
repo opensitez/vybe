@@ -92,7 +92,7 @@ fn option_bool(obj: Option<&Value>, name: &str) -> bool {
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) {
-    ctx.throw_value(crate::ecma::error::new_error("TypeError", message));
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
 }
 
 fn decode_utf8(bytes: &[u8], fatal: bool, ignore_bom: bool) -> Result<String, ()> {
