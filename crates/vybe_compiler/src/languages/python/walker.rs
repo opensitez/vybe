@@ -920,6 +920,84 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── While ───────────────────────────────────────────────────────────────────
 
+/// Per-parse counter that keeps desugared `while…else` break-flags unique so
+/// nested loops don't share (and clobber) one flag.
+static WHILE_ELSE_COUNTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Rewrite loop-level `break` statements in `stmts` to set `flag = True` before
+/// breaking, so a desugared `while…else` can distinguish a break-exit from a
+/// normal exit. Recurses through non-loop containers (if/try/with/block) but NOT
+/// into nested loops or function/class bodies — their `break`s target
+/// themselves, not this loop.
+fn mark_loop_break_sets_flag(stmts: Vec<Statement>, flag: &str) -> Vec<Statement> {
+    let mut out = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        match stmt.kind {
+            StmtKind::Break(_) => {
+                out.push(Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(flag)],
+                    value: Expression::bool(true),
+                }));
+                out.push(stmt);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                out.push(Statement::new(StmtKind::If {
+                    cond,
+                    then_body: mark_loop_break_sets_flag(then_body, flag),
+                    elifs: elifs
+                        .into_iter()
+                        .map(|(c, b)| (c, mark_loop_break_sets_flag(b, flag)))
+                        .collect(),
+                    else_body: else_body.map(|b| mark_loop_break_sets_flag(b, flag)),
+                }));
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                out.push(Statement::new(StmtKind::Try {
+                    body: mark_loop_break_sets_flag(body, flag),
+                    catches: catches
+                        .into_iter()
+                        .map(|mut c| {
+                            c.body = mark_loop_break_sets_flag(c.body, flag);
+                            c
+                        })
+                        .collect(),
+                    else_body: else_body.map(|b| mark_loop_break_sets_flag(b, flag)),
+                    finally: finally.map(|b| mark_loop_break_sets_flag(b, flag)),
+                }));
+            }
+            StmtKind::With {
+                items,
+                body,
+                is_async,
+            } => {
+                out.push(Statement::new(StmtKind::With {
+                    items,
+                    body: mark_loop_break_sets_flag(body, flag),
+                    is_async,
+                }));
+            }
+            StmtKind::Block(b) => {
+                out.push(Statement::new(StmtKind::Block(mark_loop_break_sets_flag(
+                    b, flag,
+                ))));
+            }
+            _ => out.push(stmt),
+        }
+    }
+    out
+}
+
 fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond = walk_expression(next_meaningful(&mut inner)?)?;
@@ -931,11 +1009,45 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
             else_body = Some(walk_block(next_rule_any(&mut ei, &[Rule::block])?)?);
         }
     }
-    Ok(StmtKind::While {
+
+    let Some(else_stmts) = else_body else {
+        return Ok(StmtKind::While {
+            cond,
+            body,
+            else_body: None,
+        });
+    };
+
+    // Python `while C: BODY else: ELSE` runs ELSE only on a NORMAL exit
+    // (condition false), never on `break`. The shared While emitter runs
+    // else_body unconditionally, so normalize into common-AST primitives that
+    // route through the common loop emitter (loops.rs), the same plain-`while`
+    // path every language uses:
+    //   __while_else_N = False
+    //   while C: BODY'                 (loop-level break → __while_else_N = True; break)
+    //   if not __while_else_N: ELSE
+    let n = WHILE_ELSE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let flag = format!("__while_else_{n}");
+    let body = mark_loop_break_sets_flag(body, &flag);
+    let flag_init = Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(&flag)],
+        value: Expression::bool(false),
+    });
+    let while_stmt = Statement::new(StmtKind::While {
         cond,
         body,
-        else_body,
-    })
+        else_body: None,
+    });
+    let else_guard = Statement::new(StmtKind::If {
+        cond: Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(Expression::ident(&flag)),
+        }),
+        then_body: else_stmts,
+        elifs: Vec::new(),
+        else_body: None,
+    });
+    Ok(StmtKind::Block(vec![flag_init, while_stmt, else_guard]))
 }
 
 // ── For ─────────────────────────────────────────────────────────────────────
