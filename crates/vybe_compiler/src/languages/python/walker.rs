@@ -2,6 +2,7 @@ use super::{PythonParser, Rule};
 use crate::ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use std::collections::HashMap;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Indentation preprocessor
@@ -164,6 +165,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    apply_float_var_repr(&mut body, &mut HashMap::new());
+
+    // Prepend the bytes-repr source helper when the program uses bytes, so
+    // `b'…'` display resolves to a real `__vybe_bytes_repr` function.
+    if source_uses_bytes(source) {
+        let mut prelude = parse_python_prelude(BYTES_REPR_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
@@ -171,6 +182,74 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
     })
 }
+
+/// Heuristic: does the source reference bytes at all? Only gates whether the
+/// repr helper is injected — a false positive just adds an unused function.
+fn source_uses_bytes(source: &str) -> bool {
+    source.contains("b'")
+        || source.contains("b\"")
+        || source.contains("B'")
+        || source.contains("B\"")
+        || source.contains("bytes(")
+        || source.contains(".encode(")
+        || source.contains(".decode(")
+}
+
+/// Parse a Python source prelude into top-level statements. Errors yield `[]`
+/// so a prelude problem can never break user compilation.
+fn parse_python_prelude(src: &str) -> Vec<Statement> {
+    let preprocessed = preprocess_indentation(src);
+    let Ok(pairs) = PythonParser::parse(Rule::program, &preprocessed) else {
+        return Vec::new();
+    };
+    let mut body = Vec::new();
+    let mut imports = Vec::new();
+    for top in pairs {
+        match top.as_rule() {
+            Rule::program => {
+                for pair in top.into_inner() {
+                    match pair.as_rule() {
+                        Rule::EOI | Rule::NEWLINE => continue,
+                        _ => {
+                            let _ = walk_stmt_into(pair, &mut body, &mut imports);
+                        }
+                    }
+                }
+            }
+            Rule::EOI => continue,
+            _ => {
+                let _ = walk_stmt_into(top, &mut body, &mut imports);
+            }
+        }
+    }
+    body
+}
+
+/// Python source for `__vybe_bytes_repr(int_array) -> "b'…'"`. Escape fragments
+/// are built from `chr(92)` (backslash) rather than backslash string literals,
+/// which the Python string-escape lowering mishandles.
+const BYTES_REPR_PRELUDE: &str = r#"
+def __vybe_bytes_repr(a):
+    bs = chr(92)
+    hexd = "0123456789abcdef"
+    r = "b'"
+    for b in a:
+        if b == 9:
+            r += bs + "t"
+        elif b == 10:
+            r += bs + "n"
+        elif b == 13:
+            r += bs + "r"
+        elif b == 92:
+            r += bs + bs
+        elif b == 39:
+            r += bs + "'"
+        elif 32 <= b <= 126:
+            r += chr(b)
+        else:
+            r += bs + "x" + hexd[b >> 4] + hexd[b & 15]
+    return r + "'"
+"#;
 
 fn walk_stmt_into(
     pair: Pair<Rule>,
@@ -502,14 +581,11 @@ fn walk_func_def(
     //     each `yield` compiles to a `SUSPEND` opcode. Consuming
     //     requires explicit `RESUME` (or a future iterator-protocol-
     //     aware for-in) — no automatic eager materialisation.
+    // Any function containing `yield` is a true lazy generator — compiled
+    // through the shared stack-switching machinery (`generators.rs`), exactly
+    // like JavaScript. No eager list materialization (that hung on `while True`
+    // generators and was semantically eager).
     let has_yield = body_has_yield(&body);
-    let wants_true_generator = decorators.iter().any(|d| match &d.kind {
-        ExprKind::Ident(n) => n.eq_ignore_ascii_case("generator"),
-        _ => false,
-    });
-    if has_yield && !wants_true_generator {
-        body = rewrite_generator_body(body);
-    }
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -522,7 +598,7 @@ fn walk_func_def(
         },
         handles: Vec::new(),
         is_async,
-        is_generator: has_yield && wants_true_generator,
+        is_generator: has_yield,
         is_sub: false,
     })
 }
@@ -1522,6 +1598,51 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         } else {
             walk_remaining_as_expr(&mut inner)?
         };
+        // `+=` / `*=` use Python's dynamic add/mul (list concat/repeat, string
+        // ops), so lower to `target = __pyadd__(target, value)` — the numeric
+        // CompoundAssign path coerces operands to f64 and traps on lists.
+        if op_str == "+=" || op_str == "*=" {
+            let helper = if op_str == "+=" { "__pyadd__" } else { "__pymul__" };
+            let combined = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
+                args: vec![
+                    Argument::positional(target.clone()),
+                    Argument::positional(value),
+                ],
+                optional: false,
+            });
+            return Ok(StmtKind::Assign {
+                targets: vec![target],
+                value: combined,
+            });
+        }
+        // `-=`/`|=`/`&=`/`^=` lower to `x = x <binop> v` so the polymorphic
+        // binary operator handles sets (difference/union/intersection/symmetric
+        // difference) as well as integer bitwise / numeric subtraction — the
+        // numeric CompoundAssign path only does the arithmetic case.
+        let set_binop = match op_str {
+            "-=" => Some(BinOp::Sub),
+            "|=" => Some(BinOp::BitOr),
+            "&=" => Some(BinOp::BitAnd),
+            "^=" => Some(BinOp::BitXor),
+            // `//=`/`%=` too: binary `//`/`%` use Python floor/mod semantics
+            // (round toward -inf, mod follows divisor sign); the CompoundAssign
+            // path truncates toward zero.
+            "//=" => Some(BinOp::FloorDiv),
+            "%=" => Some(BinOp::Mod),
+            _ => None,
+        };
+        if let Some(op) = set_binop {
+            let combined = Expression::new(ExprKind::Binary {
+                op,
+                left: Box::new(target.clone()),
+                right: Box::new(value),
+            });
+            return Ok(StmtKind::Assign {
+                targets: vec![target],
+                value: combined,
+            });
+        }
         let op = match op_str {
             "+=" => CompoundOp::Add,
             "-=" => CompoundOp::Sub,
@@ -1565,16 +1686,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             .into_iter()
             .map(|t| {
                 if let ExprKind::Tuple(elems) = &t.kind {
-                    let patterns = elems
-                        .iter()
-                        .map(|e| {
-                            if let ExprKind::Ident(name) = &e.kind {
-                                ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
-                            } else {
-                                ArrayPatternElem::Hole
-                            }
-                        })
-                        .collect();
+                    let patterns = elems.iter().map(expr_to_array_pattern_elem).collect();
                     Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))
                 } else {
                     t
@@ -1880,11 +1992,17 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::or_expr => walk_binary_chain(inner, |_| BinOp::Or),
         Rule::and_expr => walk_binary_chain(inner, |_| BinOp::And),
         Rule::not_expr => {
-            // not_kw ~ not_expr — unary not
+            // not_kw ~ not_expr — unary not. Lower to `False if bool(x) else True`
+            // so Python truthiness applies (empty list/dict/str are falsy) and we
+            // route through the working `bool()` / conditional path rather than
+            // `emit_dyn_not`, which uses JS truthiness (arrays are always truthy).
             let operand = walk_expression(inner.pop().ok_or("Empty not")?)?;
-            Ok(ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: Box::new(operand),
+            // The conditional's own condition already applies Python truthiness
+            // (`if []:` is falsy), so use the operand directly as the condition.
+            Ok(ExprKind::Ternary {
+                cond: Box::new(operand),
+                then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
             })
         }
         Rule::comparison => {
@@ -1932,6 +2050,30 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             })
                         } else {
                             has_call
+                        };
+                    } else if matches!(op, BinOp::In | BinOp::NotIn) {
+                        // `x in y` — polymorphic membership (string substring /
+                        // list element / dict key). Route to the Python adapter
+                        // `__py_contains__(y, x)` rather than the shared
+                        // `BinOp::In`, whose runtime array-classification
+                        // mis-sends plain objects to `Array.includes`.
+                        let contains = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Ident(
+                                "__py_contains__".into(),
+                            ))),
+                            args: vec![
+                                Argument::positional(right),
+                                Argument::positional(left.clone()),
+                            ],
+                            optional: false,
+                        });
+                        left = if op == BinOp::NotIn {
+                            Expression::new(ExprKind::Unary {
+                                op: UnaryOp::Not,
+                                expr: Box::new(contains),
+                            })
+                        } else {
+                            contains
                         };
                     } else {
                         left = Expression::new(ExprKind::Binary {
@@ -2423,21 +2565,79 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = Expression::new(ExprKind::Array(vec![]));
                                     continue;
                                 }
-                                "str" if args.len() == 1 => {
-                                    // str(x) ≡ f"{x}" — the interpolation
-                                    // lowering stringifies through the host
-                                    // ToPrimitive path (handles objects,
-                                    // notably exceptions → message), unlike
-                                    // `"" + x` whose numeric fallback traps
-                                    // on non-primitives.
-                                    let x = args[0].value.clone();
-                                    expr = Expression::new(ExprKind::Interpolation(vec![
-                                        InterpolPart::Expr(x),
-                                    ]));
-                                    continue;
-                                }
+                                // str(x) is left as a plain call so it routes
+                                // through the profile → `common:python.str`
+                                // (emit_py_repr), which applies Python repr
+                                // semantics: True/False/None, [.., ..] lists,
+                                // {'k': v} dicts, single-quoted nested strings.
                                 "dict" if args.is_empty() => {
                                     expr = Expression::new(ExprKind::Object(vec![]));
+                                    continue;
+                                }
+                                "sum" if !args.is_empty() && args[0].name.is_none() => {
+                                    // sum(iterable[, start]) — drain the iterable
+                                    // (generators/ranges) via spread first.
+                                    let mut new_args = args;
+                                    let it = new_args[0].value.clone();
+                                    new_args[0].value = spread_iterable_expr(it);
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "sum".into(),
+                                        ))),
+                                        args: new_args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "min" | "max" | "any" | "all"
+                                    if args.len() == 1 && args[0].name.is_none() =>
+                                {
+                                    // Single-iterable form: drain via spread so
+                                    // the array-based builtin sees a sequence.
+                                    let n = name.to_string();
+                                    let it = args[0].value.clone();
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(n))),
+                                        args: vec![Argument::positional(spread_iterable_expr(it))],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "filter"
+                                    if args.len() == 2
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lit(Literal::Null)
+                                        ) =>
+                                {
+                                    // filter(None, iter) → keep truthy elements
+                                    // (identity predicate `lambda __e: __e`).
+                                    let ident = Expression::new(ExprKind::Lambda {
+                                        params: vec![Param {
+                                            name: "__e".into(),
+                                            type_hint: None,
+                                            default: None,
+                                            pass_by: PassBy::Value,
+                                            is_rest: false,
+                                            is_kwargs: false,
+                                            is_optional: false,
+                                            is_nullable: false,
+                                        }],
+                                        body: LambdaBody::Expr(Box::new(Expression::new(
+                                            ExprKind::Ident("__e".into()),
+                                        ))),
+                                        is_async: false,
+                                        captures: vec![],
+                                    });
+                                    let mut new_args = args;
+                                    new_args[0] = Argument::positional(ident);
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "filter".into(),
+                                        ))),
+                                        args: new_args,
+                                        optional: false,
+                                    });
                                     continue;
                                 }
                                 "sorted" if args.len() >= 1 => {
@@ -2549,6 +2749,26 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 _ => {}
                             }
                         }
+                        // Python `gen.throw(ExcClass)` instantiates the class so
+                        // the generator's `except` matches an instance (like
+                        // `raise ExcClass`). Wrap a bare uppercase-Ident arg.
+                        let args = if matches!(&expr.kind, ExprKind::Member { field, .. } if field == "throw")
+                            && args.first().is_some_and(|a| {
+                                a.name.is_none()
+                                    && matches!(&a.value.kind, ExprKind::Ident(n)
+                                        if n.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+                            }) {
+                            let mut new_args = args;
+                            let cls = new_args[0].value.clone();
+                            new_args[0].value = Expression::new(ExprKind::Call {
+                                callee: Box::new(cls),
+                                args: vec![],
+                                optional: false,
+                            });
+                            new_args
+                        } else {
+                            args
+                        };
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args,
@@ -2597,10 +2817,166 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(expr.kind)
 }
 
+/// Wrap `value` in `[*value]` so a lazy iterable (generator, range, map, …) is
+/// drained into an array via the shared `generators.rs` spread machinery before
+/// an array/set-based builtin consumes it. Keeps generators cross-language
+/// compatible — the drain is the same one JS spread uses.
+fn spread_iterable_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Array(vec![ArrayElement {
+        key: None,
+        spread: true,
+        by_ref: false,
+        value,
+    }]))
+}
+
 /// Normalize Python `print(...)` arguments to the emitter convention
 /// `[sep, end, items…]`. The `sep`/`end` keyword args override the defaults
 /// (`" "` / `"\n"`); Python's `file`/`flush` keywords are accepted and ignored.
 /// Positional items (including `*spread`) keep their original `Argument`.
+/// Math functions that return a Python `float` (used by `expr_is_python_float`).
+const FLOAT_MATH_FNS: &[&str] = &[
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
+    "atanh", "sqrt", "pow", "exp", "log", "log2", "log10", "log1p", "expm1", "cbrt", "degrees",
+    "radians", "hypot", "fabs", "fmod", "copysign", "remainder", "dist", "fsum", "gamma", "lgamma",
+    "erf", "erfc", "ldexp",
+];
+
+/// True when an expression is *statically* a Python `float` — a float literal,
+/// true division (`/`), `float()`, a float-returning `math.*` call, unary minus
+/// of a float, or arithmetic where an operand is a float. Deliberately
+/// conservative: never assumes a bare variable or unknown call is a float
+/// (that would be the "mark everything" shortcut).
+fn expr_is_python_float(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Binary { op: BinOp::Div, .. } => true,
+        ExprKind::Binary {
+            op:
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::FloorDiv,
+            left,
+            right,
+        } => expr_is_python_float(left) || expr_is_python_float(right),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => expr_is_python_float(expr),
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(n) if n == "float" => true,
+            // Python `+`/`*` lower to __pyadd__/__pymul__ — float if an operand is.
+            ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__" => {
+                args.iter().any(|a| expr_is_python_float(&a.value))
+            }
+            ExprKind::Member { object, field, .. } => {
+                matches!(&object.kind, ExprKind::Ident(o) if o == "math")
+                    && FLOAT_MATH_FNS.contains(&field.as_str())
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Wrap `value` in `__py_float_repr__(value)` so it displays Python-float-style.
+fn wrap_float_repr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__py_float_repr__".into()))),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
+/// Tier 2 of float display: like `expr_is_python_float` but also treats a bare
+/// variable known (from a prior assignment) to hold a float as a float.
+fn expr_is_float_ctx(e: &Expression, floats: &HashMap<String, bool>) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => *floats.get(name).unwrap_or(&false),
+        ExprKind::Binary { op: BinOp::Div, .. } => true,
+        ExprKind::Binary {
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow,
+            left,
+            right,
+        } => expr_is_float_ctx(left, floats) || expr_is_float_ctx(right, floats),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => expr_is_float_ctx(expr, floats),
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__") =>
+        {
+            args.iter().any(|a| expr_is_float_ctx(&a.value, floats))
+        }
+        _ => expr_is_python_float(e),
+    }
+}
+
+/// Wrap bare float-variable arguments of a `print(...)` call so they display
+/// Python-float-style. (Direct float expressions were already wrapped during
+/// `normalize_python_print_args`; here we catch variables tracked in `floats`.)
+fn wrap_float_print_vars(e: &mut Expression, floats: &HashMap<String, bool>) {
+    if let ExprKind::Call { callee, args, .. } = &mut e.kind {
+        if matches!(&callee.kind, ExprKind::Ident(n) if n == "print") {
+            // args[0]=sep, args[1]=end, args[2..]=items.
+            for a in args.iter_mut().skip(2) {
+                if a.name.is_none() && !a.spread {
+                    if matches!(&a.value.kind, ExprKind::Ident(name) if *floats.get(name).unwrap_or(&false))
+                    {
+                        let v = std::mem::replace(&mut a.value, Expression::null());
+                        a.value = wrap_float_repr(v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Post-pass: track which local variables hold floats and wrap float-variable
+/// `print` arguments. Function bodies get a fresh scope.
+fn apply_float_var_repr(stmts: &mut [Statement], floats: &mut HashMap<String, bool>) {
+    for stmt in stmts.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::Assign { targets, value } => {
+                let is_f = expr_is_float_ctx(value, floats);
+                if let [t] = targets.as_slice() {
+                    if let ExprKind::Ident(name) = &t.kind {
+                        floats.insert(name.clone(), is_f);
+                    }
+                }
+            }
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) => wrap_float_print_vars(e, floats),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                apply_float_var_repr(then_body, floats);
+                for (_, b) in elifs.iter_mut() {
+                    apply_float_var_repr(b, floats);
+                }
+                if let Some(b) = else_body {
+                    apply_float_var_repr(b, floats);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::ForIn { body, .. } => {
+                apply_float_var_repr(body, floats)
+            }
+            StmtKind::For { body, .. } => apply_float_var_repr(body, floats),
+            StmtKind::Block(b) => apply_float_var_repr(b, floats),
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut inner = HashMap::new();
+                apply_float_var_repr(body, &mut inner);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
     let mut sep = Argument::positional(Expression::string(" "));
     let mut end = Argument::positional(Expression::string("\n"));
@@ -2610,7 +2986,16 @@ fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
             Some("sep") => sep = Argument::positional(a.value),
             Some("end") => end = Argument::positional(a.value),
             Some("file") | Some("flush") => {}
-            _ => items.push(a),
+            _ => {
+                // Display statically-known bytes as `b'…'`, floats as `4.0`.
+                if expr_is_python_bytes(&a.value) {
+                    items.push(Argument::positional(wrap_bytes_repr(a.value)));
+                } else if expr_is_python_float(&a.value) {
+                    items.push(Argument::positional(wrap_float_repr(a.value)));
+                } else {
+                    items.push(a);
+                }
+            }
         }
     }
     let mut out = Vec::with_capacity(items.len() + 2);
@@ -2624,35 +3009,42 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     let mut args = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::call_arg {
+            // The `*` / `**` prefixes are silent literals in the grammar, so
+            // check the call_arg's own text rather than a child token.
+            let arg_text = p.as_str().trim_start();
+            let is_starstar = arg_text.starts_with("**");
+            let is_star = !is_starstar && arg_text.starts_with('*');
             let mut ci: Vec<Pair<Rule>> = p.into_inner().collect();
             if ci.is_empty() {
                 continue;
             }
 
-            let first_text = ci[0].as_str();
-
-            if first_text == "**" {
-                // **kwargs
-                if ci.len() > 1 {
-                    let val = walk_expression(ci.remove(1))?;
-                    args.push(Argument {
-                        value: val,
-                        name: None,
-                        by_ref: false,
-                        spread: true,
-                    });
-                }
-            } else if first_text == "*" {
-                // *args
-                if ci.len() > 1 {
-                    let val = walk_expression(ci.remove(1))?;
-                    args.push(Argument {
-                        value: val,
-                        name: None,
-                        by_ref: false,
-                        spread: true,
-                    });
-                }
+            if is_starstar {
+                // **kwargs — spread of a mapping into keyword arguments.
+                let val = walk_expression(ci.pop().unwrap())?;
+                let val = match val.kind {
+                    ExprKind::Spread(inner) => *inner,
+                    _ => val,
+                };
+                args.push(Argument {
+                    value: val,
+                    name: None,
+                    by_ref: false,
+                    spread: true,
+                });
+            } else if is_star {
+                // *args — positional spread expansion.
+                let val = walk_expression(ci.pop().unwrap())?;
+                let val = match val.kind {
+                    ExprKind::Spread(inner) => *inner,
+                    _ => val,
+                };
+                args.push(Argument {
+                    value: val,
+                    name: None,
+                    by_ref: false,
+                    spread: true,
+                });
             } else if ci.len() >= 2 && ci[0].as_rule() == Rule::identifier {
                 // Check if it's keyword=value: identifier followed by expression
                 // If there's an "=" between them
@@ -2669,8 +3061,19 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 let val = walk_expression(ci.remove(0))?;
                 args.push(Argument::positional(val));
             } else {
+                // `*args` parses as a `star_expr` → `ExprKind::Spread`; unwrap it
+                // and flag the argument as spread so the call expands it.
                 let val = walk_expression(ci.remove(0))?;
-                args.push(Argument::positional(val));
+                if let ExprKind::Spread(inner) = val.kind {
+                    args.push(Argument {
+                        value: *inner,
+                        name: None,
+                        by_ref: false,
+                        spread: true,
+                    });
+                } else {
+                    args.push(Argument::positional(val));
+                }
             }
         }
     }
@@ -2785,18 +3188,28 @@ fn walk_list_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
         });
     }
 
-    // Normal list
+    // Normal list. `*x` elements walk to `ExprKind::Spread(x)`; unwrap them and
+    // set the `spread` flag so `[*a, *b]` flattens instead of nesting.
     let elements = inner
         .into_iter()
         .filter(|p| is_expression_rule(p.as_rule()))
         .map(|p| -> Result<ArrayElement, String> {
             let val = walk_expression(p)?;
-            Ok(ArrayElement {
-                key: None,
-                value: val,
-                spread: false,
-                by_ref: false,
-            })
+            if let ExprKind::Spread(inner) = val.kind {
+                Ok(ArrayElement {
+                    key: None,
+                    value: *inner,
+                    spread: true,
+                    by_ref: false,
+                })
+            } else {
+                Ok(ArrayElement {
+                    key: None,
+                    value: val,
+                    spread: false,
+                    by_ref: false,
+                })
+            }
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(ExprKind::Array(elements))
@@ -3104,6 +3517,34 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
 // Helpers
 // ════════════════════════════════════════════════════════════════════════════
 
+/// Convert an assignment-target expression element into a destructuring
+/// pattern element, handling `*rest` (`ExprKind::Spread` → `Rest`) and nested
+/// tuple/list targets (`(a, (b, c))` → nested `Array` pattern) — not just bare
+/// identifiers.
+fn expr_to_array_pattern_elem(e: &Expression) -> ArrayPatternElem {
+    match &e.kind {
+        ExprKind::Ident(name) => {
+            ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+        }
+        ExprKind::Spread(inner) => match &inner.kind {
+            ExprKind::Ident(name) => ArrayPatternElem::Rest(name.clone()),
+            _ => ArrayPatternElem::Hole,
+        },
+        ExprKind::Tuple(elems) => {
+            let nested = elems.iter().map(expr_to_array_pattern_elem).collect();
+            ArrayPatternElem::Pattern(BindingPattern::Array(nested), None)
+        }
+        ExprKind::Array(elems) => {
+            let nested = elems
+                .iter()
+                .map(|ae| expr_to_array_pattern_elem(&ae.value))
+                .collect();
+            ArrayPatternElem::Pattern(BindingPattern::Array(nested), None)
+        }
+        _ => ArrayPatternElem::Hole,
+    }
+}
+
 fn walk_expr_list(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner: Vec<Pair<Rule>> = pair
@@ -3301,7 +3742,49 @@ fn parse_bytes_literal(s: &str) -> ExprKind {
             value: Expression::new(ExprKind::Lit(Literal::Int(b as i64))),
         })
         .collect();
-    ExprKind::Array(elements)
+    wrap_bytes(Expression::new(ExprKind::Array(elements))).kind
+}
+
+/// Wrap an int-array expression in the `__py_bytes__` marker so downstream
+/// static analysis (`expr_is_python_bytes`) can distinguish bytes from a list.
+/// The marker is an identity passthrough at runtime.
+fn wrap_bytes(array: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__py_bytes__".into()))),
+        args: vec![Argument::positional(array)],
+        optional: false,
+    })
+}
+
+/// True when `e` is statically known to evaluate to `bytes`: a `b'…'` literal
+/// (already wrapped in `__py_bytes__`), a `bytes(...)` call, `str.encode()`, or
+/// a `+`/`*`/slice built from bytes.
+fn expr_is_python_bytes(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(n) if n == "__py_bytes__" || n == "bytes" => true,
+            // `+`/`*` lower to __pyadd__/__pymul__ — bytes if an operand is.
+            ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__" => {
+                args.iter().any(|a| expr_is_python_bytes(&a.value))
+            }
+            ExprKind::Member { field, .. } if field == "encode" => true,
+            _ => false,
+        },
+        // slice / index of bytes stays bytes for slices; a plain index is an int
+        // (handled by the caller, which only wraps whole-value repr contexts).
+        ExprKind::Index { object, .. } => expr_is_python_bytes(object),
+        _ => false,
+    }
+}
+
+/// Wrap a bytes-valued expression in a `__vybe_bytes_repr(...)` call so it
+/// displays as `b'…'`.
+fn wrap_bytes_repr(e: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__vybe_bytes_repr".into()))),
+        args: vec![Argument::positional(e)],
+        optional: false,
+    })
 }
 
 fn parse_python_string(s: &str) -> String {

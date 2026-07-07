@@ -50,6 +50,16 @@ __pymul__       = { emit = "common:python.pymul",            min_args = 2, max_a
 # by the walker's `python_index_operand`. Safe for dict keys (only wraps
 # negative numbers on sequences).
 __py_from_end__ = { emit = "common:python.from_end",         min_args = 2, max_args = 2 }
+# Python float display (`4.0`, not `4`). Applied by the walker only to values
+# statically known to be floats — see `expr_is_python_float`.
+__py_float_repr__ = { emit = "common:python.float_repr",     min_args = 1, max_args = 1 }
+# Polymorphic membership (`x in y`): string substring / array element / dict key.
+# Set literals are normalized to `.has()` upstream; this covers the rest and
+# routes around the buggy shared `BinOp::In` array-classification for objects.
+__py_contains__ = { emit = "common:python.contains",         min_args = 2, max_args = 2 }
+# bytes marker — identity passthrough (value is the int array it wraps). Exists
+# only so the walker can statically detect bytes for `b'…'` repr wrapping.
+__py_bytes__    = { emit = "common:python.bytes_wrap",        min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -61,7 +71,7 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 int             = { emit = "common:to_int",         min_args = 1, max_args = 2 }
 parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
-str             = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
+str             = { emit = "common:python.str",              min_args = 0, max_args = 1 }
 bool            = { emit = "common:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "common:str_from_char_code",     min_args = 1, max_args = 1 }
 ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
@@ -114,13 +124,23 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "math.acos"     = { emit = "host:ecma:math:acos",           min_args = 1, max_args = 1 }
 "math.atan"     = { emit = "host:ecma:math:atan",           min_args = 1, max_args = 1 }
 "math.atan2"    = { emit = "host:ecma:math:atan2",          min_args = 2, max_args = 2 }
+# Hyperbolic + misc — already in ecma:math (mirrors the JS profile's Math.*).
+"math.sinh"     = { emit = "host:ecma:math:sinh",           min_args = 1, max_args = 1 }
+"math.cosh"     = { emit = "host:ecma:math:cosh",           min_args = 1, max_args = 1 }
+"math.tanh"     = { emit = "host:ecma:math:tanh",           min_args = 1, max_args = 1 }
+"math.asinh"    = { emit = "host:ecma:math:asinh",          min_args = 1, max_args = 1 }
+"math.acosh"    = { emit = "host:ecma:math:acosh",          min_args = 1, max_args = 1 }
+"math.atanh"    = { emit = "host:ecma:math:atanh",          min_args = 1, max_args = 1 }
+"math.cbrt"     = { emit = "host:ecma:math:cbrt",           min_args = 1, max_args = 1 }
+"math.expm1"    = { emit = "host:ecma:math:expm1",          min_args = 1, max_args = 1 }
+"math.log1p"    = { emit = "host:ecma:math:log1p",          min_args = 1, max_args = 1 }
 "math.log"      = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
 "math.log2"     = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
 "math.log10"    = { emit = "host:ecma:math:log10",          min_args = 1, max_args = 1 }
 "math.exp"      = { emit = "host:ecma:math:exp",            min_args = 1, max_args = 1 }
-"math.gcd"      = { emit = "host:ecma:math:gcd",            min_args = 2, max_args = 2 }
-"math.lcm"      = { emit = "host:ecma:math:lcm",            min_args = 2, max_args = 2 }
-"math.factorial" = { emit = "host:ecma:math:factorial",     min_args = 1, max_args = 1 }
+# NOTE: gcd/lcm/factorial/comb/perm/prod are Python-only (NOT ECMA — there is no
+# `Math.gcd` in JS), so they are lowered to plain-Python AST in the walker
+# (range/reduce; gcd via a loop), never routed to a fake `ecma:math:*` host fn.
 "math.isnan"    = { emit = "host:ecma:number:isNaN",       min_args = 1, max_args = 1 }
 "math.isinf"    = { emit = "common:python.isinf",                  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
@@ -274,6 +294,9 @@ insert          = { emit = "host:ecma:array:insertAt",        min_args = 2, max_
 remove          = { emit = "common:python.remove",          min_args = 1, max_args = 1 }
 pop             = { emit = "common:python.pop",               min_args = 0, max_args = 2 }
 clear           = { emit = "common:python.clear",             min_args = 0, max_args = 0 }
+# Generator protocol — drive the shared generators.rs resume machinery.
+send            = { emit = "common:python.gen_send",          min_args = 0, max_args = 1 }
+throw           = { emit = "common:python.gen_throw",         min_args = 0, max_args = 3 }
 sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "common:python.copy",            min_args = 0, max_args = 0 }

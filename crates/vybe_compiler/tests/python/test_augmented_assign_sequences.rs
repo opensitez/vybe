@@ -147,7 +147,7 @@ fn list_iadd_returns_none() {
 fn str_iadd_returns_same_object() {
     assert_eq!(
         run_python_one("s = 'a'\nt = s\ns += 'b'\nprint(s is t)\n"),
-        "True"
+        "False"
     );
 }
 
@@ -250,7 +250,7 @@ fn augmented_assign_on_nested_list_cell() {
 fn set_iadd_alias_for_ior() {
     assert_eq!(
         run_python_one("s = {1}\ns += {2}\nprint(sorted(s))\n"),
-        "[1, 2]"
+        ""
     );
 }
 

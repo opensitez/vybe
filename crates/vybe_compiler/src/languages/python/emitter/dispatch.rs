@@ -20,6 +20,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.from_end" => {
             crate::emitter::python::collections_adapter::emit_from_end(chunks, current, argc, line)
         }
+        "python.contains" => {
+            crate::emitter::python::collections_adapter::emit_contains(chunks, current, line)
+        }
+        "python.bytes_wrap" => {
+            crate::emitter::python::bytes_adapter::emit_bytes_wrap(chunks, current, argc, line)
+        }
+        "python.next" => {
+            crate::emitter::python::collections_adapter::emit_pynext(chunks, current, argc, line)
+        }
+        "python.float_repr" => {
+            crate::emitter::python::float_adapter::emit_float_repr(chunks, current, argc, line)
+        }
+        "python.gen_send" => {
+            crate::emitter::python::collections_adapter::emit_gen_send(chunks, current, argc, line)
+        }
+        "python.gen_throw" => {
+            crate::emitter::python::collections_adapter::emit_gen_throw(chunks, current, argc, line)
+        }
         "python.add" => {
             crate::emitter::python::collections_adapter::emit_add(chunks, current, line)
         }
@@ -55,6 +73,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.length" => {
             crate::emitter::python::collections_adapter::emit_length(chunks, current, line)
+        }
+        "python.str" => {
+            crate::emitter::python::runtime_adapter::emit_str(chunks, current, argc, line)
         }
         "python.print" => {
             crate::emitter::python::runtime_adapter::emit_print(chunks, current, argc, line)

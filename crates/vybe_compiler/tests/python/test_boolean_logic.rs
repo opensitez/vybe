@@ -2,52 +2,52 @@ use crate::helpers::{run_print, run_python, run_python_one};
 
 #[test]
 fn and_both_true_returns_true() {
-    assert_eq!(run_print("True and True"), "true");
+    assert_eq!(run_print("True and True"), "True");
 }
 
 #[test]
 fn and_left_false_returns_false() {
-    assert_eq!(run_print("False and True"), "false");
+    assert_eq!(run_print("False and True"), "False");
 }
 
 #[test]
 fn and_right_false_returns_false() {
-    assert_eq!(run_print("True and False"), "false");
+    assert_eq!(run_print("True and False"), "False");
 }
 
 #[test]
 fn and_both_false_returns_false() {
-    assert_eq!(run_print("False and False"), "false");
+    assert_eq!(run_print("False and False"), "False");
 }
 
 #[test]
 fn or_both_true_returns_true() {
-    assert_eq!(run_print("True or True"), "true");
+    assert_eq!(run_print("True or True"), "True");
 }
 
 #[test]
 fn or_left_true_returns_true() {
-    assert_eq!(run_print("True or False"), "true");
+    assert_eq!(run_print("True or False"), "True");
 }
 
 #[test]
 fn or_right_true_returns_true() {
-    assert_eq!(run_print("False or True"), "true");
+    assert_eq!(run_print("False or True"), "True");
 }
 
 #[test]
 fn or_both_false_returns_false() {
-    assert_eq!(run_print("False or False"), "false");
+    assert_eq!(run_print("False or False"), "False");
 }
 
 #[test]
 fn not_true_returns_false() {
-    assert_eq!(run_print("not True"), "false");
+    assert_eq!(run_print("not True"), "False");
 }
 
 #[test]
 fn not_false_returns_true() {
-    assert_eq!(run_print("not False"), "true");
+    assert_eq!(run_print("not False"), "True");
 }
 
 #[test]
@@ -103,82 +103,82 @@ fn chained_or_returns_first_truthy() {
 
 #[test]
 fn not_inverts_truthy_value() {
-    assert_eq!(run_print("not 1"), "false");
+    assert_eq!(run_print("not 1"), "False");
 }
 
 #[test]
 fn not_inverts_falsy_zero() {
-    assert_eq!(run_print("not 0"), "true");
+    assert_eq!(run_print("not 0"), "True");
 }
 
 #[test]
 fn bool_true_literal() {
-    assert_eq!(run_print("bool(True)"), "true");
+    assert_eq!(run_print("bool(True)"), "True");
 }
 
 #[test]
 fn bool_false_literal() {
-    assert_eq!(run_print("bool(False)"), "false");
+    assert_eq!(run_print("bool(False)"), "False");
 }
 
 #[test]
 fn bool_zero_is_false() {
-    assert_eq!(run_print("bool(0)"), "false");
+    assert_eq!(run_print("bool(0)"), "False");
 }
 
 #[test]
 fn bool_positive_int_is_true() {
-    assert_eq!(run_print("bool(42)"), "true");
+    assert_eq!(run_print("bool(42)"), "True");
 }
 
 #[test]
 fn bool_negative_int_is_true() {
-    assert_eq!(run_print("bool(-1)"), "true");
+    assert_eq!(run_print("bool(-1)"), "True");
 }
 
 #[test]
 fn bool_empty_string_is_false() {
-    assert_eq!(run_print("bool('')"), "false");
+    assert_eq!(run_print("bool('')"), "False");
 }
 
 #[test]
 fn bool_nonempty_string_is_true() {
-    assert_eq!(run_print("bool('x')"), "true");
+    assert_eq!(run_print("bool('x')"), "True");
 }
 
 #[test]
 fn bool_empty_list_is_false() {
-    assert_eq!(run_print("bool([])"), "false");
+    assert_eq!(run_print("bool([])"), "False");
 }
 
 #[test]
 fn bool_nonempty_list_is_true() {
-    assert_eq!(run_print("bool([0])"), "true");
+    assert_eq!(run_print("bool([0])"), "True");
 }
 
 #[test]
 fn bool_empty_tuple_is_false() {
-    assert_eq!(run_print("bool(())"), "false");
+    assert_eq!(run_print("bool(())"), "False");
 }
 
 #[test]
 fn bool_nonempty_tuple_is_true() {
-    assert_eq!(run_print("bool((1,))"), "true");
+    assert_eq!(run_print("bool((1,))"), "True");
 }
 
 #[test]
 fn bool_empty_dict_is_false() {
-    assert_eq!(run_print("bool({})"), "false");
+    assert_eq!(run_print("bool({})"), "False");
 }
 
 #[test]
 fn bool_nonempty_dict_is_true() {
-    assert_eq!(run_print("bool({'a': 1})"), "true");
+    assert_eq!(run_print("bool({'a': 1})"), "True");
 }
 
 #[test]
 fn bool_none_is_false() {
-    assert_eq!(run_print("bool(None)"), "false");
+    assert_eq!(run_print("bool(None)"), "False");
 }
 
 #[test]
@@ -215,5 +215,5 @@ fn if_nonempty_string_branch_is_true() {
 
 #[test]
 fn double_not_restores_truthiness() {
-    assert_eq!(run_print("not not 5"), "true");
+    assert_eq!(run_print("not not 5"), "True");
 }

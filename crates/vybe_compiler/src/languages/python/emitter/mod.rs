@@ -4,6 +4,8 @@
 //! introducing Python-only host imports. They are routed via
 //! `common:python.*` from the Python profile.
 
+pub mod bytes_adapter;
 pub mod collections_adapter;
 pub mod dispatch;
+pub mod float_adapter;
 pub mod runtime_adapter;

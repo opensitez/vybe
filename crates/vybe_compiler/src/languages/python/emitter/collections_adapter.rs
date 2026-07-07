@@ -59,6 +59,101 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Python `gen.send(value)` — resume the generator with `value` (the result of
+/// the pending `yield`) through the shared `generators.rs` `resume`, returning
+/// the next yielded value. Same lazy layer JS/every language drives.
+/// Stack: `[gen, value]` → `[yielded]`.
+pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let recv = base;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    crate::emitter::generators::emit_resume(&mut chunks[current], line);
+}
+
+/// Python `gen.throw(exc)` — resume the generator by throwing `exc` at the
+/// pending `yield` via the shared `generators.rs` `resume_throw`.
+/// Stack: `[gen, exc]` → `[yielded]`.
+pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let recv = base;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    } else {
+        // throw() with no arg → GeneratorExit-ish; use a generic exception
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("", line);
+        crate::emitter::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "Exception",
+            line,
+        );
+    }
+    crate::emitter::generators::emit_resume_throw(&mut chunks[current], line);
+}
+
+/// Python `next(it[, default])`. For a generator, resume it through the shared
+/// `generators.rs` machinery (`GEN_NEXT` → `[value, has_more]`) — the same lazy
+/// path JS uses — so infinite generators advance one step instead of draining.
+/// Non-generator iterables fall back to the shared `__vybe_pynext` helper.
+pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let it = base;
+
+    // if isGenerator(it)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    call_import(chunks, current, "ecma:value", "isGenerator", 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // generator: GEN_NEXT → [value, has_more]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    crate::emitter::generators::emit_next(&mut chunks[current], line);
+    let has_more = chunks[current].local_count;
+    chunks[current].alloc_scratch(1);
+    let value = chunks[current].local_count;
+    chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_more, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_more, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line); // has_more → value
+    chunks[current].emit_else(line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // exhausted → default
+    } else {
+        // exhausted, no default → raise StopIteration
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("", line);
+        crate::emitter::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "StopIteration",
+            line,
+        );
+        crate::emitter::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_op(Op::NULL, line); // unreachable (throw diverges)
+    }
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    // not a generator → shared iterator-protocol next
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    }
+    collections::emit_runtime_helper_call(chunks, current, "__vybe_pynext", argc, line);
+    chunks[current].emit_end(line);
+}
+
 /// Python from-end index normalization. Stack: `[obj, idx]` → `[normalized_idx]`.
 ///
 /// `a[-1]` is "one from the end", not a real negative index: when `obj` is a
@@ -110,6 +205,48 @@ pub fn emit_from_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_else(line); // not a number → unchanged (dict/other key)
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     chunks[current].emit_end(line);
+}
+
+/// Python `x in y` membership. Stack: `[container, needle]` → `[bool]`.
+/// string → substring test; array → element test; else (dict/object) → own key.
+/// Set literals are lowered to `.has()` upstream and never reach here.
+pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let str_includes = chunk.add_import("ecma:string", "includes");
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let arr_includes = chunk.add_import("ecma:array", "includes");
+    let has_own = chunk.add_import("ecma:object", "hasOwn");
+
+    let needle = chunk.alloc_scratch(1);
+    let container = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, needle, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, container, line);
+
+    // string → substring test
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_call(test_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_call(str_includes, 2, line);
+    chunk.emit_else(line);
+
+    // array → element test
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_call(arr_includes, 2, line);
+    chunk.emit_else(line);
+
+    // dict / object → own key test
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_call(has_own, 2, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 /// `len(obj) + idx` — helper for the from-end wrap. Stack: `[]` → `[value]`.

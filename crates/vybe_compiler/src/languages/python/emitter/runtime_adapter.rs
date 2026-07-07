@@ -93,6 +93,18 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Python `str(x)` — the same display form `print` uses (dict → `{'k': v}`,
+/// list → `[..]`, True/False/None), so `str({'a':1})` isn't `[object Object]`.
+/// Stack: `[x]` → `[string]`.
+pub fn emit_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc == 0 {
+        chunk.emit_string_const("", line);
+        return;
+    }
+    emit_py_repr(chunk, line);
+}
+
 /// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
 fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
@@ -129,7 +141,10 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(json_str, 1, line);
-    // Fix spacing
+    // Fix spacing (`: ` for dicts nested inside the list, then `, `)
+    chunk.emit_string_const(":", line);
+    chunk.emit_string_const(": ", line);
+    chunk.emit_call(replace_all, 3, line);
     chunk.emit_string_const(",", line);
     chunk.emit_string_const(", ", line);
     chunk.emit_call(replace_all, 3, line);
@@ -149,10 +164,62 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(replace_all, 3, line);
     chunk.emit_else(line);
 
-    // fallback: coerce to string (numbers → "42", strings pass through) so
-    // callers can concatenate the result directly.
+    // Not array: a string/number coerces straight to string; anything else is
+    // treated as a dict — `{'k': v, ...}` via JSON + Python spacing/quotes.
+    let is_number = chunk.add_import("wasm:js-number", "test");
+    let is_string = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(is_string, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(is_number, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    // string / number → plain string form
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     crate::emitter::strings::emit_to_string(chunk, line);
+    chunk.emit_else(line);
+    // Error-like (own "message" AND own "stack") → Python `str(exc)` /
+    // `print(exc)` is the message, not a struct dump. The flag avoids a false
+    // positive on a plain dict that happens to have just one of those keys.
+    let has_own = chunk.add_import("ecma:object", "hasOwn");
+    let obj_get = chunk.add_import("ecma:object", "get");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let err_flag = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_string_const("message", line);
+    chunk.emit_call(has_own, 2, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_string_const("stack", line);
+    chunk.emit_call(has_own, 2, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, err_flag, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, err_flag, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_string_const("message", line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_else(line);
+    // dict → JSON stringify then Python-ify (`: ` sep, `, `, single quotes,
+    // True/False/None).
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(json_str, 1, line);
+    for (from, to) in [
+        (":", ": "),
+        (",", ", "),
+        ("true", "True"),
+        ("false", "False"),
+        ("null", "None"),
+        ("\"", "'"),
+    ] {
+        chunk.emit_string_const(from, line);
+        chunk.emit_string_const(to, line);
+        chunk.emit_call(replace_all, 3, line);
+    }
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
