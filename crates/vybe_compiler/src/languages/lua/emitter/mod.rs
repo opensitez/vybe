@@ -11,3 +11,5 @@
 
 pub mod dispatch;
 pub mod string_adapter;
+pub mod metamethods_adapter;
+

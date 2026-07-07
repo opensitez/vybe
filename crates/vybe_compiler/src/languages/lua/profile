@@ -94,6 +94,21 @@ tostring = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 
 __lua_len = { emit = "common:collections.length", min_args = 1, max_args = 1 }
 
+# Lua metamethods - normalized in normalize.rs to adapter calls
+__lua_add = { emit = "common:lua.metamethod_add", min_args = 2, max_args = 2 }
+__lua_sub = { emit = "common:lua.metamethod_sub", min_args = 2, max_args = 2 }
+__lua_mul = { emit = "common:lua.metamethod_mul", min_args = 2, max_args = 2 }
+__lua_div = { emit = "common:lua.metamethod_div", min_args = 2, max_args = 2 }
+__lua_mod = { emit = "common:lua.metamethod_mod", min_args = 2, max_args = 2 }
+__lua_pow = { emit = "common:lua.metamethod_pow", min_args = 2, max_args = 2 }
+__lua_unm = { emit = "common:lua.metamethod_unm", min_args = 1, max_args = 1 }
+__lua_concat = { emit = "common:lua.metamethod_concat", min_args = 2, max_args = 2 }
+__lua_lt = { emit = "common:lua.metamethod_lt", min_args = 2, max_args = 2 }
+__lua_le = { emit = "common:lua.metamethod_le", min_args = 2, max_args = 2 }
+__lua_eq = { emit = "common:lua.metamethod_eq", min_args = 2, max_args = 2 }
+__lua_index = { emit = "common:lua.metamethod_index", min_args = 2, max_args = 2 }
+__lua_newindex = { emit = "common:lua.metamethod_newindex", min_args = 3, max_args = 3 }
+
 # os.* — wall clock via ecma:date + PHP strftime/getdate (see normalize.rs desugar)
 "os.time" = { emit = "host:ecma:date:nowSeconds", min_args = 0, max_args = 1 }
 "__lua_strftime" = { emit = "common:php.strftime", min_args = 1, max_args = 2 }
