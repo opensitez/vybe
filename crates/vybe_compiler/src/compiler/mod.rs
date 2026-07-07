@@ -296,6 +296,13 @@ pub struct Compiler {
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
     /// ReferenceError in `emit_var_get` is suppressed in this context.
     in_typeof_operand: bool,
+    /// Every name the program lexically declares (`let`/`const`/`var`/params/
+    /// etc.) as a local, across all scopes — populated only for languages with
+    /// `unresolved_reference_throws`. A name in this set that is unresolvable in
+    /// the current scope is provably an out-of-scope user binding (never an
+    /// untracked host global), so reading it is a ReferenceError even in sloppy
+    /// mode (§9.1.1.4.6 applies in both strict and sloppy). See `emit_var_get`.
+    program_lexical_names: HashSet<String>,
 
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
@@ -1967,6 +1974,7 @@ impl Compiler {
             const_globals: HashSet::new(),
             in_strict: false,
             in_typeof_operand: false,
+            program_lexical_names: HashSet::new(),
             shared_global_slots: HashMap::new(),
             shared_global_names: Vec::new(),
             defined_functions: HashSet::new(),
@@ -4792,7 +4800,19 @@ impl Compiler {
         if high > self.chunks[cur].local_count {
             self.chunks[cur].local_count = high;
         }
+        self.track_lexical_name(name);
         slot
+    }
+
+    /// Record a user binding for sloppy-mode unresolvable-read detection.
+    /// No-op unless the profile has `unresolved_reference_throws` (JS only), so
+    /// no other language pays for it or changes behavior. Internal temporaries
+    /// (`__`-prefixed) are skipped — they are never read as user identifiers.
+    fn track_lexical_name(&mut self, name: &str) {
+        if self.profile.unresolved_reference_throws && !name.starts_with("__") {
+            let cname = self.canon(name);
+            self.program_lexical_names.insert(cname);
+        }
     }
 
     /// Stack: [coll, idx] → [coll, idx_norm]. For languages where
@@ -5067,6 +5087,7 @@ impl Compiler {
         if high > self.chunks[cur].local_count {
             self.chunks[cur].local_count = high;
         }
+        self.track_lexical_name(name);
         slot
     }
     pub(crate) fn chunk(&mut self) -> &mut Chunk {
@@ -7884,8 +7905,15 @@ impl Compiler {
         let resolvable = self.defined_globals.contains(&cname)
             || self.defined_functions.contains(&cname)
             || self.defined_classes.contains(&cname);
+        // §9.1.1.4.6 GetValue throws for an unresolvable read in BOTH strict
+        // and sloppy mode. We gate the general throw to strict mode because a
+        // blanket sloppy throw misfires on host globals we don't track as
+        // bindings — but a name the program itself lexically declared
+        // (`program_lexical_names`) that is unresolvable here is provably an
+        // out-of-scope *user* binding, never an untracked host global, so it
+        // throws in sloppy mode too.
         if self.profile.unresolved_reference_throws
-            && self.in_strict
+            && (self.in_strict || self.program_lexical_names.contains(&cname))
             && !self.in_typeof_operand
             && !resolvable
             && !cname.starts_with("__")

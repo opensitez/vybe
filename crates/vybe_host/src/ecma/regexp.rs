@@ -649,7 +649,7 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:regexp",
         "test",
-        Box::new(|_ctx, args| regexp_test(args)),
+        Box::new(|ctx, args| regexp_test(ctx, args)),
     );
 
     // `regex.exec(str)` — ECMA-262 §22.2.5.2. Returns a match Array
@@ -662,7 +662,7 @@ fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:regexp",
         "exec",
-        Box::new(|_ctx, args| regexp_exec(args)),
+        Box::new(|ctx, args| regexp_exec(ctx, args)),
     );
 
     // `regex.toString()` — ECMA-262 §22.2.5.17. Returns "/source/flags".
@@ -673,10 +673,14 @@ fn register_prototype(vm: &mut VM) {
     );
 }
 
-pub fn dispatch_regexp_method(method: &str, args: &[Value]) -> Option<Value> {
+pub fn dispatch_regexp_method(
+    ctx: &mut HostContext,
+    method: &str,
+    args: &[Value],
+) -> Option<Value> {
     match method {
-        "test" => Some(regexp_test(args)),
-        "exec" => Some(regexp_exec(args)),
+        "test" => Some(regexp_test(ctx, args)),
+        "exec" => Some(regexp_exec(ctx, args)),
         "toString" => Some(regexp_to_string(args)),
         _ => None,
     }
@@ -698,13 +702,20 @@ pub fn dispatch_regexp_string_method(
     }
 }
 
-fn regexp_test(args: &[Value]) -> Value {
-    Value::Bool(!matches!(regexp_exec(args), Value::Null))
+fn regexp_test(ctx: &mut HostContext, args: &[Value]) -> Value {
+    Value::Bool(!matches!(regexp_exec(ctx, args), Value::Null))
 }
 
-fn regexp_exec(args: &[Value]) -> Value {
+fn regexp_exec(ctx: &mut HostContext, args: &[Value]) -> Value {
     let (pattern, flags) = extract_pattern(args, 0);
-    let input = s_arg(args, 1);
+    // §22.2.7.2 RegExpBuiltinExec step 1: ToString(argument). A non-string
+    // argument is coerced through its `toString`/`valueOf` (ToPrimitive with a
+    // string hint) rather than the raw `[object]` Display.
+    let input = match args.get(1) {
+        Some(Value::String(s)) => s.to_string(),
+        Some(other) => format!("{}", crate::ecma::value::to_primitive(ctx, other, "string")),
+        None => String::new(),
+    };
     if let Some(kind) = special_pattern(&pattern, &flags) {
         return regexp_exec_special(args, &input, kind, &flags);
     }

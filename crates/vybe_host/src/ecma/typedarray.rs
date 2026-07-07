@@ -751,31 +751,51 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
     vm.register_host_fn(
         module,
         "from",
-        Box::new(move |_ctx, args| {
-            if let Some(Value::Object(src)) = args.first() {
-                let s = src.lock().unwrap();
-                let values: Option<Vec<Value>> = match &s.kind {
-                    ObjectKind::Array(elems) => Some(elems.clone()),
-                    ObjectKind::TypedArray(src_ta) => Some(
-                        (0..ta_live_length(src_ta))
-                            .map(|i| read_element(src_ta, i))
-                            .collect(),
-                    ),
-                    _ => None,
-                };
-                drop(s);
-                if let Some(values) = values {
-                    let ta_val = new_typed_array(elem, values.len());
-                    if let Value::Object(ref ta_obj) = ta_val {
-                        let ta_lock = ta_obj.lock().unwrap();
-                        if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(ta, i, v);
-                            }
+        Box::new(move |ctx, args| {
+            // §23.2.2.1 TypedArray.from(source[, mapFn]) — source is any
+            // iterable/array-like: Array, TypedArray, or String (iterated by
+            // code point).
+            let values: Option<Vec<Value>> = match args.first() {
+                Some(Value::Object(src)) => {
+                    let s = src.lock().unwrap();
+                    match &s.kind {
+                        ObjectKind::Array(elems) => Some(elems.clone()),
+                        ObjectKind::TypedArray(src_ta) => Some(
+                            (0..ta_live_length(src_ta))
+                                .map(|i| read_element(src_ta, i))
+                                .collect(),
+                        ),
+                        _ => None,
+                    }
+                }
+                Some(Value::String(s)) => Some(
+                    s.chars()
+                        .map(|c| Value::String(Arc::from(c.to_string().as_str())))
+                        .collect(),
+                ),
+                _ => None,
+            };
+            if let Some(mut values) = values {
+                // Optional mapFn (2nd arg): mapFn(value, index) per element.
+                if let Some(map_fn) = args.get(1) {
+                    if !matches!(map_fn, Value::Null | Value::Undefined) {
+                        values = values
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| ctx.invoke(map_fn, &[v.clone(), Value::I32(i as i32)]))
+                            .collect();
+                    }
+                }
+                let ta_val = new_typed_array(elem, values.len());
+                if let Value::Object(ref ta_obj) = ta_val {
+                    let ta_lock = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
+                        for (i, v) in values.iter().enumerate() {
+                            write_element(ta, i, v);
                         }
                     }
-                    return ta_val;
                 }
+                return ta_val;
             }
             new_typed_array(elem, 0)
         }),

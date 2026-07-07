@@ -8413,8 +8413,11 @@ impl Compiler {
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
                 let saved_js_this = self.save_js_this("__js_prev_this_idx");
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.set_js_this_from_stack();
+                // §13.3.7: the property key and the arguments are evaluated with
+                // the CALLER's `this`; `this` is bound to the receiver only for
+                // the call itself (just before CALL_REF below). Binding it here
+                // would make `obj[k](this, …)` see the receiver, not the
+                // enclosing `this`.
                 let key_tmp = self.define_local("__js_idx_key");
                 match &index.kind {
                     ExprKind::Member {
@@ -8512,6 +8515,11 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
+                // Bind `this` = receiver for the call only. Stack is
+                // [callee, ..args, receiver]; GLOBAL_SET pops the receiver,
+                // leaving [callee, ..args] for CALL_REF.
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.set_js_this_from_stack();
                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);

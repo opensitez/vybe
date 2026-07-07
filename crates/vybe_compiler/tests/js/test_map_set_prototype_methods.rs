@@ -350,9 +350,11 @@ crate::js_cases! {
         ["false"]
     };
 
-    map_constructor_null_iterable_throws => {
+    map_constructor_null_iterable_empty => {
+        // §24.1.1.1 step 4: null (like undefined) yields an empty map — it does
+        // NOT throw (node-verified). Mirrors set_constructor_undefined_iterable_ok.
         r#"try{new Map(null); console.log("ok");}catch(e){console.log(e instanceof TypeError);}"#,
-        ["true"]
+        ["ok"]
     };
 
     set_constructor_undefined_iterable_ok => {

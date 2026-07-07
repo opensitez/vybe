@@ -894,7 +894,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "split" => {
             if let Some(result) = args.first().and_then(|value| {
-                invoke_string_symbol_hook(ctx, value, "symbolsplit", &[Value::String(s.clone())])
+                invoke_string_symbol_hook(ctx, value, "@@split", &[Value::String(s.clone())])
             }) {
                 return result;
             }
@@ -960,7 +960,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 invoke_string_symbol_hook(
                     ctx,
                     value,
-                    "symbolreplace",
+                    "@@replace",
                     &[Value::String(s.clone()), replacement.clone()],
                 )
             }) {
@@ -1014,7 +1014,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 invoke_string_symbol_hook(
                     ctx,
                     value,
-                    "symbolreplace",
+                    "@@replace",
                     &[
                         Value::String(s.clone()),
                         args.get(1).cloned().unwrap_or(Value::Undefined),
@@ -1106,13 +1106,22 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
 fn invoke_string_symbol_hook(
     ctx: &mut HostContext,
     target: &Value,
-    key: &str,
+    raw_symbol: &str,
     args: &[Value],
 ) -> Option<Value> {
     let Value::Object(obj) = target else {
         return None;
     };
-    let method = lookup_method_via_proto(obj, key)?;
+    // A `[Symbol.split]` method can land under any of the historical key
+    // forms depending on how the computed key was produced: the raw "@@split"
+    // string value (well-known symbols are Value::String, so they skip
+    // `canonical_property_key`), the canonical short key ("symbolsplit"), or
+    // the "Symbol(@@split)" wrapper used by ecma:array.set. Try all three.
+    let canonical = crate::ecma::symbol::canonical_property_key(&Arc::from(raw_symbol));
+    let wrapped = format!("Symbol({})", raw_symbol);
+    let method = lookup_method_via_proto(obj, raw_symbol)
+        .or_else(|| lookup_method_via_proto(obj, &canonical))
+        .or_else(|| lookup_method_via_proto(obj, &wrapped))?;
     if matches!(method, Value::Null | Value::Undefined) {
         return None;
     }
@@ -2823,7 +2832,7 @@ fn dispatch_tagged_object(
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
-            if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(method, &call_args) {
+            if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(ctx, method, &call_args) {
                 return Some(result);
             }
         } else if tag == "Promise" {

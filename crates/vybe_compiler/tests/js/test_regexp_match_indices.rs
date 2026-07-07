@@ -153,7 +153,8 @@ crate::js_cases! {
 
     regexp_last_index_writable => {
         r#"const r=/a/g; r.lastIndex=2; console.log(r.exec("aba"));"#,
-        ["null"]
+        // /a/g from lastIndex 2 on "aba": 'a' at index 2 matches (node-verified).
+        ["a"]
     };
 
     regexp_exec_on_object_coercible_string => {
@@ -212,7 +213,9 @@ crate::js_cases! {
     };
 
     regexp_multiline_dollar_matches_before_end => {
-        r#"console.log(/b$/.test("a\nb"));"#,
+        // Without the `m` flag, `$` matches only at the true end of input, NOT
+        // before an interior line terminator: /a$/ fails on "a\nb" (§22.2.2.6).
+        r#"console.log(/a$/.test("a\nb"));"#,
         ["false"]
     };
 
