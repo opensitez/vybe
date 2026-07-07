@@ -14,7 +14,15 @@ use crate::emitter::math_runtime::{
     build_math_helper_fn, ecma_math_call, poly_erf, stirling_approx,
 };
 
+/// The libc runtime prelude is identical for every program, so build it once
+/// and hand out clones — the same OnceLock caching the JS/PHP front-ends use.
 pub fn prelude() -> Vec<Statement> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Vec<Statement>> = OnceLock::new();
+    CACHE.get_or_init(build_prelude).clone()
+}
+
+fn build_prelude() -> Vec<Statement> {
     let stdout_name = "__c_stdout_file";
     let buffer_name = "__c_stdout_buffer";
     let store_name = "__c_file_store";

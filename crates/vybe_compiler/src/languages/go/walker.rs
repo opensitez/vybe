@@ -98,11 +98,23 @@ fn go_uses_errors_runtime(source: &str) -> bool {
 /// Walk a prelude source and return its top-level statements, dropping the
 /// placeholder `main` used to keep the snippet a complete program.
 fn go_prelude_body(source: &str) -> Result<Vec<Statement>, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    // Each prelude constant is fixed source, re-walked on every compile; cache
+    // the parsed statements by content (same pattern as the profile cache) and
+    // hand out clones so each caller gets its own mutable copy.
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<Statement>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(source) {
+        return Ok(hit.clone());
+    }
     let (_, body, _) = walk_go_source(source)?;
-    Ok(body
+    let stmts: Vec<Statement> = body
         .into_iter()
         .filter(|stmt| !matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "main"))
-        .collect())
+        .collect();
+    cache.lock().unwrap().insert(source.to_string(), stmts.clone());
+    Ok(stmts)
 }
 
 /// Go-source runtime prelude for the closure-based `sort` package helpers.
