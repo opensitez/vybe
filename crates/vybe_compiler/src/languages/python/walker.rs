@@ -2033,6 +2033,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // existing super.method() dispatch takes over.
                 if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
                     expr = Expression::new(ExprKind::Super);
+                } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "print") {
+                    // Bare `print()` still needs the [sep, end] convention so
+                    // the emitter prints the default line terminator.
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Ident("print".into()))),
+                        args: normalize_python_print_args(Vec::new()),
+                        optional: false,
+                    });
                 } else {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
@@ -2152,6 +2160,20 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         // Python-specific: rewrite builtins that differ from JS semantics.
                         if let ExprKind::Ident(name) = &expr.kind {
                             match name.as_str() {
+                                "print" => {
+                                    // Reshape to the emitter convention
+                                    // [sep, end, items…]; sep/end kwargs are
+                                    // pulled out of the positional list.
+                                    let new_args = normalize_python_print_args(args);
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "print".into(),
+                                        ))),
+                                        args: new_args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 "divmod" if args.len() == 2 => {
                                     // divmod(a, b) → [a // b, a % b]
                                     let a = args[0].value.clone();
@@ -2267,13 +2289,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     continue;
                                 }
                                 "str" if args.len() == 1 => {
-                                    // str(x) → "" + x (stringify)
+                                    // str(x) ≡ f"{x}" — the interpolation
+                                    // lowering stringifies through the host
+                                    // ToPrimitive path (handles objects,
+                                    // notably exceptions → message), unlike
+                                    // `"" + x` whose numeric fallback traps
+                                    // on non-primitives.
                                     let x = args[0].value.clone();
-                                    expr = Expression::new(ExprKind::Binary {
-                                        op: BinOp::Add,
-                                        left: Box::new(Expression::string("")),
-                                        right: Box::new(x),
-                                    });
+                                    expr = Expression::new(ExprKind::Interpolation(vec![
+                                        InterpolPart::Expr(x),
+                                    ]));
                                     continue;
                                 }
                                 "dict" if args.is_empty() => {
@@ -2431,6 +2456,29 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
     }
     Ok(expr.kind)
+}
+
+/// Normalize Python `print(...)` arguments to the emitter convention
+/// `[sep, end, items…]`. The `sep`/`end` keyword args override the defaults
+/// (`" "` / `"\n"`); Python's `file`/`flush` keywords are accepted and ignored.
+/// Positional items (including `*spread`) keep their original `Argument`.
+fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
+    let mut sep = Argument::positional(Expression::string(" "));
+    let mut end = Argument::positional(Expression::string("\n"));
+    let mut items = Vec::new();
+    for a in raw {
+        match a.name.as_deref() {
+            Some("sep") => sep = Argument::positional(a.value),
+            Some("end") => end = Argument::positional(a.value),
+            Some("file") | Some("flush") => {}
+            _ => items.push(a),
+        }
+    }
+    let mut out = Vec::with_capacity(items.len() + 2);
+    out.push(sep);
+    out.push(end);
+    out.extend(items);
+    out
 }
 
 fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {

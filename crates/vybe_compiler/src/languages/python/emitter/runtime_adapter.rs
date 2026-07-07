@@ -8,29 +8,64 @@ use crate::emitter::{collections, target::Target};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-/// Python `print(...)` — inline emitter that converts each arg to Python repr.
-/// Bool→True/False, None→None, Array→[...], else pass through.
+/// Python `print(...)` — inline emitter that writes to `wasi:cli/stdout`
+/// (like PHP `echo`), so `sep`/`end` and the missing trailing newline are
+/// all expressible (the line-oriented `wasi:logging/logging.log` sink cannot
+/// control separators or suppress the newline).
+///
+/// Argument convention set by the Python walker: when args are present,
+/// `arg0 = sep`, `arg1 = end`, `args[2..] = items`. A bare `print()` compiles
+/// with `argc == 0` and emits just the default end (`"\n"`). Each item is
+/// converted to its Python display form via `emit_py_repr`.
 pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
+    let rd_slot = chunk.alloc_scratch(1);
+    let wr_slot = chunk.alloc_scratch(1);
+    let result_slot = chunk.alloc_scratch(1);
+
     if argc == 0 {
-        chunk.emit_string_const("", line);
-        let idx = chunk.add_import("wasi:logging/logging", "log");
-        chunk.emit_call(idx, 1, line);
-        return;
+        // Bare `print()` → just the default line terminator.
+        chunk.emit_string_const("\n", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    } else {
+        // Args are on the stack in call order (top = last). Save into slots.
+        let mut slots = Vec::with_capacity(argc as usize);
+        for _ in 0..argc {
+            let s = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, s, line);
+            slots.push(s);
+        }
+        slots.reverse(); // slots[0]=sep, slots[1]=end, slots[2..]=items
+        let sep_slot = slots[0];
+        let end_slot = slots[1];
+
+        // Build the output string: item0, sep, item1, sep, …, end.
+        let mut part_count = 0usize;
+        for (i, &item) in slots[2..].iter().enumerate() {
+            if i > 0 {
+                chunk.emit_op_u16(Op::LOCAL_GET, sep_slot, line);
+                part_count += 1;
+            }
+            chunk.emit_op_u16(Op::LOCAL_GET, item, line);
+            emit_py_repr(chunk, line);
+            part_count += 1;
+        }
+        chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+        part_count += 1;
+
+        crate::emitter::strings::emit_concat(chunk, part_count, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     }
-    let mut slots = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
-        let s = chunk.alloc_scratch(1);
-        chunk.emit_op_u16(Op::LOCAL_SET, s, line);
-        slots.push(s);
-    }
-    slots.reverse();
-    for &s in &slots {
-        chunk.emit_op_u16(Op::LOCAL_GET, s, line);
-        emit_py_repr(chunk, line);
-    }
-    let idx = chunk.add_import("wasi:logging/logging", "log");
-    chunk.emit_call(idx, argc, line);
+
+    crate::emitter::io::emit_write_stdout_with_imports(
+        chunk,
+        write_idx,
+        rd_slot,
+        wr_slot,
+        line,
+        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
+    );
 }
 
 /// Python `+` operator: array→concat, else→dynamic add.
@@ -114,8 +149,10 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(replace_all, 3, line);
     chunk.emit_else(line);
 
-    // fallback: pass through
+    // fallback: coerce to string (numbers → "42", strings pass through) so
+    // callers can concatenate the result directly.
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    crate::emitter::strings::emit_to_string(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);

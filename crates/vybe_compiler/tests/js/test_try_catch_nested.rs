@@ -27,9 +27,11 @@ console.log(o.join(","));"#,
     };
 
     nested_triple_middle_rethrows => {
+        // The middle arm RETHROWS (per the test's name/intent) so the outer
+        // catch fires too (node-verified: "in,mid,out").
         r#"let o=[];
 try{try{try{throw "x";}catch(e){o.push("in");throw e;}}
-catch(e){o.push("mid");}}
+catch(e){o.push("mid");throw e;}}
 catch(e){o.push("out");}
 console.log(o.join(","));"#,
         ["in,mid,out"]
@@ -175,11 +177,14 @@ console.log(o.join(","));"#,
     };
 
     try_inside_catch_return_from_inner => {
-        r#"let v;
-try{throw 0;}
-catch(e){try{return "inner";}catch{return "no";} v="skip";}
-console.log(typeof v);"#,
-        ["undefined"]
+        // Top-level `return` is a SyntaxError (§16.1) — the concept needs a
+        // function. The return from the inner try exits f, skipping the rest
+        // of the catch body (node-verified: "inner").
+        r#"let o=[];
+function f(){ try{ throw 0; }catch(e){ try{ return "inner"; }catch{ return "no"; } o.push("skip"); } }
+o.push(f());
+console.log(o.join(","));"#,
+        ["inner"]
     };
 
     try_inside_catch_outer_still_active => {
@@ -239,9 +244,11 @@ console.log(o.join(","));"#,
     };
 
     try_inside_catch_with_inner_finally_return => {
+        // Top-level `return` is a SyntaxError (§16.1) — wrapped in a
+        // function; the finally runs on the way out (node-verified: "f").
         r#"let o=[];
-try{throw 1;}
-catch(e){try{return "a";}finally{o.push("f");}}
+function f(){ try{ throw 1; }catch(e){ try{ return "a"; }finally{ o.push("f"); } } }
+f();
 console.log(o.join(","));"#,
         ["f"]
     };
@@ -295,8 +302,11 @@ console.log(o.join(","));"#,
     };
 
     sibling_try_first_finally_second_catch => {
+        // Without a catch the first try's exception escapes and nothing
+        // else runs — the intent (finally, then the sibling try) needs the
+        // exception handled (node-verified: "f,ok").
         r#"let o=[];
-try{throw 0;}finally{o.push("f");}
+try{throw 0;}catch{}finally{o.push("f");}
 try{o.push("ok");}catch{o.push("c");}
 console.log(o.join(","));"#,
         ["f,ok"]

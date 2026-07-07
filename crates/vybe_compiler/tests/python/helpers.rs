@@ -21,6 +21,64 @@ macro_rules! compile_case {
     };
 }
 
+// Output capture mirrors the two real output surfaces (same model as the PHP
+// harness):
+//
+// - `wasi:cli/stdout.write-via-stream(data: stream<u8>)` — Python `print`
+//   writes raw stdout bytes here with NO implicit newline, so consecutive
+//   writes concatenate onto the current line (`print('x', end='')` then
+//   `print('y')` → "xy\n"). The newline is part of `print`'s `end` argument.
+// - `wasi:logging/logging.log` — line-oriented logging; one record per call.
+//
+// Fragments are buffered in call order and split into lines in `finish_output`.
+fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let mut joined = args
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            joined.push('\n');
+            out.lock().unwrap().push(joined);
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:cli/stdout",
+        "write-via-stream",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let stream_val = args.first().cloned().unwrap_or(Value::Null);
+            let bytes = ctx.stream_drain(&stream_val);
+            if !bytes.is_empty() {
+                out.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Value::Null
+        }),
+    );
+}
+
+/// Concatenate the buffered fragments (in call order) and split into lines.
+/// A trailing newline (the default `print` end) produces a final empty
+/// element, which is dropped.
+fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let joined: String = output.lock().unwrap().concat();
+    let mut lines: Vec<String> = joined
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    while lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
 /// Run Python source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_python(src: &str) -> Vec<String> {
     let module = vybe_compiler::languages::python::parse(src).expect("Python parse failed");
@@ -35,25 +93,16 @@ pub fn run_python(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("Python run failed");
-    let result = output.lock().unwrap().clone();
-    result
+    finish_output(&output)
 }
 
+/// The program's full stdout, lines joined by "\n" (Python's line separator).
 pub fn run_python_one(src: &str) -> String {
-    run_python(src).into_iter().next().unwrap_or_default()
+    run_python(src).join("\n")
 }
 
 /// Parse-only: verify the grammar accepts the source without errors

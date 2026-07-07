@@ -27,8 +27,10 @@ crate::js_cases! {
     };
 
     nested_finally_inner_return_wins_over_outer => {
+        // §14.15.3: each enclosing finally's return REPLACES the completion —
+        // the OUTERMOST finally wins (node-verified: "outer").
         r#"function f(){try{try{return "inner";}finally{return "fin";}}finally{return "outer";}}console.log(f());"#,
-        ["fin"]
+        ["outer"]
     };
 
     try_return_finally_logs_without_overriding => {
@@ -81,17 +83,22 @@ crate::js_cases! {
     };
 
     nested_try_finally_return_chain => {
+        // §14.15.3: outermost finally's return wins (node-verified: 3).
         r#"function f(){try{try{return 1;}finally{return 2;}}finally{return 3;}}console.log(f());"#,
-        ["2"]
+        ["3"]
     };
 
     finally_with_break_inside_switch_from_try => {
+        // §14.15.3: the finally's `break` REPLACES the throw completion —
+        // the exception is discarded, the catch never runs (node-verified).
         r#"let o=[];try{switch(1){case 1:try{throw "x";}finally{o.push("f");break;}default:o.push("d");}}catch(e){o.push(String(e));}console.log(o.join(","));"#,
-        ["f,x"]
+        ["f"]
     };
 
     catch_finally_both_return_finally_wins => {
+        // §14.15.3: the return propagates outward and each finally on the
+        // way REPLACES it — the outermost ("ff") wins (node-verified).
         r#"function f(){try{throw 0;}catch{try{return "c";}finally{return "cf";}}finally{return "ff";}}console.log(f());"#,
-        ["cf"]
+        ["ff"]
     };
 }
