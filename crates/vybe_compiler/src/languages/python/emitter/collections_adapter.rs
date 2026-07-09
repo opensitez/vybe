@@ -241,10 +241,26 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(arr_includes, 2, line);
     chunk.emit_else(line);
 
-    // dict / object → own key test
+    // object → user `__contains__(self, item)` if present, else own-key test
+    let contains_key = chunk
+        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__contains__")));
+    let contains_method = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, contains_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, contains_method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, contains_method, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // 1 if a __contains__ method is present
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, contains_method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
     chunk.emit_call(has_own, 2, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -528,6 +544,23 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let size_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
 
+    // User-defined `__len__` → call it with the receiver. (Cross-language:
+    // bound alongside `__get_length`/`__get_count`.)
+    let len_key = chunks[current]
+        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__len__")));
+    let len_method = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, len_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line); // 1 if a method is present
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_else(line);
+
     // isString(recv) → string length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
@@ -546,6 +579,15 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
 
+    // isView(recv) → typed-array (bytes) length
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:arraybuffer", "isView", 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:uint8array", "length", 1, line);
+    chunks[current].emit_else(line);
+
     // has `.size` (Set/Map) → use it, else Object.keys(recv).length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
@@ -561,4 +603,6 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line); // close the isView (bytes) branch
+    chunks[current].emit_end(line); // close the __len__ dispatch branch
 }

@@ -23,9 +23,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.contains" => {
             crate::emitter::python::collections_adapter::emit_contains(chunks, current, line)
         }
-        "python.bytes_wrap" => {
-            crate::emitter::python::bytes_adapter::emit_bytes_wrap(chunks, current, argc, line)
-        }
         "python.next" => {
             crate::emitter::python::collections_adapter::emit_pynext(chunks, current, argc, line)
         }
@@ -79,6 +76,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.print" => {
             crate::emitter::python::runtime_adapter::emit_print(chunks, current, argc, line)
+        }
+        "python.bytes_decode" => {
+            crate::emitter::python::runtime_adapter::emit_bytes_decode(chunks, current, argc, line)
         }
         "python.pyadd" => {
             crate::emitter::python::runtime_adapter::emit_pyadd(chunks, current, line)

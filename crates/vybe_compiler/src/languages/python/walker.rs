@@ -141,6 +141,7 @@ fn preprocess_indentation(source: &str) -> String {
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    PY_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -190,7 +191,9 @@ fn source_uses_bytes(source: &str) -> bool {
         || source.contains("b\"")
         || source.contains("B'")
         || source.contains("B\"")
-        || source.contains("bytes(")
+        || source.contains("bytes")
+        || source.contains("bytearray")
+        || source.contains(".hex(")
         || source.contains(".encode(")
         || source.contains(".decode(")
 }
@@ -249,6 +252,18 @@ def __vybe_bytes_repr(a):
         else:
             r += bs + "x" + hexd[b >> 4] + hexd[b & 15]
     return r + "'"
+
+def __vybe_str_encode(s):
+    out = []
+    for ch in s:
+        out.append(ord(ch))
+    return out
+
+def __vybe_bytes_decode(a):
+    r = ""
+    for b in a:
+        r += chr(b)
+    return r
 "#;
 
 fn walk_stmt_into(
@@ -1723,6 +1738,15 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
         }
     }
 
+    // Record every imported module (name + alias) so bare `mod.CONST` reads
+    // stay namespace access rather than being turned into subscripts.
+    for (path, alias) in &imports {
+        note_imported_module(path);
+        if let Some(a) = alias {
+            note_imported_module(a);
+        }
+    }
+
     // For simple `import os`, `import os as operating_system`
     if imports.len() == 1 {
         let (path, alias) = imports.remove(0);
@@ -2075,6 +2099,20 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         } else {
                             contains
                         };
+                    } else if matches!(
+                        op,
+                        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
+                    ) && expr_is_python_bytes(&left)
+                        && expr_is_python_bytes(&right)
+                    {
+                        // bytes vs bytes — compare their latin-1 decodings, which
+                        // preserves byte order/equality (Uint8Arrays otherwise
+                        // compare by reference).
+                        left = Expression::new(ExprKind::Binary {
+                            op,
+                            left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
+                            right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
+                        });
                     } else {
                         left = Expression::new(ExprKind::Binary {
                             op,
@@ -2289,6 +2327,113 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
     Ok(left.kind)
 }
 
+// ── Attribute-read desugaring ───────────────────────────────────────────────
+//
+// Python `obj.attr` *reads* compile to the shared JS member-read path, whose
+// data-property lookup goes through `__stdlib_js_get_method` — a helper that
+// resolves methods/getters but NOT plain instance/class data properties. So
+// `c.year`, `Cls.CONST`, `struct_time.tm_year`, dataclass/namedtuple fields
+// etc. all read back empty, while `obj['attr']` / `getattr` (the data path)
+// work. We normalize a bare attribute *read* to a subscript so it takes the
+// working path. Method calls (`obj.m(...)`) keep the Member callee (method
+// dispatch is correct), and namespace reads (`math.pi`) and `self.x` stay on
+// the Member path.
+
+thread_local! {
+    static PY_IMPORTED_MODULES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn note_imported_module(name: &str) {
+    // Track both the full dotted path's first segment and any alias so that a
+    // bare `mod.CONST` read is left as namespace access, not turned into a
+    // subscript.
+    let first = name.split('.').next().unwrap_or(name).trim();
+    if !first.is_empty() {
+        PY_IMPORTED_MODULES.with(|m| m.borrow_mut().insert(first.to_string()));
+    }
+}
+
+fn is_imported_module(name: &str) -> bool {
+    PY_IMPORTED_MODULES.with(|m| m.borrow().contains(name))
+}
+
+/// Root identifier at the base of a member/index/call chain.
+fn expr_root_ident(e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(n) => Some(n.clone()),
+        ExprKind::Member { object, .. } => expr_root_ident(object),
+        ExprKind::Index { object, .. } => expr_root_ident(object),
+        ExprKind::Call { callee, .. } => expr_root_ident(callee),
+        _ => None,
+    }
+}
+
+/// Rewrite bare attribute reads to subscripts (see the module note above).
+fn desugar_member_reads(e: Expression) -> Expression {
+    match e.kind {
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => {
+            let object = desugar_member_reads(*object);
+            let root = expr_root_ident(&object);
+            // Keep `self.x` and `module.CONST` on the Member path.
+            let keep = matches!(root.as_deref(), Some("self"))
+                || root.as_deref().map(is_imported_module).unwrap_or(false);
+            if keep {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(object),
+                    field,
+                    null_safe,
+                })
+            } else {
+                Expression::new(ExprKind::Index {
+                    object: Box::new(object),
+                    index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(field.into())))),
+                    null_safe,
+                })
+            }
+        }
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
+            // Method call: keep the Member callee (method dispatch), but
+            // desugar the receiver's own chain.
+            let callee = match callee.kind {
+                ExprKind::Member {
+                    object,
+                    field,
+                    null_safe,
+                } => Expression::new(ExprKind::Member {
+                    object: Box::new(desugar_member_reads(*object)),
+                    field,
+                    null_safe,
+                }),
+                _ => desugar_member_reads(*callee),
+            };
+            Expression::new(ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+                optional,
+            })
+        }
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: Box::new(desugar_member_reads(*object)),
+            index,
+            null_safe,
+        }),
+        _ => e,
+    }
+}
+
 // ── Postfix (call, member, subscript chain) ─────────────────────────────────
 
 fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -2318,6 +2463,17 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         args: normalize_python_print_args(Vec::new()),
                         optional: false,
                     });
+                } else if let ExprKind::Member { object, field, .. } = &expr.kind {
+                    // bytes string-like method with no args, e.g. `b'AB'.lower()`
+                    if let Some(rewritten) = try_rewrite_bytes_method(object, field, &[]) {
+                        expr = rewritten;
+                    } else {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(expr),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                    }
                 } else {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
@@ -2434,6 +2590,20 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             }
                         }
 
+                        // `bytes.fromhex(s)` static constructor → Uint8Array.
+                        if let ExprKind::Member { object, field, .. } = &expr.kind {
+                            if field == "fromhex"
+                                && matches!(&object.kind, ExprKind::Ident(n) if n == "bytes")
+                                && args.len() == 1
+                            {
+                                expr = call_ident(
+                                    "__py_bytes_fromhex__",
+                                    vec![args[0].value.clone()],
+                                );
+                                continue;
+                            }
+                        }
+
                         // Python-specific: rewrite builtins that differ from JS semantics.
                         if let ExprKind::Ident(name) = &expr.kind {
                             match name.as_str() {
@@ -2447,6 +2617,53 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             "print".into(),
                                         ))),
                                         args: new_args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                // `eval(src[, g[, l]])` / `exec(src[, g[, l]])`
+                                // → universal compiler-as-a-service `vybe:eval`,
+                                // passing a language-neutral FEATURE attributes
+                                // object (never a mode string / positional
+                                // convention): `eval` wants the completion value,
+                                // both bind a namespace dict (locals if given,
+                                // else globals) that names are read from / written
+                                // back to.
+                                "eval" | "exec" if !args.is_empty() => {
+                                    let namespace = args
+                                        .get(2)
+                                        .or_else(|| args.get(1))
+                                        .map(|a| a.value.clone())
+                                        .unwrap_or_else(|| {
+                                            Expression::new(ExprKind::Lit(Literal::Null))
+                                        });
+                                    let attrs = Expression::new(ExprKind::Object(vec![
+                                        ObjectProperty::KeyValue {
+                                            key: Expression::new(ExprKind::Lit(Literal::Str(
+                                                "completion_value".into(),
+                                            ))),
+                                            value: Expression::new(ExprKind::Lit(Literal::Bool(
+                                                name == "eval",
+                                            ))),
+                                        },
+                                        ObjectProperty::KeyValue {
+                                            key: Expression::new(ExprKind::Lit(Literal::Str(
+                                                "namespace".into(),
+                                            ))),
+                                            value: namespace,
+                                        },
+                                    ]));
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident(
+                                            "__vybe_eval".into(),
+                                        ))),
+                                        args: vec![
+                                            args[0].clone(),
+                                            Argument::positional(Expression::new(ExprKind::Lit(
+                                                Literal::Str("python".into()),
+                                            ))),
+                                            Argument::positional(attrs),
+                                        ],
                                         optional: false,
                                     });
                                     continue;
@@ -2572,6 +2789,27 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 // {'k': v} dicts, single-quoted nested strings.
                                 "dict" if args.is_empty() => {
                                     expr = Expression::new(ExprKind::Object(vec![]));
+                                    continue;
+                                }
+                                "bytes" if args.is_empty() => {
+                                    expr = wrap_bytes(Expression::new(ExprKind::Array(vec![])));
+                                    continue;
+                                }
+                                "bytes"
+                                    if args.len() == 1 && args[0].name.is_none() =>
+                                {
+                                    // bytes(iterable_of_ints) → those octets.
+                                    expr = wrap_bytes(args[0].value.clone());
+                                    continue;
+                                }
+                                "bytes"
+                                    if args.len() == 2 && args[0].name.is_none() =>
+                                {
+                                    // bytes(str, encoding) → UTF-8 code units.
+                                    expr = wrap_bytes(call_ident(
+                                        "__vybe_str_encode",
+                                        vec![args[0].value.clone()],
+                                    ));
                                     continue;
                                 }
                                 "sum" if !args.is_empty() && args[0].name.is_none() => {
@@ -2769,6 +3007,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         } else {
                             args
                         };
+                        // bytes string-like method with args, e.g.
+                        // `b'ab'.replace(b'a', b'x')`, `b'ab'.find(b'b')`.
+                        if let ExprKind::Member { object, field, .. } = &expr.kind {
+                            if let Some(rewritten) =
+                                try_rewrite_bytes_method(object, field, &args)
+                            {
+                                expr = rewritten;
+                                continue;
+                            }
+                        }
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args,
@@ -2814,7 +3062,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
     }
-    Ok(expr.kind)
+    Ok(desugar_member_reads(expr).kind)
 }
 
 /// Wrap `value` in `[*value]` so a lazy iterable (generator, range, map, …) is
@@ -2987,10 +3235,10 @@ fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
             Some("end") => end = Argument::positional(a.value),
             Some("file") | Some("flush") => {}
             _ => {
-                // Display statically-known bytes as `b'…'`, floats as `4.0`.
-                if expr_is_python_bytes(&a.value) {
-                    items.push(Argument::positional(wrap_bytes_repr(a.value)));
-                } else if expr_is_python_float(&a.value) {
+                // Format statically-known floats Python-style (`4.0`, not `4`).
+                // Bytes display is handled at runtime in `emit_py_repr` via
+                // `arraybuffer.isView`, so no static wrapping is needed here.
+                if expr_is_python_float(&a.value) {
                     items.push(Argument::positional(wrap_float_repr(a.value)));
                 } else {
                     items.push(a);
@@ -3745,46 +3993,110 @@ fn parse_bytes_literal(s: &str) -> ExprKind {
     wrap_bytes(Expression::new(ExprKind::Array(elements))).kind
 }
 
-/// Wrap an int-array expression in the `__py_bytes__` marker so downstream
-/// static analysis (`expr_is_python_bytes`) can distinguish bytes from a list.
-/// The marker is an identity passthrough at runtime.
-fn wrap_bytes(array: Expression) -> Expression {
+/// Build a call to a named identifier with positional args.
+fn call_ident(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Ident("__py_bytes__".into()))),
-        args: vec![Argument::positional(array)],
+        callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+        args: args.into_iter().map(Argument::positional).collect(),
         optional: false,
     })
 }
 
-/// True when `e` is statically known to evaluate to `bytes`: a `b'…'` literal
-/// (already wrapped in `__py_bytes__`), a `bytes(...)` call, `str.encode()`, or
-/// a `+`/`*`/slice built from bytes.
+/// Construct a `bytes` value from an int-array expression as a real
+/// `Uint8Array` (`ObjectKind::TypedArray`). The VM handles indexing and
+/// iteration natively; display is detected at runtime via `arraybuffer.isView`
+/// in `emit_py_repr`, so no static bytes-tracking is needed.
+fn wrap_bytes(array: Expression) -> Expression {
+    call_ident("__py_bytes_new__", vec![array])
+}
+
+/// bytes methods that return `bytes` (re-encoded after the string op).
+const BYTES_METHODS_RETURN_BYTES: &[&str] = &[
+    "upper", "lower", "capitalize", "title", "swapcase", "replace", "strip", "lstrip", "rstrip",
+    "center", "ljust", "rjust", "zfill",
+];
+/// bytes methods that return a scalar (int/bool) — no re-encode.
+const BYTES_METHODS_RETURN_SCALAR: &[&str] = &[
+    "find", "rfind", "count", "startswith", "endswith", "isalpha", "isdigit", "isalnum", "isspace",
+];
+
+/// True when `e` is statically known to evaluate to `bytes`.
 fn expr_is_python_bytes(e: &Expression) -> bool {
     match &e.kind {
         ExprKind::Call { callee, args, .. } => match &callee.kind {
-            ExprKind::Ident(n) if n == "__py_bytes__" || n == "bytes" => true,
+            ExprKind::Ident(n) if n == "__py_bytes_new__" || n == "bytes" => true,
             // `+`/`*` lower to __pyadd__/__pymul__ — bytes if an operand is.
             ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__" => {
                 args.iter().any(|a| expr_is_python_bytes(&a.value))
             }
-            ExprKind::Member { field, .. } if field == "encode" => true,
+            ExprKind::Member { object, field, .. } => {
+                field == "encode"
+                    || (BYTES_METHODS_RETURN_BYTES.contains(&field.as_str())
+                        && expr_is_python_bytes(object))
+            }
             _ => false,
         },
-        // slice / index of bytes stays bytes for slices; a plain index is an int
-        // (handled by the caller, which only wraps whole-value repr contexts).
-        ExprKind::Index { object, .. } => expr_is_python_bytes(object),
         _ => false,
     }
 }
 
-/// Wrap a bytes-valued expression in a `__vybe_bytes_repr(...)` call so it
-/// displays as `b'…'`.
-fn wrap_bytes_repr(e: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Ident("__vybe_bytes_repr".into()))),
-        args: vec![Argument::positional(e)],
+/// Decode a bytes argument (e.g. the needle of `find(b'x')`) to a latin-1
+/// string; leave non-bytes args (widths, fill counts) untouched.
+fn decode_bytes_arg(a: &Argument) -> Argument {
+    if expr_is_python_bytes(&a.value) {
+        Argument {
+            value: call_ident("__vybe_bytes_decode", vec![a.value.clone()]),
+            name: a.name.clone(),
+            by_ref: a.by_ref,
+            spread: a.spread,
+        }
+    } else {
+        a.clone()
+    }
+}
+
+/// Rewrite a string-like method call on a `bytes` receiver as
+/// decode → `str.METHOD(...)` → (re-encode if it returns bytes). Returns
+/// `None` when the receiver isn't statically bytes or the method isn't a
+/// supported string-like bytes method.
+fn try_rewrite_bytes_method(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !expr_is_python_bytes(object) {
+        return None;
+    }
+    // `.hex()` → uint8array.toHex (a hex string, no `0x`/separators).
+    if field == "hex" && args.is_empty() {
+        return Some(call_ident("__py_bytes_hex__", vec![object.clone()]));
+    }
+    // `.split()`/`.join()` are deferred: they involve a *list of bytes*, and
+    // nested bytes don't yet repr as `b'…'` inside a list/collection.
+    // `.decode(...)` is handled by the profile method entry (UTF-8) — leave it.
+    let returns_bytes = BYTES_METHODS_RETURN_BYTES.contains(&field);
+    let returns_scalar = BYTES_METHODS_RETURN_SCALAR.contains(&field);
+    if !returns_bytes && !returns_scalar {
+        return None;
+    }
+    // decode(receiver).METHOD(decode(arg0), …)
+    let decoded_recv = call_ident("__vybe_bytes_decode", vec![object.clone()]);
+    let decoded_args: Vec<Argument> = args.iter().map(decode_bytes_arg).collect();
+    let str_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(decoded_recv),
+            field: field.into(),
+            null_safe: false,
+        })),
+        args: decoded_args,
         optional: false,
-    })
+    });
+    if returns_bytes {
+        // re-encode the resulting str back to bytes
+        Some(wrap_bytes(call_ident("__vybe_str_encode", vec![str_call])))
+    } else {
+        Some(str_call)
+    }
 }
 
 fn parse_python_string(s: &str) -> String {

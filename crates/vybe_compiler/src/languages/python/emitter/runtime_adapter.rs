@@ -8,6 +8,57 @@ use crate::emitter::{collections, target::Target};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
+/// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.
+/// Plain containers (lists/tuples/dicts — objects with no `__type` class stamp)
+/// compare structurally via JSON; class instances and primitives keep
+/// identity/primitive equality. Stack: `[a, b]` → `[bool i32]`.
+pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let has_own = chunk.add_import("ecma:object", "hasOwn");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let json_str = chunk.add_import("ecma:json", "stringify");
+    let str_eq = chunk.add_import("wasm:js-string", "equals");
+    let b = chunk.alloc_scratch(1);
+    let a = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+
+    // structural = isArray(a) OR (typeof(a)=="object" AND a != null AND
+    // !hasOwn(a, "__type")) — i.e. a plain list/tuple/dict, not a class instance.
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_call(cast_bool, 1, line); // i32: 1 if array
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if not null
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_string_const("__type", line);
+    chunk.emit_call(has_own, 2, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if NOT a class instance
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line); // array OR plain-object
+    chunk.emit_if_value(line);
+    // structural: JSON.stringify(a) == JSON.stringify(b)
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_call(json_str, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_call(json_str, 1, line);
+    chunk.emit_call(str_eq, 2, line);
+    chunk.emit_else(line);
+    // identity / primitive equality
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_end(line);
+}
+
 /// Python `print(...)` — inline emitter that writes to `wasi:cli/stdout`
 /// (like PHP `echo`), so `sep`/`end` and the missing trailing newline are
 /// all expressible (the line-oriented `wasi:logging/logging.log` sink cannot
@@ -86,10 +137,54 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunk.emit_call(concat, 2, line);
     chunk.emit_else(line);
-    // dynamic add (string concat or numeric add)
+    emit_object_binop_or(chunk, a_slot, b_slot, "__add__", crate::emitter::ops::emit_dyn_add, line);
+    chunk.emit_end(line);
+}
+
+/// Dispatch a binary operator to a user dunder when the left operand is a real
+/// object (`typeof == "object"`, excluding arrays/strings/numbers) carrying
+/// that method; otherwise emit `fallback`. Stack effect: consumes nothing
+/// extra — reads `a_slot`/`b_slot`, pushes the result.
+fn emit_object_binop_or(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    dunder: &str,
+    fallback: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(dunder)));
+    let method = chunk.alloc_scratch(1);
+    // Only real objects (typeof == "object") can carry the dunder; STRUCT_GET on
+    // a primitive traps, so gate the lookup behind the type check.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    chunk.emit_if_value(line);
+    // object: dispatch to the dunder if present, else fallback
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if present
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    fallback(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    // primitive: fallback directly
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    fallback(chunk, line);
     chunk.emit_end(line);
 }
 
@@ -112,8 +207,57 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     let is_array = chunk.add_import("ecma:array", "isArray");
     let json_str = chunk.add_import("ecma:json", "stringify");
     let replace_all = chunk.add_import("ecma:string", "replaceAll");
+    let is_view = chunk.add_import("ecma:arraybuffer", "isView");
+    let test_undef = chunk.add_import("wasm:js-undefined", "test");
     let scratch = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, scratch, line);
+
+    // User-defined `__str__` (falling back to `__repr__`) dispatch: if the value
+    // is an object carrying either method, call it and use its result. The
+    // method lookup returns undefined for primitives, so `print(5)` etc. fall
+    // straight through to the default formatting below.
+    let get_method = std::sync::Arc::from("__vybe_js_get_method");
+    let get_method_c = chunk.add_constant(vybe_bytecode::Value::String(get_method));
+    let str_method = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::GLOBAL_GET, get_method_c, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_string_const("__str__", line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+    // fall back to __repr__ when __str__ is absent (statement-if: side effect
+    // only, produces no stack value)
+    chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
+    chunk.emit_call(test_undef, 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, get_method_c, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_string_const("__repr__", line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+    chunk.emit_end(line);
+    // Default formatting when there's no usable dunder OR the value is an array
+    // (arrays return a non-function from the method lookup and must use the
+    // list formatter below). Otherwise call the dunder with the receiver.
+    chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
+    chunk.emit_call(test_undef, 1, line); // i32: 1 if undefined
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_call(cast_bool, 1, line); // i32: 1 if array
+    chunk.emit_op(Op::I32_OR, line); // default when undefined OR array
+    chunk.emit_if_value(line);
+
+    // bytes (Uint8Array / ArrayBuffer view) → Python `b'…'` via the source
+    // prelude helper, which iterates/indexes the typed array natively.
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_call(is_view, 1, line);
+    chunk.emit_if_value(line);
+    let repr_fn = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        "__vybe_bytes_repr",
+    )));
+    chunk.emit_op_u16(Op::GLOBAL_GET, repr_fn, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
 
     // null → "None"
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
@@ -223,6 +367,31 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line); // close the isView (bytes) branch
+
+    chunk.emit_else(line);
+    // has __str__/__repr__ → call it with the receiver
+    chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_end(line); // close the __str__-dispatch branch
+}
+
+/// Python `bytes.decode([encoding])` — UTF-8 decode a Uint8Array to a `str`.
+/// The receiver is arg0; any encoding argument is ignored (UTF-8 only).
+pub fn emit_bytes_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let n = argc.max(1);
+    let base = chunk.alloc_scratch(n as u16);
+    // Args on stack in call order (top = arg n-1). Pop into slots.
+    for i in (0..n as u16).rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+    }
+    let dec_new = chunk.add_import("web:encoding", "decoderNew");
+    let dec = chunk.add_import("web:encoding", "decode");
+    chunk.emit_call(dec_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, base, line); // receiver = arg0 (bytes)
+    chunk.emit_call(dec, 2, line);
 }
 
 /// Python `*` operator: array repeat, string repeat, or numeric multiply.
@@ -261,12 +430,15 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(str_repeat, 2, line);
     chunk.emit_else(line);
 
-    // numeric multiply
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    // user `__mul__` on an object, else numeric multiply
+    emit_object_binop_or(chunk, a_slot, b_slot, "__mul__", emit_f64_mul, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// Numeric `*` fallback (`[a, b] → [a*b]`), for `emit_object_binop_or`.
+fn emit_f64_mul(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
 }
 
 /// Python `.count(x)` — for arrays, count element occurrences.
