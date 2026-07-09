@@ -1,6 +1,32 @@
 use super::helpers::run_vb;
 
 #[test]
+fn case_insensitive_field_and_method_access() {
+    // VB is case-insensitive: `name`/`Name`/`NAME` and `greet`/`Greet`
+    // all resolve to the same declared member.
+    let out = run_vb(
+        r#"
+Module Program
+    Class Person
+        Public Name As String
+        Public Function Greet() As String
+            Return "Hi " & Name
+        End Function
+    End Class
+
+    Sub Main()
+        Dim P As New Person()
+        p.name = "Bob"
+        Console.WriteLine(p.NAME)
+        Console.WriteLine(p.greet())
+    End Sub
+End Module
+"#,
+    );
+    assert_eq!(out, vec!["Bob", "Hi Bob"]);
+}
+
+#[test]
 fn simple_class_with_fields() {
     let out = run_vb(
         r#"

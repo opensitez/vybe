@@ -81,22 +81,21 @@ fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 
 /// Run Python source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_python(src: &str) -> Vec<String> {
-    let module = vybe_compiler::languages::python::parse(src).expect("Python parse failed");
-
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_compiler::languages::python::profile_source())
-            .expect("Failed to parse Python profile");
-
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
-        .compile(&module)
-        .expect("Python compile failed");
-
+    // Run through the RuntimeCompilerService like the real exe (and the PHP
+    // harness) — a bare `vm.run` never activates the compiler-as-a-service, so
+    // `eval`/`exec`/`compile` (which route to the `vybe:eval` host) break.
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     vybe_host::register_all(&mut vm);
     register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
-    vm.run(chunks).expect("Python run failed");
+
+    let language =
+        vybe_compiler::languages::find_by_name("python").expect("python language not found");
+    let mut runtime = vybex::dynamic::RuntimeCompilerService::new(&mut vm);
+    runtime
+        .compile_and_run_source(src, language, "test.py")
+        .expect("Python run failed");
     finish_output(&output)
 }
 

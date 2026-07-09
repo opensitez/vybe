@@ -2,6 +2,18 @@ use super::helpers::run_pascal;
 
 // Procedures
 #[test]
+fn case_insensitive_identifiers() {
+    // Pascal is case-insensitive: `Counter`/`counter`, param `N`/`n`, and
+    // function `Double`/`double` all resolve to the same declaration.
+    assert_eq!(
+        run_pascal(
+            "program T; var Counter: Integer; function Double(N: Integer): Integer; begin Double := n * 2; end; begin Counter := 5; WriteLn(counter); WriteLn(double(Counter)); end."
+        ),
+        vec!["5", "10"]
+    );
+}
+
+#[test]
 fn proc_no_params() {
     assert_eq!(
         run_pascal("program T; procedure Hello; begin WriteLn('hi'); end; begin Hello; end."),

@@ -1,6 +1,42 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 
+/// Register the test output-capture bindings. Mirrors the real host's two
+/// output surfaces so assertions see what a user would:
+/// - `wasi:cli/stdout.write-via-stream` — where `console.log`/print now
+///   write (concatenated args + "\n" per call); drained and split to lines.
+/// - `wasi:logging/logging.log` — leveled logging; one line per call.
+fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+            out.lock().unwrap().push(parts.join(" "));
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:cli/stdout",
+        "write-via-stream",
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+            let stream_val = args.first().cloned().unwrap_or(Value::Null);
+            let bytes = ctx.stream_drain(&stream_val);
+            if !bytes.is_empty() {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let trimmed = text.strip_suffix('\n').unwrap_or(&text);
+                let mut vec = out.lock().unwrap();
+                for line in trimmed.split('\n') {
+                    vec.push(line.to_string());
+                }
+            }
+            Value::Null
+        }),
+    );
+}
+
 #[macro_export]
 macro_rules! js_cases {
     ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
@@ -39,17 +75,8 @@ pub fn run_js(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
     vybex::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
         .expect("JS run failed");
@@ -74,17 +101,8 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
     vybex::adapters::register_all(&mut vm).expect("adapter registration failed");
 
@@ -125,17 +143,8 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
     vybex::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
         .expect("JS run failed");
