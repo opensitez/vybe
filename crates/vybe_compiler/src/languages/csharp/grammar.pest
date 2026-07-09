@@ -88,7 +88,7 @@ async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
 generic_params = _{ "<" ~ generic_param_list ~ ">" }
 generic_param_list = _{ ident_name ~ ("," ~ ident_name)* }
 
-base_list = { ":" ~ type_name ~ ("," ~ type_name)* }
+base_list = { ":" ~ type_name ~ argument_list? ~ ("," ~ type_name)* }
 
 class_body = { "{" ~ class_member* ~ "}" }
 

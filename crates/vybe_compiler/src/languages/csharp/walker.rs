@@ -6270,6 +6270,8 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
     let mut interfaces = Vec::new();
     let mut members = Vec::new();
     let mut class_mods = ClassModifiers::default();
+    let mut primary_ctor_params: Vec<Param> = Vec::new();
+    let mut primary_ctor_base_args: Option<Vec<Expression>> = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -6304,6 +6306,13 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
             Rule::base_list => {
                 let mut first = true;
                 for bp in p.into_inner() {
+                    if bp.as_rule() == Rule::argument_list {
+                        // `: Base(arg, …)` — a primary-constructor base call
+                        // forwarding args to the base ctor.
+                        primary_ctor_base_args =
+                            Some(walk_arguments(bp)?.into_iter().map(|a| a.value).collect());
+                        continue;
+                    }
                     if bp.as_rule() == Rule::type_name {
                         let type_str = bp.as_str().trim().to_string();
                         // C# allows either a single base class or interfaces in the first slot.
@@ -6333,29 +6342,13 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                 }
             }
             Rule::primary_constructor_params => {
-                // C# 12 primary constructors: class Foo(int x, string s)
-                // Params become constructor parameters + backing fields
-                let ctor_params = walk_params(p)?;
-                let mut field_inits = Vec::new();
-                for param in &ctor_params {
-                    field_inits.push(Statement::new(StmtKind::Assign {
-                        targets: vec![Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::new(ExprKind::This)),
-                            field: param.name.clone(),
-                            null_safe: false,
-                        })],
-                        value: Expression::ident(&param.name),
-                    }));
-                }
-                if !ctor_params.is_empty() {
-                    members.insert(0, ClassMember::Constructor {
-                        params: ctor_params,
-                        body: field_inits,
-                        base_args: None,
-                        initializer_target: ConstructorInitializerTarget::Base,
-                        visibility: Visibility::Public,
-                    });
-                }
+                // C# 12 primary constructors: `class Foo(int x, string s)`.
+                // Capture each param into a backing field (like a record's
+                // positional params) so it is in scope throughout the body —
+                // methods and property getters reference it as a bare field.
+                // The synthesized constructor assigns the fields; the whole
+                // class then flows through the shared class-emit path.
+                primary_ctor_params = walk_params(p)?;
             }
             Rule::class_body => {
                 for m in p.into_inner() {
@@ -6370,6 +6363,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
         }
     }
 
+    apply_primary_constructor(&mut members, primary_ctor_params, primary_ctor_base_args);
     expand_explicit_interface_members(&mut members);
     disambiguate_explicit_property_backing_fields(&mut members);
     if !generic_params.is_empty() {
@@ -6385,6 +6379,55 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
         modifiers: class_mods,
         decorators: decorators.to_vec(),
     })
+}
+
+/// Lower C# 12 primary-constructor params onto the shared class shape: a
+/// captured backing field per param (as a record's positional params) plus a
+/// synthesized constructor that assigns them. The class then compiles through
+/// the same `common::classes` → `vybe_emitter::classes` path as any other
+/// class; method / property bodies reference the params as bare instance
+/// fields.
+fn apply_primary_constructor(
+    members: &mut Vec<ClassMember>,
+    params: Vec<Param>,
+    base_args: Option<Vec<Expression>>,
+) {
+    if params.is_empty() {
+        return;
+    }
+    for param in &params {
+        members.push(ClassMember::Field {
+            name: param.name.clone(),
+            type_hint: param.type_hint.clone(),
+            init: None,
+            modifiers: Modifiers::default(),
+            with_events: false,
+            array_bounds: None,
+        });
+    }
+    let ctor_body: Vec<Statement> = params
+        .iter()
+        .map(|p| {
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: p.name.clone(),
+                    null_safe: false,
+                })],
+                value: Expression::ident(&p.name),
+            })
+        })
+        .collect();
+    members.insert(
+        0,
+        ClassMember::Constructor {
+            params,
+            body: ctor_body,
+            base_args,
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        },
+    );
 }
 
 fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
