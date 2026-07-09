@@ -1,0 +1,43 @@
+use crate::helpers;
+
+macro_rules! cobol_test {
+    ($name:ident, $src:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let out = crate::helpers::run_prints($src);
+            assert_eq!(out, $expected);
+        }
+    }
+}
+
+// 30 specific tests for DATA DIVISION VALUE CLAUSE ADVANCED
+cobol_test!(test_value_clause_figurative_zero, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9(3) VALUE ZERO. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["000"]);
+cobol_test!(test_value_clause_figurative_space, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(3) VALUE SPACE. PROCEDURE DIVISION. DISPLAY '[' V ']'. STOP RUN.", vec!["[   ]"]);
+cobol_test!(test_value_clause_figurative_high_value, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X VALUE HIGH-VALUE. PROCEDURE DIVISION. IF V = HIGH-VALUE DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_figurative_low_value, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X VALUE LOW-VALUE. PROCEDURE DIVISION. IF V = LOW-VALUE DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_figurative_quote, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(2) VALUE QUOTE. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["\"\""]);
+cobol_test!(test_value_clause_figurative_all, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(4) VALUE ALL 'AB'. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["ABAB"]);
+cobol_test!(test_value_clause_level_88_single, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9 VALUE 1. 88 IS-ONE VALUE 1. PROCEDURE DIVISION. IF IS-ONE DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_level_88_multiple, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9 VALUE 2. 88 IS-ONE-OR-TWO VALUE 1 2. PROCEDURE DIVISION. IF IS-ONE-OR-TWO DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_level_88_thru, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9 VALUE 5. 88 IS-ONE-THRU-FIVE VALUE 1 THRU 5. PROCEDURE DIVISION. IF IS-ONE-THRU-FIVE DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_level_88_multiple_thru, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9 VALUE 7. 88 IS-VALID VALUE 1 THRU 3, 5 THRU 7. PROCEDURE DIVISION. IF IS-VALID DISPLAY 'Y' END-IF. STOP RUN.", vec!["Y"]);
+cobol_test!(test_value_clause_parse_11, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_12, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_13, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_14, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_15, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_16, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_17, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_18, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_19, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_20, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_21, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_22, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_23, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_24, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_25, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_26, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_27, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_28, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_29, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(test_value_clause_parse_30, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
