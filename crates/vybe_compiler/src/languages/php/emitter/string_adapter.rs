@@ -142,10 +142,41 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     lget(chunk, v_slot, line);
     chunk.emit_call(from_i64, 1, line);
     chunk.emit_else(line);
-    // default: "" + v
+    // default. PHP stringifies floats with `precision=14` significant digits
+    // (php_gcvt), not the VM's shortest-round-trip form. Normalize a float via
+    // toPrecision(14) then parseFloat — the round-trip trims trailing zeros
+    // exactly like PHP (`1.4142135623730951`→`1.4142135623731`, `0.1+0.2`→
+    // `0.3`). Integers and non-numbers keep the plain `"" + v` path.
+    lget(chunk, v_slot, line);
+    let num_test_echo = chunk.add_import("wasm:js-number", "test");
+    chunk.emit_call(num_test_echo, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    let is_int_echo = chunk.add_import("ecma:number", "isInteger");
+    chunk.emit_call(is_int_echo, 1, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    // integer-valued number: plain "" + v
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_else(line);
+    // fractional float: "" + parseFloat(toPrecision(v, 14))
+    push_str(chunk, "", line);
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::I32(14), line);
+    let to_prec_echo = chunk.add_import("ecma:number", "toPrecision");
+    chunk.emit_call(to_prec_echo, 2, line);
+    let parse_f_echo = chunk.add_import("ecma:number", "parseFloat");
+    chunk.emit_call(parse_f_echo, 1, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    // non-number: "" + v
+    push_str(chunk, "", line);
+    lget(chunk, v_slot, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_end(line);
     // Close: i64, -INF, INF, NaN, bigint, boolean, null — seven if_value blocks.
     chunk.emit_end(line);
     chunk.emit_end(line);

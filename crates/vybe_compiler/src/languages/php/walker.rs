@@ -70,6 +70,12 @@ thread_local! {
     // Each entry: (source_trait_name | "" if unqualified, method_name, alias_name).
     static TRAIT_ALIASES: RefCell<std::collections::HashMap<String, Vec<(String, String, String)>>> =
         RefCell::new(std::collections::HashMap::new());
+    // Live registry of walked trait bodies (name → members), populated by
+    // walk_trait_decl. Unlike the `parse()` post-pass (which only folds into
+    // top-level ClassDecls), this lets the anonymous-class walk fold trait
+    // members directly into a `ClassExpr` at walk time. Reset with TRAIT_USAGES.
+    static TRAIT_BODIES: RefCell<std::collections::HashMap<String, Vec<ClassMember>>> =
+        RefCell::new(std::collections::HashMap::new());
     // Monotonic counter for unique synthetic temp variable names. The
     // postfix `$x++` walker rewrite needs `(tmp = $x, $x = inc($x), tmp)`
     // where `tmp` must be unique per use site to avoid collisions in
@@ -104,6 +110,21 @@ fn register_type_kind(name: &str, kind: &'static str) {
 
 fn type_kind_is(name: &str, kind: &str) -> bool {
     TYPE_KINDS.with(|r| r.borrow().get(name).map(|k| *k == kind).unwrap_or(false))
+}
+
+/// All declared type names of a given kind ("class"|"interface"|"trait"|
+/// "enum"), sorted for stable output — backs `get_declared_*`.
+fn declared_type_names(kind: &str) -> Vec<String> {
+    TYPE_KINDS.with(|r| {
+        let mut v: Vec<String> = r
+            .borrow()
+            .iter()
+            .filter(|(_, k)| **k == kind)
+            .map(|(n, _)| n.clone())
+            .collect();
+        v.sort();
+        v
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1145,6 +1166,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
     TRAIT_USAGES.with(|t| t.borrow_mut().clear());
     TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
+    TRAIT_BODIES.with(|t| t.borrow_mut().clear());
     LINE_STARTS.with(|starts| {
         *starts.borrow_mut() = build_line_starts(source);
     });
@@ -1270,6 +1292,61 @@ pub fn parse(source: &str) -> Result<Module, String> {
         TRAIT_USAGES.with(|t| t.borrow().clone());
     let aliases: std::collections::HashMap<String, Vec<(String, String, String)>> =
         TRAIT_ALIASES.with(|t| t.borrow().clone());
+
+    // Transitively expand trait-uses-trait (`trait Outer { use Inner; }`):
+    // a trait that `use`s another trait must expose the inner trait's
+    // members to any class that uses the outer one. Iterate to a fixpoint
+    // so chains (A uses B uses C) fully resolve before class folding.
+    if !trait_members.is_empty() {
+        let member_name = |m: &ClassMember| -> Option<String> {
+            match m {
+                ClassMember::Const { name, .. } => Some(name.clone()),
+                ClassMember::Property { name, .. } => Some(name.clone()),
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        };
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let trait_list: Vec<String> = trait_members.keys().cloned().collect();
+            for tname in trait_list {
+                let Some(used) = usages.get(&tname).cloned() else {
+                    continue;
+                };
+                let mut present: std::collections::HashSet<String> = trait_members
+                    .get(&tname)
+                    .map(|ms| ms.iter().filter_map(&member_name).collect())
+                    .unwrap_or_default();
+                let mut to_add: Vec<ClassMember> = Vec::new();
+                for ut in &used {
+                    if ut == &tname {
+                        continue;
+                    }
+                    if let Some(um) = trait_members.get(ut) {
+                        for m in um {
+                            if let Some(mn) = member_name(m) {
+                                if present.insert(mn) {
+                                    to_add.push(m.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                if !to_add.is_empty() {
+                    trait_members.get_mut(&tname).unwrap().extend(to_add);
+                    changed = true;
+                }
+            }
+        }
+    }
+
     if !trait_members.is_empty() && !usages.is_empty() {
         for stmt in &mut body {
             if let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind {
@@ -2862,6 +2939,10 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let meta = extract_class_meta(&name, &[], &[], &ClassModifiers::default(), &members);
     CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
     register_type_kind(&name, "trait");
+    // Publish the trait body so an anonymous class using it can fold the
+    // members at walk time (the `parse()` post-pass only reaches named
+    // ClassDecls, not embedded ClassExprs).
+    TRAIT_BODIES.with(|t| t.borrow_mut().insert(name.clone(), members.clone()));
     Ok(StmtKind::ClassDecl {
         name,
         parents: Vec::new(),
@@ -3055,12 +3136,21 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 params: vec![mk_param("v")],
                 return_type: None,
                 body: build_match_chain(Statement::new(StmtKind::Throw {
+                    // PHP 8.1: `Enum::from()` throws a ValueError (not Error)
+                    // whose message embeds the offending value, e.g.
+                    // `9 is not a valid backing value for enum Bit`.
                     expr: Some(Expression::new(ExprKind::New {
-                        class: Box::new(Expression::ident("Error")),
-                        args: vec![Argument::positional(Expression::string(&format!(
-                            "Invalid backing value for enum \"{}\"",
-                            name
-                        )))],
+                        class: Box::new(Expression::ident("ValueError")),
+                        args: vec![Argument::positional(Expression::new(
+                            ExprKind::Binary {
+                                op: BinOp::Concat,
+                                left: Box::new(Expression::ident("v")),
+                                right: Box::new(Expression::string(&format!(
+                                    " is not a valid backing value for enum {}",
+                                    name
+                                ))),
+                            },
+                        ))],
                     })),
                     cause: None,
                 })),
@@ -3339,8 +3429,27 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         });
                         prelude.push(Statement::new(StmtKind::Expr(assign)));
                     }
-                    prelude.extend(body.drain(..));
-                    body = prelude;
+                    // In a derived class `$this` is not materialised until
+                    // `parent::__construct(...)` (normalised to `super(...)`)
+                    // runs, so promotion assignments must be placed *after*
+                    // that super call — placing them before writes to a null
+                    // `$this`. With no super call, prepend as usual.
+                    let super_idx = body.iter().position(|s| {
+                        matches!(&s.kind, StmtKind::Expr(e)
+                            if matches!(&e.kind, ExprKind::Call { callee, .. }
+                                if matches!(callee.kind, ExprKind::Super)))
+                    });
+                    match super_idx {
+                        Some(i) => {
+                            for (k, stmt) in prelude.into_iter().enumerate() {
+                                body.insert(i + 1 + k, stmt);
+                            }
+                        }
+                        None => {
+                            prelude.extend(body.drain(..));
+                            body = prelude;
+                        }
+                    }
                 }
                 let _ = (return_type, has_body);
                 return Ok(Some(ClassMember::Constructor {
@@ -5926,6 +6035,132 @@ fn apply_postfix(
                     ));
                 }
             };
+            // DOM method calls (`$node->createElement(...)`, `->appendChild(...)`,
+            // etc.) → the ECMA `web:dom-parser` host via `__dom_*` bindings, with
+            // the receiver passed as the first argument (the host takes the
+            // instance-call `(receiver, …)` shape).
+            let mk_dom_call = |name: &str, call_args: Vec<Argument>| {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Ident(name.to_string()),
+                            span.clone(),
+                        )),
+                        args: call_args,
+                        optional: false,
+                    },
+                    span.clone(),
+                )
+            };
+            // `loadXML($xml)` / `loadHTML($xml)` parse INTO the document,
+            // replacing its contents — model as reassigning the receiver to the
+            // freshly parsed document (matches `$doc->loadXML(...)` usage).
+            if (method_name == "loadXML" || method_name == "loadHTML") && !args.is_empty() {
+                let parse_call =
+                    mk_dom_call("__dom_parse", vec![Argument::positional(args[0].value.clone())]);
+                return Ok(Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(member_object),
+                        value: Box::new(parse_call),
+                    },
+                    span.clone(),
+                ));
+            }
+            // `saveXML($node)` serializes the given node; `saveXML()` the doc.
+            // PHP appends a trailing newline (`__dom_save_xml` adds it).
+            if method_name == "saveXML" {
+                let node = args
+                    .first()
+                    .map(|a| a.value.clone())
+                    .unwrap_or_else(|| member_object.clone());
+                return Ok(mk_dom_call(
+                    "__dom_save_xml",
+                    vec![Argument::positional(node)],
+                ));
+            }
+            // `createElement($name, $text)` — PHP's 2-arg form creates the
+            // element and a child text node with `$text`.
+            if method_name == "createElement" && args.len() >= 2 {
+                let tmp = next_tmp_name("dom_el");
+                let el = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+                let create = mk_dom_call(
+                    "__dom_createElement",
+                    vec![
+                        Argument::positional(member_object.clone()),
+                        Argument::positional(args[0].value.clone()),
+                    ],
+                );
+                let assign_el = Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(el()),
+                        value: Box::new(create),
+                    },
+                    span.clone(),
+                );
+                let text_node = mk_dom_call(
+                    "__dom_createTextNode",
+                    vec![
+                        Argument::positional(member_object.clone()),
+                        Argument::positional(args[1].value.clone()),
+                    ],
+                );
+                let append = mk_dom_call(
+                    "__dom_appendChild",
+                    vec![Argument::positional(el()), Argument::positional(text_node)],
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Sequence(vec![assign_el, append, el()]),
+                    span.clone(),
+                ));
+            }
+            // `setIdAttribute($name, $isId)` marks an attribute as the element's
+            // ID. Our `getElementById` matches the `id` attribute directly (the
+            // DOM default), so this is a no-op — evaluate to null.
+            if method_name == "setIdAttribute" || method_name == "setIdAttributeNS" {
+                return Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Null),
+                    span.clone(),
+                ));
+            }
+            let dom_adapter: Option<&str> = match method_name.as_str() {
+                "createElement" => Some("__dom_createElement"),
+                "createElementNS" => Some("__dom_createElementNS"),
+                "createTextNode" => Some("__dom_createTextNode"),
+                "createCDATASection" => Some("__dom_createCDATASection"),
+                "createComment" => Some("__dom_createComment"),
+                "createDocumentFragment" => Some("__dom_createDocumentFragment"),
+                "appendXML" => Some("__dom_appendXML"),
+                "appendChild" => Some("__dom_appendChild"),
+                "removeChild" => Some("__dom_removeChild"),
+                "replaceChild" => Some("__dom_replaceChild"),
+                "insertBefore" => Some("__dom_insertBefore"),
+                "cloneNode" => Some("__dom_cloneNode"),
+                "setAttribute" => Some("__dom_setAttribute"),
+                "getAttribute" => Some("__dom_getAttribute"),
+                "removeAttribute" => Some("__dom_removeAttribute"),
+                "hasAttribute" => Some("__dom_hasAttribute"),
+                "setAttributeNS" => Some("__dom_setAttributeNS"),
+                "getAttributeNS" => Some("__dom_getAttributeNS"),
+                "getElementsByTagName" => Some("__dom_getElementsByTagName"),
+                "getElementById" => Some("__dom_getElementById"),
+                "getElementsByClassName" => Some("__dom_getElementsByClassName"),
+                _ => None,
+            };
+            if let Some(adapter_name) = dom_adapter {
+                let mut adapter_args = vec![Argument::positional(member_object.clone())];
+                adapter_args.extend(args.clone());
+                return Ok(Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Ident(adapter_name.to_string()),
+                            span.clone(),
+                        )),
+                        args: adapter_args,
+                        optional: false,
+                    },
+                    span.clone(),
+                ));
+            }
             let directory_adapter: Option<&str> = match method_name.as_str() {
                 "read" => Some("__php_dir_read"),
                 "close" => Some("__php_dir_close"),
@@ -6000,6 +6235,10 @@ fn apply_postfix(
                     | ExprKind::Member { .. }
                     | ExprKind::This
                     | ExprKind::Sequence(_)
+                    // `(new C())->method(...)` — the rewrite saves the receiver
+                    // to a temp (single evaluation), so a constructor call is
+                    // safe and still gets magic `__call` dispatch.
+                    | ExprKind::New { .. }
             );
             if method_name.starts_with("__")
                 || matches!(&member_object.kind, ExprKind::This)
@@ -6969,17 +7208,60 @@ fn php_first_class_callable_lambda(callee: Expression, optional: bool, span: &Sp
                 ))
             })
             .collect::<Vec<_>>();
+        // `round(...)` first-class callable: the direct-call body `Math.round(a)`
+        // uses JS half-to-+∞ (round(-1.5) = -1), but PHP rounds half away from
+        // zero (round(-1.5) = -2). Build the same `sign(a) * round(abs(a))`
+        // body the direct-call `round($x)` rewrite uses.
+        let is_php_round = matches!(&callee.kind,
+            ExprKind::Member { object, field, .. }
+                if field == "round"
+                    && matches!(&object.kind, ExprKind::Ident(o) if o == "Math"));
+        let body_expr = if is_php_round && direct_arity == 1 {
+            let mk_math = |m: &str, arg_expr: Expression| {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(Expression::with_span(
+                                    ExprKind::Ident("Math".to_string()),
+                                    span.clone(),
+                                )),
+                                field: m.to_string(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        )),
+                        args: vec![Argument::positional(arg_expr)],
+                        optional: false,
+                    },
+                    span.clone(),
+                )
+            };
+            let a = || Expression::with_span(ExprKind::Ident("a".to_string()), span.clone());
+            let rounded = mk_math("round", mk_math("abs", a()));
+            let sign = mk_math("sign", a());
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(sign),
+                    right: Box::new(rounded),
+                },
+                span.clone(),
+            )
+        } else {
+            Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args,
+                    optional,
+                },
+                span.clone(),
+            )
+        };
         return Expression::with_span(
             ExprKind::Lambda {
                 params,
-                body: LambdaBody::Expr(Box::new(Expression::with_span(
-                    ExprKind::Call {
-                        callee: Box::new(callee),
-                        args,
-                        optional,
-                    },
-                    span.clone(),
-                ))),
+                body: LambdaBody::Expr(Box::new(body_expr)),
                 is_async: false,
                 captures: vec![],
             },
@@ -7181,6 +7463,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 let mut members: Vec<ClassMember> = Vec::new();
                 let mut ctor_args: Vec<Argument> = Vec::new();
                 let mut interfaces: Vec<String> = Vec::new();
+                let mut used_traits: Vec<String> = Vec::new();
                 let mut first_qualified = true;
                 for sub in inner_nokw(p) {
                     match sub.as_rule() {
@@ -7197,8 +7480,17 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                             }
                             first_qualified = false;
                         }
-                        Rule::use_trait
-                        | Rule::class_constant
+                        // `use Trait;` inside an anon class — the parse() trait
+                        // post-pass only reaches named ClassDecls, so collect
+                        // trait names here and fold their members below.
+                        Rule::use_trait => {
+                            for q in sub.into_inner() {
+                                if q.as_rule() == Rule::qualified_name {
+                                    used_traits.push(q.as_str().to_string());
+                                }
+                            }
+                        }
+                        Rule::class_constant
                         | Rule::property_declaration
                         | Rule::method_declaration
                         | Rule::empty_statement => {
@@ -7208,6 +7500,40 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         }
                         _ => {}
                     }
+                }
+                // Fold used-trait members into the anon class (class members
+                // already declared win, per PHP's trait-conflict rule).
+                if !used_traits.is_empty() {
+                    let member_name = |m: &ClassMember| -> Option<String> {
+                        match m {
+                            ClassMember::Const { name, .. } => Some(name.clone()),
+                            ClassMember::Property { name, .. } => Some(name.clone()),
+                            ClassMember::Method(stmt) => {
+                                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    };
+                    let mut declared: std::collections::HashSet<String> =
+                        members.iter().filter_map(&member_name).collect();
+                    TRAIT_BODIES.with(|tb| {
+                        let tb = tb.borrow();
+                        for tname in &used_traits {
+                            if let Some(tmembers) = tb.get(tname) {
+                                for m in tmembers {
+                                    if let Some(mn) = member_name(m) {
+                                        if declared.insert(mn) {
+                                            members.push(m.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
                 args = ctor_args;
                 // PHP names anonymous classes `class@anonymous...`; matching
@@ -7510,6 +7836,68 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 };
                 return Ok(Expression::with_span(throw_iife, span));
             }
+        }
+    }
+    // `new DOMDocument(version, encoding)` → an empty ECMA document (via the
+    // `web:dom-parser:createDocument` factory) carrying PHP's `version` /
+    // `encoding` properties. Adapts onto the ECMA DOM host like the method
+    // calls above — no PHP DOM class needed.
+    if let ExprKind::Ident(cls) = &class_expr.kind {
+        if cls == "DOMDocument" {
+            let tmp = next_tmp_name("dom_doc");
+            let doc_ident =
+                || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+            let mk_member_assign = |field: &str, value: Expression| {
+                Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(doc_ident()),
+                                field: field.to_string(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        )),
+                        value: Box::new(value),
+                    },
+                    span.clone(),
+                )
+            };
+            let create = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident("__dom_create_document".to_string()),
+                        span.clone(),
+                    )),
+                    args: vec![],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let assign_doc = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(doc_ident()),
+                    value: Box::new(create),
+                },
+                span.clone(),
+            );
+            let version = args
+                .first()
+                .map(|a| a.value.clone())
+                .unwrap_or_else(|| mk_str("1.0"));
+            let encoding = args
+                .get(1)
+                .map(|a| a.value.clone())
+                .unwrap_or_else(|| mk_str(""));
+            return Ok(Expression::with_span(
+                ExprKind::Sequence(vec![
+                    assign_doc,
+                    mk_member_assign("version", version),
+                    mk_member_assign("encoding", encoding),
+                    doc_ident(),
+                ]),
+                span,
+            ));
         }
     }
     Ok(Expression::with_span(
@@ -10694,6 +11082,45 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             new_args.extend(args.iter().skip(2).map(|a| a.value.clone()));
             mk_call(Expression::ident("array_filter"), new_args)
         }
+        // `eval($code)` → universal compiler-as-a-service `vybe:eval`, with
+        // the source language ("php") injected as the 2nd argument. The host
+        // compiles + runs it in the same VM, so definitions escape to scope.
+        "eval" if args.len() == 1 => mk_call(
+            Expression::ident("__vybe_eval"),
+            vec![
+                arg(0)?,
+                Expression::with_span(
+                    ExprKind::Lit(Literal::Str("php".to_string())),
+                    span.clone(),
+                ),
+            ],
+        ),
+        // libxml error-handling functions — our DOM host doesn't surface a
+        // global libxml error queue, so these fold to their no-op results:
+        // `use_internal_errors` returns the previous state (default false),
+        // `clear_errors` → null, `get_errors` → [], `get_last_error` → false.
+        "libxml_use_internal_errors" => ExprKind::Lit(Literal::Bool(false)),
+        "libxml_clear_errors" => ExprKind::Lit(Literal::Null),
+        "libxml_get_errors" => ExprKind::Array(vec![]),
+        "libxml_get_last_error" => ExprKind::Lit(Literal::Bool(false)),
+        // `fprintf($stream, $fmt, ...$args)` → `fwrite($stream, sprintf(...))`.
+        "fprintf" if args.len() >= 2 => {
+            let sprintf_args: Vec<Expression> =
+                args.iter().skip(1).map(|a| a.value.clone()).collect();
+            let sprintf_call = Expression::with_span(
+                mk_call(Expression::ident("sprintf"), sprintf_args),
+                span.clone(),
+            );
+            mk_call(Expression::ident("fwrite"), vec![arg(0)?, sprintf_call])
+        }
+        // `vfprintf($stream, $fmt, $args)` → `fwrite($stream, vsprintf(...))`.
+        "vfprintf" if args.len() == 3 => {
+            let vsprintf_call = Expression::with_span(
+                mk_call(Expression::ident("vsprintf"), vec![arg(1)?, arg(2)?]),
+                span.clone(),
+            );
+            mk_call(Expression::ident("fwrite"), vec![arg(0)?, vsprintf_call])
+        }
         // ── Dynamic callable helpers ───────────────────────────────────
         // PHP `call_user_func($cb, ...)` and `call_user_func_array($cb, $args)`
         // are just indirection over the normal call surface. Rewrite them
@@ -11236,6 +11663,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // a `constructor` link to their runtime class (prototype chain in
         // the JS path; stamped directly in the PHP ctor chunk), and the
         // class function carries its declared `name`.
+        // `get_class()` with no argument → the enclosing class name (like
+        // `__CLASS__`); PHP resolves it against the calling scope's class.
+        "get_class" if args.is_empty() => {
+            ExprKind::Lit(Literal::Str(current_class_name().unwrap_or_default()))
+        }
         "get_class" if args.len() == 1 => {
             // $obj.__type ?? $obj.constructor.name
             let obj = arg(0)?;
@@ -12305,6 +12737,26 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(n, "enum"))),
             _ => return None,
         },
+        // `get_declared_traits()` / `get_declared_classes()` /
+        // `get_declared_interfaces()` — compile-time snapshots of the
+        // TYPE_KINDS registry, returned as a PHP array of names.
+        "get_declared_traits" | "get_declared_classes" | "get_declared_interfaces" => {
+            let kind = match name {
+                "get_declared_traits" => "trait",
+                "get_declared_interfaces" => "interface",
+                _ => "class",
+            };
+            let items = declared_type_names(kind)
+                .into_iter()
+                .map(|n| ArrayElement {
+                    key: None,
+                    value: Expression::with_span(ExprKind::Lit(Literal::Str(n)), span.clone()),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect();
+            ExprKind::Array(items)
+        }
         "class_parents" if !args.is_empty() => {
             match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
                 Some(c) => {
@@ -12329,6 +12781,30 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             match class_name_from_arg(&args[0].value).filter(|c| class_is_registered(c)) {
                 Some(c) => {
                     let items = class_all_interfaces(&c)
+                        .into_iter()
+                        .map(|name| ArrayElement {
+                            key: None,
+                            value: Expression::with_span(
+                                ExprKind::Lit(Literal::Str(name)),
+                                span.clone(),
+                            ),
+                            spread: false,
+                            by_ref: false,
+                        })
+                        .collect();
+                    ExprKind::Array(items)
+                }
+                None => return None,
+            }
+        }
+        // `class_uses($obj_or_name)` — the trait names the class `use`s,
+        // resolved from the walker's TRAIT_USAGES registry (compile-time).
+        "class_uses" if !args.is_empty() => {
+            match class_name_from_arg(&args[0].value) {
+                Some(c) => {
+                    let traits =
+                        TRAIT_USAGES.with(|t| t.borrow().get(&c).cloned().unwrap_or_default());
+                    let items = traits
                         .into_iter()
                         .map(|name| ArrayElement {
                             key: None,
@@ -13564,7 +14040,28 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
             span.clone(),
         )),
     };
+    // `STDOUT`/`STDERR`/`STDIN` are predefined stream resources — model
+    // them as `fopen('php://<scheme>', mode)` so the fs adapter tags the
+    // sink and `fwrite`/`fprintf` route to the process stream.
+    let mk_fopen = |scheme: &str, mode: &str| ExprKind::Call {
+        callee: Box::new(Expression::ident("fopen")),
+        args: vec![
+            Argument::positional(Expression::with_span(
+                ExprKind::Lit(Literal::Str(scheme.to_string())),
+                span.clone(),
+            )),
+            Argument::positional(Expression::with_span(
+                ExprKind::Lit(Literal::Str(mode.to_string())),
+                span.clone(),
+            )),
+        ],
+        optional: false,
+    };
     Some(match name {
+        // ── standard stream resources ──
+        "STDOUT" => mk_fopen("php://stdout", "w"),
+        "STDERR" => mk_fopen("php://stderr", "w"),
+        "STDIN" => mk_fopen("php://stdin", "r"),
         // ── math constants → Math.* property ──
         "M_PI" => mk_member("Math", "PI"),
         "M_E" => mk_member("Math", "E"),
@@ -13621,6 +14118,44 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "PHP_FLOAT_EPSILON" => mk_member("Number", "EPSILON"),
         // ── PHP integer-like literals ──
         "PHP_INT_SIZE" => ExprKind::Lit(Literal::Int(8)),
+        // ── Filesystem flags / pathinfo selectors / fseek whence ──
+        "FILE_USE_INCLUDE_PATH" => ExprKind::Lit(Literal::Int(1)),
+        "FILE_APPEND" => ExprKind::Lit(Literal::Int(8)),
+        "FILE_IGNORE_NEW_LINES" => ExprKind::Lit(Literal::Int(2)),
+        "FILE_SKIP_EMPTY_LINES" => ExprKind::Lit(Literal::Int(4)),
+        "LOCK_EX" => ExprKind::Lit(Literal::Int(2)),
+        "PATHINFO_DIRNAME" => ExprKind::Lit(Literal::Int(1)),
+        "PATHINFO_BASENAME" => ExprKind::Lit(Literal::Int(2)),
+        "PATHINFO_EXTENSION" => ExprKind::Lit(Literal::Int(4)),
+        "PATHINFO_FILENAME" => ExprKind::Lit(Literal::Int(8)),
+        "SEEK_SET" => ExprKind::Lit(Literal::Int(0)),
+        "SEEK_CUR" => ExprKind::Lit(Literal::Int(1)),
+        "SEEK_END" => ExprKind::Lit(Literal::Int(2)),
+        // ── JSON encode/decode flags (ext/json) ──
+        "JSON_HEX_TAG" => ExprKind::Lit(Literal::Int(1)),
+        "JSON_HEX_AMP" => ExprKind::Lit(Literal::Int(2)),
+        "JSON_HEX_APOS" => ExprKind::Lit(Literal::Int(4)),
+        "JSON_HEX_QUOT" => ExprKind::Lit(Literal::Int(8)),
+        "JSON_FORCE_OBJECT" => ExprKind::Lit(Literal::Int(16)),
+        "JSON_NUMERIC_CHECK" => ExprKind::Lit(Literal::Int(32)),
+        "JSON_UNESCAPED_SLASHES" => ExprKind::Lit(Literal::Int(64)),
+        "JSON_PRETTY_PRINT" => ExprKind::Lit(Literal::Int(128)),
+        "JSON_UNESCAPED_UNICODE" => ExprKind::Lit(Literal::Int(256)),
+        "JSON_PARTIAL_OUTPUT_ON_ERROR" => ExprKind::Lit(Literal::Int(512)),
+        "JSON_PRESERVE_ZERO_FRACTION" => ExprKind::Lit(Literal::Int(1024)),
+        "JSON_INVALID_UTF8_IGNORE" => ExprKind::Lit(Literal::Int(1048576)),
+        "JSON_INVALID_UTF8_SUBSTITUTE" => ExprKind::Lit(Literal::Int(2097152)),
+        "JSON_THROW_ON_ERROR" => ExprKind::Lit(Literal::Int(4194304)),
+        // decode flags
+        "JSON_OBJECT_AS_ARRAY" => ExprKind::Lit(Literal::Int(1)),
+        "JSON_BIGINT_AS_STRING" => ExprKind::Lit(Literal::Int(2)),
+        // error codes (json_last_error)
+        "JSON_ERROR_NONE" => ExprKind::Lit(Literal::Int(0)),
+        "JSON_ERROR_DEPTH" => ExprKind::Lit(Literal::Int(1)),
+        "JSON_ERROR_STATE_MISMATCH" => ExprKind::Lit(Literal::Int(2)),
+        "JSON_ERROR_CTRL_CHAR" => ExprKind::Lit(Literal::Int(3)),
+        "JSON_ERROR_SYNTAX" => ExprKind::Lit(Literal::Int(4)),
+        "JSON_ERROR_UTF8" => ExprKind::Lit(Literal::Int(5)),
         // ── Error-reporting level bitmasks (ext/standard) ──
         "E_ERROR" => ExprKind::Lit(Literal::Int(1)),
         "E_WARNING" => ExprKind::Lit(Literal::Int(2)),

@@ -43,3 +43,4 @@ pub mod runtime_adapter;
 pub mod spl_adapter;
 pub mod string_adapter;
 pub mod type_guard;
+pub mod xml_adapter;

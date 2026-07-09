@@ -188,6 +188,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.json_encode" => {
             super::array_adapter::emit_php_json_encode(chunks, current, argc, line)
         }
+        "php.simplexml_load_string" => {
+            super::xml_adapter::emit_simplexml_load_string(chunks, current, argc, line)
+        }
+        "php.dom_save_xml" => {
+            super::xml_adapter::emit_dom_save_xml(chunks, current, argc, line)
+        }
         "php.array_keys" => {
             super::type_guard::guard_arg(
                 chunks, current, argc, 0, super::type_guard::Expect::Array,
@@ -456,6 +462,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks, current, argc, true, line,
         ),
         "php.rand" => crate::emitter::php::numeric_adapter::emit_rand(chunks, current, argc, line),
+        "php.lcg_value" => {
+            crate::emitter::php::numeric_adapter::emit_lcg_value(chunks, current, argc, line)
+        }
 
         // ── PHP ctype_* predicates ─────────────────────────────────
         // Char-iteration loops over the input string; each predicate
@@ -941,6 +950,91 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.dir_close" => {
             crate::emitter::php::filesystem_adapter::emit_dir_close(chunks, current, argc, line)
+        }
+        "php.sys_get_temp_dir" => crate::emitter::php::filesystem_adapter::emit_sys_get_temp_dir(
+            chunks, current, argc, line,
+        ),
+        "php.realpath" => {
+            crate::emitter::php::filesystem_adapter::emit_realpath(chunks, current, argc, line)
+        }
+        "php.copy" => {
+            crate::emitter::php::filesystem_adapter::emit_copy(chunks, current, argc, line)
+        }
+        "php.rename" => {
+            crate::emitter::php::filesystem_adapter::emit_rename(chunks, current, argc, line)
+        }
+        "php.rmdir" => {
+            crate::emitter::php::filesystem_adapter::emit_rmdir(chunks, current, argc, line)
+        }
+        "php.is_readable" => {
+            crate::emitter::php::filesystem_adapter::emit_is_readable(chunks, current, argc, line)
+        }
+        "php.is_writable" => {
+            crate::emitter::php::filesystem_adapter::emit_is_readable(chunks, current, argc, line)
+        }
+        "php.filetype" => {
+            crate::emitter::php::filesystem_adapter::emit_filetype(chunks, current, argc, line)
+        }
+        "php.scandir" => {
+            crate::emitter::php::filesystem_adapter::emit_scandir(chunks, current, argc, line)
+        }
+        "php.tempnam" => {
+            crate::emitter::php::filesystem_adapter::emit_tempnam(chunks, current, argc, line)
+        }
+        "php.mime_content_type" => crate::emitter::php::filesystem_adapter::emit_mime_content_type(
+            chunks, current, argc, line,
+        ),
+        "php.fileperms" => {
+            crate::emitter::php::filesystem_adapter::emit_fileperms(chunks, current, argc, line)
+        }
+        "php.disk_free_space" => crate::emitter::php::filesystem_adapter::emit_disk_free_space(
+            chunks, current, argc, line,
+        ),
+        "php.disk_total_space" => crate::emitter::php::filesystem_adapter::emit_disk_total_space(
+            chunks, current, argc, line,
+        ),
+        "php.fopen" => {
+            crate::emitter::php::filesystem_adapter::emit_fopen(chunks, current, argc, line)
+        }
+        "php.fwrite" => {
+            crate::emitter::php::filesystem_adapter::emit_fwrite(chunks, current, argc, line)
+        }
+        "php.fread" => {
+            crate::emitter::php::filesystem_adapter::emit_fread(chunks, current, argc, line)
+        }
+        "php.fgets" => {
+            crate::emitter::php::filesystem_adapter::emit_fgets(chunks, current, argc, line)
+        }
+        "php.fgetc" => {
+            crate::emitter::php::filesystem_adapter::emit_fgetc(chunks, current, argc, line)
+        }
+        "php.feof" => {
+            crate::emitter::php::filesystem_adapter::emit_feof(chunks, current, argc, line)
+        }
+        "php.ftell" => {
+            crate::emitter::php::filesystem_adapter::emit_ftell(chunks, current, argc, line)
+        }
+        "php.fseek" => {
+            crate::emitter::php::filesystem_adapter::emit_fseek(chunks, current, argc, line)
+        }
+        "php.rewind" => {
+            crate::emitter::php::filesystem_adapter::emit_rewind(chunks, current, argc, line)
+        }
+        "php.fflush" => {
+            crate::emitter::php::filesystem_adapter::emit_fflush(chunks, current, argc, line)
+        }
+        "php.fclose" => {
+            crate::emitter::php::filesystem_adapter::emit_fclose(chunks, current, argc, line)
+        }
+        "php.stream_get_contents" => {
+            crate::emitter::php::filesystem_adapter::emit_stream_get_contents(
+                chunks, current, argc, line,
+            )
+        }
+        "php.stream_get_meta_data" => {
+            crate::emitter::php::filesystem_adapter::emit_stream_get_meta_data(
+                chunks, current, argc, line,
+            )
         }
 
         // ── .NET String.Format adapter — composite-format substitution ──

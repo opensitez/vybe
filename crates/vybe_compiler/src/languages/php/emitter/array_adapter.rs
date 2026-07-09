@@ -116,16 +116,31 @@ fn emit_json_stringify_slots(
     argc: u8,
     line: u32,
 ) {
+    // PHP `json_encode(value, flags, depth)` maps onto ECMA
+    // `JSON.stringify(value, replacer, space)`: PHP has no replacer, its
+    // `depth` is a recursion LIMIT (not indentation), and pretty-printing is
+    // the `JSON_PRETTY_PRINT` (128) flag → `space = 4`. Interpret the flag
+    // here rather than mis-passing PHP's args as JS's.
+    let _ = (depth_slot, argc);
     let chunk = &mut chunks[current];
     lget(chunk, value_slot, line);
-    if let Some(slot) = flags_slot {
-        lget(chunk, slot, line);
-    }
-    if let Some(slot) = depth_slot {
-        lget(chunk, slot, line);
+    chunk.emit_op(Op::NULL, line); // replacer
+    match flags_slot {
+        Some(slot) => {
+            // space = (flags & JSON_PRETTY_PRINT) ? 4 : null
+            lget(chunk, slot, line);
+            chunk.emit_i32_const(128, line);
+            chunk.emit_op(Op::I32_AND, line);
+            chunk.emit_if_value(line);
+            chunk.emit_i32_const(4, line);
+            chunk.emit_else(line);
+            chunk.emit_op(Op::NULL, line);
+            chunk.emit_end(line);
+        }
+        None => chunk.emit_op(Op::NULL, line),
     }
     let _ = chunk;
-    call_import(chunks, current, "ecma:json", "stringify", argc, line);
+    call_import(chunks, current, "ecma:json", "stringify", 3, line);
 }
 
 fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {

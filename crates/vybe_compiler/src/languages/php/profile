@@ -70,6 +70,9 @@ vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_a
 sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_args = 2 }
 uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
+# `eval($code)` → universal compiler-as-a-service; the walker injects the
+# language ("php") so this is just the host binding for `vybe:eval`.
+__vybe_eval         = { emit = "host:vybe:eval:eval",       min_args = 2, max_args = 3 }
 readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
 __php_int_max       = { emit = "common:php.int_max",         min_args = 0, max_args = 0 }
@@ -271,6 +274,7 @@ log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_a
 rand                = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 mt_rand             = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
+lcg_value           = { emit = "common:php.lcg_value",        min_args = 0, max_args = 0 }
 # `fmod` uses a pure-WASM emit (emit_c_fmod) that works with any numeric type.
 fmod                = { emit = "common:expressions.f64_mod", min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
@@ -474,6 +478,37 @@ uksort              = { emit = "common:php.uksort",               min_args = 2, 
 json_encode         = { emit = "common:php.json_encode",     min_args = 1, max_args = 3 }
 json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_args = 4 }
 
+# ── DOM / XML (DOMDocument) — adapter over the ECMA `web:dom-parser` host.
+# The walker rewrites `new DOMDocument()` and `$node->method(...)` onto these
+# `__dom_*` bindings (receiver passed as the first argument). ────────────────
+__dom_create_document = { emit = "host:web:dom-parser:createDocument",       min_args = 0, max_args = 3 }
+__dom_createElement   = { emit = "host:web:dom-parser:createElement",         min_args = 1, max_args = 3 }
+__dom_createElementNS = { emit = "host:web:dom-parser:createElementNS",       min_args = 1, max_args = 3 }
+__dom_createTextNode  = { emit = "host:web:dom-parser:createTextNode",        min_args = 1, max_args = 2 }
+__dom_createCDATASection = { emit = "host:web:dom-parser:createCDATASection", min_args = 1, max_args = 2 }
+__dom_createComment   = { emit = "host:web:dom-parser:createComment",         min_args = 1, max_args = 2 }
+__dom_createDocumentFragment = { emit = "host:web:dom-parser:createDocumentFragment", min_args = 1, max_args = 1 }
+__dom_appendXML       = { emit = "host:web:dom-parser:appendXML",             min_args = 2, max_args = 2 }
+__dom_appendChild     = { emit = "host:web:dom-parser:appendChild",           min_args = 2, max_args = 2 }
+__dom_removeChild     = { emit = "host:web:dom-parser:removeChild",           min_args = 2, max_args = 2 }
+__dom_replaceChild    = { emit = "host:web:dom-parser:replaceChild",          min_args = 3, max_args = 3 }
+__dom_insertBefore    = { emit = "host:web:dom-parser:insertBefore",          min_args = 2, max_args = 3 }
+__dom_cloneNode       = { emit = "host:web:dom-parser:cloneNode",             min_args = 1, max_args = 2 }
+__dom_setAttribute    = { emit = "host:web:dom-parser:setAttribute",          min_args = 3, max_args = 3 }
+__dom_getAttribute    = { emit = "host:web:dom-parser:getAttribute",          min_args = 2, max_args = 2 }
+__dom_removeAttribute = { emit = "host:web:dom-parser:removeAttribute",       min_args = 2, max_args = 2 }
+__dom_hasAttribute    = { emit = "host:web:dom-parser:hasAttribute",          min_args = 2, max_args = 2 }
+__dom_setAttributeNS  = { emit = "host:web:dom-parser:setAttributeNS",        min_args = 4, max_args = 4 }
+__dom_getAttributeNS  = { emit = "host:web:dom-parser:getAttributeNS",        min_args = 3, max_args = 3 }
+__dom_getElementsByTagName = { emit = "host:web:dom-parser:getElementsByTagName", min_args = 2, max_args = 2 }
+__dom_getElementById  = { emit = "host:web:dom-parser:getElementById",        min_args = 2, max_args = 2 }
+__dom_getElementsByClassName = { emit = "host:web:dom-parser:getElementsByClassName", min_args = 2, max_args = 2 }
+__dom_parseFromString = { emit = "host:web:dom-parser:parseFromString",       min_args = 2, max_args = 3 }
+__dom_serializeToString = { emit = "host:web:dom-parser:serializeToString",   min_args = 1, max_args = 1 }
+__dom_parse           = { emit = "host:web:dom-parser:parse",                 min_args = 1, max_args = 1 }
+__dom_save_xml        = { emit = "common:php.dom_save_xml",                    min_args = 1, max_args = 1 }
+simplexml_load_string = { emit = "common:php.simplexml_load_string",           min_args = 1, max_args = 5 }
+
 # ── Date / Time ─────────────────────────────────────────────────────────────
 # PHP's `time()` / `date()` operate on POSIX seconds-epoch. All wrappers
 # below route through `ecma:date` (ECMA-262 Date mirror + language
@@ -531,6 +566,37 @@ filemtime           = { emit = "common:php.filemtime",          min_args = 1, ma
 readlink            = { emit = "common:php.readlink",           min_args = 1, max_args = 1 }
 mkdir               = { emit = "common:php.mkdir",               min_args = 1, max_args = 4 }
 unlink              = { emit = "common:php.unlink",             min_args = 1, max_args = 2 }
+sys_get_temp_dir    = { emit = "common:php.sys_get_temp_dir",   min_args = 0, max_args = 0 }
+realpath            = { emit = "common:php.realpath",           min_args = 1, max_args = 1 }
+copy                = { emit = "common:php.copy",               min_args = 2, max_args = 3 }
+rename              = { emit = "common:php.rename",             min_args = 2, max_args = 3 }
+rmdir               = { emit = "common:php.rmdir",             min_args = 1, max_args = 2 }
+is_readable         = { emit = "common:php.is_readable",        min_args = 1, max_args = 1 }
+is_writable         = { emit = "common:php.is_writable",        min_args = 1, max_args = 1 }
+is_writeable        = { emit = "common:php.is_writable",        min_args = 1, max_args = 1 }
+filetype            = { emit = "common:php.filetype",           min_args = 1, max_args = 1 }
+scandir             = { emit = "common:php.scandir",            min_args = 1, max_args = 3 }
+tempnam             = { emit = "common:php.tempnam",            min_args = 2, max_args = 2 }
+mime_content_type   = { emit = "common:php.mime_content_type", min_args = 1, max_args = 1 }
+fileperms           = { emit = "common:php.fileperms",          min_args = 1, max_args = 1 }
+disk_free_space     = { emit = "common:php.disk_free_space",   min_args = 1, max_args = 1 }
+disk_total_space    = { emit = "common:php.disk_total_space",  min_args = 1, max_args = 1 }
+
+# ── Stream resource I/O (fopen family) ──────────────────────────────────────
+fopen               = { emit = "common:php.fopen",             min_args = 2, max_args = 4 }
+fwrite              = { emit = "common:php.fwrite",             min_args = 2, max_args = 3 }
+fputs               = { emit = "common:php.fwrite",             min_args = 2, max_args = 3 }
+fread               = { emit = "common:php.fread",             min_args = 2, max_args = 2 }
+fgets               = { emit = "common:php.fgets",             min_args = 1, max_args = 2 }
+fgetc               = { emit = "common:php.fgetc",             min_args = 1, max_args = 1 }
+feof                = { emit = "common:php.feof",              min_args = 1, max_args = 1 }
+ftell               = { emit = "common:php.ftell",             min_args = 1, max_args = 1 }
+fseek               = { emit = "common:php.fseek",             min_args = 2, max_args = 3 }
+rewind              = { emit = "common:php.rewind",            min_args = 1, max_args = 1 }
+fflush              = { emit = "common:php.fflush",            min_args = 1, max_args = 1 }
+fclose              = { emit = "common:php.fclose",            min_args = 1, max_args = 1 }
+stream_get_contents = { emit = "common:php.stream_get_contents", min_args = 1, max_args = 3 }
+stream_get_meta_data = { emit = "common:php.stream_get_meta_data", min_args = 1, max_args = 1 }
 
 # ── Environment / CLI ───────────────────────────────────────────────────────
 

@@ -491,6 +491,22 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     crate::emitter::ops::emit_dyn_add(chunk, line);
 }
 
+/// PHP `lcg_value()` — a pseudo-random float in the half-open range [0, 1).
+/// Composes `wasi:random` (a raw u64) scaled by 2^64, matching the `rand`
+/// family's entropy source. No arguments.
+pub fn emit_lcg_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let rand_idx = chunks[0].add_import(
+        "wasi:random/insecure".to_string(),
+        "get-insecure-random-u64".to_string(),
+    );
+    let chunk = &mut chunks[current];
+    // abs(r) / 2^64  ∈ [0, 1)
+    chunk.emit_call(rand_idx, 0, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    push_const(chunk, Value::F64(18446744073709551616.0), line); // 2^64
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
 /// PHP numeric comparison: coerce both sides to f64 via parseFloat,
 /// then compare as numbers. Handles `'10' > '9'` → true.
 /// Stack: [a, b] → [bool]

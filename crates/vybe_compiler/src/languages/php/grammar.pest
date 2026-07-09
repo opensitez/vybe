@@ -837,7 +837,9 @@ new_expression = {
 // `new class extends Base implements I { ... }`. The walker treats this
 // as a synthetic class declaration + immediate `new` of that class.
 anonymous_class = {
-    kw_class
+    attribute_group*
+    ~ kw_readonly?
+    ~ kw_class
     ~ ("(" ~ arg_list? ~ ")")?
     ~ (kw_extends ~ qualified_name)?
     ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
