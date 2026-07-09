@@ -155,14 +155,11 @@ pub fn run(src: &str) -> Value {
 /// Compile + run, capture stdout (anything routed through `wasi:cli::log`),
 /// return the captured lines.
 pub fn run_prints(src: &str) -> Vec<String> {
-    let chunks = compile(src);
-    let mut vm = VM::new();
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_host::register_all(&mut vm);
-    register_output_capture(&mut vm, &output);
-    vybe_host::setup_namespaces(&mut vm);
-    vm.run(chunks).expect("run failed");
-    finish_output(&output)
+    // Run through the RuntimeCompilerService like the real exe (cli.rs) and
+    // the JS harness (`run_with_js_dynamic_runtime`) do — a bare `vm.run`
+    // never activates the compiler-as-a-service, so `eval`/`include` and
+    // other dynamic-compile paths silently break. See `run_prints_dynamic`.
+    run_prints_dynamic(src, "test.php")
 }
 
 pub fn assert_php_prints(src: &str, expected: &[&str]) {

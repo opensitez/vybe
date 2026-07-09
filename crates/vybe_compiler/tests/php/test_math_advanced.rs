@@ -44,7 +44,8 @@ echo sqrt(144);
 echo sqrt(2);
 "#
         ),
-        &["1024", "12", "1.4142135623731"]
+        // `echo` emits no newline, so PHP concatenates these into one line.
+        &["1024121.4142135623731"]
     );
 }
 
