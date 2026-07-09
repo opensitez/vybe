@@ -67,6 +67,7 @@ const CDATA_SECTION_NODE: i32 = 4;
 const PROCESSING_INSTRUCTION_NODE: i32 = 7;
 const COMMENT_NODE: i32 = 8;
 const DOCUMENT_NODE: i32 = 9;
+const DOCUMENT_FRAGMENT_NODE: i32 = 11;
 
 // ── DOM type-id table ─────────────────────────────────────────────
 // Captured by `register_dom_type_ids` once `builtin_types::register_all`
@@ -456,6 +457,41 @@ pub fn register(vm: &mut VM) {
         new_element_node(&tag, owner.as_ref())
     }));
 
+    // DOMImplementation.createDocument(namespace, qualifiedName, doctype)
+    // — DOM Living Standard §4.5.1 "createDocument". Returns a new document;
+    // when `qualifiedName` is a non-empty string a document element is created
+    // (in `namespace`) and appended as the root. `new Document()` maps here
+    // with no arguments (empty document).
+    vm.register_host_fn(
+        "web:dom-parser",
+        "createDocument",
+        Box::new(|_ctx, args| {
+            let namespace = match args.first() {
+                Some(Value::String(ns)) if !ns.is_empty() => Some(ns.to_string()),
+                _ => None,
+            };
+            let qualified = match args.get(1) {
+                Some(Value::String(q)) if !q.is_empty() => Some(q.to_string()),
+                _ => None,
+            };
+            let doc = make_node(DOCUMENT_NODE, "#document", None);
+            if let (Value::Object(d), Some(name)) = (&doc, qualified.as_ref()) {
+                let elem = new_element_node(name, Some(d));
+                if let (Value::Object(e), Some(ns)) = (&elem, namespace.as_ref()) {
+                    e.lock().unwrap().properties.insert("namespaceURI".into(), s(ns));
+                }
+                if let Value::Object(child) = &elem {
+                    append_child_inner(d, child);
+                    d.lock()
+                        .unwrap()
+                        .properties
+                        .insert("documentElement".into(), elem.clone());
+                }
+            }
+            doc
+        }),
+    );
+
     vm.register_host_fn("web:dom-parser", "createTextNode", Box::new(|_ctx, args| {
         let text = match args.get(1).or(args.first()) {
             Some(Value::String(s)) => s.to_string(),
@@ -479,6 +515,40 @@ pub fn register(vm: &mut VM) {
         }
         node
     }));
+
+    // Document.createCDATASection(data) — DOM Living Standard §4.5 (Document
+    // interface). Produces a CDATASection node (nodeType 4, nodeName
+    // "#cdata-section") whose text is `data`; `ownerDocument` links back when
+    // called on a document.
+    vm.register_host_fn(
+        "web:dom-parser",
+        "createCDATASection",
+        Box::new(|_ctx, args| {
+            let text = match args.get(1).or(args.first()) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => String::new(),
+            };
+            let owner: Option<Arc<Mutex<Object>>> = match args.first() {
+                Some(Value::Object(o)) => {
+                    let lock = o.lock().unwrap();
+                    let is_doc = matches!(lock.properties.get("nodeType"), Some(Value::I32(t)) if *t == DOCUMENT_NODE);
+                    if is_doc { Some(o.clone()) } else { None }
+                }
+                _ => None,
+            };
+            let node = make_node(CDATA_SECTION_NODE, "#cdata-section", Some(&text));
+            if let Value::Object(n) = &node {
+                let mut nl = n.lock().unwrap();
+                nl.properties.insert("textContent".into(), s(&text));
+                if let Some(d) = &owner {
+                    nl.properties
+                        .insert("ownerDocument".into(), Value::Object(d.clone()));
+                }
+            }
+            node
+        }),
+    );
 
     vm.register_host_fn(
         "web:dom-parser",
@@ -572,6 +642,38 @@ pub fn register(vm: &mut VM) {
             let Some(Value::Object(child)) = args.get(1) else {
                 return Value::Null;
             };
+            // DOM §4.2.1 pre-insert: appending a DocumentFragment moves ITS
+            // children into the parent, not the fragment node itself.
+            let is_fragment = matches!(
+                child.lock().unwrap().properties.get("nodeType"),
+                Some(Value::I32(t)) if *t == DOCUMENT_FRAGMENT_NODE
+            );
+            if is_fragment {
+                let moved: Vec<Value> = {
+                    let c = child.lock().unwrap();
+                    match c.properties.get("childNodes") {
+                        Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
+                            ObjectKind::Array(items) => items.clone(),
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(),
+                    }
+                };
+                // Empty the fragment, then append each former child to parent.
+                if let Some(Value::Object(arr)) = child.lock().unwrap().properties.get("childNodes")
+                {
+                    if let ObjectKind::Array(ref mut items) = arr.lock().unwrap().kind {
+                        items.clear();
+                    }
+                }
+                refresh_node_relationships(child);
+                for node in &moved {
+                    if let Value::Object(n) = node {
+                        append_child_inner(parent, n);
+                    }
+                }
+                return Value::Object(child.clone());
+            }
             // Detach child from any current parent first (DOM semantics:
             // appendChild is a move, not a copy — `pre-insert` step in spec).
             detach_from_parent(child);
@@ -668,6 +770,42 @@ pub fn register(vm: &mut VM) {
             _ => None,
         };
         new_document_fragment(owner.as_ref())
+    }));
+
+    // PHP `DOMDocumentFragment::appendXML($xml)` — parse the XML fragment and
+    // append the resulting top-level nodes to the fragment. Not part of the
+    // DOM standard, but composed here entirely from the spec parse surface.
+    vm.register_host_fn("web:dom-parser", "appendXML", Box::new(|_ctx, args| {
+        let Some(Value::Object(frag)) = args.first() else {
+            return Value::Bool(false);
+        };
+        let xml = match args.get(1) {
+            Some(Value::String(s)) => s.to_string(),
+            Some(other) => format!("{}", other),
+            None => return Value::Bool(false),
+        };
+        let doc = match parse_xml(&xml) {
+            Ok(doc) => doc,
+            Err(_) => return Value::Bool(false),
+        };
+        // Move the parsed document's top-level nodes into the fragment.
+        let roots: Vec<Value> = if let Value::Object(d) = &doc {
+            match d.lock().unwrap().properties.get("childNodes") {
+                Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
+                    ObjectKind::Array(items) => items.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        for node in &roots {
+            if let Value::Object(n) = node {
+                append_child_inner(frag, n);
+            }
+        }
+        Value::Bool(true)
     }));
 
     vm.register_host_fn("web:dom-parser", "createElementNS", Box::new(|_ctx, args| {
@@ -1108,14 +1246,23 @@ fn make_pi_node(target: &str, data: &str) -> Value {
 
 fn push_child(stack: &[Arc<Mutex<Object>>], child: Value) {
     let parent = stack.last().expect("dom parser: empty stack");
-    let parent_lock = parent.lock().unwrap();
-    if let Some(Value::Object(arr)) = parent_lock.properties.get("childNodes") {
-        let arr = arr.clone();
-        drop(parent_lock);
-        if let ObjectKind::Array(ref mut items) = arr.lock().unwrap().kind {
-            items.push(child);
+    let arr = {
+        let parent_lock = parent.lock().unwrap();
+        match parent_lock.properties.get("childNodes") {
+            Some(Value::Object(arr)) => arr.clone(),
+            _ => return,
         }
-    }
+    };
+    let mut a = arr.lock().unwrap();
+    let len = if let ObjectKind::Array(ref mut items) = a.kind {
+        items.push(child);
+        items.len()
+    } else {
+        return;
+    };
+    // Keep NodeList.length live on the parse path too (DOM §4.2.10).
+    a.properties
+        .insert("length".into(), Value::I32(len as i32));
 }
 
 // ── Post-walk: parentNode / ownerDocument / textContent / siblings ──
@@ -1301,10 +1448,19 @@ fn set_document_element(doc: &Arc<Mutex<Object>>) {
 
 fn find_by_id(node: &Arc<Mutex<Object>>, id: &str) -> Option<Value> {
     let n = node.lock().unwrap();
-    if let Some(Value::String(node_id)) = n.properties.get("id") {
-        if node_id.as_ref() == id {
-            return Some(Value::Object(node.clone()));
-        }
+    // DOM §4.5 `getElementById`: match the element whose `id` ATTRIBUTE equals
+    // `id`. Check the mirrored `id` property first, then the attribute map (so
+    // parsed elements — which populate attributes, not the property — match).
+    let matches = matches!(n.properties.get("id"), Some(Value::String(v)) if v.as_ref() == id)
+        || match n.properties.get("attributes") {
+            Some(Value::Object(attrs)) => matches!(
+                attrs.lock().unwrap().properties.get("id"),
+                Some(Value::String(v)) if v.as_ref() == id
+            ),
+            _ => false,
+        };
+    if matches {
+        return Some(Value::Object(node.clone()));
     }
     let children = n.properties.get("childNodes").cloned();
     drop(n);
@@ -2270,6 +2426,15 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
     } else {
         return;
     };
+
+    // Maintain `NodeList.length` (DOM §4.2.10) on the childNodes list object
+    // so `node.childNodes.length` reads the live count.
+    {
+        arr.lock()
+            .unwrap()
+            .properties
+            .insert("length".into(), Value::I32(items.len() as i32));
+    }
 
     for (i, child) in items.iter().enumerate() {
         if let Value::Object(child_obj) = child {

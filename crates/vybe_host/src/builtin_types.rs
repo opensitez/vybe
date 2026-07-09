@@ -81,7 +81,7 @@ pub fn register_all(vm: &mut VM) {
             // the TypeRegistry without language-specific aliasing.
             ("charat", "ecma:string", "charAt"),
             ("charcodeat", "ecma:string", "charCodeAt"),
-            ("codepointat", "ecma:string", "codePointAt"),
+            ("codePointAt", "ecma:string", "codePointAt"),
             ("at", "ecma:string", "at"),
             ("concat", "ecma:string", "concat"),
             ("includes", "ecma:string", "includes"),
@@ -98,13 +98,13 @@ pub fn register_all(vm: &mut VM) {
             ("tolocaleuppercase", "ecma:string", "toUpperCase"),
             // RegExp-driven String.prototype methods (§22.1.3.{11,13,14,17,18}).
             ("match", "ecma:regexp", "match"),
-            ("matchall", "ecma:regexp", "matchAll"),
+            ("matchAll", "ecma:regexp", "matchAll"),
             ("search", "ecma:regexp", "search"),
             ("replaceall", "ecma:regexp", "replaceAll"),
             // §22.1.5.1: String.prototype[@@iterator]() — yields code points.
             // Strings are opaque in WASM (wasm:js-string spec) so iteration
             // requires a host function, same as charCodeAt/codePointAt.
-            ("symbol(@@iterator)", "ecma:string", "iterator"),
+            ("Symbol(@@iterator)", "ecma:string", "iterator"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -176,7 +176,7 @@ pub fn register_all(vm: &mut VM) {
             ("copywithin", "ecma:array", "copyWithin"),
             ("entries", "ecma:array", "entries"),
             // §23.1.3.38: Array.prototype[@@iterator] = Array.prototype.values
-            ("symbol(@@iterator)", "ecma:array", "values"),
+            ("Symbol(@@iterator)", "ecma:array", "values"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -527,7 +527,7 @@ pub fn register_all(vm: &mut VM) {
             ("entries", "entries"),
             ("forEach", "forEach"),
             // §24.1.3.12: Map.prototype[@@iterator] = Map.prototype.entries
-            ("symbol(@@iterator)", "entries"),
+            ("Symbol(@@iterator)", "entries"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -560,7 +560,7 @@ pub fn register_all(vm: &mut VM) {
             ("entries", "entries"),
             ("forEach", "forEach"),
             // §24.2.3.11: Set.prototype[@@iterator] = Set.prototype.values
-            ("symbol(@@iterator)", "values"),
+            ("Symbol(@@iterator)", "values"),
         ] {
             if let Some(idx) = h(vm, "ecma:set", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -708,7 +708,7 @@ pub fn register_all(vm: &mut VM) {
             "toJSON",
         ] {
             if let Some(idx) = h(vm, "ecma:date", method) {
-                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);
@@ -747,7 +747,7 @@ pub fn register_all(vm: &mut VM) {
             "toString",
         ] {
             if let Some(idx) = h(vm, "ecma:date", method) {
-                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);
@@ -1171,7 +1171,7 @@ fn register_new_globals_types(vm: &mut VM) {
         let mut t = TypeDef::new("TextEncoder");
         for (method, fname) in &[("encode", "encode"), ("encodeInto", "encodeInto")] {
             if let Some(idx) = h(vm, "web:encoding", fname) {
-                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);
@@ -1256,7 +1256,7 @@ fn register_new_globals_types(vm: &mut VM) {
             ("getElementsByTagNameNS", "getElementsByTagNameNS"),
         ] {
             if let Some(idx) = h(vm, "web:dom-parser", fname) {
-                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);
@@ -1285,7 +1285,7 @@ fn register_new_globals_types(vm: &mut VM) {
             ("getElementsByTagNameNS", "getElementsByTagNameNS"),
         ] {
             if let Some(idx) = h(vm, "web:dom-parser", fname) {
-                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);

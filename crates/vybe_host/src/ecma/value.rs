@@ -2040,18 +2040,12 @@ fn dispatch_set(
                     }
                 }
             }
-            let mut out_obj = Object::new();
-            out_obj.kind = ObjectKind::Set(out);
-            out_obj
-                .properties
-                .insert("__type".into(), Value::String(Arc::from("Set")));
-            sync_set_size(&mut out_obj);
-            Value::Object(Arc::new(Mutex::new(out_obj)))
+            crate::ecma::set::make_set(out)
         }
         "intersection" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+                _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
             let mut out = indexmap::IndexSet::new();
             let so = obj.lock().unwrap();
@@ -2063,18 +2057,12 @@ fn dispatch_set(
                     }
                 }
             }
-            let mut out_obj = Object::new();
-            out_obj.kind = ObjectKind::Set(out);
-            out_obj
-                .properties
-                .insert("__type".into(), Value::String(Arc::from("Set")));
-            sync_set_size(&mut out_obj);
-            Value::Object(Arc::new(Mutex::new(out_obj)))
+            crate::ecma::set::make_set(out)
         }
         "difference" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+                _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
             let mut out = indexmap::IndexSet::new();
             let so = obj.lock().unwrap();
@@ -2086,18 +2074,12 @@ fn dispatch_set(
                     }
                 }
             }
-            let mut out_obj = Object::new();
-            out_obj.kind = ObjectKind::Set(out);
-            out_obj
-                .properties
-                .insert("__type".into(), Value::String(Arc::from("Set")));
-            sync_set_size(&mut out_obj);
-            Value::Object(Arc::new(Mutex::new(out_obj)))
+            crate::ecma::set::make_set(out)
         }
         "symmetricDifference" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+                _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
             let mut out = indexmap::IndexSet::new();
             let so = obj.lock().unwrap();
@@ -2114,13 +2096,7 @@ fn dispatch_set(
                     }
                 }
             }
-            let mut out_obj = Object::new();
-            out_obj.kind = ObjectKind::Set(out);
-            out_obj
-                .properties
-                .insert("__type".into(), Value::String(Arc::from("Set")));
-            sync_set_size(&mut out_obj);
-            Value::Object(Arc::new(Mutex::new(out_obj)))
+            crate::ecma::set::make_set(out)
         }
         "isSubsetOf" => {
             let rhs = match args.first() {

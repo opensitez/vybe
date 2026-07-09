@@ -5,6 +5,7 @@ mod bigint;
 mod boolean;
 mod dataview;
 mod date;
+mod dom;
 mod error;
 mod finalizationregistry;
 mod fixedarray;

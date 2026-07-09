@@ -50,10 +50,18 @@ fn bound_iterator_method(
     Value::Object(Arc::new(Mutex::new(fn_obj)))
 }
 
-fn new_set() -> Value {
+/// Build a fully-formed Set object from `values`, carrying the same
+/// `__type` stamp, `size` property, and `[@@iterator]` binding as a
+/// user-constructed `new Set()`. Host methods that return fresh Sets
+/// (`union`, `intersection`, `difference`, `symmetricDifference`, …)
+/// MUST route through here so their results are spec-iterable — a raw
+/// `Object::new()` result has no iterator method and `[...result]`
+/// yields nothing.
+pub(crate) fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     let mut obj = Object::new();
-    obj.kind = ObjectKind::Set(indexmap::IndexSet::new());
-    obj.properties.insert("size".into(), Value::I32(0));
+    let len = values.len() as i32;
+    obj.kind = ObjectKind::Set(values);
+    obj.properties.insert("size".into(), Value::I32(len));
     // __type stamp: see comment on `ecma:map.new`. Without it the
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties
@@ -66,6 +74,10 @@ fn new_set() -> Value {
         );
     }
     Value::Object(set)
+}
+
+fn new_set() -> Value {
+    make_set(indexmap::IndexSet::new())
 }
 
 fn new_set_from_iterable(args: &[Value]) -> Value {
