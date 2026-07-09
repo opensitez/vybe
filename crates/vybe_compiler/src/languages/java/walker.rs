@@ -58,6 +58,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    hoist_java_nested_types(&mut body);
+    normalize_java_class_tree(&mut body);
+
     // Java: inject a top-level call to the class's static main method.
     // Uses the same pattern as EntryPoint::Method in bundle.rs.
     if let Some(class_name) = find_main_class(&body) {
@@ -356,6 +359,7 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut params: Vec<Param> = Vec::new();
     let mut body: Vec<Statement> = Vec::new();
     let mut base_args: Option<Vec<Expression>> = None;
+    let mut initializer_target = ConstructorInitializerTarget::Base;
 
     for p in inner {
         match p.as_rule() {
@@ -364,7 +368,7 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
             Rule::function_body_block => {
                 body = walk_block(p)?;
                 // Extract super(...) or this(...) call from top of body
-                extract_base_call_from_body(&mut body, &mut base_args);
+                extract_base_call_from_body(&mut body, &mut base_args, &mut initializer_target);
             }
             _ => {}
         }
@@ -374,7 +378,7 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
         params,
         body,
         base_args,
-        initializer_target: ConstructorInitializerTarget::Base,
+        initializer_target,
         visibility,
     })
 }
@@ -471,7 +475,7 @@ fn walk_field(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             let init = if di.peek().map(|x| x.as_rule()) == Some(Rule::initializer) {
                 Some(walk_initializer(di.next().unwrap())?)
             } else {
-                None
+                type_hint.as_deref().and_then(default_expr_for_java_type)
             };
             fields.push(ClassMember::Field {
                 name,
@@ -1587,6 +1591,15 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 } else {
                     vec![]
                 };
+                if let ExprKind::Member {
+                    object,
+                    field,
+                    null_safe: _,
+                } = current.kind
+                {
+                    current = normalise_method_call(*object, field, args);
+                    continue;
+                }
                 current = Expression::new(ExprKind::Call {
                     callee: Box::new(current),
                     args,
@@ -1613,10 +1626,18 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if let ExprKind::Ident(ref root_name) = root_obj.kind {
             if root_name == "System"
                 && root_field == "out"
-                && (method == "println" || method == "print" || method == "printf")
+                && matches!(
+                    method.as_str(),
+                    "println" | "print" | "printf" | "format" | "append"
+                )
             {
+                let normalized = match method.as_str() {
+                    "format" => "printf",
+                    "append" => "print",
+                    _ => &method,
+                };
                 return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident(&method)),
+                    callee: Box::new(Expression::ident(normalized)),
                     args,
                     optional: false,
                 });
@@ -1636,6 +1657,27 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
     if let ExprKind::Ident(ref type_name) = receiver.kind {
         if is_java_type_or_util(type_name) {
+            if type_name == "String" && method == "valueOf" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_string_value_of")),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "String" && method == "format" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_string_format")),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "String" && method == "join" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_string_join")),
+                    args,
+                    optional: false,
+                });
+            }
             let dotted = format!("{}.{}", type_name, method);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(&dotted)),
@@ -1643,6 +1685,25 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 optional: false,
             });
         }
+    }
+
+    if method == "toCharArray" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_to_char_array")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if method == "formatted" {
+        let mut format_args = Vec::with_capacity(args.len() + 1);
+        format_args.push(Argument::positional(receiver));
+        format_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_string_format")),
+            args: format_args,
+            optional: false,
+        });
     }
 
     Expression::new(ExprKind::Call {
@@ -2010,20 +2071,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::char_literal => {
             let s = inner.as_str();
             let content = &s[1..s.len() - 1];
-            let ch = if content.starts_with('\\') {
-                match content.chars().nth(1) {
-                    Some('n') => '\n',
-                    Some('t') => '\t',
-                    Some('r') => '\r',
-                    Some('\'') => '\'',
-                    Some('\\') => '\\',
-                    Some('0') => '\0',
-                    _ => content.chars().nth(1).unwrap_or('\0'),
-                }
-            } else {
-                content.chars().next().unwrap_or('\0')
-            };
-            Ok(Expression::int(ch as i64))
+            Ok(Expression::string(&unescape_java_string(content)))
         }
         Rule::string_literal => {
             let s = inner.as_str();
@@ -2079,19 +2127,27 @@ fn inject_implicit_super(members: &mut Vec<ClassMember>) {
 
 /// Extract an explicit `super(...)` / `this(...)` call from the top of a
 /// constructor body and put the args in `base_args`.
-fn extract_base_call_from_body(body: &mut Vec<Statement>, base_args: &mut Option<Vec<Expression>>) {
+fn extract_base_call_from_body(
+    body: &mut Vec<Statement>,
+    base_args: &mut Option<Vec<Expression>>,
+    initializer_target: &mut ConstructorInitializerTarget,
+) {
     if body.is_empty() {
         return;
     }
-    let is_super = match &body[0].kind {
-        StmtKind::Expr(e) => {
-            matches!(&e.kind, ExprKind::SuperCall { .. })
-                || matches!(&e.kind, ExprKind::Call { callee, .. }
-                    if matches!(&callee.kind, ExprKind::Super))
-        }
-        _ => false,
+    let target = match &body[0].kind {
+        StmtKind::Expr(e) => match &e.kind {
+            ExprKind::SuperCall { .. } => Some(ConstructorInitializerTarget::Base),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Super => Some(ConstructorInitializerTarget::Base),
+                ExprKind::This => Some(ConstructorInitializerTarget::This),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
     };
-    if is_super {
+    if let Some(target) = target {
         let s = body.remove(0);
         if let StmtKind::Expr(e) = s.kind {
             let args_exprs: Vec<Expression> = match e.kind {
@@ -2100,7 +2156,322 @@ fn extract_base_call_from_body(body: &mut Vec<Statement>, base_args: &mut Option
                 _ => vec![],
             };
             *base_args = Some(args_exprs);
+            *initializer_target = target;
         }
+    }
+}
+
+fn default_expr_for_java_type(type_name: &str) -> Option<Expression> {
+    match type_name {
+        "byte" | "short" | "int" | "long" | "char" => Some(Expression::int(0)),
+        "float" | "double" => Some(Expression::float(0.0)),
+        "boolean" => Some(Expression::bool(false)),
+        _ => None,
+    }
+}
+
+fn hoist_java_nested_types(body: &mut Vec<Statement>) {
+    let mut hoisted = Vec::new();
+    hoist_java_nested_types_from_stmts(body, &mut hoisted);
+    body.extend(hoisted);
+}
+
+fn hoist_java_nested_types_from_stmts(body: &mut [Statement], hoisted: &mut Vec<Statement>) {
+    for stmt in body {
+        if let StmtKind::ClassDecl { members, .. } = &mut stmt.kind {
+            let mut kept = Vec::with_capacity(members.len());
+            for member in std::mem::take(members) {
+                match member {
+                    ClassMember::NestedType(nested) => {
+                        let mut nested_body = vec![*nested];
+                        hoist_java_nested_types_from_stmts(&mut nested_body, hoisted);
+                        hoisted.extend(nested_body);
+                    }
+                    other => kept.push(other),
+                }
+            }
+            *members = kept;
+        }
+    }
+}
+
+fn normalize_java_class_tree(body: &mut [Statement]) {
+    use std::collections::HashMap;
+
+    let mut class_members = HashMap::new();
+    collect_java_class_member_names(body, &mut class_members);
+    normalize_java_class_tree_with_members(body, &class_members);
+}
+
+fn collect_java_class_member_names(
+    body: &[Statement],
+    out: &mut std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. } => {
+                out.insert(name.clone(), JavaClassMemberNames::from_members(members));
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_class_member_names(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
+            StmtKind::Block(stmts) => collect_java_class_member_names(stmts, out),
+            _ => {}
+        }
+    }
+}
+
+fn normalize_java_class_tree_with_members(
+    body: &mut [Statement],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                ..
+            } => {
+                let mut names = class_members.get(name).cloned().unwrap_or_default();
+                for parent in parents {
+                    if let Some(parent_names) = class_members.get(parent) {
+                        names.fields.extend(parent_names.fields.iter().cloned());
+                        names.methods.extend(parent_names.methods.iter().cloned());
+                    }
+                }
+                normalize_java_class_members(members, &names);
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        normalize_java_class_tree_with_members(
+                            std::slice::from_mut(nested),
+                            class_members,
+                        );
+                    }
+                }
+            }
+            StmtKind::Block(stmts) => normalize_java_class_tree_with_members(stmts, class_members),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct JavaClassMemberNames {
+    fields: std::collections::HashSet<String>,
+    methods: std::collections::HashSet<String>,
+}
+
+impl JavaClassMemberNames {
+    fn from_members(members: &[ClassMember]) -> Self {
+        let fields = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Field {
+                    name, modifiers, ..
+                } if !modifiers.is_static => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let methods = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Method(func) => match &func.kind {
+                    StmtKind::FunctionDecl {
+                        name, modifiers, ..
+                    } if !modifiers.is_static => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        Self { fields, methods }
+    }
+}
+
+fn normalize_java_class_members(members: &mut [ClassMember], names: &JavaClassMemberNames) {
+    if names.fields.is_empty() && names.methods.is_empty() {
+        return;
+    }
+
+    for member in members {
+        match member {
+            ClassMember::Constructor { params, body, .. } => {
+                let mut locals = params.iter().map(|p| p.name.clone()).collect();
+                normalize_java_stmts(body, &names.fields, &names.methods, &mut locals);
+            }
+            ClassMember::Method(func) => {
+                if let StmtKind::FunctionDecl {
+                    params,
+                    body,
+                    modifiers,
+                    ..
+                } = &mut func.kind
+                {
+                    if modifiers.is_static {
+                        continue;
+                    }
+                    let mut locals = params.iter().map(|p| p.name.clone()).collect();
+                    normalize_java_stmts(body, &names.fields, &names.methods, &mut locals);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_java_stmts(
+    stmts: &mut [Statement],
+    fields: &std::collections::HashSet<String>,
+    methods: &std::collections::HashSet<String>,
+    locals: &mut std::collections::HashSet<String>,
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        normalize_java_expr(init, fields, methods, locals, false);
+                    }
+                    collect_binding_names(&decl.pattern, locals);
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                normalize_java_expr(value, fields, methods, locals, false);
+                for target in targets {
+                    normalize_java_expr(target, fields, methods, locals, true);
+                }
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                normalize_java_expr(value, fields, methods, locals, false);
+                normalize_java_expr(target, fields, methods, locals, true);
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                normalize_java_expr(expr, fields, methods, locals, false);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                normalize_java_expr(cond, fields, methods, locals, false);
+                normalize_java_stmts(then_body, fields, methods, &mut locals.clone());
+                for (elif_cond, elif_body) in elifs {
+                    normalize_java_expr(elif_cond, fields, methods, locals, false);
+                    normalize_java_stmts(elif_body, fields, methods, &mut locals.clone());
+                }
+                if let Some(else_body) = else_body {
+                    normalize_java_stmts(else_body, fields, methods, &mut locals.clone());
+                }
+            }
+            StmtKind::While { cond, body, .. } => {
+                normalize_java_expr(cond, fields, methods, locals, false);
+                normalize_java_stmts(body, fields, methods, &mut locals.clone());
+            }
+            StmtKind::Block(body) => {
+                normalize_java_stmts(body, fields, methods, &mut locals.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_binding_names(
+    pattern: &BindingPattern,
+    locals: &mut std::collections::HashSet<String>,
+) {
+    match pattern {
+        BindingPattern::Ident(name) => {
+            locals.insert(name.clone());
+        }
+        BindingPattern::Object(props) => {
+            for prop in props {
+                if let Some(value) = &prop.value {
+                    collect_binding_names(value, locals);
+                } else {
+                    locals.insert(prop.key.clone());
+                }
+            }
+        }
+        BindingPattern::Array(elems) => {
+            for elem in elems {
+                match elem {
+                    ArrayPatternElem::Pattern(pattern, _) => collect_binding_names(pattern, locals),
+                    ArrayPatternElem::Rest(name) => {
+                        locals.insert(name.clone());
+                    }
+                    ArrayPatternElem::Hole => {}
+                }
+            }
+        }
+    }
+}
+
+fn normalize_java_expr(
+    expr: &mut Expression,
+    fields: &std::collections::HashSet<String>,
+    methods: &std::collections::HashSet<String>,
+    locals: &std::collections::HashSet<String>,
+    is_assignment_target: bool,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if fields.contains(name) && !locals.contains(name) => {
+            let field = name.clone();
+            expr.kind = ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field,
+                null_safe: false,
+            };
+        }
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args {
+                normalize_java_expr(&mut arg.value, fields, methods, locals, false);
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if methods.contains(name) && !locals.contains(name) {
+                    let method = name.clone();
+                    callee.kind = ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: method,
+                        null_safe: false,
+                    };
+                    return;
+                }
+            }
+            normalize_java_expr(callee, fields, methods, locals, false);
+        }
+        ExprKind::Member { object, .. } => {
+            normalize_java_expr(object, fields, methods, locals, false);
+        }
+        ExprKind::Index { object, index, .. } => {
+            normalize_java_expr(object, fields, methods, locals, false);
+            normalize_java_expr(index, fields, methods, locals, false);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            normalize_java_expr(left, fields, methods, locals, false);
+            normalize_java_expr(right, fields, methods, locals, false);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            normalize_java_expr(inner, fields, methods, locals, is_assignment_target);
+        }
+        ExprKind::Assign { target, value } => {
+            normalize_java_expr(value, fields, methods, locals, false);
+            normalize_java_expr(target, fields, methods, locals, true);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_java_expr(cond, fields, methods, locals, false);
+            normalize_java_expr(then, fields, methods, locals, false);
+            normalize_java_expr(else_, fields, methods, locals, false);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                normalize_java_expr(&mut elem.value, fields, methods, locals, false);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2202,6 +2573,22 @@ fn unescape_java_string(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
+                Some('u') => {
+                    let mut hex = String::with_capacity(4);
+                    while matches!(chars.clone().next(), Some('u')) {
+                        chars.next();
+                    }
+                    for _ in 0..4 {
+                        if let Some(h) = chars.next() {
+                            hex.push(h);
+                        }
+                    }
+                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                        }
+                    }
+                }
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
                 Some('r') => out.push('\r'),

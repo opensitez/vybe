@@ -19,6 +19,7 @@ uses_normalize_class = true
 # entry_point not needed — walker injects Main.main() call directly
 # Java + on strings concatenates (auto-coercion via toString())
 dynamic_add        = true
+materialize_bool_results = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls (after walker normalisation)
@@ -42,6 +43,8 @@ printf              = { emit = "common:java.printf",             min_args = 1, m
 "Float.parseFloat"       = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
 "Boolean.parseBoolean"   = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
 "String.valueOf"         = { emit = "intrinsic:tostring",        min_args = 1, max_args = 1 }
+__java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
+__java_to_char_array     = { emit = "common:java.to_char_array",   min_args = 1, max_args = 1 }
 "Integer.toString"       = { emit = "intrinsic:tostring",        min_args = 1, max_args = 2 }
 "Integer.toBinaryString" = { emit = "common:java.to_binary_string",  min_args = 1, max_args = 1 }
 "Integer.toHexString"    = { emit = "common:java.to_hex_string",     min_args = 1, max_args = 1 }
@@ -127,8 +130,10 @@ printf              = { emit = "common:java.printf",             min_args = 1, m
 
 # ── String utilities ──────────────────────────────────────────────────────────
 
-"String.format"  = { emit = "common:java.string_format",  min_args = 1, max_args = 255 }
+"String.format"  = { emit = "common:sprintf.format",      min_args = 1, max_args = 255 }
+__java_string_format = { emit = "common:sprintf.format",  min_args = 1, max_args = 255 }
 "String.join"    = { emit = "common:java.string_join",     min_args = 2, max_args = 255 }
+__java_string_join = { emit = "common:java.string_join",   min_args = 2, max_args = 255 }
 
 # ── Object / misc ─────────────────────────────────────────────────────────────
 
@@ -158,11 +163,11 @@ trim          = { emit = "common:strings.trim",          min_args = 0, max_args 
 strip         = { emit = "common:strings.trim",          min_args = 0, max_args = 0 }
 stripLeading  = { emit = "common:str_trim_start",        min_args = 0, max_args = 0 }
 stripTrailing = { emit = "common:str_trim_end",          min_args = 0, max_args = 0 }
-startsWith    = { emit = "common:str_starts_with",       min_args = 1, max_args = 2 }
+startsWith    = { emit = "common:java.str_starts_with",  min_args = 1, max_args = 2 }
 endsWith      = { emit = "common:str_ends_with",         min_args = 1, max_args = 1 }
 contains      = { emit = "common:str_contains",          min_args = 1, max_args = 1 }
-indexOf       = { emit = "common:strings.index_of",      min_args = 1, max_args = 2 }
-lastIndexOf   = { emit = "common:str_last_index_of",     min_args = 1, max_args = 2 }
+indexOf       = { emit = "common:java.str_index_of",     min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "common:java.str_last_index_of", min_args = 1, max_args = 2 }
 replace       = [
     { emit = "common:strings.replace",       min_args = 2, max_args = 2 },
     { emit = "common:java.map_replace",      min_args = 2, max_args = 3 },
@@ -174,18 +179,18 @@ substring     = { emit = "common:strings.substring",     min_args = 1, max_args 
 charAt        = { emit = "common:str_char_at",           min_args = 1, max_args = 1 }
 charCodeAt    = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
 codePointAt   = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
-compareTo     = { emit = "common:str_compare",           min_args = 1, max_args = 1 }
+compareTo     = { emit = "common:java.compare_to",       min_args = 1, max_args = 1 }
 compareToIgnoreCase = { emit = "common:java.compare_ignore_case", min_args = 1, max_args = 1 }
 equalsIgnoreCase    = { emit = "common:java.equals_ignore_case",  min_args = 1, max_args = 1 }
 matches       = { emit = "common:java.str_matches",      min_args = 1, max_args = 1 }
 isEmpty       = { emit = "common:java.str_is_empty",     min_args = 0, max_args = 0 }
 isBlank       = { emit = "common:java.str_is_blank",     min_args = 0, max_args = 0 }
-repeat        = { emit = "common:strings.repeat",        min_args = 1, max_args = 1 }
+repeat        = { emit = "common:str_repeat",            min_args = 1, max_args = 1 }
 concat        = { emit = "common:strings.concat",        min_args = 1, max_args = 1 }
 intern        = { emit = "noop",                         min_args = 0, max_args = 0 }
 toCharArray   = { emit = "common:java.to_char_array",    min_args = 0, max_args = 0 }
 getBytes      = { emit = "common:java.to_char_array",    min_args = 0, max_args = 1 }
-formatted     = { emit = "common:java.string_format",    min_args = 0, max_args = 255 }
+formatted     = { emit = "common:sprintf.format",        min_args = 0, max_args = 255 }
 indent        = { emit = "noop",                         min_args = 1, max_args = 1 }
 lines         = { emit = "common:java.str_lines",        min_args = 0, max_args = 0 }
 
@@ -193,7 +198,7 @@ lines         = { emit = "common:java.str_lines",        min_args = 0, max_args 
 "Integer.parseInt" = { emit = "intrinsic:cint",  min_args = 1, max_args = 2 }
 
 # toString / hashCode / equals
-toString      = { emit = "intrinsic:tostring",           min_args = 0, max_args = 0 }
+toString      = { emit = "invoke:toString",              min_args = 0, max_args = 0 }
 hashCode      = { emit = "common:java.hash_code",        min_args = 0, max_args = 0 }
 equals        = { emit = "common:java.equals",           min_args = 1, max_args = 1 }
 

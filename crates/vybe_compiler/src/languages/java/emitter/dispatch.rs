@@ -39,53 +39,59 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_end(line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+            crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.str_is_blank" => {
             strings::emit_trim(&mut chunks[current], line);
             strings::emit_length(&mut chunks[current], line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+            crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.is_empty" => {
             collections::emit_len(chunks, current, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+            crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.size" => {
             collections::emit_len(chunks, current, line);
         }
+        "java.str_index_of" => {
+            super::string_adapter::emit_index_of(chunks, current, argc, line);
+        }
+        "java.str_last_index_of" => {
+            super::string_adapter::emit_last_index_of(chunks, current, argc, line);
+        }
+        "java.str_starts_with" => {
+            super::string_adapter::emit_starts_with(chunks, current, argc, line);
+        }
+        "java.string_value_of" => {
+            super::string_adapter::emit_value_of(chunks, current, line);
+        }
         "java.replace_regex" => {
-            host::emit(&mut chunks[current], "ecma:string", "replaceAll", 3, line);
+            super::string_adapter::emit_replace_regex(chunks, current, true, line);
         }
         "java.replace_first_regex" => {
-            host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
+            super::string_adapter::emit_replace_regex(chunks, current, false, line);
         }
         "java.compare_ignore_case" => {
-            host::emit(
-                &mut chunks[current],
-                "ecma:string",
-                "compareIgnoreCase",
-                2,
-                line,
-            );
+            super::string_adapter::emit_compare_ignore_case(chunks, current, line);
         }
         "java.equals_ignore_case" => {
-            host::emit(
-                &mut chunks[current],
-                "ecma:string",
-                "equalsIgnoreCase",
-                2,
-                line,
-            );
+            super::string_adapter::emit_equals_ignore_case(chunks, current, line);
         }
         "java.str_matches" => {
-            host::emit(&mut chunks[current], "ecma:string", "matches", 2, line);
+            super::string_adapter::emit_matches(chunks, current, line);
         }
         "java.to_char_array" => {
-            strings::emit_split(&mut chunks[current], line);
+            super::string_adapter::emit_to_char_array(chunks, current, line);
         }
         "java.str_lines" => {
             host::emit(&mut chunks[current], "ecma:string", "lines", 1, line);
+        }
+        "java.compare_to" => {
+            super::string_adapter::emit_compare_to(chunks, current, line);
         }
 
         // ── Numeric conversions ───────────────────────────────────────────
@@ -363,7 +369,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
         }
         "java.string_join" => {
-            collections::emit_join(chunks, current, line);
+            super::string_adapter::emit_join(chunks, current, argc, line);
         }
 
         // ── Optional ─────────────────────────────────────────────────────
@@ -391,7 +397,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
         }
         "java.hash_code" => {
-            host::emit(&mut chunks[current], "ecma:object", "hashCode", 1, line);
+            super::string_adapter::emit_hash_code(chunks, current, line);
         }
         "java.require_non_null" => {
             host::emit(
