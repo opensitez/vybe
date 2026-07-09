@@ -852,6 +852,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_count" => {
             crate::emitter::core::linq_adapter::emit_linq_count(chunks, current, line)
         }
+        "dotnet.linq_where" => {
+            crate::emitter::core::linq_adapter::emit_linq_where(chunks, current, line)
+        }
+        "dotnet.linq_any" => {
+            crate::emitter::core::linq_adapter::emit_linq_any(chunks, current, line)
+        }
+        "dotnet.linq_contains" => {
+            crate::emitter::core::linq_adapter::emit_linq_contains(chunks, current, line)
+        }
+        "dotnet.linq_reverse" => {
+            crate::emitter::core::linq_adapter::emit_linq_reverse(chunks, current, line)
+        }
+        "dotnet.linq_skip_while" => {
+            crate::emitter::core::linq_adapter::emit_linq_skip_while(chunks, current, line)
+        }
+        "dotnet.linq_take_while" => {
+            crate::emitter::core::linq_adapter::emit_linq_take_while(chunks, current, line)
+        }
         "dotnet.linq_skip_last" => {
             crate::emitter::core::linq_adapter::emit_linq_skip_last(chunks, current, line)
         }

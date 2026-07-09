@@ -442,6 +442,19 @@ pub struct MethodBinding<'a> {
     pub thunk_chunk_idx: usize,
 }
 
+/// The key variants a member is bound under so the exact-matching VM resolves
+/// it for every source language: the **original** declared name (case-sensitive
+/// languages access it verbatim) plus its **lowercase** form (case-insensitive
+/// languages canon-fold their access keys). Deduplicated when already lowercase.
+fn accessor_name_variants(name: &str) -> Vec<String> {
+    let lower = name.to_lowercase();
+    if lower == name {
+        vec![name.to_string()]
+    } else {
+        vec![name.to_string(), lower]
+    }
+}
+
 /// Build the constructor chunk for one .NET class.
 ///
 /// The chunk implements:
@@ -540,25 +553,33 @@ pub fn build_constructor_chunk(
     //
     // Each setter chunk was pre-built and pushed by the orchestrator; the
     // orchestrator passes the resulting chunk indices in `setter_bindings`.
+    // Bind each accessor under BOTH the original declared name (so
+    // case-sensitive languages — C#, F#, … — match exactly) and its lowercase
+    // form (so case-insensitive languages, whose walker canon-folds access
+    // keys, also match). The VM matches names exactly; case handling lives here
+    // in the emitter, not the VM.
     for binding in setter_bindings {
-        let set_name = format!("__set_{}", binding.prop_pascal.to_lowercase());
-        // local_get this ; ref_func setter ; struct_set "__set_<prop>" ; drop
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, binding.setter_chunk_idx as u16, line);
-        chunk.emit(0, line); // 0 upvalues
-        let key = chunk.add_constant(Value::String(Arc::from(set_name.as_str())));
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
-        chunk.emit_op(Op::DROP, line);
+        for name in accessor_name_variants(binding.prop_pascal) {
+            let set_name = format!("__set_{}", name);
+            chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            chunk.emit_op_u16(Op::REF_FUNC, binding.setter_chunk_idx as u16, line);
+            chunk.emit(0, line); // 0 upvalues
+            let key = chunk.add_constant(Value::String(Arc::from(set_name.as_str())));
+            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_op(Op::DROP, line);
+        }
     }
 
     for binding in getter_bindings {
-        let get_name = format!("__get_{}", binding.prop_pascal.to_lowercase());
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, binding.getter_chunk_idx as u16, line);
-        chunk.emit(0, line);
-        let key = chunk.add_constant(Value::String(Arc::from(get_name.as_str())));
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
-        chunk.emit_op(Op::DROP, line);
+        for name in accessor_name_variants(binding.prop_pascal) {
+            let get_name = format!("__get_{}", name);
+            chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            chunk.emit_op_u16(Op::REF_FUNC, binding.getter_chunk_idx as u16, line);
+            chunk.emit(0, line);
+            let key = chunk.add_constant(Value::String(Arc::from(get_name.as_str())));
+            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_op(Op::DROP, line);
+        }
     }
 
     // ── Step 4: bind methods for THIS class ────────────────────────────────
@@ -571,12 +592,14 @@ pub fn build_constructor_chunk(
     // re-binding the same method name overwrites the parent's binding via
     // the same `struct_set` — exactly how virtual override works in .NET.
     for binding in method_bindings {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, binding.thunk_chunk_idx as u16, line);
-        chunk.emit(0, line); // 0 upvalues
-        let key = chunk.add_constant(Value::String(Arc::from(binding.method_name)));
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
-        chunk.emit_op(Op::DROP, line);
+        for name in accessor_name_variants(binding.method_name) {
+            chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            chunk.emit_op_u16(Op::REF_FUNC, binding.thunk_chunk_idx as u16, line);
+            chunk.emit(0, line); // 0 upvalues
+            let key = chunk.add_constant(Value::String(Arc::from(name.as_str())));
+            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_op(Op::DROP, line);
+        }
     }
 
     if class.name == "Control" {

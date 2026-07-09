@@ -467,6 +467,188 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
 }
 
+/// `arr.Where(pred)` — elements for which `pred(elem)` is truthy.
+/// Stack: [arr, pred] → [array].
+pub fn emit_linq_where(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 5);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // if pred(elem): result.push(elem)  (structured skip block, cf. count_pred)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let if_block = chunks[current].emit_block(line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // skip push if pred false
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(if_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.Any()` — `Length(arr) > 0`. Stack: [seq] → [bool].
+pub fn emit_linq_any(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+}
+
+/// `arr.Contains(x)` — `arr.includes(x)`. Stack: [arr, x] → [bool].
+pub fn emit_linq_contains(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 2);
+    let x_slot = arr_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x_slot, line);
+    collections::emit_contains(chunks, current, line);
+}
+
+/// `arr.Reverse()` — a new reversed array (LINQ Reverse is non-mutating).
+/// Stack: [seq] → [array].
+pub fn emit_linq_reverse(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_reversed(chunks, current, line);
+}
+
+/// `arr.SkipWhile(pred)` — drop leading elements while `pred` holds, keep the
+/// rest (including the first element that fails `pred`). Stack: [arr, pred] →
+/// [array]. A `skipping` flag is cleared at the first failing element.
+pub fn emit_linq_skip_while(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    let skipping_slot = arr_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_i32_const(1, line); // skipping = true
+    chunks[current].emit_op_u16(Op::LOCAL_SET, skipping_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // if skipping && !pred(elem): skipping = false
+    let stop_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, skipping_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // not skipping → leave flag
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // pred still true → keep skipping
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, skipping_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(stop_block);
+
+    // if !skipping: result.push(elem)
+    let push_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, skipping_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // still skipping → no push
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(push_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.TakeWhile(pred)` — keep leading elements while `pred` holds, stop at
+/// the first failing element. Stack: [arr, pred] → [array]. A `taking` flag is
+/// cleared at the first failing element and suppresses all later pushes.
+pub fn emit_linq_take_while(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    let taking_slot = arr_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_i32_const(1, line); // taking = true
+    chunks[current].emit_op_u16(Op::LOCAL_SET, taking_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // if taking && !pred(elem): taking = false
+    let stop_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, taking_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // already stopped → leave flag
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // pred true → keep taking
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, taking_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(stop_block);
+
+    // if taking: result.push(elem)
+    let push_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, taking_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // stopped → no push
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(push_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 /// `arr.Aggregate(seed, fn)` — fold from `seed` calling `fn(acc, x)`.
 /// .NET argument order is `(seed, fn)`; we swap to call the shared
 /// `emit_reduce` helper which expects `acc` already initialised.

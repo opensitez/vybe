@@ -33,10 +33,51 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         1,
         MethodBody::Common("dotnet.linq_select".into()),
     ));
+    // `Count()` (no predicate) and `Count(pred)` are distinct overloads.
+    // Both must be declared so the (case-insensitive, exact-arity) dotnet
+    // resolver matches each — otherwise the zero-arg call falls through to
+    // the runtime-collection VM binding, which the exact VM misses for a
+    // PascalCase (`Count`) spelling. Resolving here keeps C# and VB on the
+    // same case-insensitive resolver path with no VM-level case fold.
+    class.methods.push(MethodDef::new(
+        "Count",
+        0,
+        MethodBody::Common("dotnet.linq_count".into()),
+    ));
     class.methods.push(MethodDef::new(
         "Count",
         1,
         MethodBody::Common("dotnet.linq_count_pred".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Where",
+        1,
+        MethodBody::Common("dotnet.linq_where".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Any",
+        0,
+        MethodBody::Common("dotnet.linq_any".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Contains",
+        1,
+        MethodBody::Common("dotnet.linq_contains".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Reverse",
+        0,
+        MethodBody::Common("dotnet.linq_reverse".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "SkipWhile",
+        1,
+        MethodBody::Common("dotnet.linq_skip_while".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "TakeWhile",
+        1,
+        MethodBody::Common("dotnet.linq_take_while".into()),
     ));
     class.methods.push(MethodDef::new(
         "First",
