@@ -743,7 +743,9 @@ pub fn register_type(
     // its language's case-sensitivity (`Compiler::canon` lowercases
     // for VB/Pascal/COBOL/PHP, preserves case for JS/TS/Python/C#).
     // No forced lowercasing here — that would silently collide
-    // distinct types in case-sensitive languages (`B` and `b`).
+    // distinct types in case-sensitive languages (`B` and `b`). The VM
+    // matches names exactly; case-insensitivity is entirely a
+    // compile-time concern via `canon()`.
     chunks[0].types.push(TypeEntry {
         name: name.to_string(),
         parent: parent.to_string(),

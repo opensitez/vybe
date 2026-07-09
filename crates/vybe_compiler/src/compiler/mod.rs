@@ -8481,6 +8481,18 @@ impl Compiler {
         self.profile.name == "python"
     }
 
+    /// True for profiles whose comparison/equality operators dispatch to a
+    /// user-defined dunder (`__eq__`/`__lt__`/… and their cross-language
+    /// aliases) — i.e. the same profiles the `<`/`>` sites already route
+    /// through `emit_rich_compare_locals` (Python, Ruby, Dart, C#, VB, …).
+    /// Excludes JS (ECMA coercion), PHP (loose comparison) and Pascal.
+    pub(crate) fn uses_rich_comparison(&self) -> bool {
+        !self.profile.ecma_operator_coercion
+            && !self.profile.string_aware_relational
+            && self.profile.name != "pascal"
+            && !self.is_php_profile()
+    }
+
     fn emit_condition_truthiness_from_stack(&mut self) {
         // PHP used to have a custom truthiness check here that referenced the
         // removed __keys/vybe$assoc_keys_csv side-band, causing stack corruption.
@@ -14486,6 +14498,30 @@ impl Compiler {
                 if self.profile.abstract_equality {
                     let idx = self.import("ecma:value", "abstractEq");
                     self.emit_host_call(idx, 2);
+                } else if self.uses_rich_comparison() {
+                    // Dispatch to a user `__eq__` (or cross-language alias) with
+                    // the receiver, falling back to structural equality.
+                    let right_slot = self.define_local("__rich_eq_rhs");
+                    let left_slot = self.define_local("__rich_eq_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    let line = self.line;
+                    let eq_fallback = if self.is_python_profile() {
+                        crate::emitter::python::runtime_adapter::emit_py_value_eq
+                    } else {
+                        crate::emitter::ops::emit_dyn_eq
+                    };
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__eq__",
+                        eq_fallback,
+                        line,
+                    );
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 } else {
                     {
                         let line = self.line;
@@ -14500,6 +14536,30 @@ impl Compiler {
                 if self.profile.abstract_equality {
                     let idx = self.import("ecma:value", "abstractNe");
                     self.emit_host_call(idx, 2);
+                } else if self.uses_rich_comparison() {
+                    // `a != b` == not (a `__eq__` b) — dispatch `__eq__`, negate.
+                    let right_slot = self.define_local("__rich_ne_rhs");
+                    let left_slot = self.define_local("__rich_ne_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    let line = self.line;
+                    let eq_fallback = if self.is_python_profile() {
+                        crate::emitter::python::runtime_adapter::emit_py_value_eq
+                    } else {
+                        crate::emitter::ops::emit_dyn_eq
+                    };
+                    common::expressions::emit_rich_compare_locals(
+                        self.chunk(),
+                        left_slot,
+                        right_slot,
+                        "__eq__",
+                        eq_fallback,
+                        line,
+                    );
+                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    if self.profile.materialize_bool_results {
+                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    }
                 } else {
                     {
                         let line = self.line;
@@ -16011,22 +16071,54 @@ impl Compiler {
                         }
                         return Ok(true);
                     }
+                    // print / console.log → `wasi:cli/stdout` via `wasi:io`
+                    // streams (the same sink PHP `echo` and Python `print`
+                    // use). Each arg is stringified (`ecma:string/String` —
+                    // `stream_drain` only emits `Value::String`, so raw
+                    // numbers/objects would vanish), joined with " ", and a
+                    // trailing "\n" appended, then written in a single call.
+                    // Replaces `wasi:logging/logging.log`, whose
+                    // (level, context, message) arity overload silently
+                    // dropped the middle args of any multi-arg call.
+                    let to_str = self.import("ecma:string", "String");
+                    let write_idx = self.import("wasi:cli/stdout", "write-via-stream");
                     let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, a) in args.iter().enumerate() {
                         if let Some(enum_type) = self.console_enum_type_from_expr(a) {
                             self.emit_enum_value_to_string(&enum_type, a)?;
                         } else {
                             self.compile_expr(a)?;
+                            common::strings::emit_to_string_with_import(self.chunk(), to_str, line);
                         }
                         let arg_slot = self.define_local(&format!("__print_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
                         arg_slots.push(arg_slot);
                     }
-                    for slot in &arg_slots {
+                    // Build the output string: arg0 " " arg1 " " … "\n".
+                    let mut part_count = 0usize;
+                    for (i, slot) in arg_slots.iter().enumerate() {
+                        if i > 0 {
+                            self.chunk().emit_string_const(" ", line);
+                            part_count += 1;
+                        }
                         self.emit_u16(Op::LOCAL_GET, *slot);
+                        part_count += 1;
                     }
-                    let idx = self.import("wasi:logging/logging", "log");
-                    common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
+                    self.chunk().emit_string_const("\n", line);
+                    part_count += 1;
+                    common::strings::emit_concat(self.chunk(), part_count, line);
+                    let result_slot = self.define_local("__print_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    let rd_slot = self.define_local("__print_rd");
+                    let wr_slot = self.define_local("__print_wr");
+                    common::io::emit_write_stdout_with_imports(
+                        self.chunk(),
+                        write_idx,
+                        rd_slot,
+                        wr_slot,
+                        line,
+                        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
+                    );
                 }
                 BuiltinEmit::StrLength => {
                     if !args.is_empty() {

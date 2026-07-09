@@ -137,7 +137,10 @@ impl Compiler {
                 builder::build_method_thunk_chunk(class.name, method, import_idx, &body_imports);
             self.chunks_mut().push(thunk);
             method_thunk_indices.push(self.chunks_mut().len() - 1);
-            method_lowered_names.push(method.name.to_lowercase());
+            // Pass the ORIGINAL declared method name; the builder binds it under
+            // both the original (case-sensitive access) and lowercase (case-
+            // insensitive access) keys.
+            method_lowered_names.push(method.name.to_string());
         }
         let method_bindings: Vec<MethodBinding> = method_lowered_names
             .iter()

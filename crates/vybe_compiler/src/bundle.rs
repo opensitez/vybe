@@ -17,6 +17,11 @@ pub enum EntryPoint {
     Form(String),
     /// Call a static method on a class as the program entry point, e.g. Program.Main().
     Method(String, String),
+    /// Dynamic-eval in "completion" mode: the module's value is its last
+    /// top-level expression. A language-agnostic feature (used by Python
+    /// `eval`, JS `eval`, a REPL) — applied on the common AST, so it works
+    /// for any front-end. See the `completion_value` eval attribute.
+    EvalCompletion,
 }
 
 /// A source file within a bundle.
@@ -171,6 +176,19 @@ impl Bundle {
                         optional: false,
                     },
                 ))));
+        }
+
+        // Completion-value mode (the `completion_value` eval attribute):
+        // the run's value is its last top-level expression. Rewrite the final
+        // top-level expression statement into a `return` so the module yields
+        // it. Purely on the common AST — language-agnostic.
+        if matches!(self.entry_point, EntryPoint::EvalCompletion) {
+            if let Some(last) = module.body.last_mut() {
+                if let StmtKind::Expr(expr) = &last.kind {
+                    let value = expr.clone();
+                    last.kind = StmtKind::Return(Some(value));
+                }
+            }
         }
 
         Ok(module)
