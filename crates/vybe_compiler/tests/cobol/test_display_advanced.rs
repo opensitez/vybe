@@ -22,6 +22,19 @@ fn test_display_concatenated() {
 }
 
 #[test]
+fn case_insensitive_data_name() {
+    // COBOL is case-insensitive: `ws-counter` resolves to the declared
+    // `WS-COUNTER`. The compiler must resolve the reference regardless of case.
+    let output = run_prints(&p(
+        "01 WS-COUNTER PIC 9(3) VALUE 42.",
+        r#"    DISPLAY ws-counter.
+    Move 7 To Ws-Counter.
+    DISPLAY WS-COUNTER."#,
+    ));
+    assert_eq!(output, vec!["42", "7"]);
+}
+
+#[test]
 fn test_display_no_advancing() {
     compile_ok(&p(
         "",

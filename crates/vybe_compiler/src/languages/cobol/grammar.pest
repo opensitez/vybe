@@ -1280,10 +1280,11 @@ power_expr = {
 }
 
 unary_expr = {
-    "-" ~ atom
-  | "+" ~ atom
+    unary_op ~ atom
   | atom
 }
+
+unary_op = { "-" | "+" }
 
 atom = {
     function_call
