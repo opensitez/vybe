@@ -420,4 +420,3 @@ fn last_day_feb_nonleap() {
         &["28"]
     );
 }
-

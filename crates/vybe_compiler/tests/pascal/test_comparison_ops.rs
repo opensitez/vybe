@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn int_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 5=5 then WriteLn('eq'); end."#
-        ),
+        run_pascal(r#"program T; begin if 5=5 then WriteLn('eq'); end."#),
         &["eq"]
     );
 }
@@ -14,9 +12,7 @@ fn int_equal() {
 #[test]
 fn int_not_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 5<>3 then WriteLn('ne'); end."#
-        ),
+        run_pascal(r#"program T; begin if 5<>3 then WriteLn('ne'); end."#),
         &["ne"]
     );
 }
@@ -24,9 +20,7 @@ fn int_not_equal() {
 #[test]
 fn int_less() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 2<3 then WriteLn('lt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 2<3 then WriteLn('lt'); end."#),
         &["lt"]
     );
 }
@@ -34,9 +28,7 @@ fn int_less() {
 #[test]
 fn int_greater() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 4>3 then WriteLn('gt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 4>3 then WriteLn('gt'); end."#),
         &["gt"]
     );
 }
@@ -44,9 +36,7 @@ fn int_greater() {
 #[test]
 fn int_less_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 3<=3 then WriteLn('le'); end."#
-        ),
+        run_pascal(r#"program T; begin if 3<=3 then WriteLn('le'); end."#),
         &["le"]
     );
 }
@@ -54,9 +44,7 @@ fn int_less_equal() {
 #[test]
 fn int_greater_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 7>=5 then WriteLn('ge'); end."#
-        ),
+        run_pascal(r#"program T; begin if 7>=5 then WriteLn('ge'); end."#),
         &["ge"]
     );
 }
@@ -64,9 +52,7 @@ fn int_greater_equal() {
 #[test]
 fn real_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 2.5=2.5 then WriteLn('eq'); end."#
-        ),
+        run_pascal(r#"program T; begin if 2.5=2.5 then WriteLn('eq'); end."#),
         &["eq"]
     );
 }
@@ -74,9 +60,7 @@ fn real_equal() {
 #[test]
 fn real_not_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 1.1<>2.2 then WriteLn('ne'); end."#
-        ),
+        run_pascal(r#"program T; begin if 1.1<>2.2 then WriteLn('ne'); end."#),
         &["ne"]
     );
 }
@@ -84,9 +68,7 @@ fn real_not_equal() {
 #[test]
 fn real_less() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 1.5<2.0 then WriteLn('lt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 1.5<2.0 then WriteLn('lt'); end."#),
         &["lt"]
     );
 }
@@ -94,9 +76,7 @@ fn real_less() {
 #[test]
 fn real_greater() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 3.2>3.1 then WriteLn('gt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 3.2>3.1 then WriteLn('gt'); end."#),
         &["gt"]
     );
 }
@@ -124,9 +104,7 @@ fn char_not_equal() {
 #[test]
 fn char_less() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 'a'<'b' then WriteLn('lt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 'a'<'b' then WriteLn('lt'); end."#),
         &["lt"]
     );
 }
@@ -134,9 +112,7 @@ fn char_less() {
 #[test]
 fn char_greater() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 'z'>'a' then WriteLn('gt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 'z'>'a' then WriteLn('gt'); end."#),
         &["gt"]
     );
 }
@@ -144,9 +120,7 @@ fn char_greater() {
 #[test]
 fn string_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s:string; begin s:='hi'; if s='hi' then WriteLn('eq'); end."#
-        ),
+        run_pascal(r#"program T; var s:string; begin s:='hi'; if s='hi' then WriteLn('eq'); end."#),
         &["eq"]
     );
 }
@@ -164,9 +138,7 @@ fn string_not_equal() {
 #[test]
 fn string_less() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 'abc'<'abd' then WriteLn('lt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 'abc'<'abd' then WriteLn('lt'); end."#),
         &["lt"]
     );
 }
@@ -174,9 +146,7 @@ fn string_less() {
 #[test]
 fn string_greater() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 'zzz'>'aaa' then WriteLn('gt'); end."#
-        ),
+        run_pascal(r#"program T; begin if 'zzz'>'aaa' then WriteLn('gt'); end."#),
         &["gt"]
     );
 }
@@ -184,9 +154,7 @@ fn string_greater() {
 #[test]
 fn bool_equal_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if true=true then WriteLn('eq'); end."#
-        ),
+        run_pascal(r#"program T; begin if true=true then WriteLn('eq'); end."#),
         &["eq"]
     );
 }
@@ -194,9 +162,7 @@ fn bool_equal_true() {
 #[test]
 fn bool_not_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if true<>false then WriteLn('ne'); end."#
-        ),
+        run_pascal(r#"program T; begin if true<>false then WriteLn('ne'); end."#),
         &["ne"]
     );
 }
@@ -264,9 +230,7 @@ fn subrange_compare_ge() {
 #[test]
 fn negative_int_compare() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if -5<-3 then WriteLn('lt'); end."#
-        ),
+        run_pascal(r#"program T; begin if -5<-3 then WriteLn('lt'); end."#),
         &["lt"]
     );
 }
@@ -274,9 +238,7 @@ fn negative_int_compare() {
 #[test]
 fn zero_compare() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 0=0 then WriteLn('eq'); end."#
-        ),
+        run_pascal(r#"program T; begin if 0=0 then WriteLn('eq'); end."#),
         &["eq"]
     );
 }
@@ -304,9 +266,7 @@ fn compare_in_case() {
 #[test]
 fn string_empty_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s:string; begin s:=''; if s='' then WriteLn('empty'); end."#
-        ),
+        run_pascal(r#"program T; var s:string; begin s:=''; if s='' then WriteLn('empty'); end."#),
         &["empty"]
     );
 }
@@ -314,9 +274,7 @@ fn string_empty_equal() {
 #[test]
 fn char_ord_compare() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if Ord('B')>Ord('A') then WriteLn('gt'); end."#
-        ),
+        run_pascal(r#"program T; begin if Ord('B')>Ord('A') then WriteLn('gt'); end."#),
         &["gt"]
     );
 }
@@ -324,9 +282,7 @@ fn char_ord_compare() {
 #[test]
 fn real_le() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 2.0<=2.5 then WriteLn('le'); end."#
-        ),
+        run_pascal(r#"program T; begin if 2.0<=2.5 then WriteLn('le'); end."#),
         &["le"]
     );
 }
@@ -334,9 +290,7 @@ fn real_le() {
 #[test]
 fn real_ge() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 9.9>=9.8 then WriteLn('ge'); end."#
-        ),
+        run_pascal(r#"program T; begin if 9.9>=9.8 then WriteLn('ge'); end."#),
         &["ge"]
     );
 }
@@ -344,9 +298,7 @@ fn real_ge() {
 #[test]
 fn int_chain_ne() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if not (10=11) then WriteLn('ne'); end."#
-        ),
+        run_pascal(r#"program T; begin if not (10=11) then WriteLn('ne'); end."#),
         &["ne"]
     );
 }
@@ -354,9 +306,7 @@ fn int_chain_ne() {
 #[test]
 fn compare_bool_in_if() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var ok:Boolean; begin ok:=5>3; if ok then WriteLn('yes'); end."#
-        ),
+        run_pascal(r#"program T; var ok:Boolean; begin ok:=5>3; if ok then WriteLn('yes'); end."#),
         &["yes"]
     );
 }
@@ -364,9 +314,7 @@ fn compare_bool_in_if() {
 #[test]
 fn string_ge_length() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if Length('abcd')>=4 then WriteLn('ge'); end."#
-        ),
+        run_pascal(r#"program T; begin if Length('abcd')>=4 then WriteLn('ge'); end."#),
         &["ge"]
     );
 }
@@ -374,9 +322,7 @@ fn string_ge_length() {
 #[test]
 fn char_le_boundary() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if 'A'<='Z' then WriteLn('le'); end."#
-        ),
+        run_pascal(r#"program T; begin if 'A'<='Z' then WriteLn('le'); end."#),
         &["le"]
     );
 }
@@ -394,9 +340,7 @@ fn enum_le_ge() {
 #[test]
 fn pointer_equal_nil_style() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var p:Pointer; begin p:=nil; if p=nil then WriteLn('nil'); end."#
-        ),
+        run_pascal(r#"program T; var p:Pointer; begin p:=nil; if p=nil then WriteLn('nil'); end."#),
         &["nil"]
     );
 }
@@ -420,4 +364,3 @@ fn multi_type_compare_vars() {
         &["match"]
     );
 }
-

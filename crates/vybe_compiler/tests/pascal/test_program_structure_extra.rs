@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn const_section_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=1; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=1; begin WriteLn(K); end."#),
         &["1"]
     );
 }
@@ -14,9 +12,7 @@ fn const_section_1() {
 #[test]
 fn const_section_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=2; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=2; begin WriteLn(K); end."#),
         &["2"]
     );
 }
@@ -24,9 +20,7 @@ fn const_section_2() {
 #[test]
 fn const_section_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=3; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=3; begin WriteLn(K); end."#),
         &["3"]
     );
 }
@@ -34,9 +28,7 @@ fn const_section_3() {
 #[test]
 fn const_section_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=4; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=4; begin WriteLn(K); end."#),
         &["4"]
     );
 }
@@ -44,9 +36,7 @@ fn const_section_4() {
 #[test]
 fn const_section_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=5; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=5; begin WriteLn(K); end."#),
         &["5"]
     );
 }
@@ -54,9 +44,7 @@ fn const_section_5() {
 #[test]
 fn const_section_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=6; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=6; begin WriteLn(K); end."#),
         &["6"]
     );
 }
@@ -64,9 +52,7 @@ fn const_section_6() {
 #[test]
 fn const_section_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=7; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=7; begin WriteLn(K); end."#),
         &["7"]
     );
 }
@@ -74,9 +60,7 @@ fn const_section_7() {
 #[test]
 fn const_section_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=8; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=8; begin WriteLn(K); end."#),
         &["8"]
     );
 }
@@ -84,9 +68,7 @@ fn const_section_8() {
 #[test]
 fn const_section_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=9; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=9; begin WriteLn(K); end."#),
         &["9"]
     );
 }
@@ -94,9 +76,7 @@ fn const_section_9() {
 #[test]
 fn const_section_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const K=10; begin WriteLn(K); end."#
-        ),
+        run_pascal(r#"program T; const K=10; begin WriteLn(K); end."#),
         &["10"]
     );
 }
@@ -104,9 +84,7 @@ fn const_section_10() {
 #[test]
 fn type_section_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=1; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=1; WriteLn(x); end."#),
         &["1"]
     );
 }
@@ -114,9 +92,7 @@ fn type_section_1() {
 #[test]
 fn type_section_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=2; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=2; WriteLn(x); end."#),
         &["2"]
     );
 }
@@ -124,9 +100,7 @@ fn type_section_2() {
 #[test]
 fn type_section_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=3; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=3; WriteLn(x); end."#),
         &["3"]
     );
 }
@@ -134,9 +108,7 @@ fn type_section_3() {
 #[test]
 fn type_section_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=4; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=4; WriteLn(x); end."#),
         &["4"]
     );
 }
@@ -144,9 +116,7 @@ fn type_section_4() {
 #[test]
 fn type_section_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=5; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=5; WriteLn(x); end."#),
         &["5"]
     );
 }
@@ -154,9 +124,7 @@ fn type_section_5() {
 #[test]
 fn type_section_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=6; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=6; WriteLn(x); end."#),
         &["6"]
     );
 }
@@ -164,9 +132,7 @@ fn type_section_6() {
 #[test]
 fn type_section_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=7; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=7; WriteLn(x); end."#),
         &["7"]
     );
 }
@@ -174,9 +140,7 @@ fn type_section_7() {
 #[test]
 fn type_section_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=8; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=8; WriteLn(x); end."#),
         &["8"]
     );
 }
@@ -184,9 +148,7 @@ fn type_section_8() {
 #[test]
 fn type_section_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=9; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=9; WriteLn(x); end."#),
         &["9"]
     );
 }
@@ -194,9 +156,7 @@ fn type_section_9() {
 #[test]
 fn type_section_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TInt=Integer; var x:TInt; begin x:=10; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TInt=Integer; var x:TInt; begin x:=10; WriteLn(x); end."#),
         &["10"]
     );
 }
@@ -204,9 +164,7 @@ fn type_section_10() {
 #[test]
 fn var_section_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=1; b:=2; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=1; b:=2; WriteLn(a+b); end."#),
         &["3"]
     );
 }
@@ -214,9 +172,7 @@ fn var_section_1() {
 #[test]
 fn var_section_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=2; b:=3; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=2; b:=3; WriteLn(a+b); end."#),
         &["5"]
     );
 }
@@ -224,9 +180,7 @@ fn var_section_2() {
 #[test]
 fn var_section_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=3; b:=4; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=3; b:=4; WriteLn(a+b); end."#),
         &["7"]
     );
 }
@@ -234,9 +188,7 @@ fn var_section_3() {
 #[test]
 fn var_section_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=4; b:=5; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=4; b:=5; WriteLn(a+b); end."#),
         &["9"]
     );
 }
@@ -244,9 +196,7 @@ fn var_section_4() {
 #[test]
 fn var_section_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=5; b:=6; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=5; b:=6; WriteLn(a+b); end."#),
         &["11"]
     );
 }
@@ -254,9 +204,7 @@ fn var_section_5() {
 #[test]
 fn var_section_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=6; b:=7; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=6; b:=7; WriteLn(a+b); end."#),
         &["13"]
     );
 }
@@ -264,9 +212,7 @@ fn var_section_6() {
 #[test]
 fn var_section_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=7; b:=8; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=7; b:=8; WriteLn(a+b); end."#),
         &["15"]
     );
 }
@@ -274,9 +220,7 @@ fn var_section_7() {
 #[test]
 fn var_section_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=8; b:=9; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=8; b:=9; WriteLn(a+b); end."#),
         &["17"]
     );
 }
@@ -284,9 +228,7 @@ fn var_section_8() {
 #[test]
 fn var_section_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=9; b:=10; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=9; b:=10; WriteLn(a+b); end."#),
         &["19"]
     );
 }
@@ -294,9 +236,7 @@ fn var_section_9() {
 #[test]
 fn var_section_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=10; b:=11; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=10; b:=11; WriteLn(a+b); end."#),
         &["21"]
     );
 }
@@ -420,4 +360,3 @@ fn nested_local_procedure_in_main() {
         &["inner"]
     );
 }
-

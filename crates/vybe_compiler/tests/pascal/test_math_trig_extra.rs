@@ -188,7 +188,9 @@ fn arctan2_quadrant_four() {
 #[test]
 fn sin_cos_pythagorean_unit() {
     assert_eq!(
-        run_pascal(r#"program T; var t:Real; begin t:=0.7; WriteLn(Trunc((Sin(t)*Sin(t)+Cos(t)*Cos(t))*1000)); end."#),
+        run_pascal(
+            r#"program T; var t:Real; begin t:=0.7; WriteLn(Trunc((Sin(t)*Sin(t)+Cos(t)*Cos(t))*1000)); end."#
+        ),
         &["1000"]
     );
 }
@@ -196,7 +198,9 @@ fn sin_cos_pythagorean_unit() {
 #[test]
 fn sin_double_angle_identity() {
     assert_eq!(
-        run_pascal(r#"program T; var a:Real; begin a:=0.4; WriteLn(Trunc((Sin(2*a)-2*Sin(a)*Cos(a))*10000)); end."#),
+        run_pascal(
+            r#"program T; var a:Real; begin a:=0.4; WriteLn(Trunc((Sin(2*a)-2*Sin(a)*Cos(a))*10000)); end."#
+        ),
         &["0"]
     );
 }
@@ -204,7 +208,9 @@ fn sin_double_angle_identity() {
 #[test]
 fn tan_sin_over_cos() {
     assert_eq!(
-        run_pascal(r#"program T; var a:Real; begin a:=0.3; WriteLn(Trunc((Tan(a)-Sin(a)/Cos(a))*10000)); end."#),
+        run_pascal(
+            r#"program T; var a:Real; begin a:=0.3; WriteLn(Trunc((Tan(a)-Sin(a)/Cos(a))*10000)); end."#
+        ),
         &["0"]
     );
 }
@@ -212,7 +218,9 @@ fn tan_sin_over_cos() {
 #[test]
 fn arctan_tan_roundtrip_small() {
     assert_eq!(
-        run_pascal(r#"program T; var a:Real; begin a:=0.2; WriteLn(Trunc((ArcTan(Tan(a))-a)*10000)); end."#),
+        run_pascal(
+            r#"program T; var a:Real; begin a:=0.2; WriteLn(Trunc((ArcTan(Tan(a))-a)*10000)); end."#
+        ),
         &["0"]
     );
 }
@@ -284,7 +292,9 @@ fn arctan2_y_zero_negative_x() {
 #[test]
 fn sin_half_pi_minus_x_equals_cos() {
     assert_eq!(
-        run_pascal(r#"program T; var x:Real; begin x:=0.6; WriteLn(Trunc((Sin(1.5707963-x)-Cos(x))*10000)); end."#),
+        run_pascal(
+            r#"program T; var x:Real; begin x:=0.6; WriteLn(Trunc((Sin(1.5707963-x)-Cos(x))*10000)); end."#
+        ),
         &["0"]
     );
 }
@@ -292,7 +302,9 @@ fn sin_half_pi_minus_x_equals_cos() {
 #[test]
 fn cos_half_pi_minus_x_equals_sin() {
     assert_eq!(
-        run_pascal(r#"program T; var x:Real; begin x:=0.6; WriteLn(Trunc((Cos(1.5707963-x)-Sin(x))*10000)); end."#),
+        run_pascal(
+            r#"program T; var x:Real; begin x:=0.6; WriteLn(Trunc((Cos(1.5707963-x)-Sin(x))*10000)); end."#
+        ),
         &["0"]
     );
 }
@@ -316,7 +328,9 @@ fn arctan2_small_y_large_x() {
 #[test]
 fn sin_squared_plus_cos_squared_various() {
     assert_eq!(
-        run_pascal(r#"program T; var t:Real; begin t:=1.1; WriteLn(Trunc((Sin(t)*Sin(t)+Cos(t)*Cos(t))*1000)); end."#),
+        run_pascal(
+            r#"program T; var t:Real; begin t:=1.1; WriteLn(Trunc((Sin(t)*Sin(t)+Cos(t)*Cos(t))*1000)); end."#
+        ),
         &["1000"]
     );
 }
@@ -324,7 +338,9 @@ fn sin_squared_plus_cos_squared_various() {
 #[test]
 fn tan_arctan_inverse_near_one() {
     assert_eq!(
-        run_pascal(r#"program T; var v:Real; begin v:=2.0; WriteLn(Trunc((Tan(ArcTan(v))-v)*10000)); end."#),
+        run_pascal(
+            r#"program T; var v:Real; begin v:=2.0; WriteLn(Trunc((Tan(ArcTan(v))-v)*10000)); end."#
+        ),
         &["0"]
     );
 }

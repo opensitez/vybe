@@ -34,9 +34,7 @@ fn subrange_percent_max() {
 #[test]
 fn subrange_small_negative() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TSmall=-5..5; var x:TSmall; begin x:=-3; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TSmall=-5..5; var x:TSmall; begin x:=-3; WriteLn(x); end."#),
         &["-3"]
     );
 }
@@ -44,9 +42,7 @@ fn subrange_small_negative() {
 #[test]
 fn subrange_small_positive() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TSmall=-5..5; var x:TSmall; begin x:=4; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TSmall=-5..5; var x:TSmall; begin x:=4; WriteLn(x); end."#),
         &["4"]
     );
 }
@@ -54,9 +50,7 @@ fn subrange_small_positive() {
 #[test]
 fn subrange_month_december() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TMonth=1..12; var m:TMonth; begin m:=12; WriteLn(m); end."#
-        ),
+        run_pascal(r#"program T; type TMonth=1..12; var m:TMonth; begin m:=12; WriteLn(m); end."#),
         &["12"]
     );
 }
@@ -64,9 +58,7 @@ fn subrange_month_december() {
 #[test]
 fn subrange_month_january() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TMonth=1..12; var m:TMonth; begin m:=1; WriteLn(m); end."#
-        ),
+        run_pascal(r#"program T; type TMonth=1..12; var m:TMonth; begin m:=1; WriteLn(m); end."#),
         &["1"]
     );
 }
@@ -74,9 +66,7 @@ fn subrange_month_january() {
 #[test]
 fn subrange_day_hour() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type THour=0..23; var h:THour; begin h:=23; WriteLn(h); end."#
-        ),
+        run_pascal(r#"program T; type THour=0..23; var h:THour; begin h:=23; WriteLn(h); end."#),
         &["23"]
     );
 }
@@ -134,9 +124,7 @@ fn subrange_char_digit_0() {
 #[test]
 fn subrange_assign_from_var() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=1..10; var a,b:TR; begin a:=3; b:=a; WriteLn(b); end."#
-        ),
+        run_pascal(r#"program T; type TR=1..10; var a,b:TR; begin a:=3; b:=a; WriteLn(b); end."#),
         &["3"]
     );
 }
@@ -154,9 +142,7 @@ fn subrange_inc_in_loop() {
 #[test]
 fn subrange_succ_builtin() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=10..20; var x:TR; begin x:=15; WriteLn(Succ(x)); end."#
-        ),
+        run_pascal(r#"program T; type TR=10..20; var x:TR; begin x:=15; WriteLn(Succ(x)); end."#),
         &["16"]
     );
 }
@@ -164,9 +150,7 @@ fn subrange_succ_builtin() {
 #[test]
 fn subrange_pred_builtin() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=10..20; var x:TR; begin x:=15; WriteLn(Pred(x)); end."#
-        ),
+        run_pascal(r#"program T; type TR=10..20; var x:TR; begin x:=15; WriteLn(Pred(x)); end."#),
         &["14"]
     );
 }
@@ -244,9 +228,7 @@ fn subrange_byte_range() {
 #[test]
 fn subrange_narrow_1_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TN=1..3; var n:TN; begin n:=2; WriteLn(n*2); end."#
-        ),
+        run_pascal(r#"program T; type TN=1..3; var n:TN; begin n:=2; WriteLn(n*2); end."#),
         &["4"]
     );
 }
@@ -254,9 +236,7 @@ fn subrange_narrow_1_3() {
 #[test]
 fn subrange_negative_bound() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TNeg=-10..-1; var n:TNeg; begin n:=-1; WriteLn(n); end."#
-        ),
+        run_pascal(r#"program T; type TNeg=-10..-1; var n:TNeg; begin n:=-1; WriteLn(n); end."#),
         &["-1"]
     );
 }
@@ -264,9 +244,7 @@ fn subrange_negative_bound() {
 #[test]
 fn subrange_char_upper_z() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TZ='A'..'Z'; var c:TZ; begin c:='Z'; WriteLn(c); end."#
-        ),
+        run_pascal(r#"program T; type TZ='A'..'Z'; var c:TZ; begin c:='Z'; WriteLn(c); end."#),
         &["Z"]
     );
 }
@@ -324,9 +302,7 @@ fn subrange_low_high_style() {
 #[test]
 fn subrange_assign_literal_min() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=100..200; var x:TR; begin x:=100; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TR=100..200; var x:TR; begin x:=100; WriteLn(x); end."#),
         &["100"]
     );
 }
@@ -334,9 +310,7 @@ fn subrange_assign_literal_min() {
 #[test]
 fn subrange_assign_literal_max() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=100..200; var x:TR; begin x:=200; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; type TR=100..200; var x:TR; begin x:=200; WriteLn(x); end."#),
         &["200"]
     );
 }
@@ -374,9 +348,7 @@ fn subrange_sum_in_expr() {
 #[test]
 fn subrange_mod_result() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=0..9; var x:TR; begin x:=7; WriteLn(x mod 4); end."#
-        ),
+        run_pascal(r#"program T; type TR=0..9; var x:TR; begin x:=7; WriteLn(x mod 4); end."#),
         &["3"]
     );
 }
@@ -384,9 +356,7 @@ fn subrange_mod_result() {
 #[test]
 fn subrange_multiply() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TR=2..5; var x:TR; begin x:=3; WriteLn(x*3); end."#
-        ),
+        run_pascal(r#"program T; type TR=2..5; var x:TR; begin x:=3; WriteLn(x*3); end."#),
         &["9"]
     );
 }
@@ -420,4 +390,3 @@ fn subrange_zero_based() {
         &["10"]
     );
 }
-

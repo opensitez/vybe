@@ -80,9 +80,7 @@ fn set_literal_range_members() {
 #[test]
 fn array_literal_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a:array of Integer; begin a:=[10,20]; WriteLn(a[1]); end."#
-        ),
+        run_pascal(r#"program T; var a:array of Integer; begin a:=[10,20]; WriteLn(a[1]); end."#),
         &["20"]
     );
 }
@@ -100,9 +98,7 @@ fn array_literal_string() {
 #[test]
 fn boolean_literals_in_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true and false); WriteLn(true or false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true and false); WriteLn(true or false); end."#),
         &["false", "true"]
     );
 }
@@ -125,18 +121,13 @@ fn underscore_in_numeric_literal() {
 
 #[test]
 fn wide_char_literal_if_supported() {
-    assert_eq!(
-        run_pascal(r#"program T; begin WriteLn('Ω'); end."#),
-        &["Ω"]
-    );
+    assert_eq!(run_pascal(r#"program T; begin WriteLn('Ω'); end."#), &["Ω"]);
 }
 
 #[test]
 fn multiline_string_concat() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s:string; begin s:='line1'+#10+'line2'; WriteLn(s); end."#
-        ),
+        run_pascal(r#"program T; var s:string; begin s:='line1'+#10+'line2'; WriteLn(s); end."#),
         &["line1", "line2"]
     );
 }
@@ -144,9 +135,7 @@ fn multiline_string_concat() {
 #[test]
 fn typed_constant_literal_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N:Integer=2*3; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N:Integer=2*3; begin WriteLn(N); end."#),
         &["6"]
     );
 }

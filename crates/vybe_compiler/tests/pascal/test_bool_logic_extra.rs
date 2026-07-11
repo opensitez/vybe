@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn and_both_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true and true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true and true); end."#),
         &["true"]
     );
 }
@@ -14,9 +12,7 @@ fn and_both_true() {
 #[test]
 fn and_left_false() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(false and true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(false and true); end."#),
         &["false"]
     );
 }
@@ -24,9 +20,7 @@ fn and_left_false() {
 #[test]
 fn and_right_false() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true and false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true and false); end."#),
         &["false"]
     );
 }
@@ -34,9 +28,7 @@ fn and_right_false() {
 #[test]
 fn or_left_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true or false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true or false); end."#),
         &["true"]
     );
 }
@@ -44,9 +36,7 @@ fn or_left_true() {
 #[test]
 fn or_both_false() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(false or false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(false or false); end."#),
         &["false"]
     );
 }
@@ -54,9 +44,7 @@ fn or_both_false() {
 #[test]
 fn or_right_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(false or true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(false or true); end."#),
         &["true"]
     );
 }
@@ -64,9 +52,7 @@ fn or_right_true() {
 #[test]
 fn not_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(not true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(not true); end."#),
         &["false"]
     );
 }
@@ -74,9 +60,7 @@ fn not_true() {
 #[test]
 fn not_false() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(not false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(not false); end."#),
         &["true"]
     );
 }
@@ -84,9 +68,7 @@ fn not_false() {
 #[test]
 fn xor_diff() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true xor false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true xor false); end."#),
         &["true"]
     );
 }
@@ -94,9 +76,7 @@ fn xor_diff() {
 #[test]
 fn xor_same() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true xor true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true xor true); end."#),
         &["false"]
     );
 }
@@ -104,9 +84,7 @@ fn xor_same() {
 #[test]
 fn xor_false_true() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(false xor true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(false xor true); end."#),
         &["true"]
     );
 }
@@ -134,9 +112,7 @@ fn or_short_circuit() {
 #[test]
 fn and_chain() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((1<2) and (3<4) and (5<6)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((1<2) and (3<4) and (5<6)); end."#),
         &["true"]
     );
 }
@@ -144,9 +120,7 @@ fn and_chain() {
 #[test]
 fn or_chain() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((1>2) or (3>4) or (5<6)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((1>2) or (3>4) or (5<6)); end."#),
         &["true"]
     );
 }
@@ -174,9 +148,7 @@ fn not_or_demorgan() {
 #[test]
 fn if_and_condition() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if (2>1) and (3>2) then WriteLn('ok'); end."#
-        ),
+        run_pascal(r#"program T; begin if (2>1) and (3>2) then WriteLn('ok'); end."#),
         &["ok"]
     );
 }
@@ -184,9 +156,7 @@ fn if_and_condition() {
 #[test]
 fn if_or_condition() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if (2>3) or (4>3) then WriteLn('ok'); end."#
-        ),
+        run_pascal(r#"program T; begin if (2>3) or (4>3) then WriteLn('ok'); end."#),
         &["ok"]
     );
 }
@@ -234,9 +204,7 @@ fn repeat_until_and() {
 #[test]
 fn boolean_var_assign() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var f:Boolean; begin f:=3>2; WriteLn(f); end."#
-        ),
+        run_pascal(r#"program T; var f:Boolean; begin f:=3>2; WriteLn(f); end."#),
         &["true"]
     );
 }
@@ -244,9 +212,7 @@ fn boolean_var_assign() {
 #[test]
 fn nested_not() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(not not true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(not not true); end."#),
         &["true"]
     );
 }
@@ -264,9 +230,7 @@ fn xor_in_loop_parity() {
 #[test]
 fn and_with_compare() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((5=5) and (6>5)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((5=5) and (6>5)); end."#),
         &["true"]
     );
 }
@@ -274,9 +238,7 @@ fn and_with_compare() {
 #[test]
 fn or_with_compare() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((5=6) or (7=7)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((5=6) or (7=7)); end."#),
         &["true"]
     );
 }
@@ -284,9 +246,7 @@ fn or_with_compare() {
 #[test]
 fn if_not_or() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin if not (false or false) then WriteLn('ok'); end."#
-        ),
+        run_pascal(r#"program T; begin if not (false or false) then WriteLn('ok'); end."#),
         &["ok"]
     );
 }
@@ -294,9 +254,7 @@ fn if_not_or() {
 #[test]
 fn complex_paren() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((true or false) and (not false)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((true or false) and (not false)); end."#),
         &["true"]
     );
 }
@@ -304,9 +262,7 @@ fn complex_paren() {
 #[test]
 fn xor_three_terms() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn((true xor false) xor false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn((true xor false) xor false); end."#),
         &["true"]
     );
 }
@@ -314,9 +270,7 @@ fn xor_three_terms() {
 #[test]
 fn bool_from_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Integer; begin a:=4; b:=4; WriteLn(a=b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Integer; begin a:=4; b:=4; WriteLn(a=b); end."#),
         &["true"]
     );
 }
@@ -324,9 +278,7 @@ fn bool_from_equal() {
 #[test]
 fn bool_from_not_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(3<>4); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(3<>4); end."#),
         &["true"]
     );
 }
@@ -384,9 +336,7 @@ fn or_true_stops() {
 #[test]
 fn not_equal_in_if() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s:string; begin s:='a'; if s<>'b' then WriteLn('ne'); end."#
-        ),
+        run_pascal(r#"program T; var s:string; begin s:='a'; if s<>'b' then WriteLn('ne'); end."#),
         &["ne"]
     );
 }
@@ -394,9 +344,7 @@ fn not_equal_in_if() {
 #[test]
 fn xor_zero_result() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(false xor false); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(false xor false); end."#),
         &["false"]
     );
 }
@@ -414,10 +362,7 @@ fn boolean_implies_style() {
 #[test]
 fn triple_and() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(true and true and true); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(true and true and true); end."#),
         &["true"]
     );
 }
-

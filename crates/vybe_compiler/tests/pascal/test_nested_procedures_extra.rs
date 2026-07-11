@@ -420,4 +420,3 @@ fn nested_deep_six_with_output() {
         &["6"]
     );
 }
-

@@ -114,9 +114,7 @@ fn ordinal_ord_on_char_subrange() {
 #[test]
 fn ordinal_chr_from_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Char; begin c := Chr(65); WriteLn(c); end."#
-        ),
+        run_pascal(r#"program T; var c: Char; begin c := Chr(65); WriteLn(c); end."#),
         &["A"]
     );
 }
@@ -224,9 +222,7 @@ fn subrange_compare_less_than() {
 #[test]
 fn byte_type_range_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var b: Byte; begin b := 255; WriteLn(b); end."#
-        ),
+        run_pascal(r#"program T; var b: Byte; begin b := 255; WriteLn(b); end."#),
         &["255"]
     );
 }
@@ -234,9 +230,7 @@ fn byte_type_range_value() {
 #[test]
 fn shortint_negative_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s: ShortInt; begin s := -128; WriteLn(s); end."#
-        ),
+        run_pascal(r#"program T; var s: ShortInt; begin s := -128; WriteLn(s); end."#),
         &["-128"]
     );
 }
@@ -264,9 +258,7 @@ fn int64_literal_value() {
 #[test]
 fn single_float_type() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var f: Single; begin f := 2.5; WriteLn(f + f); end."#
-        ),
+        run_pascal(r#"program T; var f: Single; begin f := 2.5; WriteLn(f + f); end."#),
         &["5"]
     );
 }
@@ -274,9 +266,7 @@ fn single_float_type() {
 #[test]
 fn extended_float_type() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var e: Extended; begin e := 1.25; WriteLn(e * 4); end."#
-        ),
+        run_pascal(r#"program T; var e: Extended; begin e := 1.25; WriteLn(e * 4); end."#),
         &["5"]
     );
 }
@@ -284,9 +274,7 @@ fn extended_float_type() {
 #[test]
 fn currency_type_roundtrip() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Currency; begin c := 19.99; WriteLn(c > 19); end."#
-        ),
+        run_pascal(r#"program T; var c: Currency; begin c := 19.99; WriteLn(c > 19); end."#),
         &["True"]
     );
 }
@@ -294,9 +282,7 @@ fn currency_type_roundtrip() {
 #[test]
 fn boolean_ord_values() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Ord(False)); WriteLn(Ord(True)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Ord(False)); WriteLn(Ord(True)); end."#),
         &["0", "1"]
     );
 }
@@ -304,9 +290,7 @@ fn boolean_ord_values() {
 #[test]
 fn char_succ_advances_ascii() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Char; begin c := 'A'; WriteLn(Succ(c)); end."#
-        ),
+        run_pascal(r#"program T; var c: Char; begin c := 'A'; WriteLn(Succ(c)); end."#),
         &["B"]
     );
 }
@@ -314,9 +298,7 @@ fn char_succ_advances_ascii() {
 #[test]
 fn char_pred_steps_back_ascii() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Char; begin c := 'B'; WriteLn(Pred(c)); end."#
-        ),
+        run_pascal(r#"program T; var c: Char; begin c := 'B'; WriteLn(Pred(c)); end."#),
         &["A"]
     );
 }

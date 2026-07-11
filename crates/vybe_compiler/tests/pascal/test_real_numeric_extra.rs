@@ -144,9 +144,7 @@ fn double_add_14() {
 #[test]
 fn extended_mul_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=1.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=1.0; WriteLn(Trunc(x*2)); end."#),
         &["2"]
     );
 }
@@ -154,9 +152,7 @@ fn extended_mul_1() {
 #[test]
 fn extended_mul_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=2.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=2.0; WriteLn(Trunc(x*2)); end."#),
         &["4"]
     );
 }
@@ -164,9 +160,7 @@ fn extended_mul_2() {
 #[test]
 fn extended_mul_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=3.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=3.0; WriteLn(Trunc(x*2)); end."#),
         &["6"]
     );
 }
@@ -174,9 +168,7 @@ fn extended_mul_3() {
 #[test]
 fn extended_mul_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=4.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=4.0; WriteLn(Trunc(x*2)); end."#),
         &["8"]
     );
 }
@@ -184,9 +176,7 @@ fn extended_mul_4() {
 #[test]
 fn extended_mul_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=5.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=5.0; WriteLn(Trunc(x*2)); end."#),
         &["10"]
     );
 }
@@ -194,9 +184,7 @@ fn extended_mul_5() {
 #[test]
 fn extended_mul_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=6.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=6.0; WriteLn(Trunc(x*2)); end."#),
         &["12"]
     );
 }
@@ -204,9 +192,7 @@ fn extended_mul_6() {
 #[test]
 fn extended_mul_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=7.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=7.0; WriteLn(Trunc(x*2)); end."#),
         &["14"]
     );
 }
@@ -214,9 +200,7 @@ fn extended_mul_7() {
 #[test]
 fn extended_mul_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=8.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=8.0; WriteLn(Trunc(x*2)); end."#),
         &["16"]
     );
 }
@@ -224,9 +208,7 @@ fn extended_mul_8() {
 #[test]
 fn extended_mul_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=9.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=9.0; WriteLn(Trunc(x*2)); end."#),
         &["18"]
     );
 }
@@ -234,9 +216,7 @@ fn extended_mul_9() {
 #[test]
 fn extended_mul_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=10.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=10.0; WriteLn(Trunc(x*2)); end."#),
         &["20"]
     );
 }
@@ -244,9 +224,7 @@ fn extended_mul_10() {
 #[test]
 fn extended_mul_11() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=11.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=11.0; WriteLn(Trunc(x*2)); end."#),
         &["22"]
     );
 }
@@ -254,9 +232,7 @@ fn extended_mul_11() {
 #[test]
 fn extended_mul_12() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=12.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=12.0; WriteLn(Trunc(x*2)); end."#),
         &["24"]
     );
 }
@@ -264,9 +240,7 @@ fn extended_mul_12() {
 #[test]
 fn extended_mul_13() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=13.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=13.0; WriteLn(Trunc(x*2)); end."#),
         &["26"]
     );
 }
@@ -274,9 +248,7 @@ fn extended_mul_13() {
 #[test]
 fn extended_mul_14() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Extended; begin x:=14.0; WriteLn(Trunc(x*2)); end."#
-        ),
+        run_pascal(r#"program T; var x:Extended; begin x:=14.0; WriteLn(Trunc(x*2)); end."#),
         &["28"]
     );
 }
@@ -420,4 +392,3 @@ fn currency_trunc_sum_14() {
         &["28"]
     );
 }
-

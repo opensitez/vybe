@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn excflow_try_ok_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try1'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try1'); except WriteLn('ex'); end; end."#),
         &["try1"]
     );
 }
@@ -24,9 +22,7 @@ fn excflow_catch_raise_2() {
 #[test]
 fn excflow_finally_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x3'); finally WriteLn('fin3'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x3'); finally WriteLn('fin3'); end; end."#),
         &["x3", "fin3"]
     );
 }
@@ -74,9 +70,7 @@ fn excflow_nested_7() {
 #[test]
 fn excflow_try_ok_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try8'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try8'); except WriteLn('ex'); end; end."#),
         &["try8"]
     );
 }
@@ -94,9 +88,7 @@ fn excflow_catch_raise_9() {
 #[test]
 fn excflow_finally_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x10'); finally WriteLn('fin10'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x10'); finally WriteLn('fin10'); end; end."#),
         &["x10", "fin10"]
     );
 }
@@ -144,9 +136,7 @@ fn excflow_nested_14() {
 #[test]
 fn excflow_try_ok_15() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try15'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try15'); except WriteLn('ex'); end; end."#),
         &["try15"]
     );
 }
@@ -164,9 +154,7 @@ fn excflow_catch_raise_16() {
 #[test]
 fn excflow_finally_17() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x17'); finally WriteLn('fin17'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x17'); finally WriteLn('fin17'); end; end."#),
         &["x17", "fin17"]
     );
 }
@@ -214,9 +202,7 @@ fn excflow_nested_21() {
 #[test]
 fn excflow_try_ok_22() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try22'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try22'); except WriteLn('ex'); end; end."#),
         &["try22"]
     );
 }
@@ -234,9 +220,7 @@ fn excflow_catch_raise_23() {
 #[test]
 fn excflow_finally_24() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x24'); finally WriteLn('fin24'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x24'); finally WriteLn('fin24'); end; end."#),
         &["x24", "fin24"]
     );
 }
@@ -284,9 +268,7 @@ fn excflow_nested_28() {
 #[test]
 fn excflow_try_ok_29() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try29'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try29'); except WriteLn('ex'); end; end."#),
         &["try29"]
     );
 }
@@ -304,9 +286,7 @@ fn excflow_catch_raise_30() {
 #[test]
 fn excflow_finally_31() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x31'); finally WriteLn('fin31'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x31'); finally WriteLn('fin31'); end; end."#),
         &["x31", "fin31"]
     );
 }
@@ -354,9 +334,7 @@ fn excflow_nested_35() {
 #[test]
 fn excflow_try_ok_36() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try36'); except WriteLn('ex'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try36'); except WriteLn('ex'); end; end."#),
         &["try36"]
     );
 }
@@ -374,9 +352,7 @@ fn excflow_catch_raise_37() {
 #[test]
 fn excflow_finally_38() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('x38'); finally WriteLn('fin38'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('x38'); finally WriteLn('fin38'); end; end."#),
         &["x38", "fin38"]
     );
 }

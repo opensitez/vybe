@@ -74,9 +74,7 @@ fn nested_function_accesses_outer_local() {
 #[test]
 fn const_in_inner_scope() {
     assert_eq!(
-        run_pascal(
-            r#"program T; procedure P; const K=7; begin WriteLn(K); end; begin P; end."#
-        ),
+        run_pascal(r#"program T; procedure P; const K=7; begin WriteLn(K); end; begin P; end."#),
         &["7"]
     );
 }
@@ -134,9 +132,7 @@ fn mutually_recursive_procedures() {
 #[test]
 fn var_section_multiple_declarations() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b,c:Integer; begin a:=1; b:=2; c:=3; WriteLn(a+b+c); end."#
-        ),
+        run_pascal(r#"program T; var a,b,c:Integer; begin a:=1; b:=2; c:=3; WriteLn(a+b+c); end."#),
         &["6"]
     );
 }
@@ -144,9 +140,7 @@ fn var_section_multiple_declarations() {
 #[test]
 fn inline_var_declaration_in_begin() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin var x:Integer; x:=8; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; begin var x:Integer; x:=8; WriteLn(x); end."#),
         &["8"]
     );
 }
@@ -194,9 +188,7 @@ fn while_loop_declared_before() {
 #[test]
 fn nested_begin_end_isolation() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var x:Integer; begin x:=1; begin x:=2; end; WriteLn(x); end."#
-        ),
+        run_pascal(r#"program T; var x:Integer; begin x:=1; begin x:=2; end; WriteLn(x); end."#),
         &["1"]
     );
 }

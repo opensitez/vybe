@@ -52,7 +52,9 @@ fn pos_case_sensitive_miss() {
 #[test]
 fn pos_from_offset_via_copy() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; p:Integer; begin s:='banana'; p:=Pos('na',Copy(s,3,Length(s))); WriteLn(p); end."#),
+        run_pascal(
+            r#"program T; var s:string; p:Integer; begin s:='banana'; p:=Pos('na',Copy(s,3,Length(s))); WriteLn(p); end."#
+        ),
         &["2"]
     );
 }
@@ -60,7 +62,9 @@ fn pos_from_offset_via_copy() {
 #[test]
 fn pos_drives_slice_extraction() {
     assert_eq!(
-        run_pascal(r#"program T; var s,t:string; p:Integer; begin s:='id=42'; p:=Pos('=',s); t:=Copy(s,p+1,Length(s)); WriteLn(t); end."#),
+        run_pascal(
+            r#"program T; var s,t:string; p:Integer; begin s:='id=42'; p:=Pos('=',s); t:=Copy(s,p+1,Length(s)); WriteLn(t); end."#
+        ),
         &["42"]
     );
 }
@@ -124,7 +128,9 @@ fn lastdelimiter_trailing_delim() {
 #[test]
 fn lastdelimiter_extract_filename() {
     assert_eq!(
-        run_pascal(r#"program T; var p:Integer; s:string; begin s:='path/to/name'; p:=LastDelimiter('/',s); WriteLn(Copy(s,p+1,Length(s))); end."#),
+        run_pascal(
+            r#"program T; var p:Integer; s:string; begin s:='path/to/name'; p:=LastDelimiter('/',s); WriteLn(Copy(s,p+1,Length(s))); end."#
+        ),
         &["name"]
     );
 }
@@ -156,7 +162,9 @@ fn comparetext_equal_ignore_case() {
 #[test]
 fn comparetext_less_upper_before_lower() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('apple','Banana'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('apple','Banana'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#
+        ),
         &["less"]
     );
 }
@@ -164,7 +172,9 @@ fn comparetext_less_upper_before_lower() {
 #[test]
 fn comparetext_greater_longer_prefix() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('zzz','zz'); if r>0 then WriteLn('gt') else WriteLn('le'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('zzz','zz'); if r>0 then WriteLn('gt') else WriteLn('le'); end."#
+        ),
         &["gt"]
     );
 }
@@ -180,7 +190,9 @@ fn comparetext_empty_vs_empty() {
 #[test]
 fn comparetext_empty_vs_nonempty() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('','a'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('','a'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#
+        ),
         &["less"]
     );
 }
@@ -188,7 +200,9 @@ fn comparetext_empty_vs_nonempty() {
 #[test]
 fn comparetext_numbers_as_strings() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('10','2'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('10','2'); if r<0 then WriteLn('less') else WriteLn('geq'); end."#
+        ),
         &["less"]
     );
 }
@@ -204,7 +218,9 @@ fn comparetext_mixed_case_order() {
 #[test]
 fn comparetext_sort_three_words() {
     assert_eq!(
-        run_pascal(r#"program T; function Before(const a,b:string):Boolean; begin Result:=CompareText(a,b)<0; end; begin if Before('ant','Bee') then WriteLn('ok'); end."#),
+        run_pascal(
+            r#"program T; function Before(const a,b:string):Boolean; begin Result:=CompareText(a,b)<0; end; begin if Before('ant','Bee') then WriteLn('ok'); end."#
+        ),
         &["ok"]
     );
 }
@@ -212,7 +228,9 @@ fn comparetext_sort_three_words() {
 #[test]
 fn comparetext_underscore_vs_letter() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('_a','a'); if r<0 then WriteLn('u') else WriteLn('v'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('_a','a'); if r<0 then WriteLn('u') else WriteLn('v'); end."#
+        ),
         &["u"]
     );
 }
@@ -220,7 +238,9 @@ fn comparetext_underscore_vs_letter() {
 #[test]
 fn comparetext_same_length_diff_char() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('cat','car'); if r>0 then WriteLn('t>r') else WriteLn('other'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('cat','car'); if r>0 then WriteLn('t>r') else WriteLn('other'); end."#
+        ),
         &["t>r"]
     );
 }
@@ -228,7 +248,9 @@ fn comparetext_same_length_diff_char() {
 #[test]
 fn pos_then_comparetext_equal_tail() {
     assert_eq!(
-        run_pascal(r#"program T; var s,t:string; p:Integer; begin s:='pre-TAIL'; p:=Pos('TAIL',s); t:=Copy(s,p,4); if CompareText(t,'tail')=0 then WriteLn('match'); end."#),
+        run_pascal(
+            r#"program T; var s,t:string; p:Integer; begin s:='pre-TAIL'; p:=Pos('TAIL',s); t:=Copy(s,p,4); if CompareText(t,'tail')=0 then WriteLn('match'); end."#
+        ),
         &["match"]
     );
 }
@@ -236,7 +258,9 @@ fn pos_then_comparetext_equal_tail() {
 #[test]
 fn lastdelimiter_then_pos_rejoin() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; d,p:Integer; begin s:='a.b.c'; d:=LastDelimiter('.',s); p:=Pos('.',s); WriteLn(d-p); end."#),
+        run_pascal(
+            r#"program T; var s:string; d,p:Integer; begin s:='a.b.c'; d:=LastDelimiter('.',s); p:=Pos('.',s); WriteLn(d-p); end."#
+        ),
         &["2"]
     );
 }
@@ -276,7 +300,9 @@ fn lastdelimiter_at_first_char() {
 #[test]
 fn pos_loop_find_all_occurrences_count() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; i,p,c:Integer; begin s:='abab'; c:=0; i:=1; repeat p:=Pos('a',Copy(s,i,Length(s))); if p>0 then begin Inc(c); i:=i+p; end; until p=0; WriteLn(c); end."#),
+        run_pascal(
+            r#"program T; var s:string; i,p,c:Integer; begin s:='abab'; c:=0; i:=1; repeat p:=Pos('a',Copy(s,i,Length(s))); if p>0 then begin Inc(c); i:=i+p; end; until p=0; WriteLn(c); end."#
+        ),
         &["2"]
     );
 }
@@ -284,7 +310,9 @@ fn pos_loop_find_all_occurrences_count() {
 #[test]
 fn comparetext_symmetry_check() {
     assert_eq!(
-        run_pascal(r#"program T; begin WriteLn(CompareText('foo','bar')); WriteLn(CompareText('bar','foo')); end."#),
+        run_pascal(
+            r#"program T; begin WriteLn(CompareText('foo','bar')); WriteLn(CompareText('bar','foo')); end."#
+        ),
         &["1", "-1"]
     );
 }
@@ -300,7 +328,9 @@ fn lastdelimiter_colon_drive() {
 #[test]
 fn pos_after_delim_extension() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; d,p:Integer; begin s:='file.txt'; d:=LastDelimiter('.',s); p:=Pos('.',s); WriteLn(Copy(s,d+1,3)); end."#),
+        run_pascal(
+            r#"program T; var s:string; d,p:Integer; begin s:='file.txt'; d:=LastDelimiter('.',s); p:=Pos('.',s); WriteLn(Copy(s,d+1,3)); end."#
+        ),
         &["txt"]
     );
 }
@@ -308,7 +338,9 @@ fn pos_after_delim_extension() {
 #[test]
 fn comparetext_prefix_relation() {
     assert_eq!(
-        run_pascal(r#"program T; var r:Integer; begin r:=CompareText('test','testing'); if r<0 then WriteLn('shorter') else WriteLn('other'); end."#),
+        run_pascal(
+            r#"program T; var r:Integer; begin r:=CompareText('test','testing'); if r<0 then WriteLn('shorter') else WriteLn('other'); end."#
+        ),
         &["shorter"]
     );
 }
@@ -316,7 +348,9 @@ fn comparetext_prefix_relation() {
 #[test]
 fn pos_multichar_second_occurrence_manual() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; p1,p2:Integer; begin s:='xyxy'; p1:=Pos('xy',s); p2:=Pos('xy',Copy(s,p1+1,Length(s))); WriteLn(p1); WriteLn(p2); end."#),
+        run_pascal(
+            r#"program T; var s:string; p1,p2:Integer; begin s:='xyxy'; p1:=Pos('xy',s); p2:=Pos('xy',Copy(s,p1+1,Length(s))); WriteLn(p1); WriteLn(p2); end."#
+        ),
         &["1", "2"]
     );
 }

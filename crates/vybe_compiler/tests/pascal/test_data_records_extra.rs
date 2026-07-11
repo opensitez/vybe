@@ -420,4 +420,3 @@ fn record_with_method_14() {
         &["29"]
     );
 }
-

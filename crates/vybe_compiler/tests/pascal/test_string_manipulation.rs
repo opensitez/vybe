@@ -116,9 +116,7 @@ fn trim_both_ends() {
 #[test]
 fn stringreplace_first_occurrence_only() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StringReplace('a-a-a','-','+',[])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StringReplace('a-a-a','-','+',[])); end."#),
         &["a+a-a"]
     );
 }
@@ -136,9 +134,7 @@ fn stringreplace_all_occurrences() {
 #[test]
 fn stringreplace_empty_search_unchanged() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StringReplace('hello','','x',[])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StringReplace('hello','','x',[])); end."#),
         &["hello"]
     );
 }
@@ -254,9 +250,7 @@ fn trim_no_spaces_unchanged() {
 #[test]
 fn copy_then_uppercase_pipeline() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(UpperCase(Copy('hello world',1,5))); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(UpperCase(Copy('hello world',1,5))); end."#),
         &["HELLO"]
     );
 }
@@ -303,9 +297,7 @@ begin WriteLn(PadLeft('hello',3,' ')); end."#
 #[test]
 fn stringreplace_delete_by_empty() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(StringReplace('abc','b','',[rfReplaceAll])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(StringReplace('abc','b','',[rfReplaceAll])); end."#),
         &["ac"]
     );
 }
@@ -313,9 +305,7 @@ fn stringreplace_delete_by_empty() {
 #[test]
 fn concat_then_comparestr_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(CompareStr('ab'+'c','abc')=0); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(CompareStr('ab'+'c','abc')=0); end."#),
         &["true"]
     );
 }
@@ -323,9 +313,7 @@ fn concat_then_comparestr_equal() {
 #[test]
 fn lowercase_then_comparetext_self() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(CompareText(LowerCase('MiXed'),'mixed')); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(CompareText(LowerCase('MiXed'),'mixed')); end."#),
         &["0"]
     );
 }

@@ -12,7 +12,9 @@ fn chr_ord_roundtrip_ascii() {
 #[test]
 fn succ_pred_on_char() {
     assert_eq!(
-        run_pascal(r#"program T; var c: Char; begin c:='m'; WriteLn(Succ(c)); WriteLn(Pred(c)); end."#),
+        run_pascal(
+            r#"program T; var c: Char; begin c:='m'; WriteLn(Succ(c)); WriteLn(Pred(c)); end."#
+        ),
         &["n", "l"]
     );
 }
@@ -20,7 +22,9 @@ fn succ_pred_on_char() {
 #[test]
 fn succ_pred_on_integer() {
     assert_eq!(
-        run_pascal(r#"program T; var n: Integer; begin n:=10; WriteLn(Succ(n)); WriteLn(Pred(n)); end."#),
+        run_pascal(
+            r#"program T; var n: Integer; begin n:=10; WriteLn(Succ(n)); WriteLn(Pred(n)); end."#
+        ),
         &["11", "9"]
     );
 }
@@ -172,9 +176,7 @@ fn chr_from_ord_zero() {
 #[test]
 fn implicit_integer_to_real_addition() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var r: Double; begin r:=2.5; r:=r+1; WriteLn(Round(r)); end."#
-        ),
+        run_pascal(r#"program T; var r: Double; begin r:=2.5; r:=r+1; WriteLn(Round(r)); end."#),
         &["4"]
     );
 }
@@ -214,9 +216,7 @@ fn extended_ascii_char_compare() {
 #[test]
 fn set_char_from_integer_ord() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Char; begin c:=Chr(90); WriteLn(c); end."#
-        ),
+        run_pascal(r#"program T; var c: Char; begin c:=Chr(90); WriteLn(c); end."#),
         &["Z"]
     );
 }

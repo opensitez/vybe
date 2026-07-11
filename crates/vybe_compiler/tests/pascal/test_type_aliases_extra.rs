@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn alias_integer_count() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TCount=Integer; var v:TCount; begin v:=7; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; type TCount=Integer; var v:TCount; begin v:=7; WriteLn(v); end."#),
         &["7"]
     );
 }
@@ -34,9 +32,7 @@ fn alias_boolean_flag() {
 #[test]
 fn alias_char_code() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TCode=Char; var v:TCode; begin v:='X'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; type TCode=Char; var v:TCode; begin v:='X'; WriteLn(v); end."#),
         &["X"]
     );
 }
@@ -204,9 +200,7 @@ fn alias_nested_record_alias() {
 #[test]
 fn alias_word_type() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TPort=Word; var p:TPort; begin p:=8080; WriteLn(p); end."#
-        ),
+        run_pascal(r#"program T; type TPort=Word; var p:TPort; begin p:=8080; WriteLn(p); end."#),
         &["8080"]
     );
 }
@@ -214,9 +208,7 @@ fn alias_word_type() {
 #[test]
 fn alias_longint() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TBig=Int64; var n:TBig; begin n:=1000000; WriteLn(n); end."#
-        ),
+        run_pascal(r#"program T; type TBig=Int64; var n:TBig; begin n:=1000000; WriteLn(n); end."#),
         &["1000000"]
     );
 }
@@ -344,9 +336,7 @@ fn alias_real_trunc() {
 #[test]
 fn alias_char_ord() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TCh=Char; var c:TCh; begin c:='B'; WriteLn(Ord(c)); end."#
-        ),
+        run_pascal(r#"program T; type TCh=Char; var c:TCh; begin c:='B'; WriteLn(Ord(c)); end."#),
         &["66"]
     );
 }
@@ -354,9 +344,7 @@ fn alias_char_ord() {
 #[test]
 fn alias_integer_hex() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type THex=Integer; const H:THex=$10; begin WriteLn(H); end."#
-        ),
+        run_pascal(r#"program T; type THex=Integer; const H:THex=$10; begin WriteLn(H); end."#),
         &["16"]
     );
 }
@@ -414,10 +402,7 @@ fn alias_set_enum() {
 #[test]
 fn alias_variant_style_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TMaybe=Integer; var m:TMaybe; begin m:=0; WriteLn(m); end."#
-        ),
+        run_pascal(r#"program T; type TMaybe=Integer; var m:TMaybe; begin m:=0; WriteLn(m); end."#),
         &["0"]
     );
 }
-

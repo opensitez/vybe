@@ -420,4 +420,3 @@ fn case_enum_in_for_dispatch() {
         &["1", "0"]
     );
 }
-

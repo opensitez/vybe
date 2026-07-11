@@ -17,7 +17,9 @@ fn triple_for_coord_strings() {
         run_pascal(
             r#"program T; var x,y,z:Integer; begin for x:=1 to 2 do for y:=1 to 2 do for z:=1 to 2 do WriteLn(IntToStr(x)+'-'+IntToStr(y)+'-'+IntToStr(z)); end."#
         ),
-        &["1-1-1", "1-1-2", "1-2-1", "1-2-2", "2-1-1", "2-1-2", "2-2-1", "2-2-2"]
+        &[
+            "1-1-1", "1-1-2", "1-2-1", "1-2-2", "2-1-1", "2-1-2", "2-2-1", "2-2-2"
+        ]
     );
 }
 
@@ -420,4 +422,3 @@ fn five_level_count() {
         &["32"]
     );
 }
-

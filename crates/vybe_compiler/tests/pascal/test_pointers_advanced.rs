@@ -264,9 +264,7 @@ fn dispose_after_mutate_multiple_fields() {
 #[test]
 fn pointer_compare_nil_after_dispose_var() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var p:^Integer; begin New(p); Dispose(p); WriteLn('ok'); end."#
-        ),
+        run_pascal(r#"program T; var p:^Integer; begin New(p); Dispose(p); WriteLn('ok'); end."#),
         &["ok"]
     );
 }
@@ -274,9 +272,7 @@ fn pointer_compare_nil_after_dispose_var() {
 #[test]
 fn pchar_style_char_pointer_deref() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c:Char; p:^Char; begin c:='M'; p:=@c; WriteLn(p^); end."#
-        ),
+        run_pascal(r#"program T; var c:Char; p:^Char; begin c:='M'; p:=@c; WriteLn(p^); end."#),
         &["M"]
     );
 }

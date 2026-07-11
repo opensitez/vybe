@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn int64_large_positive_literal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=9223372036854775807; WriteLn(i>0); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=9223372036854775807; WriteLn(i>0); end."#),
         &["true"]
     );
 }
@@ -24,9 +22,7 @@ fn int64_negative_arithmetic() {
 #[test]
 fn int64_multiply_small_factors() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=1000; WriteLn(i*1000); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=1000; WriteLn(i*1000); end."#),
         &["1000000"]
     );
 }
@@ -34,9 +30,7 @@ fn int64_multiply_small_factors() {
 #[test]
 fn int64_div_integer_truncates() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=7; WriteLn(i div 2); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=7; WriteLn(i div 2); end."#),
         &["3"]
     );
 }
@@ -44,9 +38,7 @@ fn int64_div_integer_truncates() {
 #[test]
 fn int64_mod_operation() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=10; WriteLn(i mod 3); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=10; WriteLn(i mod 3); end."#),
         &["1"]
     );
 }
@@ -54,9 +46,7 @@ fn int64_mod_operation() {
 #[test]
 fn int64_inc_by_delta() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=100; Inc(i,50); WriteLn(i); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=100; Inc(i,50); WriteLn(i); end."#),
         &["150"]
     );
 }
@@ -74,9 +64,7 @@ fn int64_in_record_field() {
 #[test]
 fn currency_add_two_amounts() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Currency; begin a:=1.25; b:=2.50; WriteLn(a+b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Currency; begin a:=1.25; b:=2.50; WriteLn(a+b); end."#),
         &["3.75"]
     );
 }
@@ -104,9 +92,7 @@ fn currency_round_half_up() {
 #[test]
 fn currency_compare_equality() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Currency; begin a:=10.00; b:=10.00; WriteLn(a=b); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Currency; begin a:=10.00; b:=10.00; WriteLn(a=b); end."#),
         &["true"]
     );
 }
@@ -114,9 +100,7 @@ fn currency_compare_equality() {
 #[test]
 fn currency_negative_balance() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c:Currency; begin c:=-5.50; WriteLn(c<0); end."#
-        ),
+        run_pascal(r#"program T; var c:Currency; begin c:=-5.50; WriteLn(c<0); end."#),
         &["true"]
     );
 }
@@ -134,9 +118,7 @@ fn extended_high_precision_add() {
 #[test]
 fn extended_division_small_fraction() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var e:Extended; begin e:=1.0/3.0; WriteLn(e>0.333); end."#
-        ),
+        run_pascal(r#"program T; var e:Extended; begin e:=1.0/3.0; WriteLn(e>0.333); end."#),
         &["true"]
     );
 }
@@ -144,9 +126,7 @@ fn extended_division_small_fraction() {
 #[test]
 fn extended_abs_negative() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var e:Extended; begin e:=-99.5; WriteLn(Abs(e)); end."#
-        ),
+        run_pascal(r#"program T; var e:Extended; begin e:=-99.5; WriteLn(Abs(e)); end."#),
         &["99.5"]
     );
 }
@@ -220,9 +200,7 @@ fn int64_to_str_and_back() {
 #[test]
 fn currency_format_two_decimals() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c:Currency; begin c:=3.5; WriteLn(Format('%.2f',[c])); end."#
-        ),
+        run_pascal(r#"program T; var c:Currency; begin c:=3.5; WriteLn(Format('%.2f',[c])); end."#),
         &["3.50"]
     );
 }
@@ -256,9 +234,7 @@ fn round_zero_unchanged() {
 #[test]
 fn int64_shl_small() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=1; i:=i shl 10; WriteLn(i); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=1; i:=i shl 10; WriteLn(i); end."#),
         &["1024"]
     );
 }
@@ -266,9 +242,7 @@ fn int64_shl_small() {
 #[test]
 fn int64_shr_small() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=1024; i:=i shr 10; WriteLn(i); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=1024; i:=i shr 10; WriteLn(i); end."#),
         &["1"]
     );
 }
@@ -286,9 +260,7 @@ fn currency_subtract_tax() {
 #[test]
 fn extended_sqrt_two_approx() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var e:Extended; begin e:=Sqrt(2.0); WriteLn(e>1.414); end."#
-        ),
+        run_pascal(r#"program T; var e:Extended; begin e:=Sqrt(2.0); WriteLn(e>1.414); end."#),
         &["true"]
     );
 }
@@ -328,9 +300,7 @@ fn ceil_exact_integer_real() {
 #[test]
 fn int64_min_comparison() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Int64; begin a:=-5; b:=-10; WriteLn(Min(a,b)); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Int64; begin a:=-5; b:=-10; WriteLn(Min(a,b)); end."#),
         &["-10"]
     );
 }
@@ -338,9 +308,7 @@ fn int64_min_comparison() {
 #[test]
 fn int64_max_comparison() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a,b:Int64; begin a:=100; b:=200; WriteLn(Max(a,b)); end."#
-        ),
+        run_pascal(r#"program T; var a,b:Int64; begin a:=100; b:=200; WriteLn(Max(a,b)); end."#),
         &["200"]
     );
 }
@@ -348,9 +316,7 @@ fn int64_max_comparison() {
 #[test]
 fn currency_int_part_via_trunc() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c:Currency; begin c:=19.99; WriteLn(Trunc(c)); end."#
-        ),
+        run_pascal(r#"program T; var c:Currency; begin c:=19.99; WriteLn(Trunc(c)); end."#),
         &["19"]
     );
 }
@@ -358,9 +324,7 @@ fn currency_int_part_via_trunc() {
 #[test]
 fn extended_power_small_exp() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var e:Extended; begin e:=Power(2.0,10.0); WriteLn(e); end."#
-        ),
+        run_pascal(r#"program T; var e:Extended; begin e:=Power(2.0,10.0); WriteLn(e); end."#),
         &["1024"]
     );
 }
@@ -376,9 +340,7 @@ fn round_tie_negative_three_point_five() {
 #[test]
 fn int64_abs_negative_large() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Int64; begin i:=-999999999; WriteLn(Abs(i)); end."#
-        ),
+        run_pascal(r#"program T; var i:Int64; begin i:=-999999999; WriteLn(Abs(i)); end."#),
         &["999999999"]
     );
 }

@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn const_hex_integer_literal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = $FF; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = $FF; begin WriteLn(N); end."#),
         &["255"]
     );
 }
@@ -14,9 +12,7 @@ fn const_hex_integer_literal() {
 #[test]
 fn const_binary_integer_literal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = %1010; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = %1010; begin WriteLn(N); end."#),
         &["10"]
     );
 }
@@ -24,9 +20,7 @@ fn const_binary_integer_literal() {
 #[test]
 fn const_octal_style_via_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = 8 * 8 + 1; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = 8 * 8 + 1; begin WriteLn(N); end."#),
         &["65"]
     );
 }
@@ -54,9 +48,7 @@ fn const_string_multiline_concat() {
 #[test]
 fn const_typed_byte_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const B: Byte = 200; begin WriteLn(B); end."#
-        ),
+        run_pascal(r#"program T; const B: Byte = 200; begin WriteLn(B); end."#),
         &["200"]
     );
 }
@@ -64,9 +56,7 @@ fn const_typed_byte_value() {
 #[test]
 fn const_typed_word_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const W: Word = 1000; begin WriteLn(W); end."#
-        ),
+        run_pascal(r#"program T; const W: Word = 1000; begin WriteLn(W); end."#),
         &["1000"]
     );
 }
@@ -74,9 +64,7 @@ fn const_typed_word_value() {
 #[test]
 fn const_negative_integer() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N: Integer = -17; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N: Integer = -17; begin WriteLn(N); end."#),
         &["-17"]
     );
 }
@@ -84,9 +72,7 @@ fn const_negative_integer() {
 #[test]
 fn const_real_division_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const R: Double = 10 / 4; begin WriteLn(R); end."#
-        ),
+        run_pascal(r#"program T; const R: Double = 10 / 4; begin WriteLn(R); end."#),
         &["2.5"]
     );
 }
@@ -264,9 +250,7 @@ fn const_array_index_from_const() {
 #[test]
 fn const_mod_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = 17 mod 5; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = 17 mod 5; begin WriteLn(N); end."#),
         &["2"]
     );
 }
@@ -274,9 +258,7 @@ fn const_mod_expression() {
 #[test]
 fn const_div_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = 17 div 5; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = 17 div 5; begin WriteLn(N); end."#),
         &["3"]
     );
 }
@@ -284,9 +266,7 @@ fn const_div_expression() {
 #[test]
 fn const_shl_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = 1 shl 4; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = 1 shl 4; begin WriteLn(N); end."#),
         &["16"]
     );
 }
@@ -294,9 +274,7 @@ fn const_shl_expression() {
 #[test]
 fn const_shr_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N = 32 shr 2; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N = 32 shr 2; begin WriteLn(N); end."#),
         &["8"]
     );
 }
@@ -314,9 +292,7 @@ fn const_record_nested_field_init() {
 #[test]
 fn const_multiple_in_same_const_section() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const A = 1; B = 2; C = 3; begin WriteLn(A + B + C); end."#
-        ),
+        run_pascal(r#"program T; const A = 1; B = 2; C = 3; begin WriteLn(A + B + C); end."#),
         &["6"]
     );
 }
@@ -344,9 +320,7 @@ fn const_compare_in_if() {
 #[test]
 fn const_real_pi_approximation() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const PI = 3.14159; begin WriteLn(PI > 3); end."#
-        ),
+        run_pascal(r#"program T; const PI = 3.14159; begin WriteLn(PI > 3); end."#),
         &["True"]
     );
 }
@@ -354,9 +328,7 @@ fn const_real_pi_approximation() {
 #[test]
 fn const_typed_ansistring() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const S: AnsiString = 'ansi'; begin WriteLn(S); end."#
-        ),
+        run_pascal(r#"program T; const S: AnsiString = 'ansi'; begin WriteLn(S); end."#),
         &["ansi"]
     );
 }
@@ -374,9 +346,7 @@ fn const_array_bounds_low_high() {
 #[test]
 fn const_expression_with_ord() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type T = (X, Y, Z); const N = Ord(Z); begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; type T = (X, Y, Z); const N = Ord(Z); begin WriteLn(N); end."#),
         &["2"]
     );
 }
@@ -384,9 +354,7 @@ fn const_expression_with_ord() {
 #[test]
 fn const_case_insensitive_string_compare_const() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const GREET = 'Hello'; begin WriteLn(UpperCase(GREET)); end."#
-        ),
+        run_pascal(r#"program T; const GREET = 'Hello'; begin WriteLn(UpperCase(GREET)); end."#),
         &["HELLO"]
     );
 }

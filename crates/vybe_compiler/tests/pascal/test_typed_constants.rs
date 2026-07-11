@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn typed_const_integer_preserves_type() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const N: Integer = 42; begin WriteLn(N); end."#
-        ),
+        run_pascal(r#"program T; const N: Integer = 42; begin WriteLn(N); end."#),
         &["42"]
     );
 }
@@ -24,9 +22,7 @@ fn typed_const_string_concat_in_const_expr() {
 #[test]
 fn typed_const_real_value() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const PiApprox: Double = 3.25; begin WriteLn(PiApprox); end."#
-        ),
+        run_pascal(r#"program T; const PiApprox: Double = 3.25; begin WriteLn(PiApprox); end."#),
         &["3.25"]
     );
 }
@@ -34,9 +30,7 @@ fn typed_const_real_value() {
 #[test]
 fn typed_const_char_literal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; const Sep: Char = '|'; begin WriteLn(Sep); end."#
-        ),
+        run_pascal(r#"program T; const Sep: Char = '|'; begin WriteLn(Sep); end."#),
         &["|"]
     );
 }

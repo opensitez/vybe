@@ -202,9 +202,7 @@ fn high_on_static_one_based_array() {
 #[test]
 fn low_on_static_one_based_array() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var a: array[1..5] of Integer; begin WriteLn(Low(a)); end."#
-        ),
+        run_pascal(r#"program T; var a: array[1..5] of Integer; begin WriteLn(Low(a)); end."#),
         &["1"]
     );
 }
@@ -336,9 +334,7 @@ fn chr_ord_roundtrip_via_builtin() {
 #[test]
 fn min_of_three_via_nested_min() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Min(Min(9, 4), Min(7, 2))); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Min(Min(9, 4), Min(7, 2))); end."#),
         &["2"]
     );
 }
@@ -346,9 +342,7 @@ fn min_of_three_via_nested_min() {
 #[test]
 fn max_of_three_via_nested_max() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Max(Max(1, 8), Max(3, 5))); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Max(Max(1, 8), Max(3, 5))); end."#),
         &["8"]
     );
 }

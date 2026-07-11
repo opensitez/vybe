@@ -124,9 +124,7 @@ fn set_of_char_range_membership() {
 #[test]
 fn set_empty_equals_empty() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TF=(A,B); var s1,s2: set of TF; begin WriteLn(s1=s2); end."#
-        ),
+        run_pascal(r#"program T; type TF=(A,B); var s1,s2: set of TF; begin WriteLn(s1=s2); end."#),
         &["true"]
     );
 }
@@ -224,9 +222,7 @@ fn scoped_enum_function_param() {
 #[test]
 fn set_of_byte_range_literals() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var s: set of Byte; begin s:=[1,2,3]; WriteLn(2 in s); end."#
-        ),
+        run_pascal(r#"program T; var s: set of Byte; begin s:=[1,2,3]; WriteLn(2 in s); end."#),
         &["true"]
     );
 }
@@ -334,9 +330,7 @@ fn enum_explicit_start_at_ten() {
 #[test]
 fn set_superset_strict_false_when_equal() {
     assert_eq!(
-        run_pascal(
-            r#"program T; type TF=(A); var s: set of TF; begin s:=[A]; WriteLn(s>s); end."#
-        ),
+        run_pascal(r#"program T; type TF=(A); var s: set of TF; begin s:=[A]; WriteLn(s>s); end."#),
         &["false"]
     );
 }

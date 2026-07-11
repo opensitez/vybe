@@ -28,9 +28,7 @@ fn writeln_empty_produces_blank_line() {
 #[test]
 fn format_float_two_decimals() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(FormatFloat('0.00', 3.1415)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(FormatFloat('0.00', 3.1415)); end."#),
         &["3.14"]
     );
 }
@@ -38,9 +36,7 @@ fn format_float_two_decimals() {
 #[test]
 fn format_int_zero_padded() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%.4d', [7])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%.4d', [7])); end."#),
         &["0007"]
     );
 }
@@ -48,9 +44,7 @@ fn format_int_zero_padded() {
 #[test]
 fn format_string_placeholder() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('hello %s', ['world'])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('hello %s', ['world'])); end."#),
         &["hello world"]
     );
 }
@@ -58,9 +52,7 @@ fn format_string_placeholder() {
 #[test]
 fn format_multiple_args() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%d+%d=%d', [2,3,5])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%d+%d=%d', [2,3,5])); end."#),
         &["2+3=5"]
     );
 }
@@ -75,18 +67,13 @@ fn writeln_bool_default() {
 
 #[test]
 fn writeln_char_literal() {
-    assert_eq!(
-        run_pascal(r#"program T; begin WriteLn('Z'); end."#),
-        &["Z"]
-    );
+    assert_eq!(run_pascal(r#"program T; begin WriteLn('Z'); end."#), &["Z"]);
 }
 
 #[test]
 fn writeln_mixed_types() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn('n=', 42); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn('n=', 42); end."#),
         &["n= 42"]
     );
 }
@@ -94,9 +81,7 @@ fn writeln_mixed_types() {
 #[test]
 fn write_tab_char_separator() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin Write('a'); Write(#9); WriteLn('b'); end."#
-        ),
+        run_pascal(r#"program T; begin Write('a'); Write(#9); WriteLn('b'); end."#),
         &["a\tb"]
     );
 }
@@ -114,9 +99,7 @@ fn writeln_nested_call_result() {
 #[test]
 fn format_datetime_style_string() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('%s-%s', ['2024', '06'])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('%s-%s', ['2024', '06'])); end."#),
         &["2024-06"]
     );
 }
@@ -124,9 +107,7 @@ fn format_datetime_style_string() {
 #[test]
 fn writeln_in_loop_counter() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var i:Integer; begin for i:=1 to 3 do WriteLn(i); end."#
-        ),
+        run_pascal(r#"program T; var i:Integer; begin for i:=1 to 3 do WriteLn(i); end."#),
         &["1", "2", "3"]
     );
 }
@@ -134,9 +115,7 @@ fn writeln_in_loop_counter() {
 #[test]
 fn write_hex_via_inttohex() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn('0x'+IntToHex(255,2)); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn('0x'+IntToHex(255,2)); end."#),
         &["0xFF"]
     );
 }
@@ -144,9 +123,7 @@ fn write_hex_via_inttohex() {
 #[test]
 fn writeln_string_concat_expression() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn('a'+'b'+'c'); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn('a'+'b'+'c'); end."#),
         &["abc"]
     );
 }
@@ -154,9 +131,7 @@ fn writeln_string_concat_expression() {
 #[test]
 fn format_fixed_width_string() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('[%s]', ['ok'])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('[%s]', ['ok'])); end."#),
         &["[ok]"]
     );
 }
@@ -164,9 +139,7 @@ fn format_fixed_width_string() {
 #[test]
 fn writeln_real_default_format() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(1.5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(1.5); end."#),
         &["1.5"]
     );
 }
@@ -174,9 +147,7 @@ fn writeln_real_default_format() {
 #[test]
 fn write_flush_style_partial_lines() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin Write('wait'); WriteLn(' ok'); end."#
-        ),
+        run_pascal(r#"program T; begin Write('wait'); WriteLn(' ok'); end."#),
         &["wait ok"]
     );
 }
@@ -184,9 +155,7 @@ fn write_flush_style_partial_lines() {
 #[test]
 fn format_percent_literal_escape() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(Format('100%%', [])); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(Format('100%%', [])); end."#),
         &["100%"]
     );
 }

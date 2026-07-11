@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn int_div_7_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(7 div 2); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(7 div 2); end."#),
         &["3"]
     );
 }
@@ -14,9 +12,7 @@ fn int_div_7_2() {
 #[test]
 fn int_mod_7_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(7 mod 2); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(7 mod 2); end."#),
         &["1"]
     );
 }
@@ -24,9 +20,7 @@ fn int_mod_7_2() {
 #[test]
 fn int_div_10_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(10 div 3); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(10 div 3); end."#),
         &["3"]
     );
 }
@@ -34,9 +28,7 @@ fn int_div_10_3() {
 #[test]
 fn int_mod_10_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(10 mod 3); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(10 mod 3); end."#),
         &["1"]
     );
 }
@@ -44,9 +36,7 @@ fn int_mod_10_3() {
 #[test]
 fn int_div_15_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(15 div 4); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(15 div 4); end."#),
         &["3"]
     );
 }
@@ -54,9 +44,7 @@ fn int_div_15_4() {
 #[test]
 fn int_mod_15_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(15 mod 4); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(15 mod 4); end."#),
         &["3"]
     );
 }
@@ -64,9 +52,7 @@ fn int_mod_15_4() {
 #[test]
 fn int_div_neg7_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(-7 div 2); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(-7 div 2); end."#),
         &["-3"]
     );
 }
@@ -74,9 +60,7 @@ fn int_div_neg7_2() {
 #[test]
 fn int_mod_neg7_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(-7 mod 2); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(-7 mod 2); end."#),
         &["-1"]
     );
 }
@@ -84,9 +68,7 @@ fn int_mod_neg7_2() {
 #[test]
 fn int_div_17_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(17 div 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(17 div 5); end."#),
         &["3"]
     );
 }
@@ -94,9 +76,7 @@ fn int_div_17_5() {
 #[test]
 fn int_mod_17_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(17 mod 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(17 mod 5); end."#),
         &["2"]
     );
 }
@@ -104,9 +84,7 @@ fn int_mod_17_5() {
 #[test]
 fn int_div_100_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(100 div 7); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(100 div 7); end."#),
         &["14"]
     );
 }
@@ -114,9 +92,7 @@ fn int_div_100_7() {
 #[test]
 fn int_mod_100_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(100 mod 7); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(100 mod 7); end."#),
         &["2"]
     );
 }
@@ -124,9 +100,7 @@ fn int_mod_100_7() {
 #[test]
 fn int_div_1_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(1 div 1); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(1 div 1); end."#),
         &["1"]
     );
 }
@@ -134,9 +108,7 @@ fn int_div_1_1() {
 #[test]
 fn int_mod_1_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(1 mod 1); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(1 mod 1); end."#),
         &["0"]
     );
 }
@@ -144,9 +116,7 @@ fn int_mod_1_1() {
 #[test]
 fn int_div_0_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(0 div 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(0 div 5); end."#),
         &["0"]
     );
 }
@@ -154,9 +124,7 @@ fn int_div_0_5() {
 #[test]
 fn int_mod_0_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(0 mod 5); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(0 mod 5); end."#),
         &["0"]
     );
 }
@@ -164,9 +132,7 @@ fn int_mod_0_5() {
 #[test]
 fn int_div_9_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(9 div 9); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(9 div 9); end."#),
         &["1"]
     );
 }
@@ -174,9 +140,7 @@ fn int_div_9_9() {
 #[test]
 fn int_mod_9_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(9 mod 9); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(9 mod 9); end."#),
         &["0"]
     );
 }
@@ -184,9 +148,7 @@ fn int_mod_9_9() {
 #[test]
 fn int_div_20_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(20 div 6); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(20 div 6); end."#),
         &["3"]
     );
 }
@@ -194,9 +156,7 @@ fn int_div_20_6() {
 #[test]
 fn int_mod_20_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin WriteLn(20 mod 6); end."#
-        ),
+        run_pascal(r#"program T; begin WriteLn(20 mod 6); end."#),
         &["2"]
     );
 }
@@ -204,9 +164,7 @@ fn int_mod_20_6() {
 #[test]
 fn shl_0() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 0); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 0); end."#),
         &["1"]
     );
 }
@@ -214,9 +172,7 @@ fn shl_0() {
 #[test]
 fn shl_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 1); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 1); end."#),
         &["2"]
     );
 }
@@ -224,9 +180,7 @@ fn shl_1() {
 #[test]
 fn shl_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 2); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 2); end."#),
         &["4"]
     );
 }
@@ -234,9 +188,7 @@ fn shl_2() {
 #[test]
 fn shl_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 3); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 3); end."#),
         &["8"]
     );
 }
@@ -244,9 +196,7 @@ fn shl_3() {
 #[test]
 fn shl_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 4); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 4); end."#),
         &["16"]
     );
 }
@@ -254,9 +204,7 @@ fn shl_4() {
 #[test]
 fn shl_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 5); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 5); end."#),
         &["32"]
     );
 }
@@ -264,9 +212,7 @@ fn shl_5() {
 #[test]
 fn shl_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 6); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 6); end."#),
         &["64"]
     );
 }
@@ -274,9 +220,7 @@ fn shl_6() {
 #[test]
 fn shl_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 7); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 7); end."#),
         &["128"]
     );
 }
@@ -284,9 +228,7 @@ fn shl_7() {
 #[test]
 fn shl_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 8); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 8); end."#),
         &["256"]
     );
 }
@@ -294,9 +236,7 @@ fn shl_8() {
 #[test]
 fn shl_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 9); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 9); end."#),
         &["512"]
     );
 }
@@ -304,9 +244,7 @@ fn shl_9() {
 #[test]
 fn shl_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 10); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 10); end."#),
         &["1024"]
     );
 }
@@ -314,9 +252,7 @@ fn shl_10() {
 #[test]
 fn shl_11() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 11); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1; WriteLn(n shl 11); end."#),
         &["2048"]
     );
 }
@@ -324,9 +260,7 @@ fn shl_11() {
 #[test]
 fn shr_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 1); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 1); end."#),
         &["512"]
     );
 }
@@ -334,9 +268,7 @@ fn shr_1() {
 #[test]
 fn shr_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 2); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 2); end."#),
         &["256"]
     );
 }
@@ -344,9 +276,7 @@ fn shr_2() {
 #[test]
 fn shr_3() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 3); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 3); end."#),
         &["128"]
     );
 }
@@ -354,9 +284,7 @@ fn shr_3() {
 #[test]
 fn shr_4() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 4); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 4); end."#),
         &["64"]
     );
 }
@@ -364,9 +292,7 @@ fn shr_4() {
 #[test]
 fn shr_5() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 5); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 5); end."#),
         &["32"]
     );
 }
@@ -374,9 +300,7 @@ fn shr_5() {
 #[test]
 fn shr_6() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 6); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 6); end."#),
         &["16"]
     );
 }
@@ -384,9 +308,7 @@ fn shr_6() {
 #[test]
 fn shr_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 7); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 7); end."#),
         &["8"]
     );
 }
@@ -394,9 +316,7 @@ fn shr_7() {
 #[test]
 fn shr_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 8); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 8); end."#),
         &["4"]
     );
 }
@@ -404,9 +324,7 @@ fn shr_8() {
 #[test]
 fn shr_9() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 9); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 9); end."#),
         &["2"]
     );
 }
@@ -414,10 +332,7 @@ fn shr_9() {
 #[test]
 fn shr_10() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 10); end."#
-        ),
+        run_pascal(r#"program T; var n:Integer; begin n:=1024; WriteLn(n shr 10); end."#),
         &["1"]
     );
 }
-

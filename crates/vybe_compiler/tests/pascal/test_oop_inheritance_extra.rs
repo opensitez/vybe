@@ -420,4 +420,3 @@ fn constructor_chain_add_7() {
         &["17"]
     );
 }
-

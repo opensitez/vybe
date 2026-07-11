@@ -420,4 +420,3 @@ fn text_sum_file_integers() {
         &["10"]
     );
 }
-

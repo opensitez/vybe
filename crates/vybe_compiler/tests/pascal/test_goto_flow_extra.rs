@@ -284,7 +284,9 @@ fn goto_if_branch_14() {
 #[test]
 fn goto_repeat_print_10() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=10; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=10; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
         &["10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
     );
 }
@@ -292,7 +294,9 @@ fn goto_repeat_print_10() {
 #[test]
 fn goto_repeat_print_11() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=11; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=11; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
         &["11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
     );
 }
@@ -300,96 +304,150 @@ fn goto_repeat_print_11() {
 #[test]
 fn goto_repeat_print_12() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=12; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=12; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_13() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=13; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=13; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_14() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=14; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=14; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_15() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=15; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=15; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_16() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=16; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=16; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_17() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=17; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=17; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2",
+            "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_18() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=18; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=18; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4",
+            "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_19() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=19; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=19; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5",
+            "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_20() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=20; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=20; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6",
+            "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_21() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=21; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=21; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7",
+            "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_22() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=22; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=22; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8",
+            "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
 
 #[test]
 fn goto_repeat_print_23() {
     assert_eq!(
-        run_pascal(r#"program T; label top; var n:Integer; begin n:=23; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#),
-        &["23", "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        run_pascal(
+            r#"program T; label top; var n:Integer; begin n:=23; top: WriteLn(n); Dec(n); if n>0 then goto top; end."#
+        ),
+        &[
+            "23", "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10",
+            "9", "8", "7", "6", "5", "4", "3", "2", "1"
+        ]
     );
 }
-

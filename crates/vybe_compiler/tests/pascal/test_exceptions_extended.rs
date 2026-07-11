@@ -14,9 +14,7 @@ fn try_except_catches_division_by_zero() {
 #[test]
 fn try_except_else_branch_not_taken() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('ok'); except WriteLn('bad'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('ok'); except WriteLn('bad'); end; end."#),
         &["ok"]
     );
 }
@@ -24,9 +22,7 @@ fn try_except_else_branch_not_taken() {
 #[test]
 fn try_finally_always_runs() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try WriteLn('try'); finally WriteLn('finally'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try WriteLn('try'); finally WriteLn('finally'); end; end."#),
         &["try", "finally"]
     );
 }
@@ -134,9 +130,7 @@ fn exception_in_constructor_cleanup() {
 #[test]
 fn assert_raises_in_debug_style() {
     assert_eq!(
-        run_pascal(
-            r#"program T; begin try Assert(false); except WriteLn('assert'); end; end."#
-        ),
+        run_pascal(r#"program T; begin try Assert(false); except WriteLn('assert'); end; end."#),
         &["assert"]
     );
 }

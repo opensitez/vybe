@@ -28,7 +28,9 @@ fn copy_from_past_end_yields_empty() {
 #[test]
 fn insert_at_beginning() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='world'; Insert('hello ', s, 1); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='world'; Insert('hello ', s, 1); WriteLn(s); end."#
+        ),
         &["hello world"]
     );
 }
@@ -36,7 +38,9 @@ fn insert_at_beginning() {
 #[test]
 fn insert_at_end_position() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='ab'; Insert('cd', s, 3); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='ab'; Insert('cd', s, 3); WriteLn(s); end."#
+        ),
         &["abcd"]
     );
 }
@@ -44,7 +48,9 @@ fn insert_at_end_position() {
 #[test]
 fn delete_middle_substring() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='abcdef'; Delete(s, 2, 3); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='abcdef'; Delete(s, 2, 3); WriteLn(s); end."#
+        ),
         &["af"]
     );
 }
@@ -52,7 +58,9 @@ fn delete_middle_substring() {
 #[test]
 fn delete_from_start() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='prefix_rest'; Delete(s, 1, 7); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='prefix_rest'; Delete(s, 1, 7); WriteLn(s); end."#
+        ),
         &["rest"]
     );
 }
@@ -220,7 +228,9 @@ fn stringreplace_single_occurrence() {
 #[test]
 fn stringreplace_replace_all_flag() {
     assert_eq!(
-        run_pascal(r#"program T; begin WriteLn(StringReplace('a-a-a', '-', '', [rfReplaceAll])); end."#),
+        run_pascal(
+            r#"program T; begin WriteLn(StringReplace('a-a-a', '-', '', [rfReplaceAll])); end."#
+        ),
         &["aaa"]
     );
 }
@@ -268,7 +278,9 @@ fn copy_then_uppercase() {
 #[test]
 fn pos_drives_copy_slice() {
     assert_eq!(
-        run_pascal(r#"program T; var s,p:Integer; t:string; begin s:='name=value'; p:=Pos('=', s); t:=Copy(s, p+1, Length(s)); WriteLn(t); end."#),
+        run_pascal(
+            r#"program T; var s,p:Integer; t:string; begin s:='name=value'; p:=Pos('=', s); t:=Copy(s, p+1, Length(s)); WriteLn(t); end."#
+        ),
         &["value"]
     );
 }
@@ -276,7 +288,9 @@ fn pos_drives_copy_slice() {
 #[test]
 fn delete_all_via_loop_pattern() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='a-b-c'; Delete(s, 2, 1); Delete(s, 3, 1); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='a-b-c'; Delete(s, 2, 1); Delete(s, 3, 1); WriteLn(s); end."#
+        ),
         &["abc"]
     );
 }
@@ -284,7 +298,9 @@ fn delete_all_via_loop_pattern() {
 #[test]
 fn insert_builds_path() {
     assert_eq!(
-        run_pascal(r#"program T; var p:string; begin p:='file'; Insert('.txt', p, Length(p)+1); WriteLn(p); end."#),
+        run_pascal(
+            r#"program T; var p:string; begin p:='file'; Insert('.txt', p, Length(p)+1); WriteLn(p); end."#
+        ),
         &["file.txt"]
     );
 }
@@ -308,7 +324,9 @@ fn sametext_empty_strings() {
 #[test]
 fn copy_full_string_via_length() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='clone'; WriteLn(Copy(s, 1, Length(s))); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='clone'; WriteLn(Copy(s, 1, Length(s))); end."#
+        ),
         &["clone"]
     );
 }
@@ -324,7 +342,9 @@ fn pos_in_empty_haystack() {
 #[test]
 fn insert_empty_fragment_no_change() {
     assert_eq!(
-        run_pascal(r#"program T; var s:string; begin s:='keep'; Insert('', s, 1); WriteLn(s); end."#),
+        run_pascal(
+            r#"program T; var s:string; begin s:='keep'; Insert('', s, 1); WriteLn(s); end."#
+        ),
         &["keep"]
     );
 }

@@ -4,9 +4,7 @@ use super::helpers::run_pascal;
 #[test]
 fn vardisp_int_1() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=1; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=1; WriteLn(v); end."#),
         &["1"]
     );
 }
@@ -14,9 +12,7 @@ fn vardisp_int_1() {
 #[test]
 fn vardisp_str_2() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt2'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt2'; WriteLn(v); end."#),
         &["txt2"]
     );
 }
@@ -64,9 +60,7 @@ fn vardisp_enum_tag_6() {
 #[test]
 fn vardisp_int_7() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=7; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=7; WriteLn(v); end."#),
         &["7"]
     );
 }
@@ -74,9 +68,7 @@ fn vardisp_int_7() {
 #[test]
 fn vardisp_str_8() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt8'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt8'; WriteLn(v); end."#),
         &["txt8"]
     );
 }
@@ -124,9 +116,7 @@ fn vardisp_enum_tag_12() {
 #[test]
 fn vardisp_int_13() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=13; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=13; WriteLn(v); end."#),
         &["13"]
     );
 }
@@ -134,9 +124,7 @@ fn vardisp_int_13() {
 #[test]
 fn vardisp_str_14() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt14'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt14'; WriteLn(v); end."#),
         &["txt14"]
     );
 }
@@ -184,9 +172,7 @@ fn vardisp_enum_tag_18() {
 #[test]
 fn vardisp_int_19() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=19; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=19; WriteLn(v); end."#),
         &["19"]
     );
 }
@@ -194,9 +180,7 @@ fn vardisp_int_19() {
 #[test]
 fn vardisp_str_20() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt20'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt20'; WriteLn(v); end."#),
         &["txt20"]
     );
 }
@@ -244,9 +228,7 @@ fn vardisp_enum_tag_24() {
 #[test]
 fn vardisp_int_25() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=25; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=25; WriteLn(v); end."#),
         &["25"]
     );
 }
@@ -254,9 +236,7 @@ fn vardisp_int_25() {
 #[test]
 fn vardisp_str_26() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt26'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt26'; WriteLn(v); end."#),
         &["txt26"]
     );
 }
@@ -304,9 +284,7 @@ fn vardisp_enum_tag_30() {
 #[test]
 fn vardisp_int_31() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=31; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=31; WriteLn(v); end."#),
         &["31"]
     );
 }
@@ -314,9 +292,7 @@ fn vardisp_int_31() {
 #[test]
 fn vardisp_str_32() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt32'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt32'; WriteLn(v); end."#),
         &["txt32"]
     );
 }
@@ -364,9 +340,7 @@ fn vardisp_enum_tag_36() {
 #[test]
 fn vardisp_int_37() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:=37; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:=37; WriteLn(v); end."#),
         &["37"]
     );
 }
@@ -374,9 +348,7 @@ fn vardisp_int_37() {
 #[test]
 fn vardisp_str_38() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var v:Variant; begin v:='txt38'; WriteLn(v); end."#
-        ),
+        run_pascal(r#"program T; var v:Variant; begin v:='txt38'; WriteLn(v); end."#),
         &["txt38"]
     );
 }

@@ -22,9 +22,7 @@ fn for_in_dynamic_array_literal() {
 #[test]
 fn for_in_string_chars_uppercase() {
     assert_eq!(
-        run_pascal(
-            r#"program T; var c: Char; begin for c in 'ab' do WriteLn(UpCase(c)); end."#
-        ),
+        run_pascal(r#"program T; var c: Char; begin for c in 'ab' do WriteLn(UpCase(c)); end."#),
         &["A", "B"]
     );
 }
