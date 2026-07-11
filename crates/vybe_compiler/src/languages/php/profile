@@ -9,6 +9,11 @@ name = "php"
 extensions = ["php", "phtml"]
 
 [compiler]
+# namespaceplan.md (PHP phase): namespace-shaped entry points (package-root
+# `\Vybe\...` chains, wildcard namespace member access) resolve through the
+# common resolver instead of the legacy hardcoded arms. PHP's vybe/wasi/wasm
+# package roots were already profile data.
+uses_common_resolver = true
 has_ecma_bigint = true               # ecma:bigint for BigInt operands
 has_generators = true                # PHP generators (yield)
 abstract_equality = true             # PHP == loose equality
@@ -192,15 +197,15 @@ mb_str_split        = { emit = "common:php.str_split",          min_args = 1, ma
 mb_substr_count     = { emit = "common:php.substr_count",       min_args = 2, max_args = 3 }
 mb_convert_case     = { emit = "common:php.mb_convert_case",    min_args = 2, max_args = 3 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
-version_compare     = { emit = "intrinsic:php_version_compare", min_args = 2, max_args = 3 }
+# version_compare defined by VERSION_PRELUDE (full pre-release-aware algorithm).
 abs                 = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
 round               = { emit = "host:ecma:math:round",      min_args = 1, max_args = 1 }
 
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
 # Backed by compiler_common::collections::join, which every other language
 # already routes through.
-implode             = { emit = "common:collections.join",    min_args = 1, max_args = 2 }
-join                = { emit = "common:collections.join",    min_args = 1, max_args = 2 }
+implode             = { emit = "common:php.implode",         min_args = 1, max_args = 2 }
+join                = { emit = "common:php.implode",         min_args = 1, max_args = 2 }
 # `strtr($str, $array)` — multi-pair substring replacement. Iterates the
 # array's entries in insertion order and applies STR_REPLACE per (key,
 # value) pair. Compiled as a multi-opcode intrinsic; no host call.
@@ -275,6 +280,7 @@ rand                = { emit = "common:php.rand",             min_args = 0, max_
 mt_rand             = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
 lcg_value           = { emit = "common:php.lcg_value",        min_args = 0, max_args = 0 }
+__php_float_bytes   = { emit = "common:php.pack_float_bytes", min_args = 2, max_args = 2 }
 # `fmod` uses a pure-WASM emit (emit_c_fmod) that works with any numeric type.
 fmod                = { emit = "common:expressions.f64_mod", min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
@@ -549,6 +555,7 @@ __php_gt            = { emit = "common:php.compare_gt",          min_args = 2, m
 __php_lt            = { emit = "common:php.compare_lt",          min_args = 2, max_args = 2 }
 __php_gte           = { emit = "common:php.compare_gte",         min_args = 2, max_args = 2 }
 __php_lte           = { emit = "common:php.compare_lte",         min_args = 2, max_args = 2 }
+__php_is_gen        = { emit = "host:ecma:value:isGenerator",    min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
@@ -601,7 +608,7 @@ stream_get_meta_data = { emit = "common:php.stream_get_meta_data", min_args = 1,
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
 getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
-extension_loaded    = { emit = "common:php.extension_loaded", min_args = 1, max_args = 1 }
+# extension_loaded/get_loaded_extensions/php_uname defined by VERSION_PRELUDE.
 phpversion          = { emit = "common:php.phpversion",       min_args = 0, max_args = 1 }
 phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_args = 1 }
 
@@ -609,8 +616,9 @@ phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_a
 # These are runtime configuration calls that don't affect compiled-bytecode
 # behaviour. Stub them so common PHP boilerplate doesn't break at runtime.
 error_reporting     = { emit = "common:php.error_reporting",     min_args = 0, max_args = 1 }
-ini_set             = { emit = "noop",                        min_args = 2, max_args = 2 }
-ini_get             = { emit = "noop",                        min_args = 1, max_args = 1 }
+# ini_get/ini_set/ini_alter/ini_restore/ini_get_all/get_cfg_var are defined by
+# INI_FUNCTIONS_PRELUDE (stateful global store); no profile entry so the
+# prelude functions resolve.
 set_error_handler   = { emit = "common:php.set_error_handler",   min_args = 1, max_args = 2 }
 restore_error_handler = { emit = "common:php.restore_error_handler", min_args = 0, max_args = 0 }
 set_exception_handler = { emit = "common:php.set_exception_handler", min_args = 1, max_args = 1 }
