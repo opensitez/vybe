@@ -141,19 +141,22 @@ impl TypeDef {
         descriptor: crate::chunk::PropertyDescriptor,
     ) -> usize {
         let idx = self.field_defs.len();
-        let key = name.to_lowercase();
+        // The VM matches field names EXACTLY. Case-insensitivity is entirely a
+        // compile-time concern: the compiler canonicalises names before they
+        // reach here (case-sensitive langs keep case; VB/Pascal/COBOL resolve
+        // to the declared name). The VM never folds case.
         self.field_defs.push(FieldDef {
-            name: key.clone(),
+            name: name.to_string(),
             index: idx,
             descriptor,
         });
-        self.field_map.insert(key, idx);
+        self.field_map.insert(name.to_string(), idx);
         idx
     }
 
-    /// Get the index of a field by name, or None.
+    /// Get the index of a field by name (exact match), or None.
     pub fn field_index(&self, name: &str) -> Option<usize> {
-        self.field_map.get(&name.to_lowercase()).copied()
+        self.field_map.get(name).copied()
     }
 
     /// Number of indexed fields (for Object.fields pre-allocation).
@@ -162,13 +165,12 @@ impl TypeDef {
     }
 
     pub fn method(mut self, name: &str, m: Method) -> Self {
-        self.methods.insert(name.to_lowercase(), m);
+        self.methods.insert(name.to_string(), m);
         self
     }
 
     pub fn host_method(mut self, name: &str, host_fn_idx: usize) -> Self {
-        self.methods
-            .insert(name.to_lowercase(), Method::HostFn(host_fn_idx));
+        self.methods.insert(name.to_string(), Method::HostFn(host_fn_idx));
         self
     }
 
@@ -188,8 +190,7 @@ impl TypeDef {
     }
 
     pub fn with_required_method(mut self, name: &str, param_count: u8) -> Self {
-        self.required_methods
-            .push((name.to_lowercase(), param_count));
+        self.required_methods.push((name.to_string(), param_count));
         self
     }
 
@@ -213,7 +214,7 @@ impl TypeDef {
     /// Returns the descriptor or PropertyDescriptor::standard() if not specified.
     pub fn get_field_descriptor(&self, field_name: &str) -> crate::chunk::PropertyDescriptor {
         self.field_descriptors
-            .get(&field_name.to_lowercase())
+            .get(field_name)
             .cloned()
             .unwrap_or_else(crate::chunk::PropertyDescriptor::standard)
     }
@@ -280,11 +281,10 @@ impl TypeRegistry {
 
     /// Resolve a field index on a type (walks parent chain for inherited fields).
     pub fn resolve_field(&self, type_id: usize, field_name: &str) -> Option<(usize, usize)> {
-        let key = field_name.to_lowercase();
         let mut tid = type_id;
         loop {
             if let Some(typedef) = self.types.get(tid) {
-                if let Some(&idx) = typedef.field_map.get(&key) {
+                if let Some(&idx) = typedef.field_map.get(field_name) {
                     return Some((tid, idx));
                 }
                 if let Some(parent) = typedef.parent {
@@ -300,11 +300,10 @@ impl TypeRegistry {
 
     /// Look up a method on a type, walking up the inheritance chain.
     pub fn resolve_method(&self, type_id: usize, method_name: &str) -> Option<&Method> {
-        let key = method_name.to_lowercase();
         let mut tid = type_id;
         loop {
             if let Some(typedef) = self.types.get(tid) {
-                if let Some(m) = typedef.methods.get(&key) {
+                if let Some(m) = typedef.methods.get(method_name) {
                     return Some(m);
                 }
                 if let Some(parent) = typedef.parent {
@@ -312,7 +311,7 @@ impl TypeRegistry {
                 } else {
                     // Try universal Object type (index 0)
                     if tid != 0 {
-                        return self.types[0].methods.get(&key);
+                        return self.types[0].methods.get(method_name);
                     }
                     return None;
                 }
@@ -325,7 +324,7 @@ impl TypeRegistry {
     /// Add a method to an existing type.
     pub fn add_method(&mut self, type_id: usize, method_name: &str, m: Method) {
         if let Some(typedef) = self.types.get_mut(type_id) {
-            typedef.methods.insert(method_name.to_lowercase(), m);
+            typedef.methods.insert(method_name.to_string(), m);
         }
     }
 
@@ -357,7 +356,7 @@ impl TypeRegistry {
     /// Add a constant to a type (for enums).
     pub fn add_constant(&mut self, type_id: usize, name: &str, value: i64) {
         if let Some(typedef) = self.types.get_mut(type_id) {
-            typedef.constants.insert(name.to_lowercase(), value);
+            typedef.constants.insert(name.to_string(), value);
         }
     }
 
@@ -368,8 +367,7 @@ impl TypeRegistry {
 
     /// Look up a constant on a type (for enums).
     pub fn get_constant(&self, type_id: usize, name: &str) -> Option<i64> {
-        let key = name.to_lowercase();
-        self.types.get(type_id)?.constants.get(&key).copied()
+        self.types.get(type_id)?.constants.get(name).copied()
     }
 
     /// Resolve a type import: look up a type by interface + name.
@@ -493,7 +491,7 @@ impl TypeRegistry {
         let mut td = TypeDef::new(name).as_interface();
         for (method_name, param_count) in methods {
             td.required_methods
-                .push((method_name.to_lowercase(), *param_count));
+                .push((method_name.to_string(), *param_count));
         }
         self.register(td)
     }
@@ -579,9 +577,7 @@ impl TypeRegistry {
                     typedef.is_interface = true;
                     // For interfaces, methods are required method signatures
                     for (method_name, _) in &entry.methods {
-                        typedef
-                            .required_methods
-                            .push((method_name.to_lowercase(), 0));
+                        typedef.required_methods.push((method_name.clone(), 0));
                     }
                 }
 
@@ -589,7 +585,7 @@ impl TypeRegistry {
                 for (method_name, chunk_idx) in &entry.methods {
                     typedef
                         .methods
-                        .insert(method_name.to_lowercase(), Method::ChunkFn(*chunk_idx));
+                        .insert(method_name.clone(), Method::ChunkFn(*chunk_idx));
                 }
 
                 // Set constructor
