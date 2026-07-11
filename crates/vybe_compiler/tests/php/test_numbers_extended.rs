@@ -154,7 +154,7 @@ fn bcmath_add() {
 fn bcmath_mul() {
     assert_eq!(
         run_prints(r#"<?php echo bcmul('123456789', '987654321'); "#),
-        vec!["121932631112635260"]
+        vec!["121932631112635269"]
     );
 }
 #[test]
@@ -168,20 +168,20 @@ fn bcmath_div() {
 fn bcmath_pow() {
     assert_eq!(
         run_prints(r#"<?php echo bcpow('2', '64'); "#),
-        vec!["18446744073709552000"]
+        vec!["18446744073709551616"]
     );
 }
 #[test]
 fn bcmath_comp() {
     assert_eq!(
         run_prints(r#"<?php echo bccomp('1.23456789', '1.23456790'); "#),
-        vec!["-1"]
+        vec!["0"]
     );
 }
 #[test]
 fn bcmath_scale() {
     assert_eq!(
         run_prints(r#"<?php bcscale(2); echo bcadd('1', '2'); "#),
-        vec!["3"]
+        vec!["3.00"]
     );
 }

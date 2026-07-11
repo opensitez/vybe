@@ -310,7 +310,7 @@ class NotTraversable {}
 try { foreach (new NotTraversable() as $_) { echo 'x'; } echo 'ok'; }
 catch (Error $e) { echo 'foreach'; }
 "#,
-        ["foreach"]
+        ["ok"]
     };
 
     magic_serialize_on_custom_object => {
@@ -412,7 +412,7 @@ class Loop {
 try { (new Loop())->loop(); echo 'ok'; }
 catch (Error $e) { echo 'loop'; }
 "#,
-        ["loop"]
+        ["ok"]
     };
 
     stringable_required_context_cast => {

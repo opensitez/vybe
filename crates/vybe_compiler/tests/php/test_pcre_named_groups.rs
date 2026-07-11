@@ -50,7 +50,7 @@ $result = preg_replace('/(?P<last>\w+),\s*(?P<first>\w+)/', '${first} ${last}', 
 echo $result;
 "#
         ),
-        vec!["John Smith"]
+        vec!["${first} ${last}"]
     );
 }
 
@@ -107,7 +107,7 @@ preg_match_all('/\d+(?! dollars)/', '50 dollars 30 euros', $m);
 echo implode(',', $m[0]);
 "#
         ),
-        vec!["30"]
+        vec!["5,30"]
     );
 }
 

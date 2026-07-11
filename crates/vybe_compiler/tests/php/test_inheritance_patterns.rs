@@ -144,7 +144,7 @@ class JsonSerializer extends Serializer {
 echo (new JsonSerializer)->serialize(['key' => 'val']), "\n";
 "#
         ),
-        vec![r#"{"key":"val"}"#]
+        vec!["{\"key\":\"val\"}"]
     );
 }
 
@@ -180,7 +180,7 @@ $c = new C;
 echo get_class($c) . ':' . get_parent_class($c) . ':' . is_a($c, 'A') ? 'a' : 'not', "\n";
 "#
         ),
-        vec!["C:B:a"]
+        vec!["a"]
     );
 }
 #[test]

@@ -64,7 +64,7 @@ $gen->next();
 try { echo $gen->getReturn(); }
 catch (Exception $e) { echo 'early'; }
 "#,
-        ["early"]
+        ["2"]
     };
 
     generator_valid_false_after_completion => {
@@ -150,7 +150,7 @@ try { foreach (g() as $v) { $log[] = $v; } }
 catch (RuntimeException $e) { $log[] = 'c'; }
 echo implode('', $log);
 "#,
-        ["c"]
+        ["fc"]
     };
 
     generator_return_value_not_yielded_to_foreach => {
@@ -201,7 +201,7 @@ function b(): Generator { yield 'B'; }
 function both(): Generator { yield from a(); yield from b(); }
 echo implode('', iterator_to_array(both()));
 "#,
-        ["AB"]
+        ["B"]
     };
 
     generator_manual_next_advances_value => {
@@ -213,7 +213,7 @@ echo $it->current();
 $it->next();
 echo $it->current();
 "#,
-        ["24"]
+        ["4"]
     };
 
     generator_rewind_not_supported => {
@@ -223,7 +223,7 @@ $gen = g();
 try { $gen->rewind(); echo 'rewound'; }
 catch (Exception $e) { echo 'norewind'; }
 "#,
-        ["norewind"]
+        ["rewound"]
     };
 
     generator_with_empty_body_only_return => {
@@ -405,7 +405,7 @@ $g = obj();
 $g->next();
 echo $g->current() instanceof ArrayObject ? 'obj' : 'no';
 "#,
-        ["obj"]
+        ["no"]
     };
 
     generator_multiple_throw_attempts_only_first_matters => {
@@ -440,7 +440,7 @@ function g(): Generator { yield 'k' => 9; }
 $arr = iterator_to_array(g(), false);
 echo implode('', array_keys($arr));
 "#,
-        ["k"]
+        ["0"]
     };
 
     generator_to_array_preserves_keys_true => {
@@ -512,6 +512,6 @@ function mid(): Generator { yield 'm'; return 'R'; }
 function top(): Generator { yield 't'; $r = yield from mid(); yield $r; }
 echo implode(',', iterator_to_array(top()));
 "#,
-        ["t,m,R"]
+        ["m,R"]
     };
 }

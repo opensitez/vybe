@@ -68,7 +68,7 @@ echo match ('inner') {
 $grade = match (85) { 90, 100 => 'A', 80, 89 => 'B', default => 'C' };
 echo $grade;
 "#,
-        ["B"]
+        ["C"]
     };
 
     match_in_return_statement => {

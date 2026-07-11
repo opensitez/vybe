@@ -239,7 +239,9 @@ preg_match_all('/https?:\/\/[\w.\/]+/', $text, $matches);
 echo implode("\n", $matches[0]);
 "#
         ),
-        &["https://example.com\nhttp://test.org/page"]
+        // implode joins with a real newline; run_prints splits stdout on "\n",
+        // so the two matched URLs land as two entries (verified vs php CLI).
+        &["https://example.com", "http://test.org/page"]
     );
 }
 

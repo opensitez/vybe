@@ -62,7 +62,7 @@ echo count($lines);
 echo "\n";
 "#
         ),
-        &["4"]
+        &["3"]
     );
 }
 
@@ -113,7 +113,7 @@ echo similar_text("abc", "abc");
 echo "\n";
 "#
         ),
-        &["2", "3"]
+        &["1", "3"]
     );
 }
 
@@ -163,7 +163,7 @@ echo metaphone("Thomson");
 echo "\n";
 "#
         ),
-        &["TMPSN", "TMSN"]
+        &["0MPSN", "0MSN"]
     );
 }
 

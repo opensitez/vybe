@@ -91,7 +91,7 @@ $r = array_map(null, [1,2,3]);
 echo implode(',', array_map(fn($x) => $x[0], $r));
 "#
         ),
-        vec!["1,2,3"]
+        vec![",,"]
     );
 }
 

@@ -167,7 +167,7 @@ $s = new Strict();
 try { $s->extra = 2; echo 'added'; }
 catch (Error $e) { echo 'dynamic'; }
 "#,
-        ["dynamic"]
+        ["added"]
     };
 
     std_class_allows_dynamic_properties => {
@@ -416,7 +416,7 @@ $f = new Flag();
 try { $f->on = '1'; echo 'ok'; }
 catch (TypeError $e) { echo 'bool'; }
 "#,
-        ["bool"]
+        ["ok"]
     };
 
     callable_typed_property_accepts_closure => {

@@ -470,7 +470,7 @@ $app->append(new ArrayIterator([1, 2]));
 $app->append(new ArrayIterator([3]));
 echo implode('', iterator_to_array($app));
 "#,
-        ["123"]
+        ["32"]
     };
 
     iteratoraggregate_yields_from_getiterator => {

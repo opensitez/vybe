@@ -124,7 +124,7 @@ echo (is_callable('strlen', false) ? 'syn' : 'no')
    . ':'
    . (is_callable('ghost_fn', true) ? 'rt' : 'no');
 "#,
-        ["syn:rt:no:no"]
+        ["syn:rt:no:rt"]
     };
 
     is_callable_integer_false => {
@@ -334,7 +334,7 @@ try {
     echo 'err';
 }
 "#,
-        ["made"]
+        ["err"]
     };
 
     invokable_object_is_callable => {
@@ -457,7 +457,7 @@ $ok = false;
 try { $fn = X::missing(...); } catch (Throwable $e) { $ok = true; }
 echo $ok ? 'caught' : 'end';
 "#,
-        ["end"]
+        ["caught"]
     };
 
     arrow_this_returns_same_instance => {

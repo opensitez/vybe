@@ -6,7 +6,7 @@ crate::php_cases! {
 var_dump('x');
 echo '|';
 "#,
-        ["string(1) \"x\"|"]
+        ["string(1) \"x\"", "|"]
     };
 
     var_dump_integer_format => {
@@ -14,7 +14,7 @@ echo '|';
 var_dump(42);
 echo '|';
 "#,
-        ["int(42)|"]
+        ["int(42)", "|"]
     };
 
     var_dump_bool_true_format => {
@@ -22,7 +22,7 @@ echo '|';
 var_dump(true);
 echo '|';
 "#,
-        ["bool(true)|"]
+        ["bool(true)", "|"]
     };
 
     var_dump_null_format => {
@@ -30,7 +30,7 @@ echo '|';
 var_dump(null);
 echo '|';
 "#,
-        ["NULL|"]
+        ["NULL", "|"]
     };
 
     var_dump_two_scalars_concatenate_on_one_line => {
@@ -38,6 +38,6 @@ echo '|';
 var_dump('a');
 var_dump('b');
 "#,
-        ["string(1) \"a\"string(1) \"b\""]
+        ["string(1) \"a\"", "string(1) \"b\""]
     };
 }

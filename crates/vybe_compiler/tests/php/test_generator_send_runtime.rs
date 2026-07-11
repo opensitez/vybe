@@ -23,7 +23,7 @@ function inner(): Generator { yield 'a'; yield 'b'; }
 function outer(): Generator { yield from inner(); yield 'c'; }
 echo implode('', iterator_to_array(outer()));
 "#,
-        ["abc"]
+        ["cb"]
     };
 
     generator_yield_from_array => {
@@ -31,7 +31,7 @@ echo implode('', iterator_to_array(outer()));
 function g(): Generator { yield from [1, 2]; yield 3; }
 echo implode(',', iterator_to_array(g()));
 "#,
-        ["1,2,3"]
+        ["3,2"]
     };
 
     generator_keys_reset_after_yield_from => {
@@ -122,7 +122,7 @@ function b(): Generator { yield from a(); yield 2; }
 function c(): Generator { yield from b(); yield 3; }
 echo implode('', iterator_to_array(c()));
 "#,
-        ["123"]
+        ["3"]
     };
 
     generator_get_return_default_null => {

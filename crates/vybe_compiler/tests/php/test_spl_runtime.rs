@@ -95,7 +95,7 @@ $h->insert(5);
 $h->insert(2);
 echo $h->extract();
 "#,
-        ["2"]
+        ["5"]
     };
 
     spl_array_object_offset_set => {
@@ -221,7 +221,7 @@ $app->append($a);
 $app->append($b);
 echo count(iterator_to_array($app));
 "#,
-        ["2"]
+        ["1"]
     };
 
     spl_no_rewind_iterator => {
@@ -265,7 +265,7 @@ $it = new RecursiveTreeIterator(new RecursiveArrayIterator(['a' => ['b']]));
 $it->rewind();
 echo $it->getPrefix();
 "#,
-        [""]
+        ["\\-"]
     };
 
     spl_recursive_iterator_iterator => {
@@ -274,7 +274,7 @@ $tree = new RecursiveArrayIterator([1, [2, 3]]);
 $it = new RecursiveIteratorIterator($tree);
 echo array_sum(iterator_to_array($it));
 "#,
-        ["6"]
+        ["5"]
     };
 
     spl_filter_iterator => {

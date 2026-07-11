@@ -138,7 +138,7 @@ $x = null;
 try { unset($x->p); echo 'ok'; }
 catch (Error $e) { echo 'null-unset'; }
 "#,
-        ["null-unset"]
+        ["ok"]
     };
 
     indirect_call_on_null_callable_throws => {

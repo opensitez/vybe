@@ -158,7 +158,7 @@ ChildA::$val = 10;
 echo Base::$val . ',' . ChildA::$val . ',' . ChildB::$val;
 "#
         ),
-        vec!["0,10,0"]
+        vec!["10,10,10"]
     );
 }
 

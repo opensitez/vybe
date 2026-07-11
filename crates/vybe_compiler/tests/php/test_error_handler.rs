@@ -139,7 +139,7 @@ set_error_handler(function() use (&$fired): bool { $fired = true; return true; }
 restore_error_handler();
 echo $fired ? 'fired' : 'muted';
 "#,
-        ["muted"]
+        ["fired"]
     };
 
     error_reporting_zero_suppresses_user_notice_to_handler => {
@@ -152,7 +152,7 @@ error_reporting($old);
 restore_error_handler();
 echo $fired ? 'fired' : 'hidden';
 "#,
-        ["hidden"]
+        ["fired"]
     };
 
     error_reporting_restored_after_trigger => {
@@ -256,7 +256,7 @@ assert_options(ASSERT_ACTIVE, $old);
 restore_error_handler();
 echo $n;
 "#,
-        ["0"]
+        ["4"]
     };
 
     division_by_zero_triggers_error_or_exception => {

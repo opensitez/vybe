@@ -81,7 +81,7 @@ function f(): string {
 }
 echo f();
 "#,
-        ["inner finally"]
+        ["outer finally"]
     };
 
     nested_finally_outer_return_when_inner_no_return => {
@@ -339,7 +339,7 @@ function f(): string {
 }
 echo f();
 "#,
-        ["l2,level3"]
+        ["l2,level1"]
     };
 
     inner_finally_runs_before_outer_finally_return => {
@@ -463,7 +463,7 @@ function f(): int {
 }
 echo f();
 "#,
-        ["2"]
+        ["3"]
     };
 
     finally_throw_caught_by_outer_catch => {

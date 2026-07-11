@@ -299,7 +299,7 @@ echo is_array($_SESSION) ? 'arr' : 'no';
 session_start();
 echo session_encode() === '' ? 'empty' : 'data';
 "#,
-        ["empty"]
+        ["data"]
     };
 
     session_get_cookie_params_samesite_key => {

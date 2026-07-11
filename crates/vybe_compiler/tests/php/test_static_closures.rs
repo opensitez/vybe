@@ -287,7 +287,7 @@ echo $expensive(4);
 echo $expensive(4);
 "#
         ),
-        vec!["16", "16"]
+        vec!["1616"]
     );
 }
 

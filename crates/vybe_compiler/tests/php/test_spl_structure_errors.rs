@@ -1,12 +1,17 @@
 //! SPL structure failure paths only — empty extract, bad offsets, iterator faults.
 //! Happy-path push/pop/order tests live in `test_spl.rs` / `test_spl_data_structures.rs`.
+//!
+//! Correction: empty pop/shift/dequeue/extract/top/bottom throw `RuntimeException`,
+//! NOT `UnderflowException` (which is a *subclass* and cannot catch its parent).
+//! Verified against the php 8.4 CLI — the earlier `catch (UnderflowException)`
+//! expectations would fail on real PHP too.
 
 crate::php_cases! {
     spl_queue_dequeue_on_empty_throws_underflow => {
         r#"<?php
 $q = new SplQueue();
 try { $q->dequeue(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'q-deq'; }
+catch (RuntimeException $e) { echo 'q-deq'; }
 "#,
         ["q-deq"]
     };
@@ -15,7 +20,7 @@ catch (UnderflowException $e) { echo 'q-deq'; }
         r#"<?php
 $s = new SplStack();
 try { $s->pop(); echo 'ok'; }
-catch (UnderflowException $e) { echo 's-pop'; }
+catch (RuntimeException $e) { echo 's-pop'; }
 "#,
         ["s-pop"]
     };
@@ -24,7 +29,7 @@ catch (UnderflowException $e) { echo 's-pop'; }
         r#"<?php
 $l = new SplDoublyLinkedList();
 try { $l->shift(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'dll-shift'; }
+catch (RuntimeException $e) { echo 'dll-shift'; }
 "#,
         ["dll-shift"]
     };
@@ -33,7 +38,7 @@ catch (UnderflowException $e) { echo 'dll-shift'; }
         r#"<?php
 $l = new SplDoublyLinkedList();
 try { $l->pop(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'dll-pop'; }
+catch (RuntimeException $e) { echo 'dll-pop'; }
 "#,
         ["dll-pop"]
     };
@@ -42,7 +47,7 @@ catch (UnderflowException $e) { echo 'dll-pop'; }
         r#"<?php
 $h = new SplMinHeap();
 try { $h->extract(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'heap-x'; }
+catch (RuntimeException $e) { echo 'heap-x'; }
 "#,
         ["heap-x"]
     };
@@ -51,7 +56,7 @@ catch (UnderflowException $e) { echo 'heap-x'; }
         r#"<?php
 $pq = new SplPriorityQueue();
 try { $pq->extract(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'pq-x'; }
+catch (RuntimeException $e) { echo 'pq-x'; }
 "#,
         ["pq-x"]
     };
@@ -60,7 +65,7 @@ catch (UnderflowException $e) { echo 'pq-x'; }
         r#"<?php
 $q = new SplQueue();
 try { $q->top(); echo 'ok'; }
-catch (UnderflowException $e) { echo 'q-top'; }
+catch (RuntimeException $e) { echo 'q-top'; }
 "#,
         ["q-top"]
     };
@@ -69,7 +74,7 @@ catch (UnderflowException $e) { echo 'q-top'; }
         r#"<?php
 $s = new SplStack();
 try { $s->bottom(); echo 'ok'; }
-catch (UnderflowException $e) { echo 's-bot'; }
+catch (RuntimeException $e) { echo 's-bot'; }
 "#,
         ["s-bot"]
     };
@@ -153,7 +158,7 @@ $inner = new ArrayIterator([1, 2, 3]);
 try { new LimitIterator($inner, 0, -1); echo 'ok'; }
 catch (ValueError $e) { echo 'lim-neg'; }
 "#,
-        ["lim-neg"]
+        ["ok"]
     };
 
     multiple_iterator_without_attach_has_zero_count => {

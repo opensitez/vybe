@@ -58,7 +58,7 @@ class P { public string $s = '0'; }
 $p = new P();
 echo empty($p->s) ? 'empty' : 'set';
 "#,
-        ["set"]
+        ["empty"]
     };
 
     object_identity_same_instance => {
@@ -91,7 +91,7 @@ echo spl_object_id(new U()) === spl_object_id(new U()) ? 'eq' : 'ne';
 class U {}
 echo spl_object_hash(new U()) === spl_object_hash(new U()) ? 'eq' : 'ne';
 "#,
-        ["ne"]
+        ["eq"]
     };
 
     instanceof_checks_hierarchy => {

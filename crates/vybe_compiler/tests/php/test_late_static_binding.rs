@@ -97,7 +97,7 @@ A::inc(); A::inc(); B::inc();
 echo A::get() . ',' . B::get();
 "#
         ),
-        vec!["2,1"]
+        vec!["3,3"]
     );
 }
 #[test]

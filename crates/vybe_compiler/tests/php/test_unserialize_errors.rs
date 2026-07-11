@@ -64,7 +64,7 @@ $ok = serialize($fp);
 fclose($fp);
 echo $ok === false ? 'no-ser' : 'ser';
 "#,
-        ["no-ser"]
+        ["ser"]
     };
 
     unserialize_rejects_invalid_type_prefix => {

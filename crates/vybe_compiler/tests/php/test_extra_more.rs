@@ -36,14 +36,14 @@ fn addslashes_removes_with_stripslashes() {
 fn wordwrap_no_cut() {
     assert_eq!(
         run_prints(r#"<?php echo wordwrap('The quick',5,"\n",false); "#),
-        vec!["The\nquick"]
+        vec!["The", "quick"]
     );
 }
 #[test]
 fn chunk_split_empty_string() {
     assert_eq!(
         run_prints(r#"<?php echo chunk_split('',2,':'); "#),
-        vec![""]
+        vec![":"]
     );
 }
 #[test]
@@ -64,7 +64,7 @@ fn count_chars_mode0() {
 fn substr_replace_array() {
     assert_eq!(
         run_prints(r#"<?php echo implode(',',substr_replace(['a','bb','ccc'],'-',1)); "#),
-        vec!["a-,-,-"]
+        vec!["a-,b-,c-"]
     );
 }
 #[test]

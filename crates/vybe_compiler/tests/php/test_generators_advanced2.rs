@@ -24,7 +24,7 @@ function outer(): Generator { yield from inner(); yield 'c'; }
 echo implode('', iterator_to_array(outer()));
 "#
         ),
-        vec!["abc"]
+        vec!["cb"]
     );
 }
 #[test]
@@ -40,7 +40,7 @@ function parent_gen(): Generator {
 echo implode(',', iterator_to_array(parent_gen()));
 "#
         ),
-        vec!["1,child_done"]
+        vec!["child_done"]
     );
 }
 

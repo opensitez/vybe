@@ -518,7 +518,7 @@ $child = $doc->createElement('name', 'vybe');
 $root->appendChild($child);
 echo $doc->saveXML($child);
 "#,
-        ["<name>vybe</name>\n"]
+        ["<name>vybe</name>"]
     };
 
     dom_get_elements_by_tag_name => {

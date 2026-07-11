@@ -175,7 +175,7 @@ echo $c->port;
 echo $c->db;
 "#
         ),
-        &["localhost", "5432", "mydb"]
+        &["localhost5432mydb"]
     );
 }
 
@@ -366,7 +366,7 @@ echo $cfg->get("db")?->value("host") ?? "default";
 echo $cfg->get("missing")?->value("host") ?? "default";
 "#
         ),
-        &["localhost", "default"]
+        &["localhostdefault"]
     );
 }
 
@@ -475,7 +475,7 @@ echo $m->currency;
 echo $m->format();
 "#
         ),
-        &["100", "USD", "100 USD"]
+        &["100USD100 USD"]
     );
 }
 
@@ -577,7 +577,7 @@ $fiber->resume();
 echo $fiber->isTerminated() ? "terminated" : "not terminated";
 "#
         ),
-        &["suspended", "not terminated", "terminated"]
+        &["suspendednot terminatedterminated"]
     );
 }
 
@@ -813,7 +813,7 @@ echo $fn(5);
 echo $fn(21);
 "#
         ),
-        &["10", "42"]
+        &["1042"]
     );
 }
 
@@ -1010,7 +1010,7 @@ echo $fn(5);
 echo $fn(21);
 "#
         ),
-        &["10", "42"]
+        &["1042"]
     );
 }
 

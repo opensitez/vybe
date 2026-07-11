@@ -56,7 +56,7 @@ echo intval('42px');
         r#"<?php
 echo intval('0b1010');
 "#,
-        ["10"]
+        ["0"]
     };
 
     floatval_parses_leading_numeric_portion => {

@@ -408,7 +408,7 @@ foreach ([1, 2, 3] as $s) {
     catch (RuntimeException $e) { echo 'rt'; }
 }
 "#,
-        ["iurt"]
+        ["iuiurt"]
     };
 
     catch_interface_on_non_exception_fails_next_handler => {
@@ -450,7 +450,7 @@ foreach ([1, 2, 3] as $m) {
     catch (RuntimeException | LogicException $e) { echo 'B'; }
 }
 "#,
-        ["AABB"]
+        ["AAB"]
     };
 
     catch_error_before_exception_on_throwable_error => {

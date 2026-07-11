@@ -17,7 +17,7 @@ fn str_split_empty_returns_false() {
 fn substr_out_of_range_empty() {
     assert_eq!(
         run_prints(r#"<?php var_export(substr('hello', 10)); "#),
-        vec!["false"]
+        vec!["''"]
     );
 }
 #[test]

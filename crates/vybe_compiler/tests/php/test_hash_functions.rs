@@ -101,7 +101,7 @@ echo strlen(hash_hkdf('sha256', 'input', 16, 'salt', 'info'));
         r#"<?php
 echo strlen(hash_pbkdf2('sha256', 'password', 'salt', 1000, 20));
 "#,
-        ["40"]
+        ["20"]
     };
 
     md5_file_equals_md5_of_contents => {

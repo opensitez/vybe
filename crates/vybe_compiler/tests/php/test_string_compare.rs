@@ -40,7 +40,7 @@ echo strnatcasecmp('Img2', 'img10') < 0 ? 'before' : 'after';
         r#"<?php
 echo levenshtein('ca', 'abc', 1, 10, 10);
 "#,
-        ["3"]
+        ["12"]
     };
 
     levenshtein_insert_only => {
@@ -62,14 +62,14 @@ echo (int)$pct;
         r#"<?php
 echo metaphone('program');
 "#,
-        ["PRGRM"]
+        ["PRKRM"]
     };
 
     metaphone_with_length_limit => {
         r#"<?php
 echo metaphone('programming', 4);
 "#,
-        ["PRGR"]
+        ["PRKR"]
     };
 
     soundex_same_sound => {

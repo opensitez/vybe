@@ -234,7 +234,8 @@ if (function_exists('mb_str_pad')) {
     echo '00hi';
 }
 "#,
-        ["00hi"]
+        // mb_str_pad('hi',5,...) pads to total width 5 → three "0" + "hi".
+        ["000hi"]
     };
 
     mbstrlen_with_explicit_utf8_encoding_param => {

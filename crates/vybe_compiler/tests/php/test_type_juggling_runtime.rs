@@ -19,7 +19,7 @@ echo '1' === 1 ? 'eq' : 'ne';
         r#"<?php
 echo '' == 0 ? 'eq' : 'ne';
 "#,
-        ["eq"]
+        ["ne"]
     };
 
     strict_empty_string_not_equal_zero => {
@@ -133,7 +133,7 @@ echo empty(0) ? 'yes' : 'no';
         r#"<?php
 echo empty('0') ? 'yes' : 'no';
 "#,
-        ["no"]
+        ["yes"]
     };
 
     isset_on_null_value => {
@@ -155,7 +155,7 @@ echo is_numeric('12.3') ? 'yes' : 'no';
         r#"<?php
 echo is_numeric('0x10') ? 'yes' : 'no';
 "#,
-        ["yes"]
+        ["no"]
     };
 
     filter_var_int_validation => {

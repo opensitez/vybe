@@ -61,7 +61,7 @@ echo $g->getReturn();
 function gen(): Generator { yield from [4, 5]; yield 6; }
 echo implode(',', iterator_to_array(gen()));
 "#,
-        ["4,5,6"]
+        ["6,5"]
     };
 
     generator_yield_from_inner_generator => {
@@ -70,7 +70,7 @@ function inner(): Generator { yield 'a'; yield 'b'; }
 function outer(): Generator { yield from inner(); yield 'c'; }
 echo implode('', iterator_to_array(outer()));
 "#,
-        ["abc"]
+        ["cb"]
     };
 
     generator_send_injects_value_after_yield => {
@@ -133,7 +133,7 @@ function b(): Generator { yield 2; }
 function all(): Generator { yield from a(); yield from b(); }
 echo implode('', iterator_to_array(all()));
 "#,
-        ["12"]
+        ["2"]
     };
 
     generator_get_return_throws_while_running => {

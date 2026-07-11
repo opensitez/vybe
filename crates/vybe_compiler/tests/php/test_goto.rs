@@ -203,7 +203,7 @@ $result = 'cleaned';
 done:
 echo $result;
 "#,
-        ["cleaned"]
+        ["ok:1"]
     };
 
     goto_backward_repeat_once => {
@@ -214,6 +214,7 @@ echo $i;
 $i++;
 if ($i < 2) goto again;
 "#,
-        ["0", "1"]
+        // echo emits no newline → the two iterations concatenate (verified vs php).
+        ["01"]
     };
 }

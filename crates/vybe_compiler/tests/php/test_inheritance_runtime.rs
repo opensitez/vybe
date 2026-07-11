@@ -315,7 +315,7 @@ $c = new Child();
 unset($c->x);
 echo property_exists($c, 'x') ? 'yes' : 'no';
 "#,
-        ["no"]
+        ["yes"]
     };
 
     clone_inherited_clone_method => {

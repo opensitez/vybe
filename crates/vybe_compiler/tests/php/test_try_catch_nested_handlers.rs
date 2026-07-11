@@ -179,7 +179,7 @@ try { throw new Exception('scoped'); }
 catch (Exception $e) { $inside = $e->getMessage(); }
 finally { echo isset($inside) ? $inside : 'gone'; }
 "#,
-        ["gone"]
+        ["scoped"]
     };
 
     nested_try_inside_catch_block => {

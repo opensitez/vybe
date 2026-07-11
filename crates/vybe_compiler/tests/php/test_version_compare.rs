@@ -12,7 +12,9 @@ echo version_compare('8.2.0', '8.1.0', '>') ? 'gt' : 'no';
         r#"<?php
 echo version_compare('8.2', '8.2.0', '==') ? 'eq' : 'ne';
 "#,
-        ["eq"]
+        // Real PHP 8.4: '8.2' < '8.2.0' (a shorter version is LESS), so the
+        // == comparison is false. Verified against php CLI.
+        ["ne"]
     };
 
     version_compare_less_or_equal => {

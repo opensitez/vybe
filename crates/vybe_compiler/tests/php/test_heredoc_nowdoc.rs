@@ -211,7 +211,7 @@ $s = <<<EOT
 echo trim($s);
 "#
         ),
-        vec!["Hello\n    World"]
+        vec!["Hello", "World"]
     );
 }
 

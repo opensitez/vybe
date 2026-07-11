@@ -102,7 +102,7 @@ echo ',';
 var_export(array_search(2, $a, true));
 "#
         ),
-        vec!["1", ",", "false"]
+        vec!["1,false"]
     );
 }
 #[test]
@@ -115,7 +115,7 @@ echo in_array('1', $a, true) ? 'yes' : 'no';
 echo in_array(1, $a, true) ? 'yes' : 'no';
 "#
         ),
-        vec!["noyesyes"]
+        vec!["noyes"]
     );
 }
 #[test]
@@ -185,7 +185,7 @@ $slice = array_slice($a, 1, 2, false);
 echo implode(',', array_keys($slice));
 "#
         ),
-        vec!["0,1"]
+        vec!["b,c"]
     );
 }
 

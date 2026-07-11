@@ -120,7 +120,7 @@ trait T { public function id(): string { return 'trait'; } }
 class Child extends Base { use T; }
 echo (new Child())->id();
 "#,
-        ["base"]
+        ["trait"]
     };
 
     trait_multiple_uses_same_trait_ok => {

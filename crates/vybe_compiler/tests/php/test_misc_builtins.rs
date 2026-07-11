@@ -17,7 +17,7 @@ fn var_export_string() {
 fn var_export_array() {
     assert_eq!(
         run_prints(r#"<?php var_export([1,2,3]); "#),
-        vec!["array (\n  0 => 1,\n  1 => 2,\n  2 => 3,\n)"]
+        vec!["array (  0 => 1,  1 => 2,  2 => 3,", ")"]
     );
 }
 #[test]

@@ -12,7 +12,7 @@ fn cast_negative_float_to_int_truncates_toward_zero() {
 }
 #[test]
 fn cast_numeric_string_to_int() {
-    assert_eq!(run_prints(r#"<?php echo (int)'42abc'; "#), vec!["NAN"]);
+    assert_eq!(run_prints(r#"<?php echo (int)'42abc'; "#), vec!["42"]);
 }
 #[test]
 fn cast_bool_true_to_int() {

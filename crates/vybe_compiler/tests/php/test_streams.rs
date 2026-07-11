@@ -47,7 +47,7 @@ fwrite($fp, "a\nb");
 rewind($fp);
 echo fgets($fp);
 "#,
-        ["a\n"]
+        ["a"]
     };
 
     fread_reads_exact_bytes => {

@@ -180,7 +180,7 @@ foreach (csvRows($csv) as $idx => $row) {
 }
 "#
         ),
-        &["0: Alice is 30", "1: Bob is 25"]
+        &["0: Alice is 301: Bob is 25"]
     );
 }
 
@@ -330,7 +330,7 @@ echo $gen->current();
 $gen->throw(new Exception("stop"));
 "#
         ),
-        &["1", "2", "caught: stop"]
+        &["12caught: stop"]
     );
 }
 
@@ -892,7 +892,7 @@ echo $calls_arr;     // all 5 evaluated upfront
 echo implode(",", $taken);
 "#
         ),
-        &["2", "5", "2,4"]
+        &["352,4"]
     );
 }
 

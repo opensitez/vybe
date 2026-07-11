@@ -47,7 +47,7 @@ echo array_reduce([1, 2, 3], fn($c, $n) => $c + $n, 0);
         r#"<?php
 echo array_reduce([2, 3, 4], fn($c, $n) => $c * $n);
 "#,
-        ["24"]
+        ["0"]
     };
 
     array_walk_mutates_by_reference => {

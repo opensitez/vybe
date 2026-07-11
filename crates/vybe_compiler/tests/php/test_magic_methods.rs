@@ -291,7 +291,7 @@ try {
 }
 "#
         ),
-        &["Alice", "30", "caught"]
+        &["Alice30caught"]
     );
 }
 
@@ -617,7 +617,7 @@ echo $b->value;
 echo $b->next->value;
 "#
         ),
-        &["first", "second", "modified", "also modified"]
+        &["firstsecondmodifiedalso modified"]
     );
 }
 
@@ -724,7 +724,7 @@ echo $t2->getValue();
 echo $t2->getSecret();
 "#
         ),
-        &["abc123", "restored"]
+        &["abc123restored"]
     );
 }
 
@@ -923,7 +923,7 @@ echo $p->price;
 echo isset($p->stock) ? "in stock" : "out";
 "#
         ),
-        &["Widget", "9.99", "in stock"]
+        &["Widget9.99in stock"]
     );
 }
 
@@ -975,7 +975,7 @@ echo $w->add(3, 4);
 echo $w->multiply(2, 3, 4);
 "#
         ),
-        &["7", "24"]
+        &["724"]
     );
 }
 

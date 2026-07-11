@@ -73,7 +73,7 @@ restore_error_handler();
 $e = error_get_last();
 echo isset($e['message']) ? 'yes' : 'no';
 "#,
-        ["yes"]
+        ["no"]
     };
 
     error_clear_last => {

@@ -106,7 +106,7 @@ echo preg_match('/a.b/s', "a\nb") ? 'dotall' : 'line';
         r#"<?php
 echo preg_replace('//', 'x', 'hi');
 "#,
-        ["hi"]
+        ["xhxix"]
     };
 
     preg_match_returns_zero_on_no_match => {

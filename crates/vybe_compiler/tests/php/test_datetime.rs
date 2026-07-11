@@ -24,7 +24,8 @@ echo date("Y-m-d", $ts);
 echo date("H:i:s", $ts);
 "#
         ),
-        &["2024-06-15", "14:30:00"]
+        // echo emits no newline, so PHP concatenates the two into one line.
+        &["2024-06-1514:30:00"]
     );
 }
 
@@ -40,7 +41,8 @@ echo date("d", $ts);
 echo date("D", $ts);
 "#
         ),
-        &["2023", "12", "25", "Mon"]
+        // echo emits no newline: all four parts concatenate into one line.
+        &["20231225Mon"]
     );
 }
 
@@ -96,7 +98,8 @@ $prev = strtotime("-1 month", $base);
 echo date("Y-m-d", $prev);
 "#
         ),
-        &["2024-06-22", "2024-05-15"]
+        // echo emits no newline: both dates concatenate into one line.
+        &["2024-06-222024-05-15"]
     );
 }
 
@@ -312,6 +315,7 @@ echo $dt->format("Y-m-d");
 echo $modified->format("Y-m-d");
 "#
         ),
-        &["2024-01-01", "2024-02-01"]
+        // echo emits no newline: both dates concatenate into one line.
+        &["2024-01-012024-02-01"]
     );
 }

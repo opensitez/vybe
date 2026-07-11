@@ -431,7 +431,7 @@ echo (new CsvExporter())->export();
 echo (new JsonExporter())->export();
 "#
         ),
-        vec!["OUT:1,2,3", "OUT:{\"a\":1}"]
+        vec!["OUT:1,2,3OUT:{\"a\":1}"]
     );
 }
 
@@ -497,7 +497,7 @@ $range = new NumberRange(1, 5);
 foreach ($range as $n) { echo $n; }
 "#
         ),
-        vec!["1", "2", "3", "4", "5"]
+        vec!["12345"]
     );
 }
 
@@ -604,7 +604,7 @@ $bob->send('Alice', 'hello');
 foreach ($room->getLog() as $entry) { echo $entry; }
 "#
         ),
-        vec!["Alice->Bob:hi", "Bob->Alice:hello"]
+        vec!["Alice->Bob:hiBob->Alice:hello"]
     );
 }
 
@@ -694,7 +694,7 @@ echo $repo->find(1)->name;
 echo count($repo->findAll());
 "#
         ),
-        vec!["Alice", "2"]
+        vec!["Alice2"]
     );
 }
 
@@ -864,7 +864,8 @@ echo $a->equals($c) ? 'equal' : 'diff';
 echo $a->add($c);
 "#
         ),
-        vec!["equal", "diff", "150 USD"]
+        // Bare echo emits no newline: the three outputs concatenate (spec PHP).
+        vec!["equaldiff150 USD"]
     );
 }
 
@@ -952,7 +953,7 @@ echo TreeFactory::count();
 echo $t1->draw(1, 2);
 "#
         ),
-        vec!["shared", "2", "oak@1,2"]
+        vec!["shared2oak@1,2"]
     );
 }
 
@@ -975,7 +976,7 @@ echo Registry::get('db')->host;
 echo Registry::has('cache') ? 'found' : 'missing';
 "#
         ),
-        vec!["found", "localhost", "missing"]
+        vec!["foundlocalhostmissing"]
     );
 }
 
@@ -1004,7 +1005,7 @@ echo ($a === $c) ? 'same' : 'diff';
 echo $c->name;
 "#
         ),
-        vec!["same", "diff", "replica"]
+        vec!["samediffreplica"]
     );
 }
 
@@ -1035,7 +1036,7 @@ echo $r2->isOk() ? 'ok' : 'err';
 echo $r2->error();
 "#
         ),
-        vec!["ok", "5", "err", "division by zero"]
+        vec!["ok5errdivision by zero"]
     );
 }
 
@@ -1065,7 +1066,7 @@ $empty = Option::none()->map(fn($x) => $x * 2);
 echo $empty->getOrElse(99);
 "#
         ),
-        vec!["some", "20", "99"]
+        vec!["some2099"]
     );
 }
 
@@ -1202,7 +1203,8 @@ echo ($u1 === $u2) ? 'cached' : 'dup';
 echo $idmap->loads();
 "#
         ),
-        vec!["Alice", "cached", "2"]
+        // Bare echo emits no newline: outputs concatenate (spec PHP).
+        vec!["Alicecached2"]
     );
 }
 
@@ -1270,7 +1272,7 @@ $proxy->doWork('task1');
 echo implode(',', $proxy->getCallLog());
 "#
         ),
-        vec!["before:doWork", "working:task1", "after:doWork", "doWork"]
+        vec!["before:doWorkworking:task1after:doWorkdoWork"]
     );
 }
 

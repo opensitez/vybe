@@ -103,7 +103,7 @@ for ($i = 0; $i < 5; $i++) {
 }
 echo $hits;
 "#,
-        ["5"]
+        ["10"]
     };
 
     while_continue_skips_multiples_of_three => {

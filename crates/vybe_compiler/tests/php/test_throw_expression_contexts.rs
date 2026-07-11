@@ -354,7 +354,7 @@ function f(): string {
 }
 try { echo f(); } catch (RuntimeException $e) { echo 'late'; }
 "#,
-        ["caught"]
+        ["late"]
     };
 
     throw_in_do_while_condition_via_assignment => {
@@ -507,7 +507,7 @@ function once(): string {
 }
 try { echo once(); } catch (RuntimeException $e) { echo $e->getMessage(); }
 "#,
-        ["first"]
+        ["1"]
     };
 
     throw_in_match_with_multiple_conditions => {

@@ -334,7 +334,7 @@ echo str_contains($out, '\\u003C') ? 'hex' : 'plain';
 try { json_decode("\"a\nb\"", false, 512, JSON_THROW_ON_ERROR); echo 'ok'; }
 catch (JsonException $e) { echo 'ctrl'; }
 "#,
-        ["ok"]
+        ["ctrl"]
     };
 
     json_encode_object_with_jsonserializable => {

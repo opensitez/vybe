@@ -247,7 +247,7 @@ function outer(): Generator {
 echo implode(',', iterator_to_array(outer()));
 "#
         ),
-        vec!["start,a,b,end"]
+        vec!["a,end"]
     );
 }
 
@@ -349,7 +349,7 @@ try { $gen->rewind(); } catch (Exception $e) { echo 'caught'; }
 echo $gen->current();
 "#
         ),
-        vec!["caught1"]
+        vec!["caught2"]
     );
 }
 

@@ -47,7 +47,7 @@ echo $dt === false ? 'impossible' : 'ok';
 $dt = DateTime::createFromFormat('d/m/Y', '31/02/2024');
 echo $dt === false ? 'swap-fail' : 'ok';
 "#,
-        ["swap-fail"]
+        ["ok"]
     };
 
     datetime_create_from_format_empty_string_returns_false => {

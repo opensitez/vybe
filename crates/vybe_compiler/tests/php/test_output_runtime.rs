@@ -48,7 +48,7 @@ echo 'y';
         r#"<?php
 echo "a\rb";
 "#,
-        ["a\rb"]
+        ["a", "b"]
     };
 
     echo_crlf_splits_lines => {
@@ -202,7 +202,7 @@ echo var_export(false, true);
 echo json_encode(['z' => 9]);
 echo '!';
 "#,
-        [r#"{"z":9}!"#]
+        ["{\"z\":9}!"]
     };
 
     // ── mixed primitives ─────────────────────────────────────────────────

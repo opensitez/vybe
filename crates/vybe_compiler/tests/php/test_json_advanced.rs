@@ -13,21 +13,21 @@ fn json_encode_array() {
 fn json_encode_assoc() {
     assert_eq!(
         run_prints(r#"<?php echo json_encode(['name'=>'Alice','age'=>30]); "#),
-        vec![r#"{"name":"Alice","age":30}"#]
+        vec!["{\"name\":\"Alice\",\"age\":30}"]
     );
 }
 #[test]
 fn json_encode_unicode_escaped() {
     assert_eq!(
         run_prints(r#"<?php echo json_encode(['emoji'=>'<>&']); "#),
-        vec![r#"{"emoji":"<>&"}"#]
+        vec!["{\"emoji\":\"<>&\"}"]
     );
 }
 #[test]
 fn json_encode_unicode_unescaped() {
     assert_eq!(
         run_prints(r#"<?php echo json_encode('héllo', JSON_UNESCAPED_UNICODE); "#),
-        vec![r#""héllo""#]
+        vec!["\"héllo\""]
     );
 }
 #[test]
@@ -144,7 +144,7 @@ fn json_last_error_msg() {
 fn json_encode_unescaped_slashes() {
     assert_eq!(
         run_prints(r#"<?php echo json_encode('a/b/c', JSON_UNESCAPED_SLASHES); "#),
-        vec![r#""a/b/c""#]
+        vec!["\"a/b/c\""]
     );
 }
 #[test]

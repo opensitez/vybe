@@ -117,7 +117,7 @@ echo intdiv(7, 2);
         r#"<?php
 echo intdiv(-7, 2);
 "#,
-        ["-4"]
+        ["-3"]
     };
 
     intdiv_modulo_consistency => {

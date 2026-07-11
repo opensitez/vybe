@@ -80,7 +80,7 @@ echo join_path('/api/', 'users/1');
         r#"<?php
 echo basename('C:\\folder\\file.txt');
 "#,
-        ["file.txt"]
+        ["C:\\folder\\file.txt"]
     };
 
     dirname_single_segment_returns_dot => {

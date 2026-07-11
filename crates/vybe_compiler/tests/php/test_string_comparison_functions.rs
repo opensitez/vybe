@@ -165,7 +165,7 @@ fn str_word_count_empty_string_is_zero() {
 fn str_word_count_hyphenated_word_counted_as_one() {
     assert_eq!(
         run_prints(r#"<?php echo str_word_count("well-known pattern"); "#),
-        vec!["3"]
+        vec!["2"]
     );
 }
 

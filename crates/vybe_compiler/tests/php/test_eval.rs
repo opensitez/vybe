@@ -168,5 +168,3 @@ echo implode('', iterator_to_array(eg()));
         ["ab"]
     };
 }
-
-

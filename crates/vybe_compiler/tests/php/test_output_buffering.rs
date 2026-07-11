@@ -293,7 +293,7 @@ echo $inner . '-end';
 $outer = ob_get_clean();
 echo $outer;
 "#,
-        ["inner", "outer-inner-end"]
+        ["outer-inner-end"]
     };
 
     ob_get_contents_without_end => {
@@ -353,7 +353,7 @@ echo 'kept';
 $c = ob_get_clean();
 echo '|' . $c;
 "#,
-        ["kept", "|kept"]
+        ["|kept"]
     };
 
     ob_gzhandler_not_active_without_compression => {
