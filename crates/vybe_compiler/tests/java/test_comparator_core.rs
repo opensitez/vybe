@@ -207,7 +207,7 @@ fn comparator_then_comparing_int_modulo_groups_by_remainder() {
     let out = run_main(
         "java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); list.add(7); list.add(4); list.add(9); list.add(2); list.sort(java.util.Comparator.comparing((Integer n) -> n % 5).thenComparing((Integer n) -> n)); System.out.println(list.get(0)); System.out.println(list.get(3));",
     );
-    assert_eq!(out, vec!["4", "9"]);
+    assert_eq!(out, vec!["2", "9"]);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn comparator_comparing_then_comparing_equal_primary_preserves_secondary() {
     let out = run_main(
         "java.util.ArrayList<String> list = new java.util.ArrayList<String>(); list.add(\"bx\"); list.add(\"ax\"); list.add(\"ay\"); list.sort(java.util.Comparator.comparing((String s) -> s.substring(1)).thenComparing((String s) -> s.charAt(0))); System.out.println(list.get(0)); System.out.println(list.get(2));",
     );
-    assert_eq!(out, vec!["ax", "bx"]);
+    assert_eq!(out, vec!["ax", "ay"]);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn comparator_chaining_then_comparing_after_reversed_primary() {
     let out = run_main(
         "java.util.ArrayList<String> list = new java.util.ArrayList<String>(); list.add(\"aab\"); list.add(\"aaa\"); list.add(\"baa\"); list.sort(java.util.Comparator.comparing((String s) -> s.length()).reversed().thenComparing((String s) -> s)); System.out.println(list.get(0)); System.out.println(list.get(2));",
     );
-    assert_eq!(out, vec!["baa", "aaa"]);
+    assert_eq!(out, vec!["aaa", "baa"]);
 }
 
 #[test]

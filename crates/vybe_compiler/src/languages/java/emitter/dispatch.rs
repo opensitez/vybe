@@ -223,6 +223,249 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.trunc_cast" => {
             crate::emitter::math::emit_trunc(&mut chunks[current], line);
         }
+        "java.double_to_string" => {
+            super::list_adapter::emit_double_to_string(chunks, current, line);
+        }
+        "java.uuid_from_string" => {
+            super::uuid_adapter::emit_from_string(chunks, current, line);
+        }
+        "java.uuid_name_from_bytes" => {
+            super::uuid_adapter::emit_name_from_bytes(chunks, current, line);
+        }
+        "java.uuid_version" => {
+            super::uuid_adapter::emit_version(chunks, current, line);
+        }
+        "java.uuid_variant" => {
+            super::uuid_adapter::emit_variant(chunks, current, line);
+        }
+        "java.uuid_most_bits" => {
+            super::uuid_adapter::emit_most_bits(chunks, current, line);
+        }
+        "java.uuid_least_bits" => {
+            super::uuid_adapter::emit_least_bits(chunks, current, line);
+        }
+        "java.uuid_compare_to" => {
+            super::uuid_adapter::emit_compare_to(chunks, current, line);
+        }
+        "java.uuid_hash_code" => {
+            super::uuid_adapter::emit_hash_code(chunks, current, line);
+        }
+        "java.uuid_new" => {
+            super::uuid_adapter::emit_new(chunks, current, argc, line);
+        }
+        "java.bitset_new" => {
+            super::bitset_adapter::emit_new(chunks, current, argc, line);
+        }
+        "java.bitset_value_of" => {
+            super::bitset_adapter::emit_value_of(chunks, current, line);
+        }
+        "java.bitset_set" => {
+            super::bitset_adapter::emit_set(chunks, current, argc, line);
+        }
+        "java.bitset_get" => {
+            super::bitset_adapter::emit_get(chunks, current, argc, line);
+        }
+        "java.bitset_clear" => {
+            super::bitset_adapter::emit_clear(chunks, current, argc, line);
+        }
+        "java.bitset_flip" => {
+            super::bitset_adapter::emit_flip(chunks, current, argc, line);
+        }
+        "java.bitset_cardinality" => {
+            super::bitset_adapter::emit_cardinality(chunks, current, line);
+        }
+        "java.bitset_length" => {
+            super::bitset_adapter::emit_length(chunks, current, line);
+        }
+        "java.bitset_size" => {
+            super::bitset_adapter::emit_size(chunks, current, line);
+        }
+        "java.bitset_is_empty" => {
+            super::bitset_adapter::emit_is_empty(chunks, current, line);
+        }
+        "java.bitset_next_set_bit" => {
+            super::bitset_adapter::emit_next_set_bit(chunks, current, line);
+        }
+        "java.bitset_next_clear_bit" => {
+            super::bitset_adapter::emit_next_clear_bit(chunks, current, line);
+        }
+        "java.bitset_previous_set_bit" => {
+            super::bitset_adapter::emit_previous_set_bit(chunks, current, line);
+        }
+        "java.bitset_previous_clear_bit" => {
+            super::bitset_adapter::emit_previous_clear_bit(chunks, current, line);
+        }
+        "java.bitset_and" => {
+            super::bitset_adapter::emit_and(chunks, current, line);
+        }
+        "java.bitset_or" => {
+            super::bitset_adapter::emit_or(chunks, current, line);
+        }
+        "java.bitset_xor" => {
+            super::bitset_adapter::emit_xor(chunks, current, line);
+        }
+        "java.bitset_and_not" => {
+            super::bitset_adapter::emit_and_not(chunks, current, line);
+        }
+        "java.bitset_intersects" => {
+            super::bitset_adapter::emit_intersects(chunks, current, line);
+        }
+        "java.bitset_equals" => {
+            super::bitset_adapter::emit_equals(chunks, current, line);
+        }
+        "java.bitset_clone" => {
+            super::bitset_adapter::emit_clone(chunks, current, line);
+        }
+        "java.bitset_stream" => {
+            super::bitset_adapter::emit_stream(chunks, current, line);
+        }
+        "java.bitset_to_array" => {
+            super::bitset_adapter::emit_to_array(chunks, current, line);
+        }
+        "java.bitset_to_string" => {
+            super::bitset_adapter::emit_to_string(chunks, current, line);
+        }
+        "java.bitset_hash_code" => {
+            super::bitset_adapter::emit_hash_code(chunks, current, line);
+        }
+        "java.enum_set_none_of" => {
+            super::enum_set_adapter::emit_none_of(chunks, current, line);
+        }
+        "java.enum_set_all_of" => {
+            super::enum_set_adapter::emit_all_of(chunks, current, line);
+        }
+        "java.enum_set_of" => {
+            super::enum_set_adapter::emit_of(chunks, current, argc, line);
+        }
+        "java.enum_set_copy_of" => {
+            super::enum_set_adapter::emit_copy_of(chunks, current, line);
+        }
+        "java.enum_set_complement_of" => {
+            super::enum_set_adapter::emit_complement_of(chunks, current, line);
+        }
+        "java.enum_set_range" => {
+            super::enum_set_adapter::emit_range(chunks, current, line);
+        }
+        "java.enum_set_add" => {
+            super::enum_set_adapter::emit_add(chunks, current, line);
+        }
+        "java.enum_set_add_all" => {
+            super::enum_set_adapter::emit_add_all(chunks, current, line);
+        }
+        "java.enum_set_contains" => {
+            super::enum_set_adapter::emit_contains(chunks, current, line);
+        }
+        "java.enum_set_contains_all" => {
+            super::enum_set_adapter::emit_contains_all(chunks, current, line);
+        }
+        "java.enum_set_remove" => {
+            super::enum_set_adapter::emit_remove(chunks, current, line);
+        }
+        "java.enum_set_equals" => {
+            super::enum_set_adapter::emit_equals(chunks, current, line);
+        }
+        "java.enum_set_hash_code" => {
+            super::enum_set_adapter::emit_hash_code(chunks, current, line);
+        }
+        "java.enum_set_iterator" => {
+            super::enum_set_adapter::emit_iterator(chunks, current, line);
+        }
+        "java.enum_set_get_class" => {
+            super::enum_set_adapter::emit_get_class(chunks, current, line);
+        }
+        "java.instant_of_epoch_second" => {
+            super::instant_adapter::emit_of_epoch_second(chunks, current, argc, line);
+        }
+        "java.instant_of_epoch_milli" => {
+            super::instant_adapter::emit_of_epoch_milli(chunks, current, line);
+        }
+        "java.instant_parse" => {
+            super::instant_adapter::emit_parse(chunks, current, line);
+        }
+        "java.instant_get_epoch_second" => {
+            super::instant_adapter::emit_get_epoch_second(chunks, current, line);
+        }
+        "java.instant_get_nano" => {
+            super::instant_adapter::emit_get_nano(chunks, current, line);
+        }
+        "java.instant_to_epoch_milli" => {
+            super::instant_adapter::emit_to_epoch_milli(chunks, current, line);
+        }
+        "java.instant_plus_seconds" => {
+            super::instant_adapter::emit_plus_seconds(chunks, current, 1.0, line);
+        }
+        "java.instant_minus_seconds" => {
+            super::instant_adapter::emit_plus_seconds(chunks, current, -1.0, line);
+        }
+        "java.instant_plus_millis" => {
+            super::instant_adapter::emit_plus_millis(chunks, current, 1.0, line);
+        }
+        "java.instant_minus_millis" => {
+            super::instant_adapter::emit_plus_millis(chunks, current, -1.0, line);
+        }
+        "java.instant_plus_nanos" => {
+            super::instant_adapter::emit_plus_nanos(chunks, current, 1.0, line);
+        }
+        "java.instant_minus_nanos" => {
+            super::instant_adapter::emit_plus_nanos(chunks, current, -1.0, line);
+        }
+        "java.instant_compare_to" => {
+            super::instant_adapter::emit_compare(chunks, current, line);
+        }
+        "java.instant_is_before" => {
+            super::instant_adapter::emit_is_before_after(chunks, current, false, line);
+        }
+        "java.instant_is_after" => {
+            super::instant_adapter::emit_is_before_after(chunks, current, true, line);
+        }
+        "java.instant_equals" => {
+            super::instant_adapter::emit_equals(chunks, current, line);
+        }
+        "java.instant_to_string" => {
+            super::instant_adapter::emit_to_string(chunks, current, line);
+        }
+        "java.duration_of_minutes" => {
+            super::instant_adapter::emit_duration_minutes(chunks, current, line);
+        }
+        "java.duration_between" => {
+            super::instant_adapter::emit_duration_between(chunks, current, line);
+        }
+        "java.zone_offset_of_hours" => {
+            super::instant_adapter::emit_zone_offset_hours(chunks, current, line);
+        }
+        "java.zone_id_of" => {
+            super::instant_adapter::emit_zone_id_utc(chunks, current, line);
+        }
+        "java.instant_with_offset" => {
+            super::instant_adapter::emit_with_offset(chunks, current, line);
+        }
+        "java.instant_get_offset" => {
+            super::instant_adapter::emit_get_offset(chunks, current, line);
+        }
+        "java.instant_get_year" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCFullYear", false, line);
+        }
+        "java.instant_get_month" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCMonth", true, line);
+        }
+        "java.instant_get_day" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCDate", false, line);
+        }
+        "java.instant_get_hour" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCHours", false, line);
+        }
+        "java.instant_get_minute" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCMinutes", false, line);
+        }
+        "java.instant_to_local_date" => {
+            super::instant_adapter::emit_local_date_string(chunks, current, line);
+        }
+        "java.instant_truncated" => {
+            super::instant_adapter::emit_truncated(chunks, current, line);
+        }
+        "java.instant_hash_code" => {
+            super::instant_adapter::emit_hash_code(chunks, current, line);
+        }
 
         // ── Character helpers ─────────────────────────────────────────────
         "java.char_is_digit" => {
@@ -483,6 +726,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.add" => {
             super::list_adapter::emit_add(chunks, current, argc, line);
         }
+        "java.sorted_add" => {
+            super::list_adapter::emit_sorted_add(chunks, current, line);
+        }
+        "java.sorted_poll" => {
+            super::list_adapter::emit_queue_poll(chunks, current, line);
+        }
+        "java.map_get" => {
+            super::list_adapter::emit_map_get(chunks, current, line);
+        }
+        "java.sorted_set_new" => {
+            super::list_adapter::emit_sorted_collection_new(chunks, current, argc, false, line);
+        }
+        "java.sorted_map_new" => {
+            super::list_adapter::emit_sorted_collection_new(chunks, current, argc, true, line);
+        }
+        "java.hash_map_new" => {
+            super::list_adapter::emit_hash_map_new(chunks, current, argc, line);
+        }
         "java.get" => {
             if argc <= 1 {
                 super::stream_adapter::emit_get_optional_value(chunks, current, line);
@@ -527,6 +788,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.queue_poll" => {
             collections::emit_shift(chunks, current, line);
         }
+        "java.sorted_first" => {
+            super::list_adapter::emit_sorted_end(chunks, current, false, line);
+        }
+        "java.sorted_last" => {
+            super::list_adapter::emit_sorted_end(chunks, current, true, line);
+        }
+        "java.sorted_first_key" => {
+            super::list_adapter::emit_sorted_map_key(chunks, current, false, line);
+        }
+        "java.sorted_last_key" => {
+            super::list_adapter::emit_sorted_map_key(chunks, current, true, line);
+        }
         "java.add_first" => {
             host::emit(&mut chunks[current], "ecma:array", "unshift", 2, line);
         }
@@ -547,43 +820,103 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Map helpers ────────────────────────────────────────────────────
         "java.map_put" => {
-            crate::emitter::dict::emit_set(chunks, current, line);
+            super::list_adapter::emit_map_put(chunks, current, line);
         }
         "java.map_put_all" => {
-            host::emit(&mut chunks[current], "ecma:object", "assign", 2, line);
+            super::list_adapter::emit_map_put_all(chunks, current, line);
         }
         "java.map_get_or_default" => {
-            host::emit(&mut chunks[current], "ecma:object", "getOrDefault", 3, line);
+            super::list_adapter::emit_map_get_or_default(chunks, current, line);
         }
         "java.map_contains_key" => {
-            crate::emitter::dict::emit_method_has(chunks, current, line);
+            host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
         }
         "java.map_contains_value" => {
-            host::emit(&mut chunks[current], "ecma:object", "hasValue", 2, line);
+            host::emit(&mut chunks[current], "ecma:map", "containsValue", 2, line);
+        }
+        "java.map_key_set" => {
+            host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
+        }
+        "java.map_values" => {
+            host::emit(&mut chunks[current], "ecma:map", "values", 1, line);
         }
         "java.entry_set" => {
-            collections::emit_iter_entries(chunks, current, line);
+            super::list_adapter::emit_map_entry_set(chunks, current, line);
         }
         "java.put_if_absent" => {
-            host::emit(&mut chunks[current], "ecma:object", "putIfAbsent", 3, line);
+            super::list_adapter::emit_map_put_if_absent(chunks, current, line);
         }
         "java.compute_if_absent" => {
-            host::emit(
-                &mut chunks[current],
-                "ecma:object",
-                "computeIfAbsent",
-                3,
-                line,
-            );
+            super::list_adapter::emit_map_compute_if_absent(chunks, current, line);
+        }
+        "java.compute_if_present" => {
+            super::list_adapter::emit_map_compute_if_present(chunks, current, line);
+        }
+        "java.map_compute" => {
+            super::list_adapter::emit_map_compute(chunks, current, line);
         }
         "java.map_merge" => {
-            host::emit(&mut chunks[current], "ecma:object", "merge", 4, line);
+            super::list_adapter::emit_map_merge(chunks, current, line);
         }
         "java.map_remove" => {
-            crate::emitter::dict::emit_method_delete(chunks, current, line);
+            super::list_adapter::emit_map_remove(chunks, current, argc, line);
         }
         "java.map_replace" => {
-            crate::emitter::dict::emit_set(chunks, current, line);
+            super::list_adapter::emit_map_replace(chunks, current, argc, line);
+        }
+        "java.map_replace_all" => {
+            super::list_adapter::emit_map_replace_all(chunks, current, line);
+        }
+        "java.map_for_each" => {
+            super::list_adapter::emit_map_for_each(chunks, current, line);
+        }
+        "java.map_clear" => {
+            host::emit(&mut chunks[current], "ecma:map", "clear", 1, line);
+        }
+        "java.map_size" => {
+            host::emit(&mut chunks[current], "ecma:map", "size", 1, line);
+        }
+        "java.map_is_empty" => {
+            host::emit(&mut chunks[current], "ecma:map", "size", 1, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            chunks[current].emit_op(Op::I32_EQ, line);
+            crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        }
+        "java.map_equals" => {
+            super::list_adapter::emit_map_equals(chunks, current, line);
+        }
+        "java.map_key_set_remove" => {
+            host::emit(&mut chunks[current], "ecma:map", "delete", 2, line);
+        }
+        "java.sorted_map_key_set" => {
+            super::list_adapter::emit_sorted_map_key_set(chunks, current, line);
+        }
+        "java.sorted_map_first_entry" => {
+            super::list_adapter::emit_sorted_map_end_entry(chunks, current, false, line);
+        }
+        "java.sorted_map_last_entry" => {
+            super::list_adapter::emit_sorted_map_end_entry(chunks, current, true, line);
+        }
+        "java.sorted_map_ceiling_entry" => {
+            super::list_adapter::emit_sorted_map_bound_entry(chunks, current, 0, line);
+        }
+        "java.sorted_map_floor_entry" => {
+            super::list_adapter::emit_sorted_map_bound_entry(chunks, current, 1, line);
+        }
+        "java.sorted_map_higher_entry" => {
+            super::list_adapter::emit_sorted_map_bound_entry(chunks, current, 2, line);
+        }
+        "java.sorted_map_lower_entry" => {
+            super::list_adapter::emit_sorted_map_bound_entry(chunks, current, 3, line);
+        }
+        "java.map_sub_map" => {
+            super::list_adapter::emit_map_range_view(chunks, current, 0, line);
+        }
+        "java.map_head_map" => {
+            super::list_adapter::emit_map_range_view(chunks, current, 1, line);
+        }
+        "java.map_tail_map" => {
+            super::list_adapter::emit_map_range_view(chunks, current, 2, line);
         }
         "java.entry_key" => {
             core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -592,6 +925,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.entry_value" => {
             core_wasm::i32_const(&mut chunks[current], line, 1);
             collections::emit_get(chunks, current, line);
+        }
+        "java.entry_set_value" => {
+            super::list_adapter::emit_entry_set_value(chunks, current, line);
+        }
+        "java.iterator_next" => {
+            super::list_adapter::emit_iterator_next(chunks, current, line);
+        }
+        "java.iterator_has_next" => {
+            super::list_adapter::emit_iterator_has_next(chunks, current, line);
         }
 
         // ── StringBuilder helpers ──────────────────────────────────────────

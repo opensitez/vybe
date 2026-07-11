@@ -552,8 +552,8 @@ literal = {
     | long_literal
     | int_literal
     | char_literal
-    | string_literal
     | text_block
+    | string_literal
     | true_kw
     | false_kw
     | null_kw

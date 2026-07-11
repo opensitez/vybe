@@ -39,6 +39,7 @@ printf              = { emit = "common:java.printf",             min_args = 1, m
 
 "Integer.parseInt"       = { emit = "common:java.parse_int",     min_args = 1, max_args = 2 }
 "Integer.valueOf"        = { emit = "common:java.parse_int",     min_args = 1, max_args = 1 }
+"Integer.compare"        = { emit = "common:java.compare",       min_args = 2, max_args = 2 }
 "Long.parseLong"         = { emit = "common:java.parse_int",     min_args = 1, max_args = 2 }
 "Long.compare"           = { emit = "common:java.compare",       min_args = 2, max_args = 2 }
 "Double.parseDouble"     = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
@@ -46,6 +47,47 @@ printf              = { emit = "common:java.printf",             min_args = 1, m
 "Float.parseFloat"       = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
 "Boolean.parseBoolean"   = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
 "String.valueOf"         = { emit = "intrinsic:tostring",        min_args = 1, max_args = 1 }
+"UUID.fromString"        = { emit = "common:java.uuid_from_string", min_args = 1, max_args = 1 }
+"UUID.randomUUID"        = { emit = "host:web:crypto:randomUUID", min_args = 0, max_args = 0 }
+"UUID.nameUUIDFromBytes" = { emit = "common:java.uuid_name_from_bytes", min_args = 1, max_args = 1 }
+"java.util.UUID.fromString"        = { emit = "common:java.uuid_from_string", min_args = 1, max_args = 1 }
+"java.util.UUID.randomUUID"        = { emit = "host:web:crypto:randomUUID", min_args = 0, max_args = 0 }
+"java.util.UUID.nameUUIDFromBytes" = { emit = "common:java.uuid_name_from_bytes", min_args = 1, max_args = 1 }
+"BitSet.valueOf"        = { emit = "common:java.bitset_value_of", min_args = 1, max_args = 1 }
+"java.util.BitSet.valueOf" = { emit = "common:java.bitset_value_of", min_args = 1, max_args = 1 }
+__java_enum_set_none_of = { emit = "common:java.enum_set_none_of", min_args = 1, max_args = 1 }
+__java_enum_set_all_of = { emit = "common:java.enum_set_all_of", min_args = 1, max_args = 1 }
+__java_enum_set_of = { emit = "common:java.enum_set_of", min_args = 1, max_args = 255 }
+__java_enum_set_copy_of = { emit = "common:java.enum_set_copy_of", min_args = 1, max_args = 1 }
+__java_enum_set_complement_of = { emit = "common:java.enum_set_complement_of", min_args = 1, max_args = 1 }
+__java_enum_set_range = { emit = "common:java.enum_set_range", min_args = 3, max_args = 3 }
+__java_enum_set_add = { emit = "common:java.enum_set_add", min_args = 2, max_args = 2 }
+__java_enum_set_add_all = { emit = "common:java.enum_set_add_all", min_args = 2, max_args = 2 }
+__java_enum_set_contains = { emit = "common:java.enum_set_contains", min_args = 2, max_args = 2 }
+__java_enum_set_contains_all = { emit = "common:java.enum_set_contains_all", min_args = 2, max_args = 2 }
+__java_enum_set_remove = { emit = "common:java.enum_set_remove", min_args = 2, max_args = 2 }
+__java_enum_set_equals = { emit = "common:java.enum_set_equals", min_args = 2, max_args = 2 }
+__java_enum_set_hash_code = { emit = "common:java.enum_set_hash_code", min_args = 1, max_args = 1 }
+__java_enum_set_iterator = { emit = "common:java.enum_set_iterator", min_args = 1, max_args = 1 }
+__java_enum_set_get_class = { emit = "common:java.enum_set_get_class", min_args = 1, max_args = 1 }
+"java.time.Instant.ofEpochSecond" = { emit = "common:java.instant_of_epoch_second", min_args = 1, max_args = 2 }
+"java.time.Instant.ofEpochMilli" = { emit = "common:java.instant_of_epoch_milli", min_args = 1, max_args = 1 }
+"java.time.Instant.parse" = { emit = "common:java.instant_parse", min_args = 1, max_args = 1 }
+"java.time.Duration.ofMinutes" = { emit = "common:java.duration_of_minutes", min_args = 1, max_args = 1 }
+"java.time.Duration.between" = { emit = "common:java.duration_between", min_args = 2, max_args = 2 }
+"java.time.ZoneOffset.ofHours" = { emit = "common:java.zone_offset_of_hours", min_args = 1, max_args = 1 }
+"java.time.ZoneId.of" = { emit = "common:java.zone_id_of", min_args = 1, max_args = 1 }
+"Instant.ofEpochSecond" = { emit = "common:java.instant_of_epoch_second", min_args = 1, max_args = 2 }
+"Instant.ofEpochMilli" = { emit = "common:java.instant_of_epoch_milli", min_args = 1, max_args = 1 }
+"Instant.parse" = { emit = "common:java.instant_parse", min_args = 1, max_args = 1 }
+"Duration.ofMinutes" = { emit = "common:java.duration_of_minutes", min_args = 1, max_args = 1 }
+"Duration.between" = { emit = "common:java.duration_between", min_args = 2, max_args = 2 }
+"ZoneOffset.ofHours" = { emit = "common:java.zone_offset_of_hours", min_args = 1, max_args = 1 }
+"ZoneId.of" = { emit = "common:java.zone_id_of", min_args = 1, max_args = 1 }
+__java_instant_compare_to = { emit = "common:java.instant_compare_to", min_args = 2, max_args = 2 }
+__java_instant_equals = { emit = "common:java.instant_equals", min_args = 2, max_args = 2 }
+__java_instant_to_string = { emit = "common:java.instant_to_string", min_args = 1, max_args = 1 }
+__java_instant_hash_code = { emit = "common:java.instant_hash_code", min_args = 1, max_args = 1 }
 __java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
 __java_string_concat     = { emit = "common:java.string_concat",   min_args = 2, max_args = 2 }
 __java_to_char_array     = { emit = "common:java.to_char_array",   min_args = 1, max_args = 1 }
@@ -75,6 +117,67 @@ __java_bigint_gcd        = { emit = "common:java.bigint_gcd",      min_args = 2,
 __java_bigint_is_probable_prime = { emit = "common:java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
 __java_bigint_next_probable_prime = { emit = "common:java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
 __java_list_remove_value = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
+__java_sorted_add = { emit = "common:java.sorted_add", min_args = 2, max_args = 2 }
+__java_sorted_poll = { emit = "common:java.sorted_poll", min_args = 1, max_args = 1 }
+__java_double_to_string = { emit = "common:java.double_to_string", min_args = 1, max_args = 1 }
+__java_map_get = { emit = "common:java.map_get", min_args = 2, max_args = 2 }
+__java_map_put = { emit = "common:java.map_put", min_args = 3, max_args = 3 }
+__java_map_put_all = { emit = "common:java.map_put_all", min_args = 2, max_args = 2 }
+__java_map_remove = { emit = "common:java.map_remove", min_args = 2, max_args = 3 }
+__java_map_get_or_default = { emit = "common:java.map_get_or_default", min_args = 3, max_args = 3 }
+__java_map_contains_key = { emit = "common:java.map_contains_key", min_args = 2, max_args = 2 }
+__java_map_contains_value = { emit = "common:java.map_contains_value", min_args = 2, max_args = 2 }
+__java_map_key_set = { emit = "common:java.map_key_set", min_args = 1, max_args = 1 }
+__java_map_values = { emit = "common:java.map_values", min_args = 1, max_args = 1 }
+__java_map_entry_set = { emit = "common:java.entry_set", min_args = 1, max_args = 1 }
+__java_map_put_if_absent = { emit = "common:java.put_if_absent", min_args = 3, max_args = 3 }
+__java_map_compute_if_absent = { emit = "common:java.compute_if_absent", min_args = 3, max_args = 3 }
+__java_map_compute_if_present = { emit = "common:java.compute_if_present", min_args = 3, max_args = 3 }
+__java_map_compute = { emit = "common:java.map_compute", min_args = 3, max_args = 3 }
+__java_map_merge = { emit = "common:java.map_merge", min_args = 4, max_args = 4 }
+__java_map_replace = { emit = "common:java.map_replace", min_args = 3, max_args = 4 }
+__java_map_replace_all = { emit = "common:java.map_replace_all", min_args = 2, max_args = 2 }
+__java_map_for_each = { emit = "common:java.map_for_each", min_args = 2, max_args = 2 }
+__java_map_clear = { emit = "common:java.map_clear", min_args = 1, max_args = 1 }
+__java_map_size = { emit = "common:java.map_size", min_args = 1, max_args = 1 }
+__java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_args = 1 }
+__java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
+__java_map_key_set_remove = { emit = "common:java.map_key_set_remove", min_args = 2, max_args = 2 }
+__java_sorted_map_key_set = { emit = "common:java.sorted_map_key_set", min_args = 1, max_args = 1 }
+__java_sorted_map_first_entry = { emit = "common:java.sorted_map_first_entry", min_args = 1, max_args = 1 }
+__java_sorted_map_last_entry = { emit = "common:java.sorted_map_last_entry", min_args = 1, max_args = 1 }
+__java_sorted_map_ceiling_entry = { emit = "common:java.sorted_map_ceiling_entry", min_args = 2, max_args = 2 }
+__java_sorted_map_floor_entry = { emit = "common:java.sorted_map_floor_entry", min_args = 2, max_args = 2 }
+__java_sorted_map_higher_entry = { emit = "common:java.sorted_map_higher_entry", min_args = 2, max_args = 2 }
+__java_sorted_map_lower_entry = { emit = "common:java.sorted_map_lower_entry", min_args = 2, max_args = 2 }
+__java_map_sub_map = { emit = "common:java.map_sub_map", min_args = 3, max_args = 3 }
+__java_map_head_map = { emit = "common:java.map_head_map", min_args = 2, max_args = 2 }
+__java_map_tail_map = { emit = "common:java.map_tail_map", min_args = 2, max_args = 2 }
+__java_bitset_set = { emit = "common:java.bitset_set", min_args = 2, max_args = 4 }
+__java_bitset_get = { emit = "common:java.bitset_get", min_args = 2, max_args = 3 }
+__java_bitset_clear = { emit = "common:java.bitset_clear", min_args = 1, max_args = 3 }
+__java_bitset_flip = { emit = "common:java.bitset_flip", min_args = 2, max_args = 3 }
+__java_bitset_cardinality = { emit = "common:java.bitset_cardinality", min_args = 1, max_args = 1 }
+__java_bitset_length = { emit = "common:java.bitset_length", min_args = 1, max_args = 1 }
+__java_bitset_size = { emit = "common:java.bitset_size", min_args = 1, max_args = 1 }
+__java_bitset_is_empty = { emit = "common:java.bitset_is_empty", min_args = 1, max_args = 1 }
+__java_bitset_next_set_bit = { emit = "common:java.bitset_next_set_bit", min_args = 2, max_args = 2 }
+__java_bitset_next_clear_bit = { emit = "common:java.bitset_next_clear_bit", min_args = 2, max_args = 2 }
+__java_bitset_previous_set_bit = { emit = "common:java.bitset_previous_set_bit", min_args = 2, max_args = 2 }
+__java_bitset_previous_clear_bit = { emit = "common:java.bitset_previous_clear_bit", min_args = 2, max_args = 2 }
+__java_bitset_and = { emit = "common:java.bitset_and", min_args = 2, max_args = 2 }
+__java_bitset_or = { emit = "common:java.bitset_or", min_args = 2, max_args = 2 }
+__java_bitset_xor = { emit = "common:java.bitset_xor", min_args = 2, max_args = 2 }
+__java_bitset_and_not = { emit = "common:java.bitset_and_not", min_args = 2, max_args = 2 }
+__java_bitset_intersects = { emit = "common:java.bitset_intersects", min_args = 2, max_args = 2 }
+__java_bitset_equals = { emit = "common:java.bitset_equals", min_args = 2, max_args = 2 }
+__java_bitset_clone = { emit = "common:java.bitset_clone", min_args = 1, max_args = 1 }
+__java_bitset_stream = { emit = "common:java.bitset_stream", min_args = 1, max_args = 1 }
+__java_bitset_to_array = { emit = "common:java.bitset_to_array", min_args = 1, max_args = 1 }
+__java_bitset_to_string = { emit = "common:java.bitset_to_string", min_args = 1, max_args = 1 }
+__java_bitset_hash_code = { emit = "common:java.bitset_hash_code", min_args = 1, max_args = 1 }
+__java_uuid_compare_to = { emit = "common:java.uuid_compare_to", min_args = 2, max_args = 2 }
+__java_uuid_hash_code = { emit = "common:java.uuid_hash_code", min_args = 1, max_args = 1 }
 "BigInteger.valueOf"     = { emit = "host:ecma:bigint:BigInt",     min_args = 1, max_args = 1 }
 "Integer.toString"       = { emit = "intrinsic:tostring",        min_args = 1, max_args = 2 }
 "Integer.toBinaryString" = { emit = "common:java.to_binary_string",  min_args = 1, max_args = 1 }
@@ -284,6 +387,38 @@ lines         = { emit = "common:java.str_lines",        min_args = 0, max_args 
 toString      = { emit = "invoke:toString",              min_args = 0, max_args = 0 }
 hashCode      = { emit = "common:java.hash_code",        min_args = 0, max_args = 0 }
 equals        = { emit = "common:java.equals",           min_args = 1, max_args = 1 }
+getSimpleName = { emit = "noop",                         min_args = 0, max_args = 0 }
+getEpochSecond = { emit = "common:java.instant_get_epoch_second", min_args = 0, max_args = 0 }
+getNano      = { emit = "common:java.instant_get_nano", min_args = 0, max_args = 0 }
+toEpochMilli = { emit = "common:java.instant_to_epoch_milli", min_args = 0, max_args = 0 }
+plusSeconds  = { emit = "common:java.instant_plus_seconds", min_args = 1, max_args = 1 }
+minusSeconds = { emit = "common:java.instant_minus_seconds", min_args = 1, max_args = 1 }
+plusMillis   = { emit = "common:java.instant_plus_millis", min_args = 1, max_args = 1 }
+minusMillis  = { emit = "common:java.instant_minus_millis", min_args = 1, max_args = 1 }
+plusNanos    = { emit = "common:java.instant_plus_nanos", min_args = 1, max_args = 1 }
+minusNanos   = { emit = "common:java.instant_minus_nanos", min_args = 1, max_args = 1 }
+plus         = { emit = "common:java.instant_plus_seconds", min_args = 1, max_args = 1 }
+minus        = { emit = "common:java.instant_minus_seconds", min_args = 1, max_args = 1 }
+isBefore     = { emit = "common:java.instant_is_before", min_args = 1, max_args = 1 }
+isAfter      = { emit = "common:java.instant_is_after", min_args = 1, max_args = 1 }
+atZone       = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
+atOffset     = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
+getOffset    = { emit = "common:java.instant_get_offset", min_args = 0, max_args = 0 }
+getTotalSeconds = { emit = "noop", min_args = 0, max_args = 0 }
+getSeconds   = { emit = "noop", min_args = 0, max_args = 0 }
+getYear      = { emit = "common:java.instant_get_year", min_args = 0, max_args = 0 }
+getMonthValue = { emit = "common:java.instant_get_month", min_args = 0, max_args = 0 }
+getDayOfMonth = { emit = "common:java.instant_get_day", min_args = 0, max_args = 0 }
+getHour      = { emit = "common:java.instant_get_hour", min_args = 0, max_args = 0 }
+getMinute    = { emit = "common:java.instant_get_minute", min_args = 0, max_args = 0 }
+toLocalDate  = { emit = "common:java.instant_to_local_date", min_args = 0, max_args = 0 }
+toLocalTime  = { emit = "noop", min_args = 0, max_args = 0 }
+truncatedTo  = { emit = "common:java.instant_truncated", min_args = 1, max_args = 1 }
+version       = { emit = "common:java.uuid_version",     min_args = 0, max_args = 0 }
+variant       = { emit = "common:java.uuid_variant",     min_args = 0, max_args = 0 }
+getMostSignificantBits = { emit = "common:java.uuid_most_bits", min_args = 0, max_args = 0 }
+getLeastSignificantBits = { emit = "common:java.uuid_least_bits", min_args = 0, max_args = 0 }
+cardinality   = { emit = "common:java.bitset_cardinality", min_args = 0, max_args = 0 }
 ordinal       = { emit = "noop",                         min_args = 0, max_args = 0 }
 intValue      = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
 longValue     = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
@@ -306,6 +441,8 @@ subList       = { emit = "common:java.sub_list",         min_args = 2, max_args 
 sort          = { emit = "common:java.list_sort",        min_args = 0, max_args = 1 }
 iterator      = { emit = "noop",                         min_args = 0, max_args = 0 }
 listIterator  = { emit = "noop",                         min_args = 0, max_args = 1 }
+next          = { emit = "common:java.iterator_next",     min_args = 0, max_args = 0 }
+hasNext       = { emit = "common:java.iterator_has_next", min_args = 0, max_args = 0 }
 stream        = { emit = "noop",                         min_args = 0, max_args = 0 }
 parallelStream = { emit = "noop",                       min_args = 0, max_args = 0 }
 
@@ -323,6 +460,7 @@ computeIfAbsent = { emit = "common:java.compute_if_absent", min_args = 2, max_ar
 merge         = { emit = "common:java.map_merge",        min_args = 3, max_args = 3 }
 getKey        = { emit = "common:java.entry_key",        min_args = 0, max_args = 0 }
 getValue      = { emit = "common:java.entry_value",      min_args = 0, max_args = 0 }
+setValue      = { emit = "common:java.entry_set_value",  min_args = 1, max_args = 1 }
 
 # StringBuilder
 append        = { emit = "common:java.sb_append",        min_args = 1, max_args = 1 }
@@ -394,6 +532,10 @@ empty         = { emit = "common:java.is_empty",         min_args = 0, max_args 
 # Queue / Deque
 offer         = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 poll          = { emit = "common:java.queue_poll",       min_args = 0, max_args = 0 }
+first         = { emit = "common:java.sorted_first",     min_args = 0, max_args = 0 }
+last          = { emit = "common:java.sorted_last",      min_args = 0, max_args = 0 }
+firstKey      = { emit = "common:java.sorted_first_key", min_args = 0, max_args = 0 }
+lastKey       = { emit = "common:java.sorted_last_key",  min_args = 0, max_args = 0 }
 addFirst      = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
 addLast       = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 removeFirst   = { emit = "common:java.remove_first",     min_args = 0, max_args = 0 }
@@ -436,6 +578,10 @@ tostring  = [["to_string"]]
 "Double.MAX_VALUE"    = 1.7976931348623157e308
 "Double.NaN"          = "NaN"
 "Double.POSITIVE_INFINITY" = "Infinity"
+"ChronoUnit.SECONDS" = "SECONDS"
+"ChronoUnit.MILLIS" = "MILLIS"
+"java.time.temporal.ChronoUnit.SECONDS" = "SECONDS"
+"java.time.temporal.ChronoUnit.MILLIS" = "MILLIS"
 "Double.NEGATIVE_INFINITY" = "-Infinity"
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -449,6 +595,15 @@ StringBuilder = ["common", "dotnet.stringbuilder_new"]
 StringBuffer  = ["common", "dotnet.stringbuilder_new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
 BigInteger    = ["ecma:bigint", "BigInt"]
+TreeSet       = ["common", "java.sorted_set_new"]
+PriorityQueue = ["common", "java.sorted_set_new"]
+TreeMap       = ["common", "java.sorted_map_new"]
+HashMap       = ["common", "java.hash_map_new"]
+LinkedHashMap = ["common", "java.hash_map_new"]
+WeakHashMap   = ["common", "java.hash_map_new"]
+Hashtable     = ["common", "java.hash_map_new"]
+UUID          = ["common", "java.uuid_new"]
+BitSet        = ["common", "java.bitset_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES
