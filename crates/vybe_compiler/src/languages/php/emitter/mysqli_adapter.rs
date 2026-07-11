@@ -93,7 +93,6 @@ fn emit_mark_queryish_prefix(
     chunk.emit_end(line);
 }
 
-
 fn reset_mysqli_error_state(chunk: &mut Chunk, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     global_set_key(chunk, "__php_mysqli_connect_errno", line);
@@ -246,7 +245,6 @@ fn emit_mysqli_result_object(
     lget(chunk, result_slot, line);
     result_slot
 }
-
 
 pub fn emit_php_mysqli_report(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];

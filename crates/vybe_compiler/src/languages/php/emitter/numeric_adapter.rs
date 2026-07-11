@@ -46,6 +46,58 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
+/// `__php_float_bytes($v, $bytes)` → a Uint8Array holding the little-endian
+/// IEEE-754 encoding of `$v` (`$bytes` = 4 → float32, 8 → float64). Backs PHP
+/// `pack('f'|'d', …)`; PHP source can't reach DataView, so this adapter drives
+/// ecma:arraybuffer/dataview/uint8array plus a `setFloat32`/`setFloat64` method
+/// invoke. The PACK_PRELUDE reads the returned bytes with `chr($u[$j])`.
+/// Stack in: `[v, bytes]`; out: `[Uint8Array]`.
+pub fn emit_pack_float_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = alloc_local(chunk);
+    let v_slot = alloc_local(chunk);
+    let buf_slot = alloc_local(chunk);
+    let dv_slot = alloc_local(chunk);
+
+    lset(chunk, b_slot, line); // bytes (top)
+    lset(chunk, v_slot, line); // value
+
+    // buf = new ArrayBuffer(bytes)
+    lget(chunk, b_slot, line);
+    let ab_new = chunk.add_import("ecma:arraybuffer", "new");
+    chunk.emit_call(ab_new, 1, line);
+    lset(chunk, buf_slot, line);
+
+    // dv = new DataView(buf)
+    lget(chunk, buf_slot, line);
+    let dv_new = chunk.add_import("ecma:dataview", "new");
+    chunk.emit_call(dv_new, 1, line);
+    lset(chunk, dv_slot, line);
+
+    // invokeMethod(dv, bytes==4 ? "setFloat32" : "setFloat64", 0, v, true)
+    lget(chunk, dv_slot, line);
+    lget(chunk, b_slot, line);
+    push_const(chunk, Value::F64(4.0), line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "setFloat32", line);
+    chunk.emit_else(line);
+    push_str(chunk, "setFloat64", line);
+    chunk.emit_end(line);
+    push_const(chunk, Value::F64(0.0), line); // byteOffset
+    lget(chunk, v_slot, line); // value
+    push_const(chunk, Value::Bool(true), line); // littleEndian (machine order)
+    let invoke = chunk.add_import("ecma:value", "invokeMethod");
+    chunk.emit_call(invoke, 5, line);
+    chunk.emit_op(Op::DROP, line); // setFloat* returns undefined
+
+    // return new Uint8Array(buf)
+    lget(chunk, buf_slot, line);
+    let u8_new = chunk.add_import("ecma:uint8array", "new");
+    chunk.emit_call(u8_new, 1, line);
+}
+
 pub fn emit_php_int_max(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_const(&mut chunks[current], Value::bigint_i64(i64::MAX), line);
 }

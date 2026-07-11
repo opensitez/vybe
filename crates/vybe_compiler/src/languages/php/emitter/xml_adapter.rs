@@ -14,7 +14,14 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     chunks[current].emit_call(idx, argc, line);
 }
@@ -28,7 +35,14 @@ fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
 /// `XMLSerializer` host and append the trailing newline PHP emits (which
 /// `serializeToString` does not). The node is already on the stack.
 pub fn emit_dom_save_xml(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "web:dom-parser", "serializeToString", 1, line);
+    call_import(
+        chunks,
+        current,
+        "web:dom-parser",
+        "serializeToString",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     chunk.emit_string_const("\n", line);
     let idx = chunk.add_import("wasm:js-string", "concat");

@@ -13,8 +13,8 @@
 //! throws on failure, then restores every argument in its original order so the
 //! underlying builtin emit consumes an unchanged stack.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// What an argument is required to be for a builtin to accept it.
 #[derive(Clone, Copy)]
@@ -43,9 +43,27 @@ fn php_exception_chain(exc_name: &str) -> &'static [&'static str] {
         "TypeError" => &["TypeError", "Error", "Throwable"],
         "ValueError" => &["ValueError", "Error", "Throwable"],
         "ArgumentCountError" => &["ArgumentCountError", "TypeError", "Error", "Throwable"],
-        "DivisionByZeroError" => &["DivisionByZeroError", "ArithmeticError", "Error", "Throwable"],
+        "DivisionByZeroError" => &[
+            "DivisionByZeroError",
+            "ArithmeticError",
+            "Error",
+            "Throwable",
+        ],
         "Error" => &["Error", "Throwable"],
         "Exception" => &["Exception", "Throwable"],
+        "RuntimeException" => &["RuntimeException", "Exception", "Throwable"],
+        "OutOfRangeException" => &[
+            "OutOfRangeException",
+            "LogicException",
+            "Exception",
+            "Throwable",
+        ],
+        "OutOfBoundsException" => &[
+            "OutOfBoundsException",
+            "RuntimeException",
+            "Exception",
+            "Throwable",
+        ],
         _ => &[],
     }
 }
@@ -55,7 +73,13 @@ fn php_exception_chain(exc_name: &str) -> &'static [&'static str] {
 /// `emit_instanceof_chain` to stamp its `Throwable` ancestry, so the exception
 /// participates in cross-language `catch` matching including base-class catches
 /// (`catch (\Error)` matching a `TypeError`).
-pub fn emit_throw_const(chunks: &mut [Chunk], current: usize, exc_name: &str, msg: &str, line: u32) {
+pub fn emit_throw_const(
+    chunks: &mut [Chunk],
+    current: usize,
+    exc_name: &str,
+    msg: &str,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);

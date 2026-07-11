@@ -41,7 +41,14 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     chunks[current].emit_call(idx, argc, line);
 }
@@ -69,7 +76,14 @@ fn global_set(chunk: &mut Chunk, key: &str, line: u32) {
 
 /// Set one string→value entry on the map in `map_slot` (`ecma:map.set` returns
 /// the map, which we drop — the Map is mutated in place).
-fn map_set_slot(chunks: &mut [Chunk], current: usize, map_slot: u16, key: &str, val_slot: u16, line: u32) {
+fn map_set_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    map_slot: u16,
+    key: &str,
+    val_slot: u16,
+    line: u32,
+) {
     {
         let chunk = &mut chunks[current];
         lget(chunk, map_slot, line);
@@ -82,7 +96,13 @@ fn map_set_slot(chunks: &mut [Chunk], current: usize, map_slot: u16, key: &str, 
 
 /// Build a PHP error array `{type, message, file, line}` and store it in a
 /// fresh slot, returning that slot. `type_slot`/`msg_slot` supply the values.
-fn emit_error_map(chunks: &mut [Chunk], current: usize, type_slot: u16, msg_slot: u16, line: u32) -> u16 {
+fn emit_error_map(
+    chunks: &mut [Chunk],
+    current: usize,
+    type_slot: u16,
+    msg_slot: u16,
+    line: u32,
+) -> u16 {
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let map_slot = {
         let chunk = &mut chunks[current];

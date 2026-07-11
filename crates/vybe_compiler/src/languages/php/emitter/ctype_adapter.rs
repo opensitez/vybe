@@ -6,8 +6,8 @@
 //! Composes only WASM string ops (`STR_LENGTH`, `STR_CODE_POINT_AT`)
 //! + numeric comparisons. No host fns; no JS polyfills.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// One `lo..=hi` UTF-16 code-unit range.
 #[derive(Copy, Clone)]

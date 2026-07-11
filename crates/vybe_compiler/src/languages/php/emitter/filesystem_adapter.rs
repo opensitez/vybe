@@ -393,7 +393,14 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetDirectory",
+        1,
+        line,
+    );
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -405,7 +412,14 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFileName",
+        1,
+        line,
+    );
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -417,7 +431,14 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    call_import(chunks, current, "wasi:filesystem", "pathGetExtension", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetExtension",
+        1,
+        line,
+    );
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -894,12 +915,26 @@ fn str_concat(chunk: &mut Chunk, line: u32) {
 
 /// PHP `sys_get_temp_dir()` — the host temp directory.
 pub fn emit_sys_get_temp_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "pathGetTempPath", 0, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetTempPath",
+        0,
+        line,
+    );
 }
 
 /// PHP `realpath($path)` — canonical absolute path.
 pub fn emit_realpath(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "pathGetFullPath", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetFullPath",
+        1,
+        line,
+    );
 }
 
 /// PHP `copy($src, $dst, $context = null)` — drops the optional context.
@@ -1075,7 +1110,14 @@ pub fn emit_tempnam(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 /// generic fallback.
 pub fn emit_mime_content_type(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // stack: [path] -> extension
-    call_import(chunks, current, "wasi:filesystem", "pathGetExtension", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "pathGetExtension",
+        1,
+        line,
+    );
     let chunk = &mut chunks[current];
     let ext_slot = alloc_local(chunk);
     lset(chunk, ext_slot, line);
@@ -1132,7 +1174,14 @@ pub fn emit_disk_free_space(chunks: &mut [Chunk], current: usize, _argc: u8, lin
 
 /// PHP `disk_total_space($dir)` — host `diskTotalSpace`.
 pub fn emit_disk_total_space(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "wasi:filesystem", "diskTotalSpace", 1, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "diskTotalSpace",
+        1,
+        line,
+    );
 }
 
 // ── php://memory stream resources ────────────────────────────────────

@@ -22,20 +22,50 @@ fn sconst(c: &mut Chunk, s: &str) -> u16 {
 
 // ── Array-backed method builders (this = the array itself) ──────────────
 
+/// Emit, at the start of the method chunk `idx`, a guard that throws
+/// `RuntimeException(msg)` when `this` (slot 0, the backing array) is empty.
+/// Real PHP raises RuntimeException — NOT UnderflowException — from
+/// SplStack/SplQueue/SplDoublyLinkedList/heap pop/shift/dequeue/extract/
+/// top/bottom on an empty structure (verified against php 8.4). The shared
+/// `type_guard::emit_throw_const` stamps the full `__types` chain so
+/// `catch (RuntimeException)` (and base catches) match cross-language.
+fn emit_empty_guard(chunks: &mut Vec<Chunk>, idx: usize, msg: &str, line: u32) {
+    {
+        let c = &mut chunks[idx];
+        c.emit_op_u16(Op::LOCAL_GET, 0, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        c.emit_f64_const(0.0, line);
+        crate::emitter::ops::emit_dyn_eq(c, line);
+        crate::emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if(line);
+    }
+    super::type_guard::emit_throw_const(chunks, idx, "RuntimeException", msg, line);
+    chunks[idx].emit_end(line);
+}
+
 /// Build a method chunk that calls `ecma:array.<ecma_fn>(this, args...)`.
 /// `arity` includes the implicit `this`. When `discard_result` is true the
 /// host call's return is dropped and `null` is returned (mutators like push);
-/// otherwise the result is returned (pop/shift).
+/// otherwise the result is returned (pop/shift). When `guard_empty` is true a
+/// leading empty-check throws `RuntimeException` (pop/shift/dequeue/extract).
 fn build_array_method(
     chunks: &mut Vec<Chunk>,
     name: &str,
     ecma_fn: &str,
     arity: u8,
     discard_result: bool,
+    guard_empty: bool,
     line: u32,
 ) -> usize {
     let mut c = Chunk::new(name);
     c.arity = arity;
+    c.local_count = c.local_count.max(arity as u16);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    if guard_empty {
+        emit_empty_guard(chunks, idx, "Can't pop from an empty datastructure", line);
+    }
+    let c = &mut chunks[idx];
     let fn_i = c.add_import("ecma:array".to_string(), ecma_fn.to_string());
     // this (the array) is slot 0
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
@@ -48,9 +78,7 @@ fn build_array_method(
         c.emit_op(Op::NULL, line);
     }
     c.emit_op(Op::RETURN, line);
-    c.local_count = c.local_count.max(arity as u16);
-    chunks.push(c);
-    chunks.len() - 1
+    idx
 }
 
 /// `count()` → `this.length` (ARRAY_LENGTH on the array itself).
@@ -83,28 +111,34 @@ fn build_is_empty_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_top_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_top");
     c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    emit_empty_guard(chunks, idx, "Peek at an empty datastructure", line);
+    let c = &mut chunks[idx];
     let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(-1.0, line);
     c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
-    c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    idx
 }
 
 /// `bottom()` → `this.at(0)` (first element).
 fn build_bottom_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_bottom");
     c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    emit_empty_guard(chunks, idx, "Peek at an empty datastructure", line);
+    let c = &mut chunks[idx];
     let at_i = c.add_import("ecma:array".to_string(), "at".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(0.0, line);
     c.emit_call(at_i, 2, line);
     c.emit_op(Op::RETURN, line);
-    c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    idx
 }
 
 // ── Heap helpers ────────────────────────────────────────────────────────
@@ -195,15 +229,18 @@ fn build_pq_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) ->
 fn build_pq_extract_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_pq_extract");
     c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    emit_empty_guard(chunks, idx, "Can't extract from an empty heap", line);
+    let c = &mut chunks[idx];
     let pop_i = c.add_import("ecma:array".to_string(), "pop".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_call(pop_i, 1, line); // → [priority, value]
     c.emit_f64_const(1.0, line);
     c.emit_op(Op::ARRAY_GET, line); // pair[1] = value
     c.emit_op(Op::RETURN, line);
-    c.local_count = c.local_count.max(1);
-    chunks.push(c);
-    chunks.len() - 1
+    idx
 }
 
 // ── SplObjectStorage / WeakMap (ecma:map, object-identity keys) ─────────
@@ -344,9 +381,9 @@ pub fn emit_spl_heap_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, ar
         (
             "extract",
             if is_max {
-                build_array_method(chunks, "__spl_extract", "pop", 1, false, line)
+                build_array_method(chunks, "__spl_extract", "pop", 1, false, true, line)
             } else {
-                build_array_method(chunks, "__spl_extract", "shift", 1, false, line)
+                build_array_method(chunks, "__spl_extract", "shift", 1, false, true, line)
             },
         ),
         (
@@ -371,27 +408,27 @@ pub fn emit_spl_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u
     let binds: Vec<(&'static str, usize)> = vec![
         (
             "push",
-            build_array_method(chunks, "__spl_push", "push", 2, true, line),
+            build_array_method(chunks, "__spl_push", "push", 2, true, false, line),
         ),
         (
             "pop",
-            build_array_method(chunks, "__spl_pop", "pop", 1, false, line),
+            build_array_method(chunks, "__spl_pop", "pop", 1, false, true, line),
         ),
         (
             "shift",
-            build_array_method(chunks, "__spl_shift", "shift", 1, false, line),
+            build_array_method(chunks, "__spl_shift", "shift", 1, false, true, line),
         ),
         (
             "unshift",
-            build_array_method(chunks, "__spl_unshift", "unshift", 2, true, line),
+            build_array_method(chunks, "__spl_unshift", "unshift", 2, true, false, line),
         ),
         (
             "enqueue",
-            build_array_method(chunks, "__spl_enqueue", "push", 2, true, line),
+            build_array_method(chunks, "__spl_enqueue", "push", 2, true, false, line),
         ),
         (
             "dequeue",
-            build_array_method(chunks, "__spl_dequeue", "shift", 1, false, line),
+            build_array_method(chunks, "__spl_dequeue", "shift", 1, false, true, line),
         ),
         ("top", build_top_method(chunks, line)),
         ("bottom", build_bottom_method(chunks, line)),

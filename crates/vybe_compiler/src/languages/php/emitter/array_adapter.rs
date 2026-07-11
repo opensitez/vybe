@@ -3801,7 +3801,7 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
 // ── implode (PHP bool-to-string coercion) ─────────────────────────
 /// PHP `implode($glue, $arr)` — like JS join but bools → "1"/"".
 /// Stack: [arr, glue] → [string].
-pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let glue_slot = alloc_local(chunk);
     let arr_slot = alloc_local(chunk);
@@ -3813,12 +3813,19 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
 
-    // Args come as (arr, glue) after walker reorder
-    lset(chunk, glue_slot, line);
-    lset(chunk, arr_slot, line);
+    // Two-arg form comes as (arr, glue) after the walker reorder; the one-arg
+    // form `implode($arr)` has only the array on the stack and an empty glue.
+    if argc >= 2 {
+        lset(chunk, glue_slot, line);
+        lset(chunk, arr_slot, line);
+    } else {
+        lset(chunk, arr_slot, line);
+        push_str(chunk, "", line);
+        lset(chunk, glue_slot, line);
+    }
 
     // Build a new array with stringified elements
-    chunk.emit_op_u8(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, out_slot, line);
 
     // Get values from array (works for both Array and Map)

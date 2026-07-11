@@ -28,7 +28,14 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     chunks[current].emit_call(idx, argc, line);
 }
@@ -107,7 +114,12 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, stmt_slot, line);
     chunk.emit_f64_const(0.0, line);
     struct_set_key(chunk, "__cursor", line);
-    for key in ["__rows", "__bound_params", "__bound_named_pairs", "__bound_result"] {
+    for key in [
+        "__rows",
+        "__bound_params",
+        "__bound_named_pairs",
+        "__bound_result",
+    ] {
         lget(&mut chunks[current], stmt_slot, line);
         emit_empty_array(chunks, current, line);
         struct_set_key(&mut chunks[current], key, line);

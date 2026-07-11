@@ -621,7 +621,13 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &s
 }
 
 /// Read a getter into a fresh scratch local, returning its slot.
-fn getter_to_slot(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &str, line: u32) -> u16 {
+fn getter_to_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    dt_slot: u16,
+    getter: &str,
+    line: u32,
+) -> u16 {
     let slot = alloc_local(&mut chunks[current]);
     emit_dt_getter(chunks, current, dt_slot, getter, line);
     local_set(&mut chunks[current], slot, line);
@@ -2598,11 +2604,19 @@ pub fn format_php_literal_to_ast(
         )
     }
     fn pad(part: Expression, width: i64, span: &crate::ast::Span) -> Expression {
-        // ("" . part).padStart(width, "0")
+        // str_pad("" . part, width, "0", STR_PAD_LEFT=0) — via the profile
+        // `common:php.str_pad` emitter (ecma:string padStart host import).
+        // A `->padStart` member call is not usable: PHP `->` is object-method
+        // dispatch and does not resolve JS string-prototype methods.
         let stringified = stringify(part, span);
         call(
-            member(stringified, "padStart", span),
-            vec![lit_int(width, span), lit_str("0", span)],
+            Expression::with_span(ExprKind::Ident("str_pad".to_string()), span.clone()),
+            vec![
+                stringified,
+                lit_int(width, span),
+                lit_str("0", span),
+                lit_int(0, span),
+            ],
             span,
         )
     }

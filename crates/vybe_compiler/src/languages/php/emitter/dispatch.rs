@@ -6,8 +6,8 @@
 //! so PHP-specific routing lives in the PHP module instead of the common
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
@@ -130,7 +130,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // isn't an array; the underlying op is the shared `common:*` emit.
         "php.array_push_g" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_push(): Argument #1 ($array) must be of type array",
                 line,
@@ -139,7 +143,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.array_pop_g" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_pop(): Argument #1 ($array) must be of type array",
                 line,
@@ -151,7 +159,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             // the parameter is by-reference; `TypeError` is an `\Error`
             // subclass, so `catch (\Error)` matches either way).
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "sort(): Argument #1 ($array) must be of type array",
                 line,
@@ -162,7 +174,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_map" => super::array_adapter::emit_array_map(chunks, current, argc, line),
         "php.array_filter" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_filter(): Argument #1 ($array) must be of type array",
                 line,
@@ -178,7 +194,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.count" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::NotScalar,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::NotScalar,
                 "TypeError",
                 "count(): Argument #1 ($value) must be of type Countable|array",
                 line,
@@ -191,12 +211,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.simplexml_load_string" => {
             super::xml_adapter::emit_simplexml_load_string(chunks, current, argc, line)
         }
-        "php.dom_save_xml" => {
-            super::xml_adapter::emit_dom_save_xml(chunks, current, argc, line)
-        }
+        "php.dom_save_xml" => super::xml_adapter::emit_dom_save_xml(chunks, current, argc, line),
         "php.array_keys" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_keys(): Argument #1 ($array) must be of type array",
                 line,
@@ -205,7 +227,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.array_values" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_values(): Argument #1 ($array) must be of type array",
                 line,
@@ -255,7 +281,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.iterator_to_array" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::NotScalar,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::NotScalar,
                 "TypeError",
                 "iterator_to_array(): Argument #1 ($iterator) must be of type Traversable|array",
                 line,
@@ -266,7 +296,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.arsort" => super::array_adapter::emit_php_arsort(chunks, current, argc, line),
         "php.ksort" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "ksort(): Argument #1 ($array) must be of type array",
                 line,
@@ -445,7 +479,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.abs" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::NotArray,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::NotArray,
                 "TypeError",
                 "abs(): Argument #1 ($num) must be of type int|float",
                 line,
@@ -464,6 +502,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.rand" => crate::emitter::php::numeric_adapter::emit_rand(chunks, current, argc, line),
         "php.lcg_value" => {
             crate::emitter::php::numeric_adapter::emit_lcg_value(chunks, current, argc, line)
+        }
+        "php.pack_float_bytes" => {
+            crate::emitter::php::numeric_adapter::emit_pack_float_bytes(chunks, current, argc, line)
         }
 
         // ── PHP ctype_* predicates ─────────────────────────────────
@@ -646,9 +687,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strpos" => {
             crate::emitter::php::string_adapter::emit_strpos(chunks, current, argc, line)
         }
-        "php.strtr" => {
-            crate::emitter::php::string_adapter::emit_strtr(chunks, current, argc, line)
-        }
+        "php.strtr" => crate::emitter::php::string_adapter::emit_strtr(chunks, current, argc, line),
         "php.quotemeta" => {
             crate::emitter::php::string_adapter::emit_quotemeta(chunks, current, argc, line)
         }
@@ -660,7 +699,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.strlen" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::NotArray,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::NotArray,
                 "TypeError",
                 "strlen(): Argument #1 ($string) must be of type string",
                 line,
@@ -818,7 +861,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // SplFixedArray is handled by the walker (→ array_fill); no dispatch needed.
         "php.array_merge" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_merge(): Argument #1 ($arrays) must be of type array",
                 line,
@@ -833,7 +880,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.array_slice" => {
             super::type_guard::guard_arg(
-                chunks, current, argc, 0, super::type_guard::Expect::Array,
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
                 "TypeError",
                 "array_slice(): Argument #1 ($array) must be of type array",
                 line,
@@ -1098,30 +1149,72 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.db_prepare" => {
             crate::emitter::php::db_adapter::emit_db_prepare(chunks, current, argc, line)
         }
-        "php.set_error_handler" => super::error_adapter::emit_set_error_handler(chunks, current, argc, line),
-        "php.restore_error_handler" => super::error_adapter::emit_restore_error_handler(chunks, current, argc, line),
-        "php.trigger_error" => super::error_adapter::emit_trigger_error(chunks, current, argc, line),
-        "php.error_get_last" => super::error_adapter::emit_error_get_last(chunks, current, argc, line),
-        "php.error_clear_last" => super::error_adapter::emit_error_clear_last(chunks, current, argc, line),
-        "php.error_reporting" => super::error_adapter::emit_error_reporting(chunks, current, argc, line),
-        "php.set_exception_handler" => super::error_adapter::emit_set_exception_handler(chunks, current, argc, line),
-        "php.pdo_statement_fetch_column" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch_column(chunks, current, argc, line),
-        "php.pdo_statement_row_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_row_count(chunks, current, argc, line),
-        "php.pdo_statement_column_count" => crate::emitter::php::pdo_adapter::emit_php_pdo_statement_column_count(chunks, current, argc, line),
-        "php.pdo_get_attribute" => crate::emitter::php::pdo_adapter::emit_php_pdo_get_attribute(chunks, current, argc, line),
-        "php.pdo_quote" => crate::emitter::php::pdo_adapter::emit_php_pdo_quote(chunks, current, argc, line),
-        "php.pdo_error_code" => crate::emitter::php::pdo_adapter::emit_php_pdo_error_code(chunks, current, argc, line),
-        "php.pdo_last_insert_id" => crate::emitter::php::pdo_adapter::emit_php_pdo_last_insert_id(chunks, current, argc, line),
-        "php.pdo_error_info" => crate::emitter::php::pdo_adapter::emit_php_pdo_error_info(chunks, current, argc, line),
-        "php.mysqli_stmt_attr_get" => super::mysqli_adapter::emit_mysqli_stmt_attr_get(chunks, current, argc, line),
-        "php.mysqli_stmt_true" => super::mysqli_adapter::emit_mysqli_stmt_true(chunks, current, argc, line),
-        "php.mysqli_stmt_false" => super::mysqli_adapter::emit_mysqli_stmt_false(chunks, current, argc, line),
-        "php.mysqli_stmt_get_result" => super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line),
-        "php.pdo_set_attribute" => {
-            crate::emitter::php::pdo_adapter::emit_php_pdo_set_attribute(
+        "php.set_error_handler" => {
+            super::error_adapter::emit_set_error_handler(chunks, current, argc, line)
+        }
+        "php.restore_error_handler" => {
+            super::error_adapter::emit_restore_error_handler(chunks, current, argc, line)
+        }
+        "php.trigger_error" => {
+            super::error_adapter::emit_trigger_error(chunks, current, argc, line)
+        }
+        "php.error_get_last" => {
+            super::error_adapter::emit_error_get_last(chunks, current, argc, line)
+        }
+        "php.error_clear_last" => {
+            super::error_adapter::emit_error_clear_last(chunks, current, argc, line)
+        }
+        "php.error_reporting" => {
+            super::error_adapter::emit_error_reporting(chunks, current, argc, line)
+        }
+        "php.set_exception_handler" => {
+            super::error_adapter::emit_set_exception_handler(chunks, current, argc, line)
+        }
+        "php.pdo_statement_fetch_column" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_fetch_column(
                 chunks, current, argc, line,
             )
         }
+        "php.pdo_statement_row_count" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_row_count(
+                chunks, current, argc, line,
+            )
+        }
+        "php.pdo_statement_column_count" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_statement_column_count(
+                chunks, current, argc, line,
+            )
+        }
+        "php.pdo_get_attribute" => crate::emitter::php::pdo_adapter::emit_php_pdo_get_attribute(
+            chunks, current, argc, line,
+        ),
+        "php.pdo_quote" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_quote(chunks, current, argc, line)
+        }
+        "php.pdo_error_code" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_error_code(chunks, current, argc, line)
+        }
+        "php.pdo_last_insert_id" => crate::emitter::php::pdo_adapter::emit_php_pdo_last_insert_id(
+            chunks, current, argc, line,
+        ),
+        "php.pdo_error_info" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_error_info(chunks, current, argc, line)
+        }
+        "php.mysqli_stmt_attr_get" => {
+            super::mysqli_adapter::emit_mysqli_stmt_attr_get(chunks, current, argc, line)
+        }
+        "php.mysqli_stmt_true" => {
+            super::mysqli_adapter::emit_mysqli_stmt_true(chunks, current, argc, line)
+        }
+        "php.mysqli_stmt_false" => {
+            super::mysqli_adapter::emit_mysqli_stmt_false(chunks, current, argc, line)
+        }
+        "php.mysqli_stmt_get_result" => {
+            super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line)
+        }
+        "php.pdo_set_attribute" => crate::emitter::php::pdo_adapter::emit_php_pdo_set_attribute(
+            chunks, current, argc, line,
+        ),
         "php.pdo_begin_transaction" => {
             crate::emitter::php::pdo_adapter::emit_php_pdo_begin_transaction(
                 chunks, current, argc, line,
@@ -1130,9 +1223,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.pdo_commit" => {
             crate::emitter::php::pdo_adapter::emit_php_pdo_commit(chunks, current, argc, line)
         }
-        "php.pdo_rollback" => crate::emitter::php::pdo_adapter::emit_php_pdo_rollback(
-            chunks, current, argc, line,
-        ),
+        "php.pdo_rollback" => {
+            crate::emitter::php::pdo_adapter::emit_php_pdo_rollback(chunks, current, argc, line)
+        }
         "php.pdo_statement_bind_param" => {
             crate::emitter::php::pdo_adapter::emit_php_pdo_statement_bind_param(
                 chunks, current, argc, line,
@@ -1158,9 +1251,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_report" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_report(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_report" => {
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_report(chunks, current, argc, line)
+        }
         "php.mysqli_connect" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_connect(
             chunks, current, argc, line,
         ),
@@ -1182,12 +1275,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_error" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_error(
-            chunks, current, argc, line,
-        ),
-        "php.mysqli_query" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_query(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_error" => {
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_error(chunks, current, argc, line)
+        }
+        "php.mysqli_query" => {
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_query(chunks, current, argc, line)
+        }
         "php.mysqli_prepare" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_prepare(
             chunks, current, argc, line,
         ),
@@ -1202,9 +1295,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mysqli_ping" => {
             crate::emitter::php::mysqli_adapter::emit_php_mysqli_ping(chunks, current, argc, line)
         }
-        "php.mysqli_errno" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_errno(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_errno" => {
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_errno(chunks, current, argc, line)
+        }
         "php.mysqli_affected_rows" => {
             crate::emitter::php::mysqli_adapter::emit_php_mysqli_affected_rows(
                 chunks, current, argc, line,
@@ -1213,11 +1306,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mysqli_insert_id" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_insert_id(
             chunks, current, argc, line,
         ),
-        "php.mysqli_num_fields" => {
-            crate::emitter::php::mysqli_adapter::emit_php_mysqli_num_fields(
-                chunks, current, argc, line,
-            )
-        }
+        "php.mysqli_num_fields" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_num_fields(
+            chunks, current, argc, line,
+        ),
         "php.mysqli_fetch_field" => {
             crate::emitter::php::mysqli_adapter::emit_php_mysqli_fetch_field(
                 chunks, current, argc, line,
@@ -1238,9 +1329,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_close" => crate::emitter::php::mysqli_adapter::emit_php_mysqli_close(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_close" => {
+            crate::emitter::php::mysqli_adapter::emit_php_mysqli_close(chunks, current, argc, line)
+        }
         "php.mysqli_real_escape_string" => {
             crate::emitter::php::mysqli_adapter::emit_php_mysqli_real_escape_string(
                 chunks, current, argc, line,

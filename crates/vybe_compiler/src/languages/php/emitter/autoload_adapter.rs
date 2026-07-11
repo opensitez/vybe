@@ -121,7 +121,12 @@ fn emit_fallback_if_undefined(chunk: &mut Chunk, ctor_slot: u16, fallback: &str,
 /// Invoke the registered autoload callback with `autoload_name` (passing
 /// the receiver as `this` when the callback is a method). No-op when no
 /// callback is registered.
+///
+/// The internal class identity is dotted (`App.Widget` — un-flattened
+/// namespaces); PHP autoload callbacks receive the SPEC spelling with
+/// backslashes (`App\Widget`), so convert at this boundary.
 fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
+    let autoload_name = &autoload_name.replace('.', "\\");
     let autoload_slot = alloc_local(chunk);
     let autoload_idx = str_idx(chunk, "__php_autoload_callback");
     chunk.emit_op_u16(Op::GLOBAL_GET, autoload_idx, line);

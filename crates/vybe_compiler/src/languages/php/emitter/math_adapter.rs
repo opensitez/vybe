@@ -352,7 +352,12 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     // PHP 8: `base_convert` bases must be in 2..=36, else ValueError.
     // bad = from<2 || from>36 || to<2 || to>36
-    for (slot, lo) in [(from_slot, true), (from_slot, false), (to_slot, true), (to_slot, false)] {
+    for (slot, lo) in [
+        (from_slot, true),
+        (from_slot, false),
+        (to_slot, true),
+        (to_slot, false),
+    ] {
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(if lo { 2.0 } else { 36.0 }), line);
         if lo {

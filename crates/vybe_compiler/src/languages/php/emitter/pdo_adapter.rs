@@ -1178,12 +1178,16 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
     lget(chunk, rows_slot, line);
 }
 
-
 // ── Additional PDOStatement / PDO methods over the shared statement shape ────
 
 /// `$stmt->fetchColumn()` — advance the cursor, return the first column of the
 /// row, or `false` at end of result. Stack: `[stmt]` → `[value|false]`.
-pub fn emit_php_pdo_statement_fetch_column(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_pdo_statement_fetch_column(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
@@ -1221,7 +1225,12 @@ pub fn emit_php_pdo_statement_fetch_column(chunks: &mut [Chunk], current: usize,
 }
 
 /// `$stmt->rowCount()` — rows affected by the last DML, or 0. Stack: `[stmt]` → `[n]`.
-pub fn emit_php_pdo_statement_row_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_pdo_statement_row_count(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     struct_get_key(chunk, "__row_count", line);
     // null → 0
@@ -1238,7 +1247,12 @@ pub fn emit_php_pdo_statement_row_count(chunks: &mut [Chunk], current: usize, _a
 
 /// `$stmt->columnCount()` — number of columns in the result (keys of row 0). 0
 /// when there are no rows. Stack: `[stmt]` → `[n]`.
-pub fn emit_php_pdo_statement_column_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_pdo_statement_column_count(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
