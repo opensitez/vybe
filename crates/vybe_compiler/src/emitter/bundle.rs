@@ -3,7 +3,7 @@
 //! Appends helper chunks to program. Emits a preamble in the script chunk
 //! that creates function refs and stores them in globals (`__vybe_*`).
 //!
-//! Call sites do: `global_get "__vybe_range"` + `call_ref 3`
+//! Call sites do: `global_get "__vybe_sorted"` + `call_ref 1`
 //!
 //! On Vybe VM, `register_all` overwrites these globals with host fn objects.
 //! On any other runtime, the globals hold the bundled helper function refs.
@@ -17,7 +17,6 @@ use vybe_bytecode::{Chunk, Value};
 
 /// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
-    ("__stdlib_range", "__vybe_range"),
     ("__stdlib_sorted", "__vybe_sorted"),
     ("__stdlib_sort_in_place", "__vybe_sort_in_place"),
     (
@@ -29,7 +28,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
     ("__stdlib_reversed", "__vybe_reversed"),
     ("__stdlib_enumerate", "__vybe_enumerate"),
-    ("__stdlib_zip", "__vybe_zip"),
     ("__stdlib_sum", "__vybe_sum"),
     ("__stdlib_min", "__vybe_min"),
     ("__stdlib_max", "__vybe_max"),
@@ -43,26 +41,9 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_pyfilter", "__vybe_pyfilter"),
     ("__stdlib_pyiter", "__vybe_pyiter"),
     ("__stdlib_pynext", "__vybe_pynext"),
-    ("__stdlib_rand_choice", "__vybe_rand_choice"),
-    ("__stdlib_rand_shuffle", "__vybe_rand_shuffle"),
-    ("__stdlib_rand_sample", "__vybe_rand_sample"),
     ("__stdlib_rotate", "__vybe_rotate"),
     ("__stdlib_array_copy", "__vybe_array_copy"),
-    ("__stdlib_sin", "__vybe_sin"),
-    ("__stdlib_cos", "__vybe_cos"),
-    ("__stdlib_tan", "__vybe_tan"),
-    ("__stdlib_asin", "__vybe_asin"),
-    ("__stdlib_acos", "__vybe_acos"),
-    ("__stdlib_atan", "__vybe_atan"),
-    ("__stdlib_atan2", "__vybe_atan2"),
-    ("__stdlib_log", "__vybe_log"),
-    ("__stdlib_log10", "__vybe_log10"),
-    ("__stdlib_exp", "__vybe_exp"),
-    ("__stdlib_sinh", "__vybe_sinh"),
-    ("__stdlib_cosh", "__vybe_cosh"),
-    ("__stdlib_tanh", "__vybe_tanh"),
-    ("__stdlib_sign", "__vybe_sign"),
-    ("__stdlib_clamp", "__vybe_clamp"),
+    // Math transcendentals removed — provided natively by `ecma:math:*`.
     ("__stdlib_tostring", "__vybe_tostring"),
     (
         "__stdlib_string_is_null_or_empty",
@@ -128,11 +109,9 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_pyoct", "__vybe_pyoct"),
     ("__stdlib_pybin", "__vybe_pybin"),
     ("__stdlib_isinf", "__vybe_isinf"),
-    ("__stdlib_callable", "__vybe_callable"),
     ("__stdlib_splice", "__vybe_splice"),
     ("__stdlib_slice", "__vybe_slice"),
     ("__stdlib_hasproperty", "__vybe_hasproperty"),
-    ("__stdlib_instanceof", "__vybe_instanceof"),
     ("__stdlib_js_get_method", "__vybe_js_get_method"),
     ("__stdlib_js_instanceof", "__vybe_js_instanceof"),
     ("__stdlib_redim", "__vybe_redim"),
@@ -151,7 +130,10 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
     ("__stdlib_sprintf", "__vybe_sprintf"),
     ("__stdlib_generator_next", "__vybe_generator_next"),
-    ("__stdlib_async_generator_next", "__vybe_async_generator_next"),
+    (
+        "__stdlib_async_generator_next",
+        "__vybe_async_generator_next",
+    ),
     ("__stdlib_generator_self", "__vybe_generator_self"),
     ("__stdlib_iter_drain", "__vybe_iter_drain"),
     // PHP runtime helpers — all inline opcode emitters under
@@ -221,11 +203,9 @@ pub fn append_runtime_helper_chunks(program_chunks: &mut Vec<Chunk>) {
 /// The call convention is: [func_ref, arg0, arg1, ...] on stack.
 ///
 /// Usage in compiler:
-///   emit_call_push_func(chunk, "__vybe_range", 0);  // push func ref
-///   compile_expr(arg0);                               // push start
-///   compile_expr(arg1);                               // push stop
-///   compile_expr(arg2);                               // push step
-///   emit_call_invoke(chunk, 3, 0);                    // call_ref 3
+///   emit_call_push_func(chunk, "__vybe_sorted", 0);  // push func ref
+///   compile_expr(arg0);                               // push array
+///   emit_call_invoke(chunk, 1, 0);                    // call_ref 1
 pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
     let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
     chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
@@ -347,7 +327,6 @@ fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
     match export {
         "__stdlib_minmax" => &["__stdlib_min", "__stdlib_max"],
         "__stdlib_pynext" => &["__stdlib_iter_drain"],
-        "__stdlib_rand_sample" => &["__stdlib_rand_shuffle"],
         "__stdlib_rotate" => &["__stdlib_fmod"],
         _ => &[],
     }

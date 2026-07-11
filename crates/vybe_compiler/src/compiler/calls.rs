@@ -2278,10 +2278,7 @@ impl Compiler {
                     Some(arg) => ordered_args.push(arg),
                     None => {
                         if last_supplied.is_some_and(|last| i < last) {
-                            let default = signature
-                                .param_defaults
-                                .get(i)
-                                .and_then(|d| d.clone());
+                            let default = signature.param_defaults.get(i).and_then(|d| d.clone());
                             ordered_args.push(Argument::positional(
                                 default.unwrap_or_else(Expression::null),
                             ));
@@ -2377,9 +2374,20 @@ impl Compiler {
         // the last segment is a known function.
         if self.is_php_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
-                if name.contains('\\') {
-                    let last = name.rsplit('\\').next().unwrap_or(name);
-                    let first = name.split('\\').next().unwrap_or("");
+                // Either separator: legacy `\`-spelled chains and the
+                // walker's dotted un-flattened form (`App.line`) resolve
+                // the same way — functions still declare flat, so an FQ
+                // call flattens to the known last segment.
+                let sep = if name.contains('\\') {
+                    Some('\\')
+                } else if name.contains('.') {
+                    Some('.')
+                } else {
+                    None
+                };
+                if let Some(sep) = sep {
+                    let last = name.rsplit(sep).next().unwrap_or(name);
+                    let first = name.split(sep).next().unwrap_or("");
                     if !first.is_empty()
                         && !self.profile.is_namespace_root(&first.to_lowercase())
                         && self.defined_functions.contains(&self.canon(last))
@@ -3041,9 +3049,15 @@ impl Compiler {
         // ── Typed static-field receiver: counts.ContainsKey(...) ─────
         // Static fields can carry type hints too. Resolve them here so
         // class-level typed state uses the same shared .NET surface as
-        // locals with type annotations.
+        // locals with type annotations. .NET-shaped profiles ONLY —
+        // ungated, this hijacked typed receivers in other languages
+        // (the "dotnet adapter leaked into compiler core" disease).
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            let class_name = resolve_receiver_type_hint(self, object);
+            let class_name = if self.profile.namespaces.use_dotnet {
+                resolve_receiver_type_hint(self, object)
+            } else {
+                None
+            };
             if let Some(class_name) = class_name {
                 if self
                     .resolve_pending_class_name_for_type_hint(&class_name)
@@ -3330,8 +3344,48 @@ impl Compiler {
                 // builtins with custom emit logic (`Array.from`,
                 // `Math.max`) still win on the names they claim.
                 let key = self.canon(obj_name);
-                if let Some(module) = self.host_namespace_aliases.get(&key).cloned() {
-                    let _ = module;
+                // namespaceplan.md: migrated profiles gate this path through
+                // the common resolver (adds locals-shadow correctness); the
+                // direct map read serves the not-yet-migrated languages.
+                let ns_module = if self.profile.uses_common_resolver {
+                    match self.resolve_namespace_name(obj_name) {
+                        Some(super::resolver::Resolution::NamespaceAlias { module }) => {
+                            Some(module)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    self.host_namespace_aliases.get(&key).cloned()
+                };
+                if let Some(ns_module) = ns_module {
+                    // §16.2: namespace member access is a COMPILE-TIME
+                    // binding. Resolve the export statically — through the
+                    // profile's mount-with-rename surface first
+                    // (`j.dumps` → ecma:json/stringify), then the host's
+                    // component-model export table — and emit a direct
+                    // CALL_IMPORT. Only an export unknown at compile time
+                    // falls back to the runtime namespace object.
+                    let static_target = self
+                        .module_exports
+                        .get(&ns_module)
+                        .and_then(|exports| exports.get(field))
+                        .cloned()
+                        .or_else(|| {
+                            let ctx = crate::emitter::instructions::host::CapabilityContext::get();
+                            if ctx.functions.has(&ns_module, field) {
+                                Some((ns_module.clone(), field.clone()))
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some((target_module, target_name)) = static_target {
+                        for arg in &arg_exprs {
+                            self.compile_expr(arg)?;
+                        }
+                        let idx = self.import(&target_module, &target_name);
+                        self.emit_host_call(idx, arg_exprs.len() as u8);
+                        return Ok(());
+                    }
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -3397,9 +3451,42 @@ impl Compiler {
             } = &object.kind
             {
                 if let ExprKind::Ident(prefix) = &inner_obj.kind {
-                    let prefix_lc = self.canon(prefix);
-                    if matches!(prefix_lc.as_str(), "vybe" | "wasi" | "wasm") {
-                        let module = format!("{}:{}", prefix_lc, self.canon(inner_field));
+                    // namespaceplan.md migration: profiles that opted into
+                    // the common resolver take the data-driven package-root
+                    // path (profile `[[esm_default]] kind = "package-root"`
+                    // mounts); the hardcoded arm below serves the languages
+                    // that haven't migrated yet and dies with the last one.
+                    let resolved = if self.profile.uses_common_resolver {
+                        match self.resolve_namespace_path(&[prefix, inner_field, field]) {
+                            Some(super::resolver::Resolution::HostImport { module, func }) => {
+                                Some((module, func))
+                            }
+                            // The global namespace tree mounts EVERY host
+                            // export (`vybe.gui.*` right next to `ecma.*`) —
+                            // a tree HostCall is the same direct
+                            // component-model call, no per-profile
+                            // package-root data required.
+                            Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                    module,
+                                    func,
+                                    ..
+                                },
+                            )) => Some((module, func)),
+                            _ => None,
+                        }
+                    } else {
+                        let prefix_lc = self.canon(prefix);
+                        if matches!(prefix_lc.as_str(), "vybe" | "wasi" | "wasm") {
+                            Some((
+                                format!("{}:{}", prefix_lc, self.canon(inner_field)),
+                                field.clone(),
+                            ))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((module, func)) = resolved {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
@@ -3411,7 +3498,7 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        let idx = self.import(&module, field);
+                        let idx = self.import(&module, &func);
                         self.emit_host_call(idx, arg_exprs.len() as u8);
                         return Ok(());
                     }
@@ -3433,7 +3520,13 @@ impl Compiler {
                 if !class_parts.is_empty() {
                     let class_path = class_parts.join(".");
                     let head_name = class_parts.first().map(String::as_str).unwrap_or("");
-                    let full_canon = self.canon(&class_path);
+                    // A source type alias (`use App\Http\Request;`,
+                    // VB `Imports X = …`) resolves the class path to its
+                    // canonical (namespace-qualified) identity first, so
+                    // `Str::upper()` on a use-aliased class dispatches to
+                    // the declared `vendor.support.str`.
+                    let aliased_path = self.resolve_source_type_alias(&class_path);
+                    let full_canon = self.canon(&aliased_path);
                     if self.defined_classes.contains(&full_canon)
                         && self.scope().resolve(head_name).is_none()
                         && self.scope().resolve_ci(head_name).is_none()
@@ -3464,9 +3557,12 @@ impl Compiler {
                 {
                     if let Some(class_canon) = early_static_class_canon.as_ref() {
                         let canon_field = self.canon(&method_name);
-                        let shadowed = self.pending_classes.get(class_canon.as_str()).is_some_and(
-                            |pc| pc.static_method_overloads.contains_key(&canon_field),
-                        );
+                        let shadowed =
+                            self.pending_classes
+                                .get(class_canon.as_str())
+                                .is_some_and(|pc| {
+                                    pc.static_method_overloads.contains_key(&canon_field)
+                                });
                         if !shadowed {
                             early_static_class_canon = None;
                         }
@@ -3641,63 +3737,13 @@ impl Compiler {
                         // normal instance pipeline; the dotted resolver is for namespace/
                         // static chains and can otherwise short-circuit LINQ-style calls.
                     } else {
-                        let dotnet_surface = common::dotnet::surface();
-                        let imports = {
-                            let mut imp = dotnet_surface.default_imports().to_vec();
-                            imp.extend(self.profile.namespaces.extra_imports.clone());
-                            imp
-                        };
-                        let defined_globals = self.defined_globals.clone();
-                        let field_set: std::collections::HashSet<String> =
-                            if let Some(ref cn) = self.current_class {
-                                self.pending_classes
-                                    .get(cn.as_str())
-                                    .map(|pc| pc.fields.iter().cloned().collect())
-                                    .unwrap_or_default()
-                            } else {
-                                std::collections::HashSet::new()
-                            };
-                        // `is_local` must recognise top-level variables that
-                        // live in `defined_globals` (VB `Dim` at the module
-                        // level, JS top-level `var`/`let`), but MUST NOT
-                        // match user classes there — those go through
-                        // `is_user_type` which returns Unresolved so static
-                        // dispatch runs the class ctor path, not a bogus
-                        // struct_get chain off the ctor function. The union
-                        // (`is_local`) minus (`is_user_type`) gives the
-                        // right set of "things you can local_get and
-                        // struct_get from".
-                        let defined_classes = self.defined_classes.clone();
-                        let is_user_class_fn = move |name: &str| -> bool {
-                            defined_classes.contains(name)
-                                || defined_classes.iter().any(|c| c.eq_ignore_ascii_case(name))
-                        };
-                        let is_user_class_for_local = is_user_class_fn.clone();
-                        let accessible_locals = self
-                            .scopes
-                            .iter()
-                            .flat_map(|scope| scope.locals.iter().map(|local| local.name.clone()))
-                            .collect::<Vec<_>>();
-                        let ctx = common::dotnet::ResolutionContext {
-                            is_local: &|name: &str| {
-                                if is_user_class_for_local(name) {
-                                    return false;
-                                }
-                                accessible_locals
-                                    .iter()
-                                    .any(|local| local == name || local.eq_ignore_ascii_case(name))
-                                    || defined_globals.contains(name)
-                                    || defined_globals.iter().any(|g| g.eq_ignore_ascii_case(name))
-                            },
-                            is_class_field: &|name: &str| field_set.contains(name),
-                            is_user_type: &is_user_class_fn,
-                            imports: &imports,
-                        };
-                        let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
-                        let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
+                        // namespaceplan.md: the legacy platform cascade is deleted —
+                        // the COMMON resolver implements the .NET chain ordering over
+                        // platform data + the namespace tree + real compiler scope.
+                        let resolution = self.resolve_dotnet_chain(&parts);
 
                         match resolution {
-                            common::dotnet::DottedResolution::GlobalAccess { name } => {
+                            Some(super::resolver::Resolution::GlobalAccess { name }) => {
                                 let global_idx = self.str_const(&name);
                                 self.emit_u16(Op::GLOBAL_GET, global_idx);
                                 for a in &arg_exprs {
@@ -3706,7 +3752,9 @@ impl Compiler {
                                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                                 return Ok(());
                             }
-                            common::dotnet::DottedResolution::CommonCall { emit } => {
+                            Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                            )) => {
                                 if emit.eq_ignore_ascii_case("dotnet.array_resize")
                                     && args.len() == 2
                                     && args[0].by_ref
@@ -3736,7 +3784,16 @@ impl Compiler {
                                 self.emit_common(&emit, arg_exprs.len() as u8, line);
                                 return Ok(());
                             }
-                            common::dotnet::DottedResolution::HostCall { module, func } => {
+                            Some(
+                                super::resolver::Resolution::HostImport { module, func }
+                                | super::resolver::Resolution::Tree(
+                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                        module,
+                                        func,
+                                        ..
+                                    },
+                                ),
+                            ) => {
                                 if self.profile.name == "csharp"
                                     && module.eq_ignore_ascii_case("ecma:number")
                                     && func.eq_ignore_ascii_case("parseInt")
@@ -3765,9 +3822,9 @@ impl Compiler {
                                 self.emit_host_call(idx, arg_exprs.len() as u8);
                                 return Ok(());
                             }
-                            common::dotnet::DottedResolution::NamespaceAccess {
+                            Some(super::resolver::Resolution::NamespaceChain {
                                 parts: ns_parts,
-                            } => {
+                            }) => {
                                 // If any contiguous sub-window of the chain is a profile namespace
                                 // constant (e.g. ["system","math","pi","tostring"] where "math.pi"
                                 // is a constant), emit the constant and dispatch remaining as a
@@ -3887,7 +3944,7 @@ impl Compiler {
                                 }
                                 let is_const = ns_parts
                                     .last()
-                                    .map(|name| dotnet_surface.is_known_constant(name))
+                                    .map(|name| common::dotnet::surface().is_known_constant(name))
                                     .unwrap_or(false);
                                 if !is_const {
                                     for a in &arg_exprs {
@@ -3897,7 +3954,7 @@ impl Compiler {
                                 }
                                 return Ok(());
                             }
-                            common::dotnet::DottedResolution::InstanceMember { local, members } => {
+                            Some(super::resolver::Resolution::ScopedMember { local, members }) => {
                                 // Intercept `parent.Controls.Add(child)` for GUI.
                                 // The .NET WinForms surface is `Form.Controls.Add(ctrl)`,
                                 // MAUI is `parent.Children.Add(ctrl)`, etc. — all
@@ -3956,11 +4013,11 @@ impl Compiler {
                                 // dispatch (`dict.Add`, `queue.Dequeue`, etc.) and the
                                 // generic object member path as the single source of truth.
                             }
-                            common::dotnet::DottedResolution::NoOp => {
+                            Some(super::resolver::Resolution::NoOp) => {
                                 self.emit(Op::NULL);
                                 return Ok(());
                             }
-                            common::dotnet::DottedResolution::Unresolved => {
+                            _ => {
                                 // Fall through to value methods and other resolution
                             }
                         }
@@ -3975,7 +4032,20 @@ impl Compiler {
                     && common::dotnet::is_namespace_root(&lower_parts[0]);
                 if !dotnet_root {
                     let alias_key = self.canon(&lower_parts[0]);
-                    if let Some(module) = self.host_namespace_aliases.get(&alias_key).cloned() {
+                    // namespaceplan.md: migrated profiles resolve the chain
+                    // head through the common resolver (locals shadow);
+                    // direct map read serves not-yet-migrated languages.
+                    let ns_module = if self.profile.uses_common_resolver {
+                        match self.resolve_namespace_name(&parts[0]) {
+                            Some(super::resolver::Resolution::NamespaceAlias { module }) => {
+                                Some(module)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        self.host_namespace_aliases.get(&alias_key).cloned()
+                    };
+                    if let Some(module) = ns_module {
                         let is_prototype_chain = self.class_prototype_dispatch()
                             && lower_parts.len() > 2
                             && lower_parts
@@ -4054,6 +4124,21 @@ impl Compiler {
                                 lower_parts[1].clone()
                             } else {
                                 lower_parts[1..].join(".")
+                            };
+                            // Mount-with-rename (namespaceplan.md): the
+                            // profile's module-export surface reconciles the
+                            // source-level name with the canonical host
+                            // export (`json.dumps` / `j.dumps` →
+                            // ecma:json/stringify) before emitting.
+                            let (module, func) = match self
+                                .module_exports
+                                .get(&module)
+                                .and_then(|exports| exports.get(&func))
+                            {
+                                Some((target_module, target_name)) => {
+                                    (target_module.clone(), target_name.clone())
+                                }
+                                None => (module, func),
                             };
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -4146,15 +4231,13 @@ impl Compiler {
                 // route so the generic Function.prototype path below
                 // handles them (class constructors are function objects).
                 if self.profile.has_function_prototype_bind
-                    && matches!(field.as_str(), "bind" | "call" | "apply") {
+                    && matches!(field.as_str(), "bind" | "call" | "apply")
+                {
                     if let Some(canon) = static_class_canon.as_ref() {
                         let canon_field = self.canon(field);
-                        let shadowed = self
-                            .pending_classes
-                            .get(canon.as_str())
-                            .is_some_and(|pc| {
-                                pc.static_method_overloads.contains_key(&canon_field)
-                            });
+                        let shadowed = self.pending_classes.get(canon.as_str()).is_some_and(|pc| {
+                            pc.static_method_overloads.contains_key(&canon_field)
+                        });
                         if !shadowed {
                             static_class_canon = None;
                         }
@@ -4558,7 +4641,15 @@ impl Compiler {
             // runtime collection registry owns at this arity (`List.Count()`).
             let surface_type: Option<String> = match &class_name {
                 Some(cn) if self.resolve_pending_class_name_for_type_hint(cn).is_some() => None,
-                Some(cn) => Some(Self::normalize_type_hint(cn)),
+                // The .NET surface serves .NET-shaped profiles ONLY. Ungated,
+                // this hijacked typed receivers in other languages (JS
+                // `const a=[1,2]; a.reverse()` → the surface's non-mutating
+                // Array.Reverse) — the exact "dotnet adapter leaked into
+                // compiler core" disease namespaceplan.md documents.
+                Some(cn) if self.profile.namespaces.use_dotnet => {
+                    Some(Self::normalize_type_hint(cn))
+                }
+                Some(_) => None,
                 None if self.profile.namespaces.use_dotnet
                     && !self.direct_receiver_has_own_pending_method(object, field)
                     && !self.defined_class_methods.contains(&self.canon(field))
@@ -4817,7 +4908,10 @@ impl Compiler {
                 // registry for shared .NET collection methods instead of
                 // intercepting them via language profile value-method tables.
             } else if let Some(def) = matched_value_method {
-                if self.profile.supports_spread_arguments && field == "push" && args.iter().any(|arg| arg.spread) {
+                if self.profile.supports_spread_arguments
+                    && field == "push"
+                    && args.iter().any(|arg| arg.spread)
+                {
                     let line = self.line;
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_value_push_spread_obj");
@@ -5344,11 +5438,13 @@ impl Compiler {
                             self.emit_u8(Op::CALL_REF, 2);
                         }
                         self.chunk().emit_else(line);
-                        let global = self.str_const("__vybe_sort_with_comparator");
-                        self.emit_u16(Op::GLOBAL_GET, global);
+                        // JS is 1-to-1 with the ECMA runtime: `Array.prototype.sort`
+                        // (§23.1.3.30) IS `ecma:array/sort` — call it directly with
+                        // the user comparator, no stdlib comparator polyfill.
+                        let idx = self.import("ecma:array", "sort");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_host_call(idx, 2);
                         self.chunk().emit_end(line);
                     }
                     "sort_by_key" => {
@@ -8450,10 +8546,15 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
                 self.emit(Op::REF_IS_NULL);
-                let lookup = self.str_const("__vybe_js_get_method");
                 let line = self.line;
                 self.chunk().emit_if(line);
-                self.emit_u16(Op::GLOBAL_GET, lookup);
+                // Direct ecma `[[Get]]` (Reflect.get) → callee_tmp; a non-object
+                // receiver yields undefined (Reflect.get throws on non-object,
+                // where the old __vybe_js_get_method returned undefined).
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                crate::emitter::instructions::recipes::is_object(self.chunk(), line);
+                self.chunk().emit_if_value(line);
+                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {
                     ExprKind::Member {
@@ -8476,14 +8577,23 @@ impl Compiler {
                     }
                     _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
                 }
-                self.emit_u8(Op::CALL_REF, 2);
+                self.emit_host_call(reflect_idx, 2);
+                self.chunk().emit_else(line);
+                inst!(self, core_wasm::undefined);
+                self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_SET, callee_tmp);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_tmp);
                 fn_call!(self, "wasm:js-undefined", "test", 1);
                 let line = self.line;
                 self.chunk().emit_if(line);
-                self.emit_u16(Op::GLOBAL_GET, lookup);
+                // Direct ecma `[[Get]]` (Reflect.get) → callee_tmp; a non-object
+                // receiver yields undefined (Reflect.get throws on non-object,
+                // where the old __vybe_js_get_method returned undefined).
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                crate::emitter::instructions::recipes::is_object(self.chunk(), line);
+                self.chunk().emit_if_value(line);
+                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {
                     ExprKind::Member {
@@ -8506,7 +8616,10 @@ impl Compiler {
                     }
                     _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
                 }
-                self.emit_u8(Op::CALL_REF, 2);
+                self.emit_host_call(reflect_idx, 2);
+                self.chunk().emit_else(line);
+                inst!(self, core_wasm::undefined);
+                self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_SET, callee_tmp);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
@@ -11175,8 +11288,9 @@ impl Compiler {
                 // into a plain wrapper holding `__gen_fn` (obj-literal
                 // `*m(){}` methods and generator expressions).
                 let (eff_async, eff_generator) = match body {
-                    LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts)
-                        .unwrap_or((is_async, is_generator)),
+                    LambdaBody::Block(stmts) => {
+                        Self::wrapped_generator_kind(stmts).unwrap_or((is_async, is_generator))
+                    }
                     _ => (is_async, is_generator),
                 };
                 let line = self.line;
@@ -11312,18 +11426,12 @@ impl Compiler {
         parts: &[String],
         args: &[&Expression],
     ) -> Result<bool, String> {
-        let lower_parts: Vec<String> = parts.iter().map(|s| s.to_lowercase()).collect();
-        let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
-        let imports = crate::platforms::dotnet::emitter::core::imports::default_interface_imports();
-        let ctx = common::dotnet::ResolutionContext {
-            is_local: &|_: &str| false,
-            is_class_field: &|_: &str| false,
-            is_user_type: &|_: &str| false,
-            imports: &imports,
-        };
-        let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
-        match resolution {
-            common::dotnet::DottedResolution::CommonCall { emit } => {
+        // namespaceplan.md: the legacy platform cascade is deleted — the
+        // COMMON resolver's .NET chain handles it (tree + platform data).
+        match self.resolve_dotnet_chain(parts) {
+            Some(super::resolver::Resolution::Tree(
+                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+            )) => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
@@ -11331,7 +11439,12 @@ impl Compiler {
                 self.emit_common(&emit, args.len() as u8, line);
                 Ok(true)
             }
-            common::dotnet::DottedResolution::HostCall { module, func } => {
+            Some(
+                super::resolver::Resolution::HostImport { module, func }
+                | super::resolver::Resolution::Tree(
+                    crate::emitter::namespaces::ResolutionTarget::HostCall { module, func, .. },
+                ),
+            ) => {
                 for a in args {
                     self.compile_expr(a)?;
                 }

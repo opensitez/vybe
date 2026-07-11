@@ -852,7 +852,9 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        if self.profile.ambient_this_binding && crate::compiler::closures_in_body_reference_this(body) {
+        if self.profile.ambient_this_binding
+            && crate::compiler::closures_in_body_reference_this(body)
+        {
             let this_idx = self.str_const("__js_this");
             self.emit_u16(Op::GLOBAL_GET, this_idx);
             let this_local = self.define_local("__js_this");
@@ -1758,11 +1760,7 @@ impl Compiler {
                 // other languages construct through their own paths).
                 if cc.profile.ecma_new_dispatch {
                     let line = cc.line;
-                    common::classes::emit_class_requires_new_guard(
-                        cc.chunk(),
-                        &class.name,
-                        line,
-                    );
+                    common::classes::emit_class_requires_new_guard(cc.chunk(), &class.name, line);
                 }
                 for s in &m.body {
                     cc.compile_stmt(s)?;

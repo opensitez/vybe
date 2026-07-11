@@ -50,28 +50,22 @@ impl Compiler {
     }
 
     pub(super) fn emit_js_member_fallback_get(&mut self, obj_slot: u16, field_name: &str) {
-        let lookup = self.str_const("__vybe_js_get_method");
-        let getter_slot = self.define_local("__js_member_getter");
-        let accessor_name = format!("__get_{}", field_name);
-
-        self.emit_u16(Op::GLOBAL_GET, lookup);
+        // Direct ecma `[[Get]]` (Reflect.get, §28.1.6): walks the prototype
+        // chain, invokes a `__get_<field>` accessor with the receiver, else
+        // returns the raw data property (undefined if missing). Replaces the
+        // `__vybe_js_get_method` adapter's manual getter-then-property two-step.
+        // Reflect.get throws on a non-object, but the adapter returned undefined
+        // for primitives/null — so guard: non-object → undefined (no throw).
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from(accessor_name.as_str())));
-        self.emit_u8(Op::CALL_REF, 2);
-        self.emit_u16(Op::LOCAL_SET, getter_slot);
-
-        self.emit_u16(Op::LOCAL_GET, getter_slot);
-        fn_call!(self, "wasm:js-undefined", "test", 1);
+        inst!(self, recipes::is_object);
         let line = self.line;
         self.chunk().emit_if_value(line);
-        self.emit_u16(Op::GLOBAL_GET, lookup);
+        let idx = self.import("ecma:reflect", "get");
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::String(Arc::from(field_name)));
-        self.emit_u8(Op::CALL_REF, 2);
+        self.emit_host_call(idx, 2);
         self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, getter_slot);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u8(Op::CALL_REF, 1);
+        inst!(self, core_wasm::undefined);
         self.chunk().emit_end(line);
     }
 
@@ -935,7 +929,12 @@ impl Compiler {
                     if let crate::ast::ExprKind::Ident(type_name) = &right.kind {
                         self.compile_expr(left)?;
                         let line = self.line;
-                        let name_canon = self.canon(type_name);
+                        // A source type alias (`use App\Http\Request;`)
+                        // resolves to the declared namespace-qualified
+                        // identity, so `x instanceof Request` REF_TESTs
+                        // the real `app.http.request` type.
+                        let aliased = self.resolve_source_type_alias(type_name);
+                        let name_canon = self.canon(&aliased);
                         let idx = self.chunk().add_constant(vybe_bytecode::Value::String(
                             std::sync::Arc::from(name_canon.as_str()),
                         ));
@@ -1350,7 +1349,8 @@ impl Compiler {
                                 } else {
                                     crate::emitter::ops::emit_dyn_not(self.chunk(), line);
                                 }
-                                if (self.profile.ecma_boolean_operators || self.profile.materialize_bool_results)
+                                if (self.profile.ecma_boolean_operators
+                                    || self.profile.materialize_bool_results)
                                     && !(self.profile.name == "pascal"
                                         && self.pascal_expr_is_integer_like(inner))
                                 {
@@ -1703,64 +1703,38 @@ impl Compiler {
                         let lower_parts: Vec<String> =
                             parts.iter().map(|part| self.canon(part)).collect();
                         if common::dotnet::is_namespace_root(&lower_parts[0]) {
-                            let scope = self.scope();
-                            let dotnet_surface = common::dotnet::surface();
-                            let mut imports = dotnet_surface.default_imports().to_vec();
-                            imports.extend(self.profile.namespaces.extra_imports.clone());
-                            let field_set: std::collections::HashSet<String> =
-                                if let Some(ref class_name) = self.current_class {
-                                    self.pending_classes
-                                        .get(class_name.as_str())
-                                        .map(|pending| pending.fields.iter().cloned().collect())
-                                        .unwrap_or_default()
-                                } else {
-                                    std::collections::HashSet::new()
-                                };
-                            let defined_globals = self.defined_globals.clone();
-                            let defined_classes = self.defined_classes.clone();
-                            let is_user_class_fn = move |name: &str| -> bool {
-                                defined_classes.contains(name)
-                                    || defined_classes
-                                        .iter()
-                                        .any(|class_name| class_name.eq_ignore_ascii_case(name))
-                            };
-                            let is_user_class_for_local = is_user_class_fn.clone();
-                            let ctx = common::dotnet::ResolutionContext {
-                                is_local: &|name: &str| {
-                                    if is_user_class_for_local(name) {
-                                        return false;
-                                    }
-                                    scope.resolve(name).is_some()
-                                        || scope.resolve_ci(name).is_some()
-                                        || defined_globals.contains(name)
-                                        || defined_globals.iter().any(|global_name| {
-                                            global_name.eq_ignore_ascii_case(name)
-                                        })
-                                },
-                                is_class_field: &|name: &str| field_set.contains(name),
-                                is_user_type: &is_user_class_fn,
-                                imports: &imports,
-                            };
-                            let refs: Vec<&str> =
-                                lower_parts.iter().map(|part| part.as_str()).collect();
-                            match common::dotnet::resolve_dotted_name(&refs, &ctx) {
-                                common::dotnet::DottedResolution::GlobalAccess { name } => {
+                            // namespaceplan.md: the legacy platform cascade is
+                            // deleted — the COMMON resolver's .NET chain handles
+                            // it (tree + platform data + real compiler scope).
+                            match self.resolve_dotnet_chain(&parts) {
+                                Some(super::resolver::Resolution::GlobalAccess { name }) => {
                                     let idx = self.str_const(&name);
                                     self.emit_u16(Op::GLOBAL_GET, idx);
                                     return Ok(());
                                 }
-                                common::dotnet::DottedResolution::CommonCall { emit } => {
+                                Some(super::resolver::Resolution::Tree(
+                                    crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                                )) => {
                                     self.emit_common(&emit, 0, self.line);
                                     return Ok(());
                                 }
-                                common::dotnet::DottedResolution::HostCall { module, func } => {
+                                Some(
+                                    super::resolver::Resolution::HostImport { module, func }
+                                    | super::resolver::Resolution::Tree(
+                                        crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                            module,
+                                            func,
+                                            ..
+                                        },
+                                    ),
+                                ) => {
                                     let idx = self.import(&module, &func);
                                     self.emit_host_call(idx, 0);
                                     return Ok(());
                                 }
-                                common::dotnet::DottedResolution::NamespaceAccess {
+                                Some(super::resolver::Resolution::NamespaceChain {
                                     parts: ns_parts,
-                                } => {
+                                }) => {
                                     if ns_parts.len() >= 2 {
                                         let mut found_window: Option<(usize, usize)> = None;
                                         'outer: for start in 0..ns_parts.len().saturating_sub(1) {
@@ -1801,7 +1775,10 @@ impl Compiler {
                     }
                 }
 
-                if self.class_prototype_dispatch() && matches!(&object.kind, ExprKind::Super) && !*null_safe {
+                if self.class_prototype_dispatch()
+                    && matches!(&object.kind, ExprKind::Super)
+                    && !*null_safe
+                {
                     if let Some(parent) = self
                         .current_class
                         .as_ref()
@@ -2525,7 +2502,12 @@ impl Compiler {
                 // (C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`).
                 // Route through compiler_common's polymorphic slice helper so
                 // strings and arrays both work uniformly.
-                if let ExprKind::Range { start, end, .. } = &index.kind {
+                if let ExprKind::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &index.kind
+                {
                     let line = self.line;
                     if self.profile.ecma_array_method_dispatch {
                         // Emit an inline polymorphic slice for JS: strings use
@@ -2542,6 +2524,11 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, start_slot);
 
                         self.compile_expr(end)?;
+                        // Inclusive `a..b` slice → exclusive upper bound b+1.
+                        if *inclusive {
+                            inst!(self, core_wasm::i32_const, 1);
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        }
                         self.emit_u16(Op::LOCAL_SET, end_slot);
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2567,6 +2554,11 @@ impl Compiler {
                         self.compile_expr(object)?;
                         self.compile_expr(start)?;
                         self.compile_expr(end)?;
+                        // Inclusive `a..b` slice → exclusive upper bound b+1.
+                        if *inclusive {
+                            inst!(self, core_wasm::i32_const, 1);
+                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        }
                         common::collections::emit_slice_invoke(self.chunk(), line);
                     }
                 } else if let ExprKind::Slice { lower, upper, step } = &index.kind {
@@ -2890,12 +2882,17 @@ impl Compiler {
                         self.chunk().emit_end(null_line);
                         self.chunk().emit_end(string_line);
                     }
-                    let lookup = self.str_const("__vybe_js_get_method");
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
                     let lookup_line = self.line;
                     self.chunk().emit_if_value(lookup_line);
-                    self.emit_u16(Op::GLOBAL_GET, lookup);
+                    // STRUCT_GET missed → direct ecma `[[Get]]` (Reflect.get),
+                    // guarding non-object receivers → undefined (Reflect.get
+                    // throws on non-object; __vybe_js_get_method returned undefined).
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    inst!(self, recipes::is_object);
+                    self.chunk().emit_if_value(lookup_line);
+                    let reflect_idx = self.import("ecma:reflect", "get");
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match &index.kind {
                         ExprKind::Member {
@@ -2918,7 +2915,10 @@ impl Compiler {
                         }
                         _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                     }
-                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit_host_call(reflect_idx, 2);
+                    self.chunk().emit_else(lookup_line);
+                    inst!(self, core_wasm::undefined);
+                    self.chunk().emit_end(lookup_line);
                     self.chunk().emit_else(lookup_line);
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.chunk().emit_end(lookup_line);
@@ -3075,12 +3075,16 @@ impl Compiler {
                             self.chunk().emit_end(null_line);
                             self.chunk().emit_end(string_line);
                         }
-                        let lookup = self.str_const("__vybe_js_get_method");
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let lookup_line = self.line;
                         self.chunk().emit_if_value(lookup_line);
-                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        // STRUCT_GET missed → direct ecma `[[Get]]` (Reflect.get),
+                        // guarding non-object receivers → undefined.
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        inst!(self, recipes::is_object);
+                        self.chunk().emit_if_value(lookup_line);
+                        let reflect_idx = self.import("ecma:reflect", "get");
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         match &index.kind {
                             ExprKind::Member {
@@ -3104,7 +3108,10 @@ impl Compiler {
                             }
                             _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                         }
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_host_call(reflect_idx, 2);
+                        self.chunk().emit_else(lookup_line);
+                        inst!(self, core_wasm::undefined);
+                        self.chunk().emit_end(lookup_line);
                         self.chunk().emit_else(lookup_line);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.chunk().emit_end(lookup_line);
@@ -3388,7 +3395,9 @@ impl Compiler {
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
-                    if self.profile.ecma_new_dispatch && self.defined_functions.contains(&canon_type) {
+                    if self.profile.ecma_new_dispatch
+                        && self.defined_functions.contains(&canon_type)
+                    {
                         let idx = self.str_const(&canon_type);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                         let ctor_slot = self.define_local("__js_ctor");
@@ -3683,26 +3692,26 @@ impl Compiler {
                         // class name — its runtime string value is resolved to a
                         // constructor by the dynamic fall-through below.
                         if let ExprKind::Ident(name) = &class.kind {
-                          if !name.starts_with('$') {
-                            let autoload_name =
-                                Self::strip_global_namespace_prefix(name).to_string();
-                            let ctor_base = autoload_name
-                                .rsplit('\\')
-                                .next()
-                                .unwrap_or(autoload_name.as_str());
-                            let fallback_ctor = self.canon(ctor_base);
-                            let primary_ctor = format!("{}$arity{}", fallback_ctor, args.len());
-                            self.emit_dynamic_constructor_global_ref(
-                                &primary_ctor,
-                                Some(&fallback_ctor),
-                                &autoload_name,
-                            );
-                            for a in args {
-                                self.compile_expr(&a.value)?;
+                            if !name.starts_with('$') {
+                                let autoload_name =
+                                    Self::strip_global_namespace_prefix(name).to_string();
+                                let ctor_base = autoload_name
+                                    .rsplit('\\')
+                                    .next()
+                                    .unwrap_or(autoload_name.as_str());
+                                let fallback_ctor = self.canon(ctor_base);
+                                let primary_ctor = format!("{}$arity{}", fallback_ctor, args.len());
+                                self.emit_dynamic_constructor_global_ref(
+                                    &primary_ctor,
+                                    Some(&fallback_ctor),
+                                    &autoload_name,
+                                );
+                                for a in args {
+                                    self.compile_expr(&a.value)?;
+                                }
+                                self.emit_u8(Op::CALL_REF, args.len() as u8);
+                                return Ok(());
                             }
-                            self.emit_u8(Op::CALL_REF, args.len() as u8);
-                            return Ok(());
-                          }
                         }
                     }
                 }
@@ -3763,9 +3772,9 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from("Class not found")));
                         self.emit_u8(Op::CALL_REF, 1);
                         {
-            let line = self.line;
-            crate::emitter::errors::emit_throw(self.chunk(), line);
-        }
+                            let line = self.line;
+                            crate::emitter::errors::emit_throw(self.chunk(), line);
+                        }
                     }
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, class_slot);
@@ -4235,7 +4244,6 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
-                                    
                                         false,
                                     )?;
                                 }
@@ -4292,7 +4300,6 @@ impl Compiler {
                                         &[],
                                         *is_async,
                                         *is_generator,
-                                    
                                         false,
                                     )?;
                                 }
@@ -5800,12 +5807,18 @@ impl Compiler {
             ExprKind::Range {
                 start,
                 end,
-                inclusive: _,
+                inclusive,
             } => {
                 self.compile_expr(start)?;
                 self.compile_expr(end)?;
                 let line = self.line;
-                common::collections::emit_range(&mut self.chunks, self.current, 2, line);
+                common::collections::emit_range(
+                    &mut self.chunks,
+                    self.current,
+                    2,
+                    *inclusive,
+                    line,
+                );
             }
 
             // ── StaticAccess (PHP) ──────────────────────────────────────

@@ -330,8 +330,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     let mut chunks = Vec::new();
     let mut exports = Vec::new();
 
-    chunks.push(build_range(imports));
-    exports.push("__stdlib_range");
     chunks.push(build_sorted(imports));
     exports.push("__stdlib_sorted");
     chunks.push(build_sort_in_place(imports));
@@ -344,8 +342,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_reversed");
     chunks.push(build_enumerate(imports));
     exports.push("__stdlib_enumerate");
-    chunks.push(build_zip(imports));
-    exports.push("__stdlib_zip");
     chunks.push(build_sum(imports));
     exports.push("__stdlib_sum");
     chunks.push(build_min(imports));
@@ -372,46 +368,13 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_pyiter");
     chunks.push(build_pynext(imports));
     exports.push("__stdlib_pynext");
-    chunks.push(build_rand_choice(imports));
-    exports.push("__stdlib_rand_choice");
-    chunks.push(build_rand_shuffle(imports));
-    exports.push("__stdlib_rand_shuffle");
-    chunks.push(build_rand_sample(imports));
-    exports.push("__stdlib_rand_sample");
     chunks.push(build_rotate(imports));
     exports.push("__stdlib_rotate");
     chunks.push(build_array_copy(imports));
     exports.push("__stdlib_array_copy");
-    chunks.push(build_sin(imports));
-    exports.push("__stdlib_sin");
-    chunks.push(build_cos(imports));
-    exports.push("__stdlib_cos");
-    chunks.push(build_tan(imports));
-    exports.push("__stdlib_tan");
-    chunks.push(build_asin(imports));
-    exports.push("__stdlib_asin");
-    chunks.push(build_acos(imports));
-    exports.push("__stdlib_acos");
-    chunks.push(build_atan(imports));
-    exports.push("__stdlib_atan");
-    chunks.push(build_atan2(imports));
-    exports.push("__stdlib_atan2");
-    chunks.push(build_log(imports));
-    exports.push("__stdlib_log");
-    chunks.push(build_log10(imports));
-    exports.push("__stdlib_log10");
-    chunks.push(build_exp(imports));
-    exports.push("__stdlib_exp");
-    chunks.push(build_sinh(imports));
-    exports.push("__stdlib_sinh");
-    chunks.push(build_cosh(imports));
-    exports.push("__stdlib_cosh");
-    chunks.push(build_tanh(imports));
-    exports.push("__stdlib_tanh");
-    chunks.push(build_sign(imports));
-    exports.push("__stdlib_sign");
-    chunks.push(build_clamp(imports));
-    exports.push("__stdlib_clamp");
+    // Math transcendentals (sin/cos/tan/…/sign/clamp) removed: dead chunks —
+    // every language routes math through `Math.*` → `ecma:math:*` host fns
+    // directly, so these `env`-delegating wrappers were never bundled.
     chunks.push(build_to_string(imports));
     exports.push("__stdlib_tostring");
     chunks.push(build_string_is_null_or_empty(imports));
@@ -502,16 +465,12 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_pybin");
     chunks.push(build_isinf(imports));
     exports.push("__stdlib_isinf");
-    chunks.push(build_callable(imports));
-    exports.push("__stdlib_callable");
     chunks.push(build_splice(imports));
     exports.push("__stdlib_splice");
     chunks.push(build_slice(imports));
     exports.push("__stdlib_slice");
     chunks.push(build_has_property(imports));
     exports.push("__stdlib_hasproperty");
-    chunks.push(build_instance_of(imports));
-    exports.push("__stdlib_instanceof");
     chunks.push(build_js_get_method(imports));
     exports.push("__stdlib_js_get_method");
     chunks.push(build_js_instance_of(imports));
@@ -587,7 +546,7 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
 }
 
 /// Build only the requested helper chunks. `requested` must contain
-/// helper export names such as `__stdlib_range`, not `__vybe_*` globals.
+/// helper export names such as `__stdlib_sorted`, not `__vybe_*` globals.
 pub fn build_runtime_helpers_for_exports(
     imports: &mut Chunk,
     requested: &[&'static str],
@@ -607,14 +566,12 @@ pub fn build_runtime_helpers_for_exports(
 
 fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk> {
     let chunk = match name {
-        "__stdlib_range" => build_range(imports),
         "__stdlib_sorted" => build_sorted(imports),
         "__stdlib_sort_in_place" => build_sort_in_place(imports),
         "__stdlib_sort_with_comparator" => build_sort_with_comparator(imports),
         "__stdlib_sort_by_key" => build_sort_by_key(imports),
         "__stdlib_reversed" => build_reversed(imports),
         "__stdlib_enumerate" => build_enumerate(imports),
-        "__stdlib_zip" => build_zip(imports),
         "__stdlib_sum" => build_sum(imports),
         "__stdlib_min" => build_min(imports),
         "__stdlib_max" => build_max(imports),
@@ -628,26 +585,8 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_pyfilter" => build_pyfilter(imports),
         "__stdlib_pyiter" => build_pyiter(imports),
         "__stdlib_pynext" => build_pynext(imports),
-        "__stdlib_rand_choice" => build_rand_choice(imports),
-        "__stdlib_rand_shuffle" => build_rand_shuffle(imports),
-        "__stdlib_rand_sample" => build_rand_sample(imports),
         "__stdlib_rotate" => build_rotate(imports),
         "__stdlib_array_copy" => build_array_copy(imports),
-        "__stdlib_sin" => build_sin(imports),
-        "__stdlib_cos" => build_cos(imports),
-        "__stdlib_tan" => build_tan(imports),
-        "__stdlib_asin" => build_asin(imports),
-        "__stdlib_acos" => build_acos(imports),
-        "__stdlib_atan" => build_atan(imports),
-        "__stdlib_atan2" => build_atan2(imports),
-        "__stdlib_log" => build_log(imports),
-        "__stdlib_log10" => build_log10(imports),
-        "__stdlib_exp" => build_exp(imports),
-        "__stdlib_sinh" => build_sinh(imports),
-        "__stdlib_cosh" => build_cosh(imports),
-        "__stdlib_tanh" => build_tanh(imports),
-        "__stdlib_sign" => build_sign(imports),
-        "__stdlib_clamp" => build_clamp(imports),
         "__stdlib_tostring" => build_to_string(imports),
         "__stdlib_string_is_null_or_empty" => build_string_is_null_or_empty(imports),
         "__stdlib_string_is_null_or_whitespace" => build_string_is_null_or_whitespace(imports),
@@ -692,11 +631,9 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_pyoct" => build_pyradix(imports, "__stdlib_pyoct", "0o", 8),
         "__stdlib_pybin" => build_pyradix(imports, "__stdlib_pybin", "0b", 2),
         "__stdlib_isinf" => build_isinf(imports),
-        "__stdlib_callable" => build_callable(imports),
         "__stdlib_splice" => build_splice(imports),
         "__stdlib_slice" => build_slice(imports),
         "__stdlib_hasproperty" => build_has_property(imports),
-        "__stdlib_instanceof" => build_instance_of(imports),
         "__stdlib_js_get_method" => build_js_get_method(imports),
         "__stdlib_js_instanceof" => build_js_instance_of(imports),
         "__stdlib_redim" => build_redim(imports),
@@ -742,86 +679,6 @@ pub fn rest_fixed_arity(name: &str) -> Option<u8> {
         "sprintf" => Some(1),
         _ => None,
     }
-}
-
-// ── range(start, stop, step) → array ────────────────────────
-// Every dynamic-array op routes through `common::collections::emit_*`
-// so the emitted bytecode imports `ecma:array.*` — works natively on
-// v8, on Vybe (registered handlers), and on plain wasmtime with the
-// polyfill module. Raw ARRAY_* opcodes are Vybe-only and have been
-// removed.
-fn build_range(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_range");
-    c.arity = 3; // start, stop, step
-    c.local_count = 4;
-    let start = 0u16;
-    let stop = 1;
-    let step = 2;
-    let result = 3;
-
-    // Python `range` overloads: `range(stop)` ≡ `range(0, stop, 1)`,
-    // `range(start, stop)` ≡ `range(start, stop, 1)`. The VM pads
-    // missing args to Null per `call_function_inner`, so we detect
-    // nulls here and reshape locals accordingly.
-    //
-    // 1-arg case: only `start` is set, `stop` is null → shift (stop = start, start = 0)
-    let stop_is_null = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, stop, 0);
-    c.emit_op(Op::REF_IS_NULL, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    // stop = start
-    c.emit_op_u16(Op::LOCAL_GET, start, 0);
-    c.emit_op_u16(Op::LOCAL_SET, stop, 0);
-    // start = 0
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, start, 0);
-    c.emit_end(0);
-    c.patch_block(stop_is_null);
-
-    // step null → step = 1 (covers 1-arg and 2-arg overloads).
-    let step_is_null = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, step, 0);
-    c.emit_op(Op::REF_IS_NULL, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op_u16(Op::LOCAL_SET, step, 0);
-    c.emit_end(0);
-    c.patch_block(step_is_null);
-
-    // result = []
-    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, start, 0);
-    c.emit_op_u16(Op::LOCAL_GET, stop, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    // result.push(i) — push returns new_length (ECMA-262); drop it.
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, start, 0);
-    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, start, 0);
-    c.emit_op_u16(Op::LOCAL_GET, step, 0);
-    crate::emitter::ops::emit_dyn_add_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, start, 0);
-
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
 }
 
 // ── sorted(array) → array (insertion sort — O(n²) but works) ──
@@ -1613,64 +1470,6 @@ fn build_enumerate(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── zip(a, b) → [[a0,b0],[a1,b1],...] ──────────────────────
-fn build_zip(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_zip");
-    c.arity = 2;
-    c.local_count = 5; // a(0) + b(1) + result(2) + i(3) + len(4)
-    let a = 0u16;
-    let b = 1;
-    let result = 2;
-    let i = 3;
-    let len = 4;
-
-    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    // len = min(a.length, b.length) — use a.length for simplicity
-    c.emit_op_u16(Op::LOCAL_GET, a, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit loop
-
-    // result.push([a[i], b[i]])
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, a, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, b, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    crate::emitter::collections::emit_array_pair_into(imports, &mut c, 0);
-    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    c.emit_br(0, 0); // continue loop
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
 // ── sum(array) → number ─────────────────────────────────────
 fn build_sum(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sum");
@@ -2257,153 +2056,6 @@ fn build_pynext(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── rand_choice(arr) — random element via ecma:math.random ──
-// `arr[Math.floor(Math.random() * arr.length)]`. Returns null on empty.
-fn build_rand_choice(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_rand_choice");
-    c.arity = 1;
-    c.local_count = 3; // arr(0), len(1), idx(2)
-    let arr = 0u16;
-    let len = 1;
-    let idx = 2;
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // empty? return null
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
-    c.emit_if(0);
-    c.emit_op(Op::NULL, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-
-    // idx = floor(random() * len)
-    let r_idx = c.add_import("ecma:math", "random");
-    c.emit_call(r_idx, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::F64_FROM_I32, 0);
-    c.emit_op(Op::F64_MUL, 0);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    c.emit_op_u16(Op::LOCAL_SET, idx, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── rand_shuffle(arr) — in-place Fisher-Yates with ecma:math.random ──
-fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_rand_shuffle");
-    c.arity = 1;
-    c.local_count = 5; // arr(0), i(1), j(2), tmp(3), len(4)
-    let arr = 0u16;
-    let i = 1;
-    let j = 2;
-    let tmp = 3;
-    let len = 4;
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // i = len - 1
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-    // while i > 0
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    crate::emitter::ops::emit_dyn_le_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit if i <= 0
-
-    // j = floor(random() * (i + 1))
-    let r_idx = c.add_import("ecma:math", "random");
-    c.emit_call(r_idx, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op(Op::F64_FROM_I32, 0);
-    c.emit_op(Op::F64_MUL, 0);
-    c.emit_op(Op::I32_FROM_F64, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    // tmp = arr[i]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::LOCAL_SET, tmp, 0);
-    // arr[i] = arr[j]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
-    // arr[j] = tmp
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op_u16(Op::LOCAL_GET, tmp, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // i--
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── rand_sample(arr, k) — Python `random.sample(seq, k)` ──
-// Returns a new array of k elements without replacement. Uses
-// shuffle then slice — O(n) memory, simple and correct.
-fn build_rand_sample(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_rand_sample");
-    c.arity = 2;
-    c.local_count = 3;
-    // copy = arr.slice(0, len) — duplicate so shuffle doesn't mutate caller
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    let sl_idx = c.add_import("ecma:array", "slice");
-    c.emit_call(sl_idx, 3, 0);
-    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
-
-    // shuffle copy in place
-    let sh_name = c.add_constant(Value::String(Arc::from("__vybe_rand_shuffle")));
-    c.emit_op_u16(Op::GLOBAL_GET, sh_name, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // return copy.slice(0, k)
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_call(sl_idx, 3, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
 
 // ── rotate(arr, n) — Ruby `Array#rotate(n)` ──
 // Returns new array rotated n positions left. n defaults to 1; negative
@@ -2494,148 +2146,11 @@ fn build_array_copy(imports: &mut Chunk) -> Chunk {
     c
 }
 
-fn build_unary_env_math(_imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
-    let mut c = Chunk::new(chunk_name);
-    let idx = c.add_import("env", env_name);
-    c.arity = 1;
-    c.local_count = 1;
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_call(idx, 1, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-fn build_binary_env_math(_imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
-    let mut c = Chunk::new(chunk_name);
-    let idx = c.add_import("env", env_name);
-    c.arity = 2;
-    c.local_count = 2;
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    c.emit_call(idx, 2, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-fn build_sin(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_sin", "sin")
-}
-
-fn build_cos(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_cos", "cos")
-}
-
-fn build_tan(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_tan", "tan")
-}
-
-fn build_asin(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_asin", "asin")
-}
-
-fn build_acos(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_acos", "acos")
-}
-
-fn build_atan(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_atan", "atan")
-}
-
-fn build_atan2(imports: &mut Chunk) -> Chunk {
-    build_binary_env_math(imports, "__stdlib_atan2", "atan2")
-}
-
-fn build_sinh(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_sinh", "sinh")
-}
-
-fn build_cosh(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_cosh", "cosh")
-}
-
-fn build_tanh(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_tanh", "tanh")
-}
-
-fn build_log(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_log", "log")
-}
-
-fn build_log10(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_log10", "log10")
-}
-
-fn build_exp(imports: &mut Chunk) -> Chunk {
-    build_unary_env_math(imports, "__stdlib_exp", "exp")
-}
-
-fn build_sign(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_sign");
-    c.arity = 1;
-    c.local_count = 1;
-    let value = 0u16;
-
-    let skip_positive = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_f64_const(0.0, 0);
-    crate::emitter::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_f64_const(1.0, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(skip_positive);
-
-    let skip_negative = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_f64_const(0.0, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_f64_const(-1.0, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(skip_negative);
-
-    c.emit_f64_const(0.0, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-fn build_clamp(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_clamp");
-    c.arity = 3;
-    c.local_count = 3;
-    let value = 0u16;
-    let min = 1u16;
-    let max = 2u16;
-
-    let skip_min = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_op_u16(Op::LOCAL_GET, min, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, min, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(skip_min);
-
-    let skip_max = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_op_u16(Op::LOCAL_GET, max, 0);
-    crate::emitter::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::LOCAL_GET, max, 0);
-    c.emit_op(Op::RETURN, 0);
-    c.emit_end(0);
-    c.patch_block(skip_max);
-
-    c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
+// Math transcendentals removed. They were `env`-module-importing wrappers
+// (`add_import("env", "sin")`) — a host dependency that shouldn't exist.
+// `ecma:math` provides sin/cos/tan/asin/acos/atan/atan2/log/log10/exp/
+// sinh/cosh/tanh/sign natively; every language routes `Math.*` → `ecma:math:*`
+// directly, so these chunks were dead AND pulled in a phantom `env` import.
 
 // ── toString(value) → string ────────────────────────────────
 // "" + value triggers dyn_add string coercion in the VM
@@ -3613,20 +3128,6 @@ fn build_isinf(imports: &mut Chunk) -> Chunk {
     c.emit_call(isnan, 1, 0);
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_op(Op::I32_AND, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── callable(v) → bool — Python: `typeof v == "function"` ──────────
-fn build_callable(_imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_callable");
-    c.arity = 1;
-    c.local_count = 1;
-    let fn_str = c.add_constant(Value::String(std::sync::Arc::from("function")));
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    emit_typeof(&mut c, 0);
-    emit_const_index(&mut c, fn_str, 0);
-    emit_str_equals(&mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -5069,22 +4570,6 @@ fn build_assign(_imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── instanceOf(obj, type_name) → bool ───────────────────────
-fn build_instance_of(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_instanceof");
-    c.arity = 2;
-    c.local_count = 2;
-    // ref_test needs a constant pool string, but we have a dynamic value.
-    // Workaround: compare __type property with the type name string.
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
-    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
-    emit_const_index(&mut c, type_key, 0);
-    crate::emitter::collections::emit_get_into(imports, &mut c, 0); // obj["__type"]
-    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // type_name
-    emit_str_equals(&mut c, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
 
 // ── jsGetMethod(obj, key) → callable | undefined ──────────────────
 fn build_js_get_method(imports: &mut Chunk) -> Chunk {
@@ -6106,3 +5591,4 @@ fn build_regex_match_all_pat_first(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
+

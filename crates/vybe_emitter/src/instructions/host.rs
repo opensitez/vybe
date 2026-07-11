@@ -46,6 +46,14 @@ impl FunctionRegistry {
             .keys()
             .any(|(m, n)| *m == module && *n == name)
     }
+
+    /// Every registered host export as `(module, name)` — the component-model
+    /// interface surface. The namespace tree mounts from this
+    /// (`namespaces::resolve_path` lazy mount), so resolution and emission
+    /// share ONE source of truth for what the host exports.
+    pub fn entries(&self) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+        self.functions.keys().copied()
+    }
 }
 
 pub struct EmitRegistry {

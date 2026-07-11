@@ -159,6 +159,41 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_op(Op::DROP, line); // []
 }
 
+/// `isinstance(obj, "Class")` / `obj.is_a?(Class)` — the READ side of the type
+/// stamp, inheritance-aware. Checks membership in the `__types` ancestry array
+/// stamped by [`emit_instanceof_chain`] (so `isinstance(subclass, Parent)` and
+/// interfaces work); falls back to the single `__type` for objects without a
+/// `__types` chain. Shared by every stamped language (retires the per-language
+/// `__vybe_instanceof` chunk and Ruby's byte-identical inline).
+/// Stack: `[obj, class_name]` → `[bool]`.
+pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].local_count;
+    chunks[current].alloc_scratch(3);
+    let (obj_s, klass_s, types_s) = (base, base + 1, base + 2);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, klass_s, line); // [obj]
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_s, line); // []
+    // types = obj["__types"]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
+    chunks[current].emit_string_const("__types", line);
+    crate::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, types_s, line);
+    // if types present → types.includes(class_name); else obj["__type"] == class_name
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line); // 1 when __types is present
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, klass_s, line);
+    crate::collections::emit_contains(chunks, current, line); // __types.includes(class_name)
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
+    chunks[current].emit_string_const("__type", line);
+    crate::collections::emit_get(chunks, current, line); // obj["__type"]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, klass_s, line);
+    crate::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
 // ── Method binding ──────────────────────────────────────────────────────
 
 /// Bind an instance method on the object: this.<method_name> = ref_func(chunk_idx).

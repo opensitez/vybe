@@ -36,6 +36,7 @@ mod calls;
 mod classes;
 mod events;
 mod expressions;
+mod resolver;
 
 use crate::ast::*;
 use crate::emitter as common;
@@ -428,6 +429,16 @@ pub struct Compiler {
     /// Phase 3 will wire `calls.rs`'s qualified-chain path to consume
     /// this map instead of `profile.namespaces.host_packages`.
     host_package_roots: HashMap<String, String>,
+    /// Namespace-tree mounts: canon(prefix) → tree path. Populated by the
+    /// Linker from profile `TreeMount` defaults (VB/C# `system` →
+    /// `dotnet.system`); the resolver rebases a matching qualified chain
+    /// onto the tree path before walking the global namespace tree.
+    tree_mounts: HashMap<String, String>,
+    /// Ambient namespace-tree roots: tree paths bare qualified chains
+    /// additionally search under — .NET `Imports`/`using` context as data.
+    /// Profile `TreeAmbient` defaults + user import statements (rebased
+    /// through `tree_mounts` at link time). Order matters: first hit wins.
+    ambient_tree_roots: Vec<String>,
     /// Source-language type aliases: canon(alias) -> target type path.
     /// Shared across languages so `Imports X = System.Text.StringBuilder`
     /// and `using X = System.Text.StringBuilder` normalize below the walker.
@@ -2030,6 +2041,8 @@ impl Compiler {
             host_const_bindings: HashMap::new(),
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
+            tree_mounts: HashMap::new(),
+            ambient_tree_roots: Vec::new(),
             source_type_aliases: HashMap::new(),
             current_module_imports: Vec::new(),
             module_exports: HashMap::new(),
@@ -3106,6 +3119,41 @@ impl Compiler {
                     let key = self.canon(alias);
                     self.host_namespace_aliases.insert(key, m.clone());
                 }
+                crate::profile::EsmDefault::ModuleExport {
+                    module: m,
+                    name,
+                    target_module,
+                    target_name,
+                } => {
+                    // Mount-with-rename (namespaceplan.md): the profile
+                    // declares module `m`'s export surface, so a user
+                    // `from m import name` / `import { name } from "m"`
+                    // binds through the SAME adapter-module path below
+                    // (Phase A.2 walks `module_exports`), reconciling the
+                    // source-level name with the canonical host export.
+                    self.module_exports
+                        .entry(m.clone())
+                        .or_default()
+                        .insert(name.clone(), (target_module.clone(), target_name.clone()));
+                    // Also index by the HOST module the language-level name
+                    // mounts to (`json` → `ecma:json`), so namespace-alias
+                    // member access (`json.dumps(...)`, `import json as j;
+                    // j.dumps(...)`) resolves the rename regardless of which
+                    // alias the namespace is bound under.
+                    if let Some(host_module) = self.host_namespace_aliases.get(&self.canon(m)) {
+                        let host_module = host_module.clone();
+                        self.module_exports
+                            .entry(host_module)
+                            .or_default()
+                            .insert(name.clone(), (target_module.clone(), target_name.clone()));
+                    }
+                }
+                crate::profile::EsmDefault::TreeMount { prefix, path } => {
+                    self.tree_mounts.insert(self.canon(prefix), path.clone());
+                }
+                crate::profile::EsmDefault::TreeAmbient { path } => {
+                    self.ambient_tree_roots.push(path.clone());
+                }
                 crate::profile::EsmDefault::PackageRoot {
                     prefix,
                     module_root,
@@ -3143,6 +3191,14 @@ impl Compiler {
                 } => {
                     self.source_type_aliases
                         .insert(self.canon(alias), path.clone());
+                    // ESM §16.2: `import X as j` rebinds X's module namespace
+                    // under `j` — same binding, second name. Covers Python
+                    // `import json as j` (j.dumps → ecma:json) and any
+                    // language whose walker emits Simple-with-alias.
+                    let path_key = self.canon(path);
+                    if let Some(m) = self.host_namespace_aliases.get(&path_key).cloned() {
+                        self.host_namespace_aliases.insert(self.canon(alias), m);
+                    }
                 }
                 crate::ast::ImportKind::Named { path, names, .. } => {
                     let path = normalize_bare(path);
@@ -3192,6 +3248,12 @@ impl Compiler {
                         self.host_namespace_aliases.insert(key, path);
                     }
                 }
+                // Simple imports (`Imports System.Text` / `using X;`) will
+                // feed ambient tree roots when the legacy dotnet cascade is
+                // deleted — until then bare-name resolution stays with the
+                // cascade fallback (ambient duplicates shadowed the
+                // compiler's Task.Run THREAD_SPAWN special path; each
+                // ambient entry needs per-entry verification first).
                 // Default + Simple: no meaning for host modules; skip.
                 crate::ast::ImportKind::Default { .. } | crate::ast::ImportKind::Simple { .. } => {}
             }
@@ -4071,7 +4133,9 @@ impl Compiler {
     }
 
     fn private_member_access_forbidden(&self, field: &str) -> bool {
-        self.profile.supports_private_fields && field.starts_with('#') && self.current_class.is_none()
+        self.profile.supports_private_fields
+            && field.starts_with('#')
+            && self.current_class.is_none()
     }
 
     fn emit_private_access_denied(&mut self, field: &str) -> Result<(), String> {
@@ -4827,6 +4891,15 @@ impl Compiler {
         // Stash [coll, idx] into locals (LOCAL_SET peeks; DROP pops).
         self.emit_u16(Op::LOCAL_SET, idx_slot);
         self.emit_u16(Op::LOCAL_SET, arr_slot);
+        // A string/Map key (`h["a"]`) must skip the wrap — the `idx < 0` compare
+        // below coerces its operand, so a string key would hit `toF64` and trap.
+        // Guard on js-string.test (small-int array indices are i32, which
+        // js-number.test would reject — that's why we test for string, not number).
+        let str_test = self.import("wasm:js-string", "test");
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_host_call(str_test, 1);
+        self.chunk().emit_if(line); // string key → skip wrap
+        self.chunk().emit_else(line); // non-string → wrap
         // if idx < 0: idx = arr.length + idx
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         self.emit_const(Value::I32(0));
@@ -4856,6 +4929,7 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().patch_block(block_p);
         self.label_depth -= 1;
+        self.chunk().emit_end(line); // close the string-key guard `if`
         // Re-push [arr, idx_norm] for the caller's emit_get.
         self.emit_u16(Op::LOCAL_GET, arr_slot);
         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -5269,6 +5343,27 @@ impl Compiler {
         let parts: Vec<&str> = name.split('\\').collect();
         if parts.len() < 2 {
             return None;
+        }
+
+        // namespaceplan.md: the global namespace tree is the PRIMARY
+        // resolver — it mounts every host export (`vybe.gui.*` next to
+        // `ecma.*` and `wasi.*`), so a backslash chain resolves exactly
+        // like the dotted chains other languages emit. The manual
+        // module-string build below remains the fallback for name shapes
+        // the tree doesn't key (e.g. CamelCase segments of kebab-case
+        // module names).
+        if self.profile.uses_common_resolver {
+            match self.resolve_namespace_path(&parts) {
+                Some(self::resolver::Resolution::HostImport { module, func }) => {
+                    return Some((module, func));
+                }
+                Some(self::resolver::Resolution::Tree(
+                    crate::emitter::namespaces::ResolutionTarget::HostCall { module, func, .. },
+                )) => {
+                    return Some((module, func));
+                }
+                _ => {}
+            }
         }
 
         // Consult the Linker's `host_package_roots` map instead of
@@ -7878,12 +7973,46 @@ impl Compiler {
             && !self.defined_functions.contains(&cname)
             && !self.defined_classes.contains(&cname)
             && !cname.starts_with("__")
+            // `use const Lib\LEVEL;` imported names read the qualified
+            // global from inside functions too — fall through to the
+            // use-alias consult below instead of PHP's undeclared-null.
+            && !self.source_type_aliases.contains_key(&cname)
         {
             self.emit(Op::NULL);
             return;
         }
         // Global — canonicalize name for case-insensitive languages
         // But in strict mode, if this is genuinely undeclared, throw ReferenceError
+        //
+        // Use-alias consult (namespaceplan.md): `use const Lib\MAX;` binds
+        // bare `MAX` to the namespace-qualified global `Lib.MAX` (the same
+        // `source_type_aliases` map static-access/instanceof already
+        // resolve through). Only when nothing else declared the bare name —
+        // a real global/function/class shadows the import per PHP scoping.
+        let cname = if self.profile.uses_common_resolver
+            && !self.defined_globals.contains(&cname)
+            && !self.defined_functions.contains(&cname)
+            && !self.defined_classes.contains(&cname)
+        {
+            // PHP §namespace resolution order for unqualified names: the
+            // CURRENT namespace's declaration wins over file-level `use`
+            // aliases (which are last-wins across the file), then the
+            // aliases, then the global fallback.
+            let ns_qualified = self.current_namespace.as_deref().and_then(|ns| {
+                let q = self.canon(&format!("{ns}.{cname}"));
+                (self.defined_functions.contains(&q) || self.defined_globals.contains(&q))
+                    .then_some(q)
+            });
+            match ns_qualified {
+                Some(q) => q,
+                None => match self.source_type_aliases.get(&cname) {
+                    Some(target) => self.canon(target),
+                    None => cname,
+                },
+            }
+        } else {
+            cname
+        };
         let idx = self.global_name_const_idx(&cname);
 
         // ECMA-262 §9.1.1.4.6 / §13.3.2.1 GetValue: reading an *unresolvable*
@@ -12493,7 +12622,10 @@ impl Compiler {
                     let cn = self.canon(name);
                     let idx = self.str_const(&cn);
                     self.emit_u16(Op::GLOBAL_SET, idx);
-                    if self.profile.ecma_lexical_declarations && *kind == VarDeclKind::Var && is_toplevel {
+                    if self.profile.ecma_lexical_declarations
+                        && *kind == VarDeclKind::Var
+                        && is_toplevel
+                    {
                         let global_this_key = self.str_const("globalThis");
                         let field_key = self.str_const(&cn);
                         self.emit_u16(Op::GLOBAL_GET, global_this_key);
@@ -15942,7 +16074,9 @@ impl Compiler {
         // The compiler doesn't know about language-specific names — it just looks up
         // the canonical name in compiler_common's registry.
         if let Some(canonical_op) = common::canonical::CanonicalOp::from_name(name) {
-            if self.profile.has_ecma_globals && matches!(canonical_op, common::canonical::CanonicalOp::Len) {
+            if self.profile.has_ecma_globals
+                && matches!(canonical_op, common::canonical::CanonicalOp::Len)
+            {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
                     let obj_slot = self.define_local("__js_len_obj");
@@ -16071,54 +16205,29 @@ impl Compiler {
                         }
                         return Ok(true);
                     }
-                    // print / console.log → `wasi:cli/stdout` via `wasi:io`
-                    // streams (the same sink PHP `echo` and Python `print`
-                    // use). Each arg is stringified (`ecma:string/String` —
-                    // `stream_drain` only emits `Value::String`, so raw
-                    // numbers/objects would vanish), joined with " ", and a
-                    // trailing "\n" appended, then written in a single call.
-                    // Replaces `wasi:logging/logging.log`, whose
-                    // (level, context, message) arity overload silently
-                    // dropped the middle args of any multi-arg call.
-                    let to_str = self.import("ecma:string", "String");
-                    let write_idx = self.import("wasi:cli/stdout", "write-via-stream");
+                    // print / console.log → `wasi:logging/logging.log`. The
+                    // host log fn renders each arg via the console/inspect
+                    // surface (`Value::Display`: BigInt `8n`, `-0`, arrays
+                    // `1,2`, …) — NOT ECMAScript `ToString`. Keep the
+                    // stringification in the host so the ECMA console base
+                    // stays spec-correct; dotnet layers its own formatting on
+                    // top via `emit_dotnet_console_arg`.
                     let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, a) in args.iter().enumerate() {
                         if let Some(enum_type) = self.console_enum_type_from_expr(a) {
                             self.emit_enum_value_to_string(&enum_type, a)?;
                         } else {
                             self.compile_expr(a)?;
-                            common::strings::emit_to_string_with_import(self.chunk(), to_str, line);
                         }
                         let arg_slot = self.define_local(&format!("__print_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
                         arg_slots.push(arg_slot);
                     }
-                    // Build the output string: arg0 " " arg1 " " … "\n".
-                    let mut part_count = 0usize;
-                    for (i, slot) in arg_slots.iter().enumerate() {
-                        if i > 0 {
-                            self.chunk().emit_string_const(" ", line);
-                            part_count += 1;
-                        }
+                    for slot in &arg_slots {
                         self.emit_u16(Op::LOCAL_GET, *slot);
-                        part_count += 1;
                     }
-                    self.chunk().emit_string_const("\n", line);
-                    part_count += 1;
-                    common::strings::emit_concat(self.chunk(), part_count, line);
-                    let result_slot = self.define_local("__print_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot);
-                    let rd_slot = self.define_local("__print_rd");
-                    let wr_slot = self.define_local("__print_wr");
-                    common::io::emit_write_stdout_with_imports(
-                        self.chunk(),
-                        write_idx,
-                        rd_slot,
-                        wr_slot,
-                        line,
-                        |c| c.emit_op_u16(Op::LOCAL_GET, result_slot, line),
-                    );
+                    let idx = self.import("wasi:logging/logging", "log");
+                    common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
                 }
                 BuiltinEmit::StrLength => {
                     if !args.is_empty() {
@@ -17376,6 +17485,26 @@ impl Compiler {
                 // wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read
                 crate::emitter::io::emit_input(self.chunk(), line);
             }
+            "write_stdout" => {
+                // libc stdout write → wasi:io DIRECTLY (no `print`/wasi:logging,
+                // no vybelib). arg0 = exact bytes; byte-faithful, no implicit
+                // newline. Mirrors the proven wasi:cli/stdout.get-stdout +
+                // wasi:io/streams.blocking-write-and-flush path.
+                self.compile_expr(args[0])?;
+                let text_slot = self.define_local("__c_wasi_stdout_text");
+                self.emit_u16(Op::LOCAL_SET, text_slot);
+                let stdout_idx = self.import("wasi:cli/stdout", "get-stdout");
+                let write_idx = self.import(
+                    "wasi:io/streams",
+                    "[method]output-stream.blocking-write-and-flush",
+                );
+                self.emit_host_call(stdout_idx, 0);
+                self.emit_u16(Op::LOCAL_GET, text_slot);
+                self.emit_host_call(write_idx, 2);
+                self.emit(Op::DROP);
+                // fputs/stdout_append return 0
+                self.emit_const(Value::I32(0));
+            }
             "asc" => {
                 self.compile_expr(args[0])?;
                 inst!(self, core_wasm::i32_const, 0);
@@ -18373,7 +18502,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit_u16(Op::LOCAL_GET, stop_slot);
                     self.emit_u16(Op::LOCAL_GET, step_slot);
-                    common::collections::emit_range(&mut self.chunks, self.current, 3, line);
+                    common::collections::emit_range(&mut self.chunks, self.current, 3, false, line);
                 } else {
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 }
@@ -19335,7 +19464,6 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
-
 
             // ── String compositions of ecma:string primitives ──────────
             //

@@ -346,6 +346,15 @@ pub struct LanguageProfile {
     /// this `false`.
     pub ambient_this_binding: bool,
 
+    /// namespaceplan.md migration switch: when true, this language's
+    /// namespace-shaped entry points (host prefix chains, wildcard
+    /// namespace member access, …) resolve through the common resolver
+    /// (`compiler::resolver`) instead of the legacy hardcoded arms.
+    /// Flipped per language as its phase lands (JS → Python → PHP →
+    /// dotnet → rest); the legacy arms are deleted once every profile
+    /// is migrated.
+    pub uses_common_resolver: bool,
+
     /// ECMA-262 §10.2.1.1: a *missing* argument is the distinct value
     /// `undefined`, separate from an explicitly-passed `null`. Argument-presence
     /// tests (default-parameter application, constructor/overload arity
@@ -435,6 +444,36 @@ pub enum EsmDefault {
     /// `System.Threading.Thread.Sleep` resolves under `dotnet:`) where
     /// the namespace object would be too coarse.
     PackageRoot { prefix: String, module_root: String },
+    /// Mount-with-rename export surface for a language-level module
+    /// (namespaceplan.md alias leaves as profile data): declares that
+    /// module `module` exports `name`, implemented by
+    /// `target_module`/`target_name`. Feeds the Linker's
+    /// `module_exports` re-export map, so `from json import dumps`
+    /// (Python) binds `dumps` → `ecma:json`/`stringify` through the
+    /// SAME Named-import path every ESM import takes — reconciling
+    /// source names with the canonical host export names.
+    ModuleExport {
+        module: String,
+        name: String,
+        target_module: String,
+        target_name: String,
+    },
+    /// Namespace-tree mount (namespaceplan.md): a qualified chain whose
+    /// first segment matches `prefix` resolves by walking the global
+    /// namespace tree rooted at `path` — `System.Math.Sin` with
+    /// `prefix = "system", path = "dotnet.system"` walks
+    /// `dotnet.system.math.sin`. This is how a language's ambient
+    /// namespace roots map onto platform-registered tree surfaces
+    /// (VB/C# `System.*` → the dotnet descriptor data) with zero
+    /// platform-owned resolver logic.
+    TreeMount { prefix: String, path: String },
+    /// Ambient namespace-tree root (namespaceplan.md): bare qualified
+    /// chains additionally resolve by searching under `path` — the
+    /// data form of .NET's ambient `Imports`/`using` context
+    /// (`Thread.Sleep` found at `dotnet.system.threading.thread.sleep`).
+    /// Profile entries give the language's defaults; user `Imports X.Y`
+    /// statements add more at link time (rebased through the tree-mounts).
+    TreeAmbient { path: String },
 }
 
 /// A compile-time constant value.
@@ -939,6 +978,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("ambient_this_binding")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let uses_common_resolver = compiler
+        .get("uses_common_resolver")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let missing_arg_is_undefined = compiler
         .get("missing_arg_is_undefined")
         .and_then(|v| v.as_bool())
@@ -1257,6 +1300,42 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         module_root: module_root.to_string(),
                     });
                 }
+                "module-export" | "module_export" => {
+                    let (Some(module), Some(name), Some(target_module), Some(target_name)) = (
+                        tbl.get("module").and_then(|v| v.as_str()),
+                        tbl.get("name").and_then(|v| v.as_str()),
+                        tbl.get("target_module").and_then(|v| v.as_str()),
+                        tbl.get("target_name").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    esm_defaults.push(EsmDefault::ModuleExport {
+                        module: module.to_string(),
+                        name: name.to_string(),
+                        target_module: target_module.to_string(),
+                        target_name: target_name.to_string(),
+                    });
+                }
+                "tree-mount" | "tree_mount" => {
+                    let (Some(prefix), Some(path)) = (
+                        tbl.get("prefix").and_then(|v| v.as_str()),
+                        tbl.get("path").and_then(|v| v.as_str()),
+                    ) else {
+                        continue;
+                    };
+                    esm_defaults.push(EsmDefault::TreeMount {
+                        prefix: prefix.to_string(),
+                        path: path.to_string(),
+                    });
+                }
+                "tree-ambient" | "tree_ambient" => {
+                    let Some(path) = tbl.get("path").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    esm_defaults.push(EsmDefault::TreeAmbient {
+                        path: path.to_string(),
+                    });
+                }
                 _ => {
                     eprintln!("Warning: unknown esm_default kind: {:?}", kind);
                 }
@@ -1339,6 +1418,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         unresolved_reference_throws,
         coerces_value_to_type_hint,
         ambient_this_binding,
+        uses_common_resolver,
         missing_arg_is_undefined,
         materialize_bool_results,
         supports_autoload,

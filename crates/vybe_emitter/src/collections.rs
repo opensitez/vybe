@@ -833,17 +833,132 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
 // ── Host imports (higher-level operations) ──────────────────
 
-/// range(stop) or range(start, stop) or range(start, stop, step).
-/// Stack: [args...] → [array]
+/// `range` / `..` materialization → `[array]`, an inline loop built on the
+/// shared `loops` while-loop primitives (no `__vybe_range` stdlib chunk).
 ///
-/// Routes through the bundled `__vybe_range` runtime helper via GLOBAL_GET + CALL_REF.
-pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, line: u32) {
-    emit_runtime_helper_call(chunks, current, "__vybe_range", arg_count, line);
+/// Arities (args already on the stack): `1` → `range(stop)` (start 0, step 1);
+/// `2` → `start..stop` (step 1); `3` → `start..stop by step`. Exclusive by
+/// default; `inclusive` includes the upper bound (`<=` instead of `<`) and
+/// applies to the 1-/2-arg forms — the 3-arg form is always exclusive (its
+/// callers pre-adjust `stop`).
+///
+/// Handles BOTH numeric ranges and CHAR ranges (`'a'..'z'`): a purely-numeric
+/// loop can't compare or step string bounds, so when the low bound is a string
+/// both bounds are converted to code units (`charCodeAt`) and each element is
+/// rebuilt with `fromCharCode`. The 3-arg form honours a runtime step sign
+/// (ascending `i < stop`, descending `i > stop`).
+pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, inclusive: bool, line: u32) {
+    let base = chunks[current].local_count;
+    chunks[current].alloc_scratch(6);
+    let (start_s, stop_s, step_s, i_s, result_s, isstr_s) =
+        (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+
+    // Unpack stack args → (start, stop, step) by arity.
+    match arg_count {
+        1 => {
+            // [stop] → start = 0, step = 1
+            chunks[current].emit_op_u16(Op::LOCAL_SET, stop_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, start_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
+        }
+        3 => {
+            // [start, stop, step]
+            chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, stop_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, start_s, line);
+        }
+        _ => {
+            // [start, stop] (arg_count == 2) → step = 1
+            chunks[current].emit_op_u16(Op::LOCAL_SET, stop_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, start_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
+        }
+    }
+
+    // isstr = js-string.test(start): char range → iterate over code units.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start_s, line);
+    let str_test = chunks[current].add_import("wasm:js-string", "test");
+    chunks[current].emit_call(str_test, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, isstr_s, line);
+
+    // Char range: convert both bounds to code units.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, isstr_s, line);
+    chunks[current].emit_if(line);
+    let cca = chunks[current].add_import("ecma:string", "charCodeAt");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_call(cca, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stop_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_call(cca, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stop_s, line);
+    chunks[current].emit_end(line);
+
+    // result = []; i = start
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+
+    let state = crate::loops::emit_loop_start(chunks, current, line);
+    // cond — continue while:
+    //   arity 3: step > 0 ? i < stop : i > stop   (runtime step sign)
+    //   else:    i < stop   (or i <= stop when inclusive)
+    if arg_count == 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        crate::ops::emit_dyn_gt(&mut chunks[current], line); // step > 0
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, stop_s, line);
+        crate::ops::emit_dyn_lt(&mut chunks[current], line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, stop_s, line);
+        crate::ops::emit_dyn_gt(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, stop_s, line);
+        if inclusive {
+            crate::ops::emit_dyn_le(&mut chunks[current], line);
+        } else {
+            crate::ops::emit_dyn_lt(&mut chunks[current], line);
+        }
+    }
+    crate::loops::emit_loop_cond(chunks, current, line);
+
+    // result.push(isstr ? String.fromCharCode(i) : i)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, isstr_s, line);
+    chunks[current].emit_if_value(line);
+    let fcc = chunks[current].add_import("ecma:string", "fromCharCode");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+    chunks[current].emit_call(fcc, 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+    chunks[current].emit_end(line);
+    let push = chunks[current].add_import("ecma:array", "push");
+    chunks[current].emit_call(push, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // i += step
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
+    crate::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+    crate::loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
 }
 
-/// Target-aware range — inline loop on pure WASM (saves a chunk call),
-/// `__vybe_range` polyfill otherwise. Single-arg case stays inlined
-/// since it's the most common shape; multi-arg routes to the polyfill.
+/// Target-aware range shim — kept for callers that thread a `Target`; the
+/// actual materialization is the unified `emit_range` inline loop (exclusive,
+/// Python `range()` semantics; no `__vybe_range` chunk).
 pub fn emit_range_targeted(
     chunks: &mut [Chunk],
     current: usize,
@@ -851,51 +966,108 @@ pub fn emit_range_targeted(
     _target: &Target,
     line: u32,
 ) {
-    {
-        let chunk = &mut chunks[current];
-        if arg_count == 1 {
-            let stop_local = chunk.local_count;
-            chunk.alloc_scratch(3);
-            let i_local = stop_local + 1;
-            let result_local = stop_local + 2;
+    emit_range(chunks, current, arg_count, false, line);
+}
 
-            chunk.emit_op_u16(Op::LOCAL_SET, stop_local, line);
-            chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
-            core_wasm::i32_const(chunk, line, 0);
-            chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
+/// Length policy for [`emit_zip`] — which array bounds the result length.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ZipLen {
+    /// First (receiver) array length; shorter arrays pad with null. (Ruby)
+    First,
+    /// Shortest array length; stops at the smallest. (Python `zip`)
+    Shortest,
+    /// Longest array length; shorter arrays pad with null. (PHP `array_map(null,…)`)
+    Longest,
+}
 
-            let block_patch = chunk.emit_block(line);
-            let (loop_patch, _) = chunk.emit_loop_s(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, stop_local, line);
-            crate::ops::emit_dyn_lt(chunk, line);
-            crate::ops::emit_dyn_to_bool(chunk, line);
-            chunk.emit_op(Op::I32_EQZ, line);
-            chunk.emit_br_if(1, line);
+/// `a.zip(b, c, …)` → `[[a[0],b[0],c[0]], [a[1],…], …]`, one tuple per index up
+/// to the length chosen by `mode`; indices past a shorter array yield the
+/// null/undefined a polymorphic get returns. `n` = total arrays on the stack
+/// (receiver + others). Stack: `[a, b, c, …]` → `[result]`. Shared across
+/// languages (Ruby/PHP/Python) — inline loop over `ecma:array` primitives, no
+/// `__vybe_zip` stdlib chunk. Variadic (the old chunk was 2-array only).
+pub fn emit_zip(chunks: &mut [Chunk], current: usize, n: u8, mode: ZipLen, line: u32) {
+    let n = n.max(1) as u16;
+    let base = chunks[current].local_count;
+    chunks[current].alloc_scratch(n + 5);
+    let (result_s, i_s, len_s, tuple_s, tmp_s) = (
+        base + n,
+        base + n + 1,
+        base + n + 2,
+        base + n + 3,
+        base + n + 4,
+    );
 
-            chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            let push_idx = chunk.add_import("ecma:array", "push");
-            chunk.emit_call(push_idx, 2, line);
-            chunk.emit_op(Op::DROP, line);
-
-            chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            core_wasm::i32_const(chunk, line, 1);
-            chunk.emit_op(Op::I32_ADD, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
-
-            chunk.emit_br(0, line);
-            chunk.emit_end(line);
-            chunk.patch_loop(loop_patch);
-            chunk.emit_end(line);
-            chunk.patch_block(block_patch);
-
-            chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
-        } else {
-            emit_runtime_helper_call(chunks, current, "__vybe_range", arg_count, line);
+    // Pop the n arrays into base..base+n (top of stack = last array).
+    for k in (0..n).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + k, line);
+    }
+    // len = arrays[0].length
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
+    // Shortest/Longest: fold the remaining arrays' lengths into `len`.
+    if mode != ZipLen::First {
+        for k in 1..n {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base + k, line);
+            emit_len(chunks, current, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, tmp_s, line);
+            // if (tmp <op> len) len = tmp
+            chunks[current].emit_op_u16(Op::LOCAL_GET, tmp_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
+            if mode == ZipLen::Shortest {
+                crate::ops::emit_dyn_lt(&mut chunks[current], line);
+            } else {
+                crate::ops::emit_dyn_gt(&mut chunks[current], line);
+            }
+            crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, tmp_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
+            chunks[current].emit_end(line);
         }
     }
+    // result = []; i = 0
+    emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+
+    let block_p = chunks[current].emit_block(line);
+    let (loop_p, _) = chunks[current].emit_loop_s(line);
+    // break when !(i < len)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
+    crate::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    // tuple = [arrays[0][i], arrays[1][i], …]
+    emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple_s, line);
+    for k in 0..n {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, tuple_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + k, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+        emit_get(chunks, current, line);
+        emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    // result.push(tuple)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple_s, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // i += 1
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
 }
 
 /// sorted(iterable). Stack: [array] → [sorted_array]
@@ -928,10 +1100,6 @@ pub fn emit_enumerate(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// zip(a, b). Stack: [a, b] → [pairs]
-pub fn emit_zip(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_runtime_helper_call(chunks, current, "__vybe_zip", 2, line);
-}
-
 /// sum(array). Stack: [array] → [number]
 pub fn emit_sum(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_runtime_helper_call(chunks, current, "__vybe_sum", 1, line);
