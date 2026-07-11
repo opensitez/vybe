@@ -200,12 +200,22 @@ __java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_arg
 __java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
 __java_map_key_set_remove = { emit = "common:java.map_key_set_remove", min_args = 2, max_args = 2 }
 __java_sorted_map_key_set = { emit = "common:java.sorted_map_key_set", min_args = 1, max_args = 1 }
+__java_sorted_map_first_key = { emit = "common:java.sorted_map_first_key", min_args = 1, max_args = 1 }
+__java_sorted_map_last_key = { emit = "common:java.sorted_map_last_key", min_args = 1, max_args = 1 }
 __java_sorted_map_first_entry = { emit = "common:java.sorted_map_first_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_last_entry = { emit = "common:java.sorted_map_last_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_ceiling_entry = { emit = "common:java.sorted_map_ceiling_entry", min_args = 2, max_args = 2 }
 __java_sorted_map_floor_entry = { emit = "common:java.sorted_map_floor_entry", min_args = 2, max_args = 2 }
 __java_sorted_map_higher_entry = { emit = "common:java.sorted_map_higher_entry", min_args = 2, max_args = 2 }
 __java_sorted_map_lower_entry = { emit = "common:java.sorted_map_lower_entry", min_args = 2, max_args = 2 }
+__java_sorted_map_ceiling_key = { emit = "common:java.sorted_map_ceiling_key", min_args = 2, max_args = 2 }
+__java_sorted_map_floor_key = { emit = "common:java.sorted_map_floor_key", min_args = 2, max_args = 2 }
+__java_sorted_map_higher_key = { emit = "common:java.sorted_map_higher_key", min_args = 2, max_args = 2 }
+__java_sorted_map_lower_key = { emit = "common:java.sorted_map_lower_key", min_args = 2, max_args = 2 }
+__java_sorted_map_poll_first_entry = { emit = "common:java.sorted_map_poll_first_entry", min_args = 1, max_args = 1 }
+__java_sorted_map_poll_last_entry = { emit = "common:java.sorted_map_poll_last_entry", min_args = 1, max_args = 1 }
+__java_sorted_map_descending_key_set = { emit = "common:java.sorted_map_descending_key_set", min_args = 1, max_args = 1 }
+__java_sorted_map_descending_map = { emit = "common:java.sorted_map_descending_map", min_args = 1, max_args = 1 }
 __java_map_sub_map = { emit = "common:java.map_sub_map", min_args = 3, max_args = 3 }
 __java_map_head_map = { emit = "common:java.map_head_map", min_args = 2, max_args = 2 }
 __java_map_tail_map = { emit = "common:java.map_tail_map", min_args = 2, max_args = 2 }
@@ -319,6 +329,7 @@ __java_uuid_hash_code = { emit = "common:java.uuid_hash_code", min_args = 1, max
 "Set.of"    = { emit = "common:java.set_of",   min_args = 0, max_args = 255 }
 "Map.of"    = { emit = "common:java.map_of",   min_args = 0, max_args = 255 }
 "Map.entry" = { emit = "common:java.map_entry",min_args = 2, max_args = 2 }
+"Map.ofEntries" = { emit = "common:java.map_of_entries", min_args = 0, max_args = 255 }
 
 # ── String utilities ──────────────────────────────────────────────────────────
 
@@ -727,9 +738,16 @@ TreeSet       = ["common", "java.sorted_set_new"]
 PriorityQueue = ["common", "java.sorted_set_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
+IdentityHashMap = ["common", "java.hash_map_new"]
 LinkedHashMap = ["common", "java.hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]
+"java.util.TreeMap"       = ["common", "java.sorted_map_new"]
+"java.util.HashMap"       = ["common", "java.hash_map_new"]
+"java.util.IdentityHashMap" = ["common", "java.hash_map_new"]
+"java.util.LinkedHashMap" = ["common", "java.hash_map_new"]
+"java.util.WeakHashMap"   = ["common", "java.hash_map_new"]
+"java.util.Hashtable"     = ["common", "java.hash_map_new"]
 OutOfMemoryError = ["common", "java.hash_map_new"]
 UUID          = ["common", "java.uuid_new"]
 BitSet        = ["common", "java.bitset_new"]

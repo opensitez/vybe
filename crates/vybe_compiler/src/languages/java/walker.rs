@@ -4353,6 +4353,43 @@ fn rewrite_java_tostring_stmts(
                     &mut locals.clone(),
                 );
             }
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                else_body,
+                ..
+            } => {
+                rewrite_java_tostring_expr(
+                    iter,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
+                let mut loop_locals = locals.clone();
+                loop_locals.insert(var.clone(), "Object".to_string());
+                if let Some(key) = key {
+                    loop_locals.insert(key.clone(), "Object".to_string());
+                }
+                rewrite_java_tostring_stmts(
+                    body,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    &mut loop_locals,
+                );
+                if let Some(else_body) = else_body {
+                    rewrite_java_tostring_stmts(
+                        else_body,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        &mut locals.clone(),
+                    );
+                }
+            }
             StmtKind::Block(body) => {
                 rewrite_java_tostring_stmts(
                     body,
@@ -4948,6 +4985,7 @@ fn java_type_is_map(type_name: Option<&str>) -> bool {
         base,
         "Map"
             | "HashMap"
+            | "IdentityHashMap"
             | "LinkedHashMap"
             | "WeakHashMap"
             | "TreeMap"
@@ -4981,12 +5019,22 @@ fn java_map_method_name(method: &str) -> Option<&'static str> {
         "size" => "__java_map_size",
         "isEmpty" => "__java_map_is_empty",
         "equals" => "__java_map_equals",
+        "firstKey" => "__java_sorted_map_first_key",
+        "lastKey" => "__java_sorted_map_last_key",
         "firstEntry" => "__java_sorted_map_first_entry",
         "lastEntry" => "__java_sorted_map_last_entry",
         "ceilingEntry" => "__java_sorted_map_ceiling_entry",
         "floorEntry" => "__java_sorted_map_floor_entry",
         "higherEntry" => "__java_sorted_map_higher_entry",
         "lowerEntry" => "__java_sorted_map_lower_entry",
+        "ceilingKey" => "__java_sorted_map_ceiling_key",
+        "floorKey" => "__java_sorted_map_floor_key",
+        "higherKey" => "__java_sorted_map_higher_key",
+        "lowerKey" => "__java_sorted_map_lower_key",
+        "pollFirstEntry" => "__java_sorted_map_poll_first_entry",
+        "pollLastEntry" => "__java_sorted_map_poll_last_entry",
+        "descendingKeySet" => "__java_sorted_map_descending_key_set",
+        "descendingMap" => "__java_sorted_map_descending_map",
         "subMap" => "__java_map_sub_map",
         "headMap" => "__java_map_head_map",
         "tailMap" => "__java_map_tail_map",

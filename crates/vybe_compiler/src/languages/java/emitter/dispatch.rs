@@ -931,10 +931,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             collections::emit_clone(chunks, current, line);
         }
         "java.map_of" => {
-            host::emit(&mut chunks[current], "ecma:object", "fromPairs", argc, line);
+            super::list_adapter::emit_map_of(chunks, current, argc, line);
         }
         "java.map_entry" => {
-            host::emit(&mut chunks[current], "ecma:array", "pair", 2, line);
+            super::list_adapter::emit_map_entry(chunks, current, line);
+        }
+        "java.map_of_entries" => {
+            super::list_adapter::emit_map_of_entries(chunks, current, argc, line);
         }
         "java.empty_list" => {
             collections::emit_array_new(chunks, current, 0, line);
@@ -1116,6 +1119,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.sorted_map_key_set" => {
             super::list_adapter::emit_sorted_map_key_set(chunks, current, line);
         }
+        "java.sorted_map_first_key" => {
+            super::list_adapter::emit_sorted_map_key(chunks, current, false, line);
+        }
+        "java.sorted_map_last_key" => {
+            super::list_adapter::emit_sorted_map_key(chunks, current, true, line);
+        }
         "java.sorted_map_first_entry" => {
             super::list_adapter::emit_sorted_map_end_entry(chunks, current, false, line);
         }
@@ -1133,6 +1142,30 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.sorted_map_lower_entry" => {
             super::list_adapter::emit_sorted_map_bound_entry(chunks, current, 3, line);
+        }
+        "java.sorted_map_ceiling_key" => {
+            super::list_adapter::emit_sorted_map_bound_key(chunks, current, 0, line);
+        }
+        "java.sorted_map_floor_key" => {
+            super::list_adapter::emit_sorted_map_bound_key(chunks, current, 1, line);
+        }
+        "java.sorted_map_higher_key" => {
+            super::list_adapter::emit_sorted_map_bound_key(chunks, current, 2, line);
+        }
+        "java.sorted_map_lower_key" => {
+            super::list_adapter::emit_sorted_map_bound_key(chunks, current, 3, line);
+        }
+        "java.sorted_map_poll_first_entry" => {
+            super::list_adapter::emit_sorted_map_poll_entry(chunks, current, false, line);
+        }
+        "java.sorted_map_poll_last_entry" => {
+            super::list_adapter::emit_sorted_map_poll_entry(chunks, current, true, line);
+        }
+        "java.sorted_map_descending_key_set" => {
+            super::list_adapter::emit_sorted_map_descending_key_set(chunks, current, line);
+        }
+        "java.sorted_map_descending_map" => {
+            super::list_adapter::emit_sorted_map_descending_map(chunks, current, line);
         }
         "java.map_sub_map" => {
             super::list_adapter::emit_map_range_view(chunks, current, 0, line);

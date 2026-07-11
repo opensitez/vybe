@@ -16,6 +16,8 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 const COMPARATOR_KEY: &str = "__java_comparator";
+const IMMUTABLE_MAP_KEY: &str = "__java_immutable_map";
+const DESCENDING_MAP_KEY: &str = "__java_descending_map";
 
 fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     get(&mut chunks[current], value, line);
@@ -35,6 +37,43 @@ fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: 
     emit_comparator(chunks, current, value, line);
     collections::emit_runtime_helper_call(chunks, current, "__vybe_sort_with_comparator", 2, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_java_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("", line);
+    crate::emitter::errors::emit_exception_new_finalize(&mut chunks[current], name, line);
+    crate::emitter::errors::emit_throw(&mut chunks[current], line);
+}
+
+fn emit_throw_if_null(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_java_exception_throw(chunks, current, "NullPointerException", line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_mark_immutable_map(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(IMMUTABLE_MAP_KEY, line);
+    chunks[current].emit_bool_const(true, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
+}
+
+fn emit_throw_if_immutable_map(chunks: &mut [Chunk], current: usize, map: u16, line: u32) {
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(IMMUTABLE_MAP_KEY, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_java_exception_throw(chunks, current, "UnsupportedOperationException", line);
     chunks[current].emit_end(line);
 }
 
@@ -137,6 +176,54 @@ pub fn emit_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     collections::emit_map_new(chunks, current, line);
 }
 
+pub fn emit_map_entry(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_array_pair(chunks, current, line);
+}
+
+pub fn emit_map_of_entries(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    collections::emit_array_new(chunks, current, argc as u16, line);
+    host::emit(&mut chunks[current], "ecma:map", "new", 1, line);
+    emit_mark_immutable_map(chunks, current, line);
+}
+
+pub fn emit_map_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let argc = argc as u16;
+    if argc == 0 {
+        collections::emit_map_new(chunks, current, line);
+        emit_mark_immutable_map(chunks, current, line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc);
+    for i in (0..argc).rev() {
+        set(&mut chunks[current], base + i, line);
+    }
+
+    collections::emit_array_new(chunks, current, 0, line);
+    let pairs = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], pairs, line);
+
+    let mut i = 0;
+    while i + 1 < argc {
+        emit_throw_if_null(chunks, current, base + i, line);
+        emit_throw_if_null(chunks, current, base + i + 1, line);
+        get(&mut chunks[current], base + i, line);
+        get(&mut chunks[current], base + i + 1, line);
+        collections::emit_array_pair(chunks, current, line);
+        let pair = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], pair, line);
+        get(&mut chunks[current], pairs, line);
+        get(&mut chunks[current], pair, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        i += 2;
+    }
+
+    get(&mut chunks[current], pairs, line);
+    host::emit(&mut chunks[current], "ecma:map", "new", 1, line);
+    emit_mark_immutable_map(chunks, current, line);
+}
+
 pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
@@ -145,6 +232,7 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    emit_throw_if_immutable_map(chunks, current, map, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
@@ -911,9 +999,12 @@ pub fn emit_sorted_end(chunks: &mut [Chunk], current: usize, last: bool, line: u
 pub fn emit_sorted_map_key(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
     let map = chunks[current].alloc_scratch(1);
     let keys = chunks[current].alloc_scratch(1);
+    let use_last = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], map, line);
+    chunks[current].emit_bool_const(last, line);
+    set(&mut chunks[current], use_last, line);
     get(&mut chunks[current], map, line);
-    host::emit(&mut chunks[current], "ecma:object", "keys", 1, line);
+    host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
     set(&mut chunks[current], keys, line);
     emit_comparator(chunks, current, map, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -928,26 +1019,73 @@ pub fn emit_sorted_map_key(chunks: &mut [Chunk], current: usize, last: bool, lin
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], keys, line);
-    if last {
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(DESCENDING_MAP_KEY, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], use_last, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    set(&mut chunks[current], use_last, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], use_last, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
         get(&mut chunks[current], keys, line);
         collections::emit_len(chunks, current, line);
         core_wasm::i32_const(&mut chunks[current], line, 1);
         chunks[current].emit_op(Op::I32_SUB, line);
-    } else {
+    chunks[current].emit_else(line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
-    }
+    chunks[current].emit_end(line);
     collections::emit_get(chunks, current, line);
 }
 
 pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
     let keys = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    get(&mut chunks[current], map, line);
     host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
     set(&mut chunks[current], keys, line);
+    emit_comparator(chunks, current, map, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
     get(&mut chunks[current], keys, line);
     collections::emit_sort(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
     get(&mut chunks[current], keys, line);
-    host::emit(&mut chunks[current], "ecma:array", "values", 1, line);
+    emit_comparator(chunks, current, map, line);
+    collections::emit_runtime_helper_call(chunks, current, "__vybe_sort_with_comparator", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(DESCENDING_MAP_KEY, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], keys, line);
+    collections::emit_reverse(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], keys, line);
+}
+
+pub fn emit_sorted_map_descending_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_sorted_map_key_set(chunks, current, line);
+    collections::emit_reverse(chunks, current, line);
+}
+
+pub fn emit_sorted_map_descending_map(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(DESCENDING_MAP_KEY, line);
+    chunks[current].emit_bool_const(true, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
 }
 
 pub fn emit_sorted_map_end_entry(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
@@ -1029,6 +1167,33 @@ pub fn emit_sorted_map_bound_entry(chunks: &mut [Chunk], current: usize, mode: u
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
     emit_map_entry_from_key(chunks, current, map, candidate, line);
+}
+
+pub fn emit_sorted_map_bound_key(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
+    emit_sorted_map_bound_entry(chunks, current, mode, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+}
+
+pub fn emit_sorted_map_poll_entry(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let entry = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+
+    get(&mut chunks[current], map, line);
+    emit_sorted_map_key(chunks, current, last, line);
+    set(&mut chunks[current], key, line);
+
+    emit_map_entry_from_key(chunks, current, map, key, line);
+    set(&mut chunks[current], entry, line);
+
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(&mut chunks[current], entry, line);
 }
 
 fn emit_bound_condition(
