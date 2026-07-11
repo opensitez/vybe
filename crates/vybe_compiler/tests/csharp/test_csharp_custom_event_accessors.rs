@@ -1,6 +1,5 @@
 //! Custom event add/remove accessors with backing fields and explicit raise methods.
 
-
 csharp_cases! {
     custom_event_invoke_via_backing => {
         r#"class Btn{System.Action _c; public event System.Action Click{add{_c+=value;} remove{_c-=value;}} public void Raise(){_c?.Invoke();}}int n=0; var b=new Btn(); b.Click+=()=>n++; b.Raise(); Console.WriteLine(n);"#,

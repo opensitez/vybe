@@ -1,6 +1,5 @@
 //! encoding/hex and encoding/base64: Encode, Decode, Dump, and StdEncoding round-trips.
 
-
 go_run_cases! {
     hex_encode_empty_slice => (
         "package main; import \"fmt\"; import \"encoding/hex\"; func main() { src := []byte{}; dst := make([]byte, hex.EncodedLen(len(src))); n := hex.Encode(dst, src); fmt.Println(n) }",

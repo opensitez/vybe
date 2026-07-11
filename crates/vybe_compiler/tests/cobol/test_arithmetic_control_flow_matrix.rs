@@ -18,7 +18,10 @@ fn add_two_operands_to_target() {
 
 #[test]
 fn add_literal_to_target() {
-    let out = run_prints(&p("01 R PIC 9(3) VALUE 1.", "    ADD 9 TO R.\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 R PIC 9(3) VALUE 1.",
+        "    ADD 9 TO R.\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["10"]);
 }
 
@@ -40,7 +43,10 @@ fn add_with_end_add_compiles() {
 
 #[test]
 fn subtract_literal_from_target() {
-    let out = run_prints(&p("01 R PIC 9(3) VALUE 20.", "    SUBTRACT 6 FROM R.\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 R PIC 9(3) VALUE 20.",
+        "    SUBTRACT 6 FROM R.\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["14"]);
 }
 
@@ -62,7 +68,10 @@ fn subtract_with_end_subtract_compiles() {
 
 #[test]
 fn multiply_literal_by_target() {
-    let out = run_prints(&p("01 R PIC 9(3) VALUE 8.", "    MULTIPLY 3 BY R.\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 R PIC 9(3) VALUE 8.",
+        "    MULTIPLY 3 BY R.\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["24"]);
 }
 
@@ -113,7 +122,10 @@ fn divide_with_end_divide_compiles() {
 
 #[test]
 fn compute_basic_sum() {
-    let out = run_prints(&p("01 R PIC 9(3) VALUE 0.", "    COMPUTE R = 1 + 2 + 3.\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 R PIC 9(3) VALUE 0.",
+        "    COMPUTE R = 1 + 2 + 3.\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["6"]);
 }
 
@@ -499,9 +511,7 @@ fn call_nested_in_if_compiles() {
 
 #[test]
 fn goback_in_subprogram_compiles() {
-    compile_ok(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. SUB1.\nPROCEDURE DIVISION.\n    GOBACK.",
-    );
+    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. SUB1.\nPROCEDURE DIVISION.\n    GOBACK.");
 }
 
 #[test]
@@ -513,9 +523,7 @@ fn cancel_identifier_compiles() {
 
 #[test]
 fn stop_literal_compiles() {
-    compile_ok(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP \"DONE\".",
-    );
+    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP \"DONE\".");
 }
 
 #[test]

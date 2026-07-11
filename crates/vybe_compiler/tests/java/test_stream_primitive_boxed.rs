@@ -199,4 +199,3 @@ fn double_stream_boxed_map_to_int_sum() {
     );
     assert_eq!(out, vec!["3"]);
 }
-

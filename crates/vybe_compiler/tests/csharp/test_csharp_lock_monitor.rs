@@ -1,7 +1,6 @@
 //! `lock` statement and `Monitor` — mutual exclusion via shared counter prints.
 //! GAP: concurrency primitives.
 
-
 csharp_cases! {
     lock_single_increment_leaves_counter_one => {
         r#"

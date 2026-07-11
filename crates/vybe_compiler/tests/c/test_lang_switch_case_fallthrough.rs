@@ -1,6 +1,5 @@
 //! Switch fallthrough, default placement, nesting, break and continue interaction.
 
-
 c_run_cases! {
     fallthrough_accumulates_two_cases => { includes: ["<stdio.h>"], decls: "", body: "int x=0; switch(1){ case 1: x++; case 2: x++; break; } printf(\"%d\\n\", x); return 0;", expect: ["2"] },
     fallthrough_three_cases_before_break => { includes: ["<stdio.h>"], decls: "", body: "int x=0; switch(1){ case 1: x++; case 2: x++; case 3: x++; break; } printf(\"%d\\n\", x); return 0;", expect: ["3"] },

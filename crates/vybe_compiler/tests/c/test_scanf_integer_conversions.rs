@@ -1,6 +1,5 @@
 //! sscanf integer conversions — %d %i %u %o %x %X with distinct inputs.
 
-
 c_run_cases! {
     sscanf_d_zero => {
         includes: ["<stdio.h>"],

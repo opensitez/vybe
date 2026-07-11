@@ -1,7 +1,6 @@
 //! Task combinators — `Task.WhenAll`, `Task.WhenAny`, `ContinueWith`, `Task.Run`.
 //! GAP: concurrency primitives.
 
-
 csharp_cases! {
     task_run_returns_constant_count => {
         r#"

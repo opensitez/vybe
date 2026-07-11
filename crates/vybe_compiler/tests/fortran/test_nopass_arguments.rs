@@ -1,6 +1,15 @@
 use super::helpers::compile_ok;
-macro_rules! c { ($n:ident,$s:expr)=>{ #[test] fn $n(){ compile_ok($s); } }; }
-c!(nopass_arguments_01,"module m
+macro_rules! c {
+    ($n:ident,$s:expr) => {
+        #[test]
+        fn $n() {
+            compile_ok($s);
+        }
+    };
+}
+c!(
+    nopass_arguments_01,
+    "module m
 type::t
 contains
 procedure,nopass::s
@@ -9,8 +18,11 @@ contains
 subroutine s()
 end
 end module m
-");
-c!(nopass_arguments_02,"module m
+"
+);
+c!(
+    nopass_arguments_02,
+    "module m
 type::t
 contains
 procedure,nopass::f
@@ -20,8 +32,11 @@ integer function f()
 f=1
 end
 end module m
-");
-c!(nopass_arguments_03,"module m
+"
+);
+c!(
+    nopass_arguments_03,
+    "module m
 type::t
 contains
 procedure,nopass::s1
@@ -33,8 +48,11 @@ end
 subroutine s2()
 end
 end module m
-");
-c!(nopass_arguments_04,"module m
+"
+);
+c!(
+    nopass_arguments_04,
+    "module m
 type::t
 contains
 procedure,nopass::set
@@ -44,8 +62,11 @@ subroutine set(x)
 integer::x
 end
 end module m
-");
-c!(nopass_arguments_05,"module m
+"
+);
+c!(
+    nopass_arguments_05,
+    "module m
 type::t
 contains
 procedure,nopass::mk
@@ -56,8 +77,11 @@ integer :: r
 r=1
 end
 end module m
-");
-c!(nopass_arguments_06,"module m
+"
+);
+c!(
+    nopass_arguments_06,
+    "module m
 type::t
 contains
 procedure,nopass::show
@@ -67,8 +91,11 @@ subroutine show()
 print *,1
 end
 end module m
-");
-c!(nopass_arguments_07,"module m
+"
+);
+c!(
+    nopass_arguments_07,
+    "module m
 type::t
 contains
 procedure,nopass::s
@@ -78,8 +105,11 @@ subroutine s(x)
 real::x
 end
 end module m
-");
-c!(nopass_arguments_08,"module m
+"
+);
+c!(
+    nopass_arguments_08,
+    "module m
 type::t
 contains
 procedure,nopass::s
@@ -89,8 +119,11 @@ subroutine s(x,y)
 integer::x,y
 end
 end module m
-");
-c!(nopass_arguments_09,"module m
+"
+);
+c!(
+    nopass_arguments_09,
+    "module m
 type::t
 contains
 procedure,nopass::s
@@ -100,8 +133,11 @@ subroutine s(c)
 character(len=*)::c
 end
 end module m
-");
-c!(nopass_arguments_10,"module m
+"
+);
+c!(
+    nopass_arguments_10,
+    "module m
 type::t
 contains
 procedure,nopass::s
@@ -111,4 +147,5 @@ subroutine s(l)
 logical::l
 end
 end module m
-");
+"
+);

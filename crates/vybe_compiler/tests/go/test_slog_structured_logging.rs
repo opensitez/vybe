@@ -2,7 +2,6 @@
 //! value types, Default logger — extended coverage distinct from
 //! `test_cover_text_html_log.rs` compile smokes.
 
-
 go_run_cases! {
     slog_text_handler_info_message_present => (
         "package main; import \"fmt\"; import \"log/slog\"; import \"bytes\"; import \"strings\"; func main() { var buf bytes.Buffer; h := slog.NewTextHandler(&buf, nil); l := slog.New(h); l.Info(\"ready\"); fmt.Println(strings.Contains(buf.String(), \"ready\")) }",

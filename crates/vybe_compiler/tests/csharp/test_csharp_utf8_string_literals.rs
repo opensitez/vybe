@@ -1,7 +1,6 @@
 //! UTF-8 string literals (`u8"..."`, C# 11) produce `ReadOnlySpan<byte>`.
 //! GAP: no prior coverage of `u8` literal syntax or byte-span decoding.
 
-
 csharp_cases! {
     utf8_literal_empty_has_zero_length => {
         r#"var bytes=u8""; Console.WriteLine(bytes.Length);"#,

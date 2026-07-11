@@ -1,6 +1,5 @@
 use super::helpers::*;
 
-
 // Stringize operator (#)
 #[test]
 fn stringize_operator() {

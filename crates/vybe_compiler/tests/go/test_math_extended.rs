@@ -1,6 +1,5 @@
 //! math package beyond test_math.rs: Log, Pow, Mod, Remainder, Trig, constants.
 
-
 go_run_cases! {
     math_pow_integer_exp => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Pow(2, 3)) }", vec!["8"]),
     math_sqrt_two => ("package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.Sqrt(2)) }", vec!["1.4142135623730951"]),

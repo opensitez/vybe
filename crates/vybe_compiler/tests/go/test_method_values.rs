@@ -1,6 +1,5 @@
 //! Method values and method expressions — distinct call forms.
 
-
 go_run_cases! {
     method_value_on_literal => ("package main; import \"fmt\"; type counter struct { n int }; func (c counter) twice() int { return c.n * 2 }; func main() { f := counter{n:3}.twice; fmt.Println(f()) }", vec!["6"]),
     method_expression_requires_receiver => ("package main; import \"fmt\"; type box struct { v int }; func (b box) get() int { return b.v }; func main() { f := box.get; fmt.Println(f(box{v:9})) }", vec!["9"]),

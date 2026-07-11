@@ -1,6 +1,5 @@
 //! Channel close, range-over-channel, send/receive on buffered channels.
 
-
 go_run_cases! {
     buffered_channel_len_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int, 3); ch <- 1; ch <- 2; fmt.Println(len(ch)); fmt.Println(cap(ch)) }", vec!["2", "3"]),
     receive_from_buffered_fifo => ("package main; import \"fmt\"; func main() { ch := make(chan int, 2); ch <- 10; ch <- 20; fmt.Println(<-ch); fmt.Println(<-ch) }", vec!["10", "20"]),

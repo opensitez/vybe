@@ -116,13 +116,15 @@ fn strict_math_copy_sign_negative_mag() {
 
 #[test]
 fn strict_math_ieee_remainder_seven_four() {
-    let out = run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(7.0, 4.0));"#);
+    let out =
+        run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(7.0, 4.0));"#);
     assert_eq!(out, vec!["-1"]);
 }
 
 #[test]
 fn strict_math_ieee_remainder_eight_three() {
-    let out = run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(8.0, 3.0));"#);
+    let out =
+        run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(8.0, 3.0));"#);
     assert_eq!(out, vec!["-1"]);
 }
 
@@ -194,7 +196,8 @@ fn strict_math_exp_zero() {
 
 #[test]
 fn strict_math_log_e() {
-    let out = run_main(r#"System.out.println((int) java.lang.StrictMath.log(java.lang.StrictMath.E));"#);
+    let out =
+        run_main(r#"System.out.println((int) java.lang.StrictMath.log(java.lang.StrictMath.E));"#);
     assert_eq!(out, vec!["1"]);
 }
 
@@ -320,19 +323,25 @@ fn strict_math_scalb_negative_base() {
 
 #[test]
 fn strict_math_next_up_double_max_finite() {
-    let out = run_main(r#"System.out.println(java.lang.StrictMath.nextUp(java.lang.Double.MAX_VALUE) > java.lang.Double.MAX_VALUE);"#);
+    let out = run_main(
+        r#"System.out.println(java.lang.StrictMath.nextUp(java.lang.Double.MAX_VALUE) > java.lang.Double.MAX_VALUE);"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn strict_math_ulp_of_double_min() {
-    let out = run_main(r#"System.out.println(java.lang.StrictMath.ulp(java.lang.Double.MIN_VALUE) > 0.0);"#);
+    let out = run_main(
+        r#"System.out.println(java.lang.StrictMath.ulp(java.lang.Double.MIN_VALUE) > 0.0);"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn strict_math_get_exponent_subnormal() {
-    let out = run_main(r#"System.out.println(java.lang.StrictMath.getExponent(java.lang.Double.MIN_VALUE) == java.lang.Double.MIN_EXPONENT - 1);"#);
+    let out = run_main(
+        r#"System.out.println(java.lang.StrictMath.getExponent(java.lang.Double.MIN_VALUE) == java.lang.Double.MIN_EXPONENT - 1);"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -350,13 +359,16 @@ fn strict_math_fma_zero_addend() {
 
 #[test]
 fn strict_math_ieee_remainder_exact() {
-    let out = run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(10.0, 5.0));"#);
+    let out =
+        run_main(r#"System.out.println((int) java.lang.StrictMath.IEEEremainder(10.0, 5.0));"#);
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn strict_math_to_degrees_pi() {
-    let out = run_main(r#"System.out.println((int) java.lang.StrictMath.toDegrees(java.lang.StrictMath.PI));"#);
+    let out = run_main(
+        r#"System.out.println((int) java.lang.StrictMath.toDegrees(java.lang.StrictMath.PI));"#,
+    );
     assert_eq!(out, vec!["180"]);
 }
 
@@ -371,4 +383,3 @@ fn strict_math_next_after_equal_direction() {
     let out = run_main(r#"System.out.println(java.lang.StrictMath.nextAfter(0.0, 0.0) == 0.0);"#);
     assert_eq!(out, vec!["true"]);
 }
-

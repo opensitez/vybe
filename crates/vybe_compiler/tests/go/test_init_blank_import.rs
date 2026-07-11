@@ -1,6 +1,5 @@
 //! package init() ordering, side-effect imports, and blank imports (`_ "pkg"`).
 
-
 go_run_cases! {
     init_order_three_sequential_appends => (
         "package main; import \"fmt\"; var order string; func init() { order = order + \"1\" }; func init() { order = order + \"2\" }; func init() { order = order + \"3\" }; func main() { fmt.Println(order) }",

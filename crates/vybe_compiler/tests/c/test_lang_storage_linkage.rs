@@ -1,6 +1,5 @@
 //! Storage duration, linkage, and translation-unit semantics.
 
-
 c_run_cases! {
     extern_global_read => {
         includes: ["<stdio.h>"],

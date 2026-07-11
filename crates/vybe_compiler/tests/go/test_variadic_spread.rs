@@ -3,7 +3,6 @@
 //! Distinct from `test_variadic.rs` (basic sum/count/join) and
 //! `test_functions_patterns_extra.rs` (single forward/spread smoke tests).
 
-
 go_run_cases! {
     spread_empty_int_slice_variadic_zero_sum => (
         "package main; import \"fmt\"; func sum(nums ...int) int { total := 0; for _, n := range nums { total += n }; return total }; func main() { fmt.Println(sum([]int{}...)); }",

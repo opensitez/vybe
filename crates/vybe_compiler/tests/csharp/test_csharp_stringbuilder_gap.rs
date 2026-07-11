@@ -1,6 +1,5 @@
 //! StringBuilder gap coverage: Append/AppendLine/Insert/Remove/Replace/Clear/Length/Capacity overloads and edge cases.
 
-
 csharp_cases! {
     stringbuilder_gap_append_char_single => {
         r#"var sb=new System.Text.StringBuilder(); sb.Append('Z'); Console.WriteLine(sb.ToString());"#,

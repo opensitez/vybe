@@ -1,7 +1,6 @@
 //! encoding/xml, csv, gob, pem, ascii85, base32 - extra APIs not in
 //! test_stdlib_encoding_misc.rs; one distinct API per compile smoke.
 
-
 go_compile_cases! {
     // encoding/xml - beyond Marshal/Unmarshal
     xml_marshal_indent => "package main; import \"encoding/xml\"; type T struct { X int `xml:\"x\"` }; func main() { _, _ = xml.MarshalIndent(T{X: 1}, \"\", \"  \") }",

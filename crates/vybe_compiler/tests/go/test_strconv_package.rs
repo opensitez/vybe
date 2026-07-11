@@ -1,6 +1,5 @@
 //! strconv: distinct parsing/formatting APIs beyond Itoa/Atoi in test_strings_advanced.
 
-
 go_run_cases! {
     strconv_parse_int_base10 => ("package main; import \"fmt\"; import \"strconv\"; func main() { n, _ := strconv.ParseInt(\"42\", 10, 64); fmt.Println(n) }", vec!["42"]),
     strconv_parse_int_base16 => ("package main; import \"fmt\"; import \"strconv\"; func main() { n, _ := strconv.ParseInt(\"ff\", 16, 64); fmt.Println(n) }", vec!["255"]),

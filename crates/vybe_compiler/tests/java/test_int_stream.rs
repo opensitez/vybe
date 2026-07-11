@@ -2,9 +2,8 @@ use crate::helpers::run_main;
 
 #[test]
 fn int_stream_range_excludes_upper_bound() {
-    let out = run_main(
-        "long c = java.util.stream.IntStream.range(1, 4).count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.IntStream.range(1, 4).count(); System.out.println(c);");
     assert_eq!(out, vec!["3"]);
 }
 
@@ -26,9 +25,8 @@ fn int_stream_range_last_value_before_end() {
 
 #[test]
 fn int_stream_range_empty_when_start_equals_end() {
-    let out = run_main(
-        "long c = java.util.stream.IntStream.range(7, 7).count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.IntStream.range(7, 7).count(); System.out.println(c);");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -50,25 +48,22 @@ fn int_stream_range_closed_last_element() {
 
 #[test]
 fn int_stream_of_three_values_sums() {
-    let out = run_main(
-        "int s = java.util.stream.IntStream.of(1, 2, 3).sum(); System.out.println(s);",
-    );
+    let out =
+        run_main("int s = java.util.stream.IntStream.of(1, 2, 3).sum(); System.out.println(s);");
     assert_eq!(out, vec!["6"]);
 }
 
 #[test]
 fn int_stream_of_single_value_count() {
-    let out = run_main(
-        "long c = java.util.stream.IntStream.of(42).count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.IntStream.of(42).count(); System.out.println(c);");
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn int_stream_empty_yields_zero_count() {
-    let out = run_main(
-        "long c = java.util.stream.IntStream.empty().count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.IntStream.empty().count(); System.out.println(c);");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -194,9 +189,7 @@ fn int_stream_skip_drops_leading_elements() {
 
 #[test]
 fn int_stream_for_each_prints_sequence() {
-    let out = run_main(
-        "java.util.stream.IntStream.of(4, 5).forEach(n -> System.out.println(n));",
-    );
+    let out = run_main("java.util.stream.IntStream.of(4, 5).forEach(n -> System.out.println(n));");
     assert_eq!(out, vec!["4", "5"]);
 }
 
@@ -591,4 +584,3 @@ fn int_stream_filter_map_sum_pipeline() {
     );
     assert_eq!(out, vec!["14"]);
 }
-

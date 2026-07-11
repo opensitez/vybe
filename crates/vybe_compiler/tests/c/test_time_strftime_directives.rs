@@ -1,6 +1,5 @@
 //! strftime format directives — one conversion specifier per test with fixed struct tm.
 
-
 c_run_cases! {
     strftime_percent_y_four_digit_year => {
         includes: ["<stdio.h>", "<time.h>"],

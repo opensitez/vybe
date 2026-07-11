@@ -1,6 +1,5 @@
 //! regexp/syntax package APIs — breadth-only, one API per test.
 
-
 go_compile_cases! {
     syntax_parse => "package main; import \"regexp/syntax\"; func main() { _, _ = syntax.Parse(\"a\", syntax.Perl) }",
     syntax_compile => "package main; import \"regexp/syntax\"; func main() { re, _ := syntax.Parse(\"a\", 0); _, _ = syntax.Compile(re) }",
@@ -71,4 +70,3 @@ go_compile_cases! {
     syntax_inst_rune_any => "package main; import \"regexp/syntax\"; func main() { _ = syntax.InstRuneAny }",
     syntax_inst_rune_any_not_nl => "package main; import \"regexp/syntax\"; func main() { _ = syntax.InstRuneAnyNotNL }",
 }
-

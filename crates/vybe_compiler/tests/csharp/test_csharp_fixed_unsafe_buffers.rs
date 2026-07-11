@@ -1,7 +1,6 @@
 //! `fixed` pinning via `&arr[0]`, `unsafe` blocks, and pointer dereference prints.
 //! GAP: fixed-buffer pointer coverage is thin beyond whole-array pinning.
 
-
 csharp_cases! {
     fixed_byte_ptr_from_first_element_reads_value => {
         r#"byte[] arr={65,66,67}; unsafe{fixed(byte* ptr=&arr[0]){Console.WriteLine(*ptr);}}"#,

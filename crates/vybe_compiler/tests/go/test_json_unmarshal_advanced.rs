@@ -2,7 +2,6 @@
 //! slice elements, unicode escapes, MarshalIndent, RawMessage, DisallowUnknownFields, UseNumber
 //! — distinct from `test_json_marshal.rs`.
 
-
 go_run_cases! {
     json_unmarshal_embedded_promoted_field => (
         "package main; import \"fmt\"; import \"encoding/json\"; type Inner struct { N int }; type Outer struct { Inner }; func main() { var o Outer; json.Unmarshal([]byte(`{\"N\":5}`), &o); fmt.Println(o.N) }",

@@ -1,6 +1,5 @@
 //! struct, union, enum language rules — one behavior per test.
 
-
 c_run_cases! {
     struct_member_access_dot => {
         includes: ["<stdio.h>"],

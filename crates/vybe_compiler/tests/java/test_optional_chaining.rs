@@ -2,17 +2,13 @@ use crate::helpers::run_main;
 
 #[test]
 fn optional_is_empty_true_for_empty() {
-    let out = run_main(
-        "System.out.println(java.util.Optional.empty().isEmpty());",
-    );
+    let out = run_main("System.out.println(java.util.Optional.empty().isEmpty());");
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn optional_is_empty_false_for_present() {
-    let out = run_main(
-        "System.out.println(java.util.Optional.of(1).isEmpty());",
-    );
+    let out = run_main("System.out.println(java.util.Optional.of(1).isEmpty());");
     assert_eq!(out, vec!["false"]);
 }
 
@@ -42,9 +38,8 @@ fn optional_equals_empty_to_empty() {
 
 #[test]
 fn optional_equals_present_to_different() {
-    let out = run_main(
-        "System.out.println(java.util.Optional.of(1).equals(java.util.Optional.of(2)));",
-    );
+    let out =
+        run_main("System.out.println(java.util.Optional.of(1).equals(java.util.Optional.of(2)));");
     assert_eq!(out, vec!["false"]);
 }
 
@@ -82,9 +77,7 @@ fn optional_or_else_throw_no_arg_on_empty() {
 
 #[test]
 fn optional_or_else_throw_no_arg_on_present() {
-    let out = run_main(
-        "System.out.println(java.util.Optional.of(7).orElseThrow());",
-    );
+    let out = run_main("System.out.println(java.util.Optional.of(7).orElseThrow());");
     assert_eq!(out, vec!["7"]);
 }
 
@@ -154,9 +147,7 @@ fn optional_to_string_present_contains_value() {
 
 #[test]
 fn optional_equals_present_same_type_different_value() {
-    let out = run_main(
-        "System.out.println(java.util.Optional.of(1).equals(java.util.Optional.of(1L)));",
-    );
+    let out =
+        run_main("System.out.println(java.util.Optional.of(1).equals(java.util.Optional.of(1L)));");
     assert_eq!(out, vec!["false"]);
 }
-

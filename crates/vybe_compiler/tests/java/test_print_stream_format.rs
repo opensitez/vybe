@@ -68,15 +68,15 @@ fn print_stream_append_char_sequence_start_end() {
 
 #[test]
 fn print_stream_append_returns_print_stream_for_chaining() {
-    let out = run_main(
-        r#"System.out.append("a").append("b").append("c"); System.out.println("");"#,
-    );
+    let out =
+        run_main(r#"System.out.append("a").append("b").append("c"); System.out.println("");"#);
     assert_eq!(out, vec!["abc", ""]);
 }
 
 #[test]
 fn print_stream_append_then_format() {
-    let out = run_main(r#"System.out.append("[").format("%d", 5).append("]"); System.out.println("");"#);
+    let out =
+        run_main(r#"System.out.append("[").format("%d", 5).append("]"); System.out.println("");"#);
     assert_eq!(out, vec!["[5]", ""]);
 }
 
@@ -260,7 +260,8 @@ fn print_stream_format_null_string_as_null_text() {
 
 #[test]
 fn print_stream_append_multiple_chars_without_newlines() {
-    let out = run_main(r#"System.out.append('1').append('2').append('3'); System.out.println("");"#);
+    let out =
+        run_main(r#"System.out.append('1').append('2').append('3'); System.out.println("");"#);
     assert_eq!(out, vec!["123", ""]);
 }
 
@@ -298,7 +299,9 @@ fn print_stream_format_long_integer() {
 
 #[test]
 fn print_stream_append_then_printf_on_same_line() {
-    let out = run_main(r#"System.out.append("["); System.out.printf("%s", "x"); System.out.println("]");"#);
+    let out = run_main(
+        r#"System.out.append("["); System.out.printf("%s", "x"); System.out.println("]");"#,
+    );
     assert_eq!(out, vec!["[", "[x", "[x]"]);
 }
 

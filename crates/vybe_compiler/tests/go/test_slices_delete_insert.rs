@@ -1,6 +1,5 @@
 //! slices.Delete, Insert, Replace, Compact (Go 1.21+ slices package extras).
 
-
 go_run_cases! {
     slices_delete_middle => ("package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1,2,3,4}; t := slices.Delete(s, 1, 3); fmt.Println(t) }", vec!["[1 4]"]),
     slices_insert => ("package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1,3}; t := slices.Insert(s, 1, 2); fmt.Println(t) }", vec!["[1 2 3]"]),

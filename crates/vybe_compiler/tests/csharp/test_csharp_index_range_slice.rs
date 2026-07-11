@@ -1,7 +1,6 @@
 //! Index-from-end (`^n`), `Range` (`..`), and slicing on arrays and strings.
 //! GAP: deep slice/index coverage beyond basic smoke tests in `ranges_indices`.
 
-
 csharp_cases! {
     index_from_end_two_reads_second_to_last_array_element => {
         r#"int[] data={10,20,30,40}; Console.WriteLine(data[^2]);"#,

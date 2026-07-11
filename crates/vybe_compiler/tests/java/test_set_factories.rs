@@ -11,9 +11,8 @@ fn set_of_distinct_elements_supports_contains() {
 
 #[test]
 fn set_of_empty_is_empty() {
-    let out = run_main(
-        "java.util.Set<String> s = java.util.Set.of(); System.out.println(s.isEmpty());",
-    );
+    let out =
+        run_main("java.util.Set<String> s = java.util.Set.of(); System.out.println(s.isEmpty());");
     assert_eq!(out, vec!["true"]);
 }
 

@@ -1,7 +1,6 @@
 //! Enum metaprogramming: `Parse`, `TryParse`, `GetNames`, `GetValues`, `HasFlag`, casts.
 //! GAP: reflection-style enum APIs need dedicated structural coverage.
 
-
 csharp_cases! {
     enum_parse_string_to_member => {
         r#"enum Color{Red,Green,Blue} var c=(Color)System.Enum.Parse(typeof(Color),"Green"); Console.WriteLine(c);"#,

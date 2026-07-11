@@ -7,37 +7,157 @@ macro_rules! cobol_test {
             let out = crate::helpers::run_prints($src);
             assert_eq!(out, $expected);
         }
-    }
+    };
 }
 
 // 30 specific tests for DATA DIVISION SIGN CLAUSE
-cobol_test!(test_sign_leading_separate, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS LEADING SEPARATE CHARACTER VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["-123"]);
-cobol_test!(test_sign_trailing_separate, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS TRAILING SEPARATE CHARACTER VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["123-"]);
-cobol_test!(test_sign_leading, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS LEADING VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["-123"]); // Output format depends on compiler default
-cobol_test!(test_sign_trailing, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS TRAILING VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.", vec!["123-"]); // Output format depends on compiler default
-cobol_test!(test_sign_parse_5, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_6, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_7, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_8, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_9, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_10, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_11, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_12, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_13, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_14, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_15, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_16, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_17, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_18, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_19, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_20, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_21, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_22, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_23, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_24, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_25, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_26, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_27, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_28, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_29, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_sign_parse_30, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(
+    test_sign_leading_separate,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS LEADING SEPARATE CHARACTER VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.",
+    vec!["-123"]
+);
+cobol_test!(
+    test_sign_trailing_separate,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS TRAILING SEPARATE CHARACTER VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.",
+    vec!["123-"]
+);
+cobol_test!(
+    test_sign_leading,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS LEADING VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.",
+    vec!["-123"]
+); // Output format depends on compiler default
+cobol_test!(
+    test_sign_trailing,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC S9(3) SIGN IS TRAILING VALUE -123. PROCEDURE DIVISION. DISPLAY V. STOP RUN.",
+    vec!["123-"]
+); // Output format depends on compiler default
+cobol_test!(
+    test_sign_parse_5,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_6,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_7,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_8,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_9,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_10,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_11,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_12,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_13,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_14,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_15,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_16,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_17,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_18,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_19,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_20,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_21,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_22,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_23,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_24,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_25,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_26,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_27,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_28,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_29,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_sign_parse_30,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);

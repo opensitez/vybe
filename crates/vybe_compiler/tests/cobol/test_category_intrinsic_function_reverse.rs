@@ -7,37 +7,157 @@ macro_rules! cobol_test {
             let out = crate::helpers::run_prints($src);
             assert_eq!(out, $expected);
         }
-    }
+    };
 }
 
 // 30 specific tests for INTRINSIC FUNCTION REVERSE
-cobol_test!(test_reverse_basic, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'HELLO'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(V). STOP RUN.", vec!["OLLEH"]);
-cobol_test!(test_reverse_spaces, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'A B C'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(V). STOP RUN.", vec!["C B A"]);
-cobol_test!(test_reverse_trailing_spaces, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'A    '. PROCEDURE DIVISION. DISPLAY '[' FUNCTION REVERSE(V) ']'. STOP RUN.", vec!["[    A]"]);
-cobol_test!(test_reverse_literal, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE('12345'). STOP RUN.", vec!["54321"]);
-cobol_test!(test_reverse_nested, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'HELLO'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(FUNCTION UPPER-CASE(V)). STOP RUN.", vec!["OLLEH"]);
-cobol_test!(test_reverse_parse_6, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_7, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_8, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_9, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_10, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_11, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_12, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_13, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_14, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_15, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_16, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_17, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_18, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_19, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_20, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_21, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_22, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_23, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_24, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_25, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_26, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_27, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_28, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_29, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_reverse_parse_30, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(
+    test_reverse_basic,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'HELLO'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(V). STOP RUN.",
+    vec!["OLLEH"]
+);
+cobol_test!(
+    test_reverse_spaces,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'A B C'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(V). STOP RUN.",
+    vec!["C B A"]
+);
+cobol_test!(
+    test_reverse_trailing_spaces,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'A    '. PROCEDURE DIVISION. DISPLAY '[' FUNCTION REVERSE(V) ']'. STOP RUN.",
+    vec!["[    A]"]
+);
+cobol_test!(
+    test_reverse_literal,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE('12345'). STOP RUN.",
+    vec!["54321"]
+);
+cobol_test!(
+    test_reverse_nested,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC X(5) VALUE 'HELLO'. PROCEDURE DIVISION. DISPLAY FUNCTION REVERSE(FUNCTION UPPER-CASE(V)). STOP RUN.",
+    vec!["OLLEH"]
+);
+cobol_test!(
+    test_reverse_parse_6,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_7,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_8,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_9,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_10,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_11,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_12,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_13,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_14,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_15,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_16,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_17,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_18,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_19,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_20,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_21,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_22,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_23,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_24,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_25,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_26,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_27,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_28,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_29,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_reverse_parse_30,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);

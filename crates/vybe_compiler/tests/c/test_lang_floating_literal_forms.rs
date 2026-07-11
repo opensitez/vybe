@@ -1,6 +1,5 @@
 //! Floating literal lexical forms: decimal, scientific, suffixes, hex floats.
 
-
 c_run_cases! {
     one_point_zero => {
         includes: ["<stdio.h>"],

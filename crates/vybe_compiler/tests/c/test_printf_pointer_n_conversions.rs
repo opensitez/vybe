@@ -1,6 +1,5 @@
 //! printf pointer, %n, and %% edge cases beyond test_printf_formats.rs.
 
-
 c_run_cases! {
     printf_n_records_three_chars => {
         includes: ["<stdio.h>", "<stddef.h>"],

@@ -2,7 +2,6 @@
 //! sentinel comparison — distinct from `test_errors_package.rs` (basic chains) and
 //! `test_fmt_errors_print.rs` (Sscanf/Fprint, non-chain Errorf).
 
-
 go_run_cases! {
     errors_join_two_messages => (
         "package main; import \"fmt\"; import \"errors\"; func main() { err := errors.Join(errors.New(\"alpha\"), errors.New(\"beta\")); fmt.Println(err.Error()) }",

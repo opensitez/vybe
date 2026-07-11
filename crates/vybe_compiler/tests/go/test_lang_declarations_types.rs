@@ -1,6 +1,5 @@
 //! Declarations, types, and zero values — one language rule per test.
 
-
 go_run_cases! {
     zero_value_int => ("package main; import \"fmt\"; func main() { var n int; fmt.Println(n) }", vec!["0"]),
     zero_value_bool => ("package main; import \"fmt\"; func main() { var b bool; fmt.Println(b) }", vec!["false"]),

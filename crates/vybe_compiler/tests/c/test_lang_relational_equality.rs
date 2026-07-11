@@ -1,6 +1,5 @@
 //! Relational and equality operators — ints, unsigned wrap, pointers.
 
-
 c_run_cases! {
     int_equality_true => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", 7==7); return 0;", expect: ["1"] },
     int_equality_false => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%d\\n\", 7==8); return 0;", expect: ["0"] },

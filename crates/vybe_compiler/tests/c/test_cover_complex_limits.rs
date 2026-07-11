@@ -1,6 +1,5 @@
 //! complex.h, stdatomic.h, limits.h, float.h — one API/macro per test.
 
-
 c_run_cases! {
     complex_carg => { includes: ["<stdio.h>", "<complex.h>"], decls: "", body: "double complex z=1+1*I; printf(\"%.3f\\n\", carg(z)); return 0;", expect: ["0.785"] },
     complex_conj => { includes: ["<stdio.h>", "<complex.h>"], decls: "", body: "double complex z=conj(1+2*I); printf(\"%.1f %.1f\\n\", creal(z), cimag(z)); return 0;", expect: ["1.0 -2.0"] },

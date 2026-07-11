@@ -2,7 +2,6 @@
 //!
 //! Distinct from `test_unicode_utf8.rs`, which covers UTF-8 encoding/decoding only.
 
-
 go_run_cases! {
     unicode_is_letter_ascii_upper => (
         "package main; import \"fmt\"; import \"unicode\"; func main() { fmt.Println(unicode.IsLetter('A')) }",

@@ -2,7 +2,6 @@
 //! interface method calls. Distinct from `test_interfaces_patterns_extra.rs` (general
 //! interface patterns) and `test_struct_embedding_advanced.rs` (struct field/method promotion).
 
-
 go_run_cases! {
     reader_writer_read_promoted_runtime =>
         ("package main; import \"fmt\"; type reader interface { read() int }; type writer interface { write(int) }; type readWriter interface { reader; writer }; type buf struct { data int }; func (b buf) read() int { return b.data }; func (b buf) write(n int) { b.data = n }; func main() { var rw readWriter = buf{data: 7}; fmt.Println(rw.read()) }", vec!["7"]),

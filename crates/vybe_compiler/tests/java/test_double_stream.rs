@@ -10,17 +10,15 @@ fn double_stream_of_three_sums() {
 
 #[test]
 fn double_stream_of_single_count() {
-    let out = run_main(
-        "long c = java.util.stream.DoubleStream.of(42.5).count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.DoubleStream.of(42.5).count(); System.out.println(c);");
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn double_stream_empty_count() {
-    let out = run_main(
-        "long c = java.util.stream.DoubleStream.empty().count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.DoubleStream.empty().count(); System.out.println(c);");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -551,4 +549,3 @@ fn double_stream_builder_add_multiple() {
     );
     assert_eq!(out, vec!["6"]);
 }
-

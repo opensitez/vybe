@@ -110,4 +110,3 @@ fn test_perform_exit_perform() {
     ));
     assert_eq!(output, vec!["1", "2"]);
 }
-

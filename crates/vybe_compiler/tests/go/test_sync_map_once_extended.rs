@@ -2,7 +2,6 @@
 //! Distinct from `test_sync_package.rs` (basic Mutex/Map/Once/Pool) and
 //! `test_atomic_sync_extended.rs` (sync/atomic primitives).
 
-
 go_run_cases! {
     sync_map_int_key_store_load =>
         ("package main; import \"fmt\"; import \"sync\"; func main() { var m sync.Map; m.Store(1, \"one\"); v, ok := m.Load(1); fmt.Println(v.(string)); fmt.Println(ok) }", vec!["one", "true"]),

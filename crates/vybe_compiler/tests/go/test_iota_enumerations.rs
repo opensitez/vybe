@@ -1,6 +1,5 @@
 //! Iota: distinct enumeration patterns (bitmasks, offsets, typed constants).
 
-
 go_run_cases! {
     iota_simple_three_values => ("package main; import \"fmt\"; const ( A = iota; B; C ); func main() { fmt.Println(A); fmt.Println(B); fmt.Println(C) }", vec!["0", "1", "2"]),
     iota_skip_with_blank => ("package main; import \"fmt\"; const ( _ = iota; X = iota; Y ); func main() { fmt.Println(X); fmt.Println(Y) }", vec!["1", "2"]),

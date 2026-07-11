@@ -2,7 +2,6 @@
 //!
 //! Distinct from fmt I/O in other test files; focuses on stdlib logging and CLI flags.
 
-
 go_run_cases! {
     log_print_single_string => (
         "package main; import \"fmt\"; import \"log\"; func main() { log.Print(\"alpha\"); fmt.Println(\"done\") }",

@@ -1,6 +1,5 @@
 //! Language runtime batch 4 — distinct rules not covered in breadth 1–3.
 
-
 c_run_cases! {
     sizeof_string_literal_includes_nul => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%zu\\n\", sizeof \"ab\"); return 0;", expect: ["3"] },
     sizeof_array_not_pointer => { includes: ["<stdio.h>"], decls: "", body: "int a[4]; printf(\"%zu\\n\", sizeof a); return 0;", expect: ["16"] },

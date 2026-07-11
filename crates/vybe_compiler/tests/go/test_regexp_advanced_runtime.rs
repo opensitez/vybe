@@ -1,7 +1,6 @@
 //! regexp advanced runtime: FindAllStringSubmatch, SubexpNames, ReplaceAllString $refs,
 //! LiteralPrefix, NumSubexp, QuoteMeta — distinct from `test_regexp_package.rs`.
 
-
 go_run_cases! {
     regexp_find_all_submatch_two_groups => (
         "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`(\\d+)-(\\d+)`); m := re.FindAllStringSubmatch(\"a1-2 b3-4\", -1); fmt.Println(len(m)); fmt.Println(m[0][1]); fmt.Println(m[1][2]) }",

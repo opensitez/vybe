@@ -2,7 +2,6 @@
 //! AppendInt/AppendFloat, ParseUint bit sizes, CanBackquote — extended coverage
 //! distinct from `test_strconv_package.rs`.
 
-
 go_run_cases! {
     atoi_positive_decimal => (
         "package main; import \"fmt\"; import \"strconv\"; func main() { n, err := strconv.Atoi(\"12345\"); fmt.Println(n); fmt.Println(err == nil) }",

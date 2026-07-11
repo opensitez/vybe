@@ -62,13 +62,17 @@ fn character_is_low_surrogate_false() {
 
 #[test]
 fn character_high_surrogate_of_emoji() {
-    let out = run_main(r#"System.out.println(Character.isHighSurrogate(Character.highSurrogate(0x1F600)));"#);
+    let out = run_main(
+        r#"System.out.println(Character.isHighSurrogate(Character.highSurrogate(0x1F600)));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn character_low_surrogate_of_emoji() {
-    let out = run_main(r#"System.out.println(Character.isLowSurrogate(Character.lowSurrogate(0x1F600)));"#);
+    let out = run_main(
+        r#"System.out.println(Character.isLowSurrogate(Character.lowSurrogate(0x1F600)));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -212,7 +216,8 @@ fn character_is_supplementary_code_point() {
 
 #[test]
 fn character_to_chars_two_element() {
-    let out = run_main(r#"char[] arr = Character.toChars(0x1F600); System.out.println(arr.length);"#);
+    let out =
+        run_main(r#"char[] arr = Character.toChars(0x1F600); System.out.println(arr.length);"#);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -284,7 +289,8 @@ fn character_reverse_bytes() {
 
 #[test]
 fn string_code_points_distinct_count() {
-    let out = run_main(r#"String s = "aab"; System.out.println(s.codePoints().distinct().count());"#);
+    let out =
+        run_main(r#"String s = "aab"; System.out.println(s.codePoints().distinct().count());"#);
     assert_eq!(out, vec!["2"]);
 }
 
@@ -296,7 +302,8 @@ fn string_chars_distinct_count() {
 
 #[test]
 fn string_offset_by_code_points_emoji() {
-    let out = run_main(r#"String s = "a\uD83D\uDE00c"; System.out.println(s.offsetByCodePoints(0, 2));"#);
+    let out =
+        run_main(r#"String s = "a\uD83D\uDE00c"; System.out.println(s.offsetByCodePoints(0, 2));"#);
     assert_eq!(out, vec!["3"]);
 }
 
@@ -314,7 +321,8 @@ fn character_is_defined_emoji() {
 
 #[test]
 fn character_get_type_letter() {
-    let out = run_main(r#"System.out.println(Character.getType('A') == Character.UPPERCASE_LETTER);"#);
+    let out =
+        run_main(r#"System.out.println(Character.getType('A') == Character.UPPERCASE_LETTER);"#);
     assert_eq!(out, vec!["true"]);
 }
 
@@ -323,4 +331,3 @@ fn character_get_numeric_value_digit() {
     let out = run_main(r#"System.out.println(Character.getNumericValue('9'));"#);
     assert_eq!(out, vec!["9"]);
 }
-

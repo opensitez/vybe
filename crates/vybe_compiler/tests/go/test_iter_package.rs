@@ -2,7 +2,6 @@
 //! slices.Values over map values via maps.Values — compile smoke plus runtime
 //! where the VM can execute iterator loops synchronously.
 
-
 go_run_cases! {
     iter_slices_all_index_sum => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{10, 20, 30}; sum := 0; for i := range slices.All(s) { sum += s[i] }; fmt.Println(sum) }",

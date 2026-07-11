@@ -1,0 +1,3 @@
+package    vybe -> vybe:
+package    wasi -> wasi:
+package    wasm -> wasm:

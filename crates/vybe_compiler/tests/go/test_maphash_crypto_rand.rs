@@ -1,6 +1,5 @@
 //! hash/maphash and crypto/rand compile coverage.
 
-
 go_compile_cases! {
     maphash_new => "package main; import \"hash/maphash\"; func main() { var h maphash.Hash; h.SetSeed(maphash.MakeSeed()) }",
     maphash_write_string => "package main; import \"hash/maphash\"; func main() { var h maphash.Hash; h.WriteString(\"go\") }",

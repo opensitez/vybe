@@ -7,9 +7,27 @@ fn p(data: &str, body: &str) -> String {
     )
 }
 
-#[test] fn evaluate_when_other_compiles() { compile_ok(&p("01 WS-A PIC 9(1) VALUE 9.", "    EVALUATE WS-A\n        WHEN 1\n            DISPLAY \"ONE\"\n        WHEN 2\n            DISPLAY \"TWO\"\n        WHEN OTHER\n            DISPLAY \"OTHER\"\n    END-EVALUATE.")); }
-#[test] fn evaluate_multiple_branches_compiles() { compile_ok(&p("01 WS-A PIC 9(1) VALUE 2.", "    EVALUATE WS-A\n        WHEN 1\n            DISPLAY \"ONE\"\n        WHEN 2\n            DISPLAY \"TWO\"\n        WHEN 3\n            DISPLAY \"THREE\"\n    END-EVALUATE.")); }
-#[test] fn evaluate_true_condition_compiles() { compile_ok(&p("01 WS-A PIC 9(2) VALUE 85.", "    EVALUATE TRUE\n        WHEN WS-A >= 90\n            DISPLAY \"A\"\n        WHEN WS-A >= 80\n            DISPLAY \"B\"\n        WHEN OTHER\n            DISPLAY \"F\"\n    END-EVALUATE.")); }
+#[test]
+fn evaluate_when_other_compiles() {
+    compile_ok(&p(
+        "01 WS-A PIC 9(1) VALUE 9.",
+        "    EVALUATE WS-A\n        WHEN 1\n            DISPLAY \"ONE\"\n        WHEN 2\n            DISPLAY \"TWO\"\n        WHEN OTHER\n            DISPLAY \"OTHER\"\n    END-EVALUATE.",
+    ));
+}
+#[test]
+fn evaluate_multiple_branches_compiles() {
+    compile_ok(&p(
+        "01 WS-A PIC 9(1) VALUE 2.",
+        "    EVALUATE WS-A\n        WHEN 1\n            DISPLAY \"ONE\"\n        WHEN 2\n            DISPLAY \"TWO\"\n        WHEN 3\n            DISPLAY \"THREE\"\n    END-EVALUATE.",
+    ));
+}
+#[test]
+fn evaluate_true_condition_compiles() {
+    compile_ok(&p(
+        "01 WS-A PIC 9(2) VALUE 85.",
+        "    EVALUATE TRUE\n        WHEN WS-A >= 90\n            DISPLAY \"A\"\n        WHEN WS-A >= 80\n            DISPLAY \"B\"\n        WHEN OTHER\n            DISPLAY \"F\"\n    END-EVALUATE.",
+    ));
+}
 #[test]
 fn perform_through_paragraphs_compiles() {
     compile_ok(

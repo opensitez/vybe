@@ -1,6 +1,5 @@
 //! Attribute usage patterns: Obsolete still callable, Flags enum, Serializable marker, Conditional via prints.
 
-
 csharp_cases! {
     attribute_obsolete_method_still_invokes => {
         r#"using System; class S{[Obsolete("old")] public string Run()=>"ok";} Console.WriteLine(new S().Run());"#,

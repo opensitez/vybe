@@ -2,7 +2,6 @@
 //! Bit, GCD, ProbablyPrime, Rat Add, Float64 — distinct from smoke in
 //! `test_stdlib_math_database.rs`.
 
-
 go_run_cases! {
     big_int_set_string_base10 => (
         "package main; import \"fmt\"; import \"math/big\"; func main() { z := new(big.Int); z.SetString(\"12345\", 10); fmt.Println(z.String()) }",

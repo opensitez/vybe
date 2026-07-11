@@ -1,6 +1,5 @@
 //! Record struct deep coverage: value equality, IEquatable, GetHashCode, with expressions, readonly/nominal forms.
 
-
 csharp_cases! {
     record_struct_readonly_positional_equality => {
         r#"readonly record struct Pair(int A,int B); Console.WriteLine(new Pair(1,2)==new Pair(1,2));"#,

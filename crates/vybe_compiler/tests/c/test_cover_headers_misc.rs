@@ -1,6 +1,5 @@
 //! ctype, assert, and preprocessor compile breadth.
 
-
 c_compile_cases! {
     ctype_isblank_space => { includes: ["<ctype.h>"], decls: "", body: "return isblank(' ');" },
     ctype_isblank_tab => { includes: ["<ctype.h>"], decls: "", body: "return isblank('\\t');" },

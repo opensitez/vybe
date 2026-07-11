@@ -1,6 +1,5 @@
 //! Union reads/writes, struct-wrapped unions, and observable integer results.
 
-
 c_run_cases! {
     union_write_int_read_same_int => {
         includes: ["<stdio.h>"],

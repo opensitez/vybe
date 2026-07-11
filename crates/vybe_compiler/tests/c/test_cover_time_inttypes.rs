@@ -1,6 +1,5 @@
 //! time.h and inttypes.h — one API per test.
 
-
 c_run_cases! {
     time_returns_seconds => { includes: ["<stdio.h>", "<time.h>"], decls: "", body: "time_t t = time(0); printf(\"%d\\n\", t > 0); return 0;", expect: ["1"] },
     clock_ticks => { includes: ["<stdio.h>", "<time.h>"], decls: "", body: "clock_t c = clock(); printf(\"%d\\n\", c >= 0); return 0;", expect: ["1"] },

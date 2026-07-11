@@ -1,6 +1,5 @@
 //! errors package: New, fmt.Errorf wrapping, Is, As, Unwrap, Join.
 
-
 go_run_cases! {
     errors_new_error_string => (
         "package main; import \"fmt\"; import \"errors\"; func main() { err := errors.New(\"file not found\"); fmt.Println(err.Error()) }",

@@ -1,6 +1,5 @@
 //! C11 threads.h and fenv.h — one API per compile smoke.
 
-
 c_compile_cases! {
     thrd_create_join => {
         includes: ["<stdio.h>", "<threads.h>"],

@@ -2,7 +2,6 @@
 //! Distinct from `test_init_blank_import.rs` (blank imports) and
 //! `test_declarations_patterns.rs` (single init smoke).
 
-
 go_run_cases! {
     init_two_funcs_append_letters => (
         "package main; import \"fmt\"; var trace string; func init() { trace += \"A\" }; func init() { trace += \"B\" }; func main() { fmt.Println(trace) }",

@@ -1,6 +1,5 @@
 //! embed and unsafe.Sizeof/Alignof compile patterns.
 
-
 go_compile_cases! {
     unsafe_sizeof_int => "package main; import \"unsafe\"; func main() { _ = unsafe.Sizeof(int(0)) }",
     unsafe_sizeof_struct => "package main; import \"unsafe\"; type S struct { a int; b byte }; func main() { _ = unsafe.Sizeof(S{}) }",

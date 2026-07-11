@@ -1,4 +1,3 @@
-
 go_run_cases! {
     defer_lifo_four_level_stack =>
         ("package main; import \"fmt\"; func main() { defer fmt.Println(\"a\"); defer fmt.Println(\"b\"); defer fmt.Println(\"c\"); defer fmt.Println(\"d\"); }", vec!["d", "c", "b", "a"]),

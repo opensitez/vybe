@@ -1,7 +1,6 @@
 //! Compile coverage for `go` statement forms: closures, method calls, parameterized
 //! anonymous functions, and loop-driven goroutine spawning.
 
-
 compile_cases! {
     // Closure capture
     go_closure_capture_local_int_compile => "package main; func main() { x := 1; go func() { _ = x }() }",

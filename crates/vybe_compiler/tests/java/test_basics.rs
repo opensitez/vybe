@@ -57,4 +57,3 @@ fn compound_addition_assignment() {
     let out = run_main("int x = 10; x += 5; System.out.println(x);");
     assert_eq!(out, vec!["15"]);
 }
-

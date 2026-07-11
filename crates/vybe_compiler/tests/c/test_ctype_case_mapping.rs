@@ -1,6 +1,5 @@
 //! tolower and toupper — distinct inputs with explicit char output.
 
-
 c_run_cases! {
     toupper_on_b_yields_b => { includes: ["<stdio.h>", "<ctype.h>"], decls: "", body: "printf(\"%c\\n\", toupper('b')); return 0;", expect: ["B"] },
     tolower_on_b_yields_b => { includes: ["<stdio.h>", "<ctype.h>"], decls: "", body: "printf(\"%c\\n\", tolower('B')); return 0;", expect: ["b"] },

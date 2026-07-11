@@ -1,6 +1,5 @@
 //! Left/right shift semantics — signed, unsigned, zero shift, bit patterns.
 
-
 c_run_cases! {
     unsigned_left_shift_by_one => { includes: ["<stdio.h>"], decls: "", body: "unsigned u=5; printf(\"%u\\n\", u<<1); return 0;", expect: ["10"] },
     unsigned_left_shift_by_four => { includes: ["<stdio.h>"], decls: "", body: "unsigned u=1; printf(\"%u\\n\", u<<4); return 0;", expect: ["16"] },

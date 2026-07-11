@@ -1,6 +1,5 @@
 //! go/build, go/constant, go/doc, go/format, go/importer, go/printer, go/types, go/version — breadth-only, one API per test.
 
-
 go_compile_cases! {
     build_default => "package main; import \"go/build\"; func main() { _ = build.Default }",
     build_import => "package main; import \"go/build\"; func main() { _, _ = build.Import(\"fmt\", \".\", 0) }",

@@ -1,6 +1,5 @@
 //! With expressions on records: positional/nominal, nested with, derived records, and reference semantics.
 
-
 csharp_cases! {
     with_positional_single_field => {
         r#"record Point(int X,int Y); var q=(new Point(1,2)) with{X=10}; Console.WriteLine(q.X); Console.WriteLine(q.Y);"#,

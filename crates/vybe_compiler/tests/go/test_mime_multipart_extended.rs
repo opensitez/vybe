@@ -1,7 +1,6 @@
 //! mime and multipart extended: ParseMediaType, FormatMediaType, Writer CreatePart,
 //! Reader NextPart, boundary parsing — distinct from `test_stdlib_mime_runtime.rs`.
 
-
 go_run_cases! {
     mime_parse_media_type_simple => (
         "package main; import \"fmt\"; import \"mime\"; func main() { mt, params, err := mime.ParseMediaType(\"text/html\"); fmt.Println(mt); fmt.Println(err == nil); fmt.Println(len(params)) }",

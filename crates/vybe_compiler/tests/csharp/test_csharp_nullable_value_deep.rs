@@ -2,7 +2,6 @@
 //! and lifted operators for `int?`, `decimal?`, and related primitives.
 //! GAP: deep nullable semantics beyond basic smoke tests.
 
-
 csharp_cases! {
     nullable_int_has_value_true_for_zero => {
         r#"int? n=0; Console.WriteLine(n.HasValue);"#,

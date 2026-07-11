@@ -1,6 +1,5 @@
 //! net/http subpackages — one API per test.
 
-
 go_compile_cases! {
     httptest_new_server => "package main; import \"net/http/httptest\"; func main() { s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})); s.Close() }",
     httptest_new_request => "package main; import \"net/http/httptest\"; func main() { _ = httptest.NewRequest(\"GET\", \"/\", nil) }",

@@ -1,7 +1,6 @@
 //! runtime, runtime/debug, runtime/metrics, runtime/pprof, runtime/trace,
 //! testing, testing/fstest, testing/iotest, testing/quick - one API per compile smoke.
 
-
 go_compile_cases! {
     // runtime - core introspection
     runtime_num_cpu => "package main; import \"runtime\"; func main() { _ = runtime.NumCPU() }",

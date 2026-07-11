@@ -1,6 +1,5 @@
 //! net/http handler patterns: HandlerFunc, ServeMux, StatusText, methods, headers, WithContext.
 
-
 go_run_cases! {
     http_status_text_ok => (
         "package main; import \"fmt\"; import \"net/http\"; func main() { fmt.Println(http.StatusText(http.StatusOK)) }",

@@ -1,7 +1,6 @@
 //! hash/crc32, hash/adler32, hash/fnv runtime: Checksum, Update, New, Write, Sum —
 //! distinct compile smokes in `test_crypto_hash_compile.rs` and `test_cover_hash_heap_io.rs`.
 
-
 go_run_cases! {
     crc32_checksum_ieee_empty => (
         "package main; import \"fmt\"; import \"hash/crc32\"; func main() { fmt.Println(crc32.ChecksumIEEE([]byte{})) }",

@@ -2,7 +2,6 @@
 //! bytes: Compare, Equal, HasPrefix, Index, ToUpper/ToLower — distinct from
 //! `test_strings_ops_extended.rs` (Cut/Clone focus) and `test_strings_builder.rs`.
 
-
 go_run_cases! {
     strings_compare_prefix_diff_at_first => (
         "package main; import \"fmt\"; import \"strings\"; func main() { fmt.Println(strings.Compare(\"apple\", \"apply\")) }",

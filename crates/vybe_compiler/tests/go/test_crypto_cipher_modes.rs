@@ -2,7 +2,6 @@
 //! crypto/cipher Stream — distinct from `test_crypto_hash_compile.rs` and compile smokes in
 //! `test_stdlib_crypto_extended.rs` / `test_cover_crypto_all.rs`.
 
-
 go_run_cases! {
     aes_block_size_constant => (
         "package main; import \"fmt\"; import \"crypto/aes\"; func main() { fmt.Println(aes.BlockSize) }",

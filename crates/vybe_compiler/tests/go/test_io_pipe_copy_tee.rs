@@ -2,7 +2,6 @@
 //! WriteString via interface, LimitReader, MultiReader — extended runtime and
 //! compile coverage distinct from `test_bufio_io.rs` and `test_io_fs_extended.rs`.
 
-
 go_run_cases! {
     copy_empty_source_writes_nothing => (
         "package main; import \"fmt\"; import \"io\"; import \"bytes\"; import \"strings\"; func main() { var dst bytes.Buffer; n, err := io.Copy(&dst, strings.NewReader(\"\")); fmt.Println(n, err == nil, dst.Len()) }",

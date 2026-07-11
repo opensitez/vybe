@@ -2,7 +2,6 @@
 //! cmplx.Abs, cmplx.Pow; Sprintf %e/%g; negative zero sign — distinct from
 //! `test_math_extended.rs` and smoke in `test_stdlib_math_database.rs`.
 
-
 go_run_cases! {
     math_isnan_on_nan => (
         "package main; import \"fmt\"; import \"math\"; func main() { fmt.Println(math.IsNaN(math.NaN())) }",

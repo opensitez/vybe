@@ -279,4 +279,3 @@ fn collectors_averaging_int_empty_is_nan() {
     );
     assert_eq!(out, vec!["true"]);
 }
-

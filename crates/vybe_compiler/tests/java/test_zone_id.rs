@@ -62,19 +62,25 @@ fn zone_id_system_default_not_null() {
 
 #[test]
 fn zone_id_equals_same_region() {
-    let out = run_main(r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.equals(b));"#);
+    let out = run_main(
+        r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.equals(b));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn zone_id_equals_different_region() {
-    let out = run_main(r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("GMT"); System.out.println(a.equals(b));"#);
+    let out = run_main(
+        r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("GMT"); System.out.println(a.equals(b));"#,
+    );
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn zone_id_hash_code_consistent() {
-    let out = run_main(r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.hashCode() == b.hashCode());"#);
+    let out = run_main(
+        r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.hashCode() == b.hashCode());"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -86,13 +92,17 @@ fn zone_id_to_string_returns_id() {
 
 #[test]
 fn zone_id_of_offset_hours_only() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.ofOffset("Z", java.time.ZoneOffset.ofHours(3)).getId());"#);
+    let out = run_main(
+        r#"System.out.println(java.time.ZoneId.ofOffset("Z", java.time.ZoneOffset.ofHours(3)).getId());"#,
+    );
     assert_eq!(out, vec!["+03:00"]);
 }
 
 #[test]
 fn zone_id_of_offset_negative_hours() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.ofOffset("Z", java.time.ZoneOffset.ofHours(-8)).getId());"#);
+    let out = run_main(
+        r#"System.out.println(java.time.ZoneId.ofOffset("Z", java.time.ZoneOffset.ofHours(-8)).getId());"#,
+    );
     assert_eq!(out, vec!["-08:00"]);
 }
 
@@ -116,37 +126,49 @@ fn zone_id_short_ids_maps_est() {
 
 #[test]
 fn zone_id_normalized_same_for_utc() {
-    let out = run_main(r#"java.time.ZoneId z = java.time.ZoneId.of("UTC"); System.out.println(z.normalized().getId());"#);
+    let out = run_main(
+        r#"java.time.ZoneId z = java.time.ZoneId.of("UTC"); System.out.println(z.normalized().getId());"#,
+    );
     assert_eq!(out, vec!["Z"]);
 }
 
 #[test]
 fn zone_id_from_zone_offset() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.from(java.time.ZoneOffset.ofHours(5)).getId());"#);
+    let out = run_main(
+        r#"System.out.println(java.time.ZoneId.from(java.time.ZoneOffset.ofHours(5)).getId());"#,
+    );
     assert_eq!(out, vec!["+05:00"]);
 }
 
 #[test]
 fn zone_id_compare_to_same() {
-    let out = run_main(r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.compareTo(b));"#);
+    let out = run_main(
+        r#"java.time.ZoneId a = java.time.ZoneId.of("UTC"); java.time.ZoneId b = java.time.ZoneId.of("UTC"); System.out.println(a.compareTo(b));"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn zone_id_compare_to_earlier_offset() {
-    let out = run_main(r#"java.time.ZoneId a = java.time.ZoneId.of("+01:00"); java.time.ZoneId b = java.time.ZoneId.of("+02:00"); System.out.println(a.compareTo(b) < 0);"#);
+    let out = run_main(
+        r#"java.time.ZoneId a = java.time.ZoneId.of("+01:00"); java.time.ZoneId b = java.time.ZoneId.of("+02:00"); System.out.println(a.compareTo(b) < 0);"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn zone_id_at_instant_utc_offset_zero() {
-    let out = run_main(r#"java.time.Instant i = java.time.Instant.parse("2024-06-15T12:00:00Z"); System.out.println(java.time.ZoneId.of("UTC").getRules().getOffset(i).getTotalSeconds());"#);
+    let out = run_main(
+        r#"java.time.Instant i = java.time.Instant.parse("2024-06-15T12:00:00Z"); System.out.println(java.time.ZoneId.of("UTC").getRules().getOffset(i).getTotalSeconds());"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn zone_id_at_instant_fixed_offset() {
-    let out = run_main(r#"java.time.Instant i = java.time.Instant.parse("2024-06-15T12:00:00Z"); System.out.println(java.time.ZoneId.of("+03:00").getRules().getOffset(i).getTotalSeconds());"#);
+    let out = run_main(
+        r#"java.time.Instant i = java.time.Instant.parse("2024-06-15T12:00:00Z"); System.out.println(java.time.ZoneId.of("+03:00").getRules().getOffset(i).getTotalSeconds());"#,
+    );
     assert_eq!(out, vec!["10800"]);
 }
 
@@ -182,7 +204,8 @@ fn zone_id_of_offset_quarter_hour() {
 
 #[test]
 fn zone_id_from_offset_zero() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.from(java.time.ZoneOffset.UTC).getId());"#);
+    let out =
+        run_main(r#"System.out.println(java.time.ZoneId.from(java.time.ZoneOffset.UTC).getId());"#);
     assert_eq!(out, vec!["Z"]);
 }
 
@@ -212,13 +235,17 @@ fn zone_id_of_etc_gmt_plus_one() {
 
 #[test]
 fn zone_id_get_display_name_utc() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.of("UTC").getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH));"#);
+    let out = run_main(
+        r#"System.out.println(java.time.ZoneId.of("UTC").getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH));"#,
+    );
     assert_eq!(out, vec!["UTC"]);
 }
 
 #[test]
 fn zone_id_is_normalised_for_fixed_offset() {
-    let out = run_main(r#"java.time.ZoneId z = java.time.ZoneId.of("+04:00"); System.out.println(z.equals(z.normalized()));"#);
+    let out = run_main(
+        r#"java.time.ZoneId z = java.time.ZoneId.of("+04:00"); System.out.println(z.equals(z.normalized()));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -230,13 +257,16 @@ fn zone_id_of_minute_precision_offset() {
 
 #[test]
 fn zone_id_rules_is_fixed_offset_utc() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.of("UTC").getRules().isFixedOffset());"#);
+    let out =
+        run_main(r#"System.out.println(java.time.ZoneId.of("UTC").getRules().isFixedOffset());"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn zone_id_rules_is_fixed_offset_paris_false() {
-    let out = run_main(r#"System.out.println(java.time.ZoneId.of("Europe/Paris").getRules().isFixedOffset());"#);
+    let out = run_main(
+        r#"System.out.println(java.time.ZoneId.of("Europe/Paris").getRules().isFixedOffset());"#,
+    );
     assert_eq!(out, vec!["false"]);
 }
 
@@ -254,7 +284,8 @@ fn zone_id_of_atlantic_reykjavik() {
 
 #[test]
 fn zone_id_offset_at_instant_reykjavik() {
-    let out = run_main(r#"java.time.Instant i = java.time.Instant.parse("2024-01-15T00:00:00Z"); System.out.println(java.time.ZoneId.of("Atlantic/Reykjavik").getRules().getOffset(i).getTotalSeconds());"#);
+    let out = run_main(
+        r#"java.time.Instant i = java.time.Instant.parse("2024-01-15T00:00:00Z"); System.out.println(java.time.ZoneId.of("Atlantic/Reykjavik").getRules().getOffset(i).getTotalSeconds());"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
-

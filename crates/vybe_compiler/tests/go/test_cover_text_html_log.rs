@@ -1,7 +1,6 @@
 //! html, html/template, mime/quotedprintable, log/slog, log/syslog
 //! - one distinct API per compile smoke (breadth over depth).
 
-
 go_compile_cases! {
     // html
     html_escape_string => "package main; import \"html\"; func main() { _ = html.EscapeString(\"<b>bold</b>\") }",

@@ -1,6 +1,5 @@
 //! time package: Duration, Unix timestamps, Format/Parse layouts.
 
-
 go_run_cases! {
     time_duration_string_second => ("package main; import \"fmt\"; import \"time\"; func main() { fmt.Println(time.Second.String()) }", vec!["1s"]),
     time_duration_minutes => ("package main; import \"fmt\"; import \"time\"; func main() { d := 2 * time.Minute; fmt.Println(d.Minutes()) }", vec!["2"]),

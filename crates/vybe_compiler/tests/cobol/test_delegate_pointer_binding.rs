@@ -49,10 +49,7 @@ fn set_procedure_pointer_to_entry_compiles() {
 
 #[test]
 fn call_through_procedure_pointer_compiles() {
-    compile_ok(&p(
-        "01 P USAGE IS PROCEDURE-POINTER.",
-        "    CALL P.",
-    ));
+    compile_ok(&p("01 P USAGE IS PROCEDURE-POINTER.", "    CALL P."));
 }
 
 #[test]

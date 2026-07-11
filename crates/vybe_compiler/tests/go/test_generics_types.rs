@@ -2,7 +2,6 @@
 //!
 //! Complements `test_generics_functions.rs` (generic functions and function constraints).
 
-
 go_run_cases! {
     // --- generic struct types ---
     generic_pair_homogeneous_fields => (

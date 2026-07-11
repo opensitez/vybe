@@ -1,6 +1,5 @@
 //! regexp package: Match, Find, Replace, Compile patterns.
 
-
 go_run_cases! {
     regexp_match_string_literal => ("package main; import \"fmt\"; import \"regexp\"; func main() { fmt.Println(regexp.MatchString(\"^go\", \"gopher\")) }", vec!["true"]),
     regexp_match_string_miss => ("package main; import \"fmt\"; import \"regexp\"; func main() { fmt.Println(regexp.MatchString(\"^rust\", \"gopher\")) }", vec!["false"]),

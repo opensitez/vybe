@@ -1,6 +1,5 @@
 //! Generics: functions and types with distinct constraints and instantiations.
 
-
 go_run_cases! {
     generic_min_int => ("package main; import \"fmt\"; func Min[T ~int](a, b T) T { if a < b { return a }; return b }; func main() { fmt.Println(Min(3, 7)) }", vec!["3"]),
     generic_max_int => ("package main; import \"fmt\"; func Max[T ~int](a, b T) T { if a > b { return a }; return b }; func main() { fmt.Println(Max(3, 7)) }", vec!["7"]),

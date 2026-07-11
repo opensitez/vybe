@@ -1,6 +1,5 @@
 //! snprintf, vsnprintf, and formatted buffer I/O — distinct format/width cases.
 
-
 c_run_cases! {
     snprintf_writes_null_terminated => {
         includes: ["<stdio.h>"],

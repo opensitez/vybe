@@ -1,6 +1,5 @@
 //! wchar.h — one wide-character API per test.
 
-
 c_run_cases! {
     wcslen_counts => { includes: ["<stdio.h>", "<wchar.h>"], decls: "", body: "wchar_t s[] = L\"ab\"; printf(\"%d\\n\", (int)wcslen(s)); return 0;", expect: ["2"] },
     wcscpy_copies => { includes: ["<stdio.h>", "<wchar.h>"], decls: "", body: "wchar_t d[4]; wcscpy(d, L\"go\"); printf(\"%lc\\n\", d[0]); return 0;", expect: ["g"] },

@@ -14,7 +14,10 @@ fn raise_exception_compiles() {
 
 #[test]
 fn raise_and_display_compiles() {
-    compile_ok(&p("", "    RAISE EXCEPTION \"fatal\".\n    DISPLAY \"after error\"."));
+    compile_ok(&p(
+        "",
+        "    RAISE EXCEPTION \"fatal\".\n    DISPLAY \"after error\".",
+    ));
 }
 
 #[test]

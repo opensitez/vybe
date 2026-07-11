@@ -1,6 +1,5 @@
 //! Bitwise AND, OR, XOR, NOT — distinct bit patterns and complements.
 
-
 c_run_cases! {
     bitwise_and_ff_with_0f => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%x\\n\", 0xFF & 0x0F); return 0;", expect: ["f"] },
     bitwise_and_aa_with_55 => { includes: ["<stdio.h>"], decls: "", body: "printf(\"%x\\n\", 0xAA & 0x55); return 0;", expect: ["0"] },

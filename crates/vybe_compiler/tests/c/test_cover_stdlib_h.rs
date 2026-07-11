@@ -1,6 +1,5 @@
 //! stdlib.h — one distinct API per test.
 
-
 c_run_cases! {
     abs_int => { includes: ["<stdio.h>", "<stdlib.h>"], decls: "", body: "printf(\"%d\\n\", abs(-9)); return 0;", expect: ["9"] },
     labs_long => { includes: ["<stdio.h>", "<stdlib.h>"], decls: "", body: "printf(\"%ld\\n\", labs(-5L)); return 0;", expect: ["5"] },

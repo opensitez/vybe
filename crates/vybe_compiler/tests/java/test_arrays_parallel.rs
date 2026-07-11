@@ -138,9 +138,8 @@ fn arrays_sort_partial_range() {
 
 #[test]
 fn arrays_binary_search_found() {
-    let out = run_main(
-        "int[] a = {1, 3, 5}; System.out.println(java.util.Arrays.binarySearch(a, 3));",
-    );
+    let out =
+        run_main("int[] a = {1, 3, 5}; System.out.println(java.util.Arrays.binarySearch(a, 3));");
     assert_eq!(out, vec!["1"]);
 }
 
@@ -162,9 +161,8 @@ fn arrays_hash_code_consistent() {
 
 #[test]
 fn arrays_to_string_format() {
-    let out = run_main(
-        "String s = java.util.Arrays.toString(new int[]{1, 2}); System.out.println(s);",
-    );
+    let out =
+        run_main("String s = java.util.Arrays.toString(new int[]{1, 2}); System.out.println(s);");
     assert_eq!(out, vec!["[1, 2]"]);
 }
 
@@ -183,4 +181,3 @@ fn arrays_compare_unsigned_bytes() {
     );
     assert_eq!(out, vec!["true"]);
 }
-

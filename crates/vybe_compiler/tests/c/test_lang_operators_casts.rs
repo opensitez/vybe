@@ -1,6 +1,5 @@
 //! Operators, promotions, and casts — one rule per test.
 
-
 c_run_cases! {
     integer_promotion_in_add => { includes: ["<stdio.h>"], decls: "", body: "char a=1,b=2; printf(\"%d\\n\", a+b); return 0;", expect: ["3"] },
     usual_arithmetic_conversions => { includes: ["<stdio.h>"], decls: "", body: "int i=2; double d=2.5; printf(\"%.1f\\n\", i+d); return 0;", expect: ["4.5"] },

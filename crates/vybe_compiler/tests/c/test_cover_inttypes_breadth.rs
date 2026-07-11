@@ -1,6 +1,5 @@
 //! inttypes printf/scan macros and misc headers — one macro/API per test.
 
-
 c_compile_cases! {
     prid8_macro => { includes: ["<stdio.h>", "<inttypes.h>"], decls: "", body: "int8_t v=1; printf(\"%\" PRId8, v); return 0;" },
     prid16_macro => { includes: ["<stdio.h>", "<inttypes.h>"], decls: "", body: "int16_t v=1; printf(\"%\" PRId16, v); return 0;" },

@@ -1,6 +1,5 @@
 //! database/sql — Open, Query, Exec, Stmt, Tx, Rows breadth compile smokes.
 
-
 go_compile_cases! {
     // database/sql — package functions
     sql_open_dsn => "package main; import \"database/sql\"; func main() { _, _ = sql.Open(\"stub\", \":memory:\") }",

@@ -1,6 +1,5 @@
 //! Preprocessor macro expansion — object/function macros, stringify, paste, variadic.
 
-
 c_run_cases! {
     object_macro_integer_substitution_in_printf => {
         includes: ["<stdio.h>"],

@@ -1,6 +1,5 @@
 //! fmt.Sprintf / fmt.Print formatting verbs — distinct edit-descriptor semantics.
 
-
 go_run_cases! {
     sprintf_decimal_positive => ("package main; import \"fmt\"; func main() { fmt.Println(fmt.Sprintf(\"%d\", 42)) }", vec!["42"]),
     sprintf_decimal_negative => ("package main; import \"fmt\"; func main() { fmt.Println(fmt.Sprintf(\"%d\", -7)) }", vec!["-7"]),

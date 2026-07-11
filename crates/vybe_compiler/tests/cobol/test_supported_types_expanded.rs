@@ -9,7 +9,10 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn alphanumeric_type_compiles() {
-    compile_ok(&p("01 WS-TXT PIC X(10) VALUE \"HELLO\".", "    DISPLAY WS-TXT."));
+    compile_ok(&p(
+        "01 WS-TXT PIC X(10) VALUE \"HELLO\".",
+        "    DISPLAY WS-TXT.",
+    ));
 }
 
 #[test]
@@ -24,17 +27,26 @@ fn signed_numeric_type_compiles() {
 
 #[test]
 fn decimal_implied_type_compiles() {
-    compile_ok(&p("01 WS-AMT PIC 9(3)V99 VALUE 123.45.", "    DISPLAY WS-AMT."));
+    compile_ok(&p(
+        "01 WS-AMT PIC 9(3)V99 VALUE 123.45.",
+        "    DISPLAY WS-AMT.",
+    ));
 }
 
 #[test]
 fn binary_usage_type_compiles() {
-    compile_ok(&p("01 WS-BIN PIC 9(4) USAGE IS BINARY VALUE 7.", "    ADD 1 TO WS-BIN."));
+    compile_ok(&p(
+        "01 WS-BIN PIC 9(4) USAGE IS BINARY VALUE 7.",
+        "    ADD 1 TO WS-BIN.",
+    ));
 }
 
 #[test]
 fn comp3_usage_type_compiles() {
-    compile_ok(&p("01 WS-PACK PIC 9(5) USAGE IS COMP-3 VALUE 20.", "    ADD 5 TO WS-PACK."));
+    compile_ok(&p(
+        "01 WS-PACK PIC 9(5) USAGE IS COMP-3 VALUE 20.",
+        "    ADD 5 TO WS-PACK.",
+    ));
 }
 
 #[test]
@@ -44,12 +56,18 @@ fn pointer_usage_type_compiles() {
 
 #[test]
 fn function_pointer_usage_type_compiles() {
-    compile_ok(&p("01 WS-FPTR USAGE IS FUNCTION-POINTER.", "    DISPLAY \"FPTR\"."));
+    compile_ok(&p(
+        "01 WS-FPTR USAGE IS FUNCTION-POINTER.",
+        "    DISPLAY \"FPTR\".",
+    ));
 }
 
 #[test]
 fn procedure_pointer_usage_type_compiles() {
-    compile_ok(&p("01 WS-PPTR USAGE IS PROCEDURE-POINTER.", "    DISPLAY \"PPTR\"."));
+    compile_ok(&p(
+        "01 WS-PPTR USAGE IS PROCEDURE-POINTER.",
+        "    DISPLAY \"PPTR\".",
+    ));
 }
 
 #[test]

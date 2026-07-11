@@ -1,6 +1,5 @@
 //! Stdlib/stdio breadth batch — one API per compile smoke.
 
-
 c_compile_cases! {
     stdlib_getenv_setenv => { includes: ["<stdlib.h>"], decls: "", body: "setenv(\"VYBE_TEST\",\"1\",1); return getenv(\"VYBE_TEST\") != 0;" },
     stdlib_putenv => { includes: ["<stdlib.h>"], decls: "", body: "putenv(\"VYBE_TEST=2\"); return 0;" },

@@ -3,7 +3,6 @@
 //! Compare/Contains/Index/Trim/Join) and incidental Buffer use in `test_bufio_io.rs` /
 //! `test_io_fs_extended.rs` (io/bufio wrappers, not Buffer method semantics).
 
-
 go_run_cases! {
     new_buffer_string_seed => (
         "package main; import \"fmt\"; import \"bytes\"; func main() { b := bytes.NewBufferString(\"seed\"); fmt.Println(b.String()) }",

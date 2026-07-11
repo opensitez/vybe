@@ -1,6 +1,5 @@
 //! Nested structs, anonymous structs, and multi-level member access paths.
 
-
 c_run_cases! {
     triple_nested_dot_path => {
         includes: ["<stdio.h>"],

@@ -42,17 +42,15 @@ fn long_stream_of_three_sums() {
 
 #[test]
 fn long_stream_of_single_count() {
-    let out = run_main(
-        "long c = java.util.stream.LongStream.of(42L).count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.LongStream.of(42L).count(); System.out.println(c);");
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn long_stream_empty_count_zero() {
-    let out = run_main(
-        "long c = java.util.stream.LongStream.empty().count(); System.out.println(c);",
-    );
+    let out =
+        run_main("long c = java.util.stream.LongStream.empty().count(); System.out.println(c);");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -178,9 +176,8 @@ fn long_stream_skip_drops_prefix() {
 
 #[test]
 fn long_stream_for_each_prints() {
-    let out = run_main(
-        "java.util.stream.LongStream.of(4L, 5L).forEach(n -> System.out.println(n));",
-    );
+    let out =
+        run_main("java.util.stream.LongStream.of(4L, 5L).forEach(n -> System.out.println(n));");
     assert_eq!(out, vec!["4", "5"]);
 }
 
@@ -559,4 +556,3 @@ fn long_stream_range_empty_start_equals_end() {
     );
     assert_eq!(out, vec!["0"]);
 }
-

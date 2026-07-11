@@ -1,6 +1,5 @@
 //! Explicit cast expressions that change representation or observable values.
 
-
 c_run_cases! {
     int_ninety_seven_to_char_prints_a => {
         includes: ["<stdio.h>"],

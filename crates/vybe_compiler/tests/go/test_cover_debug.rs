@@ -1,6 +1,5 @@
 //! debug/* binary formats — one API per test.
 
-
 go_compile_cases! {
     debug_buildinfo_read => "package main; import \"runtime/debug\"; func main() { _, _ = debug.ReadBuildInfo() }",
     debug_buildinfo_module_version => "package main; import \"runtime/debug\"; func main() { info, _ := debug.ReadBuildInfo(); if info != nil { _ = info.Main.Version } }",

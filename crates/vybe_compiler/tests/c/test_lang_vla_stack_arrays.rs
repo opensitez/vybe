@@ -1,6 +1,5 @@
 //! VLA stack arrays — sizeof, initialization, function passing (distinct from test_vla.rs).
 
-
 c_run_cases! {
     vla_sizeof_matches_element_count_times_int => {
         includes: ["<stdio.h>"],

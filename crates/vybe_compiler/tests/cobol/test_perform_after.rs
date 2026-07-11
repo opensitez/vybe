@@ -21,14 +21,7 @@ fn test_perform_varying_after() {
     END-PERFORM.
 "#,
     ));
-    assert_eq!(output, vec![
-        "1 1",
-        "1 2",
-        "1 3",
-        "2 1",
-        "2 2",
-        "2 3"
-    ]);
+    assert_eq!(output, vec!["1 1", "1 2", "1 3", "2 1", "2 2", "2 3"]);
 }
 
 #[test]

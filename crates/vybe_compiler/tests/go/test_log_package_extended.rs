@@ -2,7 +2,6 @@
 //! Output with custom writer via bytes.Buffer — extended coverage distinct
 //! from `test_log_flag_packages.rs`.
 
-
 go_run_cases! {
     log_print_to_custom_buffer => (
         "package main; import \"fmt\"; import \"log\"; import \"bytes\"; func main() { var buf bytes.Buffer; log.SetOutput(&buf); log.SetFlags(0); log.Print(\"buf\"); fmt.Println(buf.String()) }",

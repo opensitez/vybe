@@ -1,6 +1,5 @@
 //! os process environment: Getpid, Args, Environ, Getenv helpers, Stat/Lstat, MkdirTemp, UserHomeDir.
 
-
 go_run_cases! {
     os_getpid_positive => (
         "package main; import \"fmt\"; import \"os\"; func main() { fmt.Println(os.Getpid() > 0) }",

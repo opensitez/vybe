@@ -1,6 +1,5 @@
 //! Defer LIFO stack — print order, named returns, loop capture, return/panic interaction.
 
-
 go_run_cases! {
     defer_two_prints_reverse_order => ("package main; import \"fmt\"; func main() { defer fmt.Println(\"first\"); defer fmt.Println(\"second\"); }", vec!["second", "first"]),
     defer_three_prints_lifo => ("package main; import \"fmt\"; func main() { defer fmt.Println(1); defer fmt.Println(2); defer fmt.Println(3); }", vec!["3", "2", "1"]),

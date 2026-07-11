@@ -72,36 +72,58 @@ pub fn run_prints(src: &str) -> Vec<String> {
         Err(e) => panic!("compile failed: {}", e),
     };
     let mut vm = VM::new();
+    // Raw stdout fragments in call order. libc output reaches the harness on
+    // two surfaces:
+    // - `wasi:io/streams.[method]output-stream.blocking-write-and-flush` —
+    //   the byte-faithful libc stdout path (`intrinsic:write_stdout`); text
+    //   is the second arg, newlines are the program's own.
+    // - `wasi:logging/logging.log` — line-oriented; one record per call,
+    //   newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
+    let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-            let joined = s.join(" ");
-            // C printf embeds \n in the format string; split so each line
-            // becomes a separate captured entry matching test expectations.
-            let mut guard = out.lock().unwrap();
-            let parts: Vec<&str> = joined.split('\n').collect();
-            // Strip the trailing empty string only when it is an artifact of a
-            // trailing newline (i.e., the joined string ends with '\n').
-            // Preserve empty strings that are actual content (e.g. puts("") → "").
-            let end = if joined.ends_with('\n') {
-                parts.len().saturating_sub(1)
-            } else {
-                parts.len()
-            };
-            for line in &parts[..end] {
-                guard.push(line.to_string());
+            let mut joined = s.join(" ");
+            joined.push('\n');
+            out.lock().unwrap().push(joined);
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(text) = args.get(1) {
+                let s = format!("{}", text);
+                if !s.is_empty() {
+                    out.lock().unwrap().push(s);
+                }
             }
             Value::Null
         }),
     );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("run failed");
-    output.lock().unwrap().clone()
+    // Concatenate fragments and split into lines so each printf line becomes
+    // one captured entry. Strip only the final empty artifact of a trailing
+    // newline — interior empties are real content (`puts("")` → "").
+    let joined: String = output.lock().unwrap().concat();
+    if joined.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = joined
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if joined.ends_with('\n') {
+        lines.pop();
+    }
+    lines
 }
 
 pub fn assert_outputs(src: &str, expected: &[&str]) {

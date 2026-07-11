@@ -1,0 +1,6 @@
+namespace  Dir -> wasi:filesystem
+namespace  File -> wasi:filesystem
+namespace  IO -> wasi:cli
+namespace  JSON -> ecma:json
+namespace  Kernel -> vybe:runtime
+namespace  Math -> ecma:math

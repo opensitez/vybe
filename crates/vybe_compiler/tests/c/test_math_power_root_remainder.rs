@@ -1,6 +1,5 @@
 //! Runtime checks for C math.h power, root, and remainder functions.
 
-
 c_run_cases! {
     sqrt_twenty_five => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", sqrt(25.0)); return 0;", expect: ["5.0"] },
     sqrt_thirty_six => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%.1f\\n\", sqrt(36.0)); return 0;", expect: ["6.0"] },

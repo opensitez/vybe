@@ -1,6 +1,5 @@
 //! Function types, prototypes, and varargs — one rule per test.
 
-
 c_run_cases! {
     prototype_before_definition => {
         includes: ["<stdio.h>"],

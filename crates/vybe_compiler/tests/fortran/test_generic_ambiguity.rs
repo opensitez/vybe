@@ -1,6 +1,15 @@
 use super::helpers::compile_ok;
-macro_rules! c { ($n:ident,$s:expr)=>{ #[test] fn $n(){ compile_ok($s); } }; }
-c!(generic_ambiguity_01,"module m
+macro_rules! c {
+    ($n:ident,$s:expr) => {
+        #[test]
+        fn $n() {
+            compile_ok($s);
+        }
+    };
+}
+c!(
+    generic_ambiguity_01,
+    "module m
 interface g
 module procedure si,sr
 end interface
@@ -12,8 +21,11 @@ subroutine sr(r)
 real::r
 end
 end module m
-");
-c!(generic_ambiguity_02,"module m
+"
+);
+c!(
+    generic_ambiguity_02,
+    "module m
 interface g
 module procedure s1,s2
 end interface
@@ -25,8 +37,11 @@ subroutine s2(j)
 integer::j
 end
 end module m
-");
-c!(generic_ambiguity_03,"module m
+"
+);
+c!(
+    generic_ambiguity_03,
+    "module m
 interface g
 module procedure s1,s2,s3
 end interface
@@ -41,8 +56,11 @@ subroutine s3(c)
 complex::c
 end
 end module m
-");
-c!(generic_ambiguity_04,"module m
+"
+);
+c!(
+    generic_ambiguity_04,
+    "module m
 interface operator(+)
 module procedure addi,addr
 end interface
@@ -56,8 +74,11 @@ real::a,b
 addr=a+b
 end
 end module m
-");
-c!(generic_ambiguity_05,"module m
+"
+);
+c!(
+    generic_ambiguity_05,
+    "module m
 interface assignment(=)
 module procedure asgi,asgr
 end interface
@@ -71,8 +92,11 @@ real::a,b
 a=b
 end
 end module m
-");
-c!(generic_ambiguity_06,"module m
+"
+);
+c!(
+    generic_ambiguity_06,
+    "module m
 interface g
 module procedure s1
 end interface
@@ -85,8 +109,11 @@ program p
 use m
 call g(1)
 end program p
-");
-c!(generic_ambiguity_07,"module m
+"
+);
+c!(
+    generic_ambiguity_07,
+    "module m
 interface g
 module procedure s1
 end interface
@@ -99,8 +126,11 @@ program p
 use m
 call g(1.0)
 end program p
-");
-c!(generic_ambiguity_08,"module m
+"
+);
+c!(
+    generic_ambiguity_08,
+    "module m
 interface g
 module procedure s1,s2
 end interface
@@ -117,8 +147,11 @@ use m
 call g(1)
 call g(1.0)
 end program p
-");
-c!(generic_ambiguity_09,"module m
+"
+);
+c!(
+    generic_ambiguity_09,
+    "module m
 interface operator(-)
 module procedure subi,subr
 end interface
@@ -132,8 +165,11 @@ real::a,b
 subr=a-b
 end
 end module m
-");
-c!(generic_ambiguity_10,"module m
+"
+);
+c!(
+    generic_ambiguity_10,
+    "module m
 interface g
 module procedure s1,s2
 end interface
@@ -145,4 +181,5 @@ subroutine s2(l)
 logical::l
 end
 end module m
-");
+"
+);

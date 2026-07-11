@@ -1,6 +1,5 @@
 //! crypto/* beyond hash — one compile smoke per distinct API.
 
-
 go_compile_cases! {
     aes_new_cipher => "package main; import \"crypto/aes\"; func main() { _, _ = aes.NewCipher(make([]byte, 16)) }",
     cipher_new_cfb_encrypter => "package main; import \"crypto/aes\"; import \"crypto/cipher\"; func main() { b, _ := aes.NewCipher(make([]byte, 16)); _ = cipher.NewCFBEncrypter(b, make([]byte, 16)) }",

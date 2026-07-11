@@ -1,6 +1,5 @@
 //! strtok, strspn, strcspn, strpbrk, strstr — tokens, spans, and search offsets.
 
-
 c_run_cases! {
     strtok_splits_colon_delimited => { includes: ["<stdio.h>", "<string.h>"], decls: "char s[] = \"one:two:three\";", body: "char *tok=strtok(s, \":\"); printf(\"%s\\n\", tok); tok=strtok(NULL, \":\"); printf(\"%s\\n\", tok); tok=strtok(NULL, \":\"); printf(\"%s\\n\", tok); return 0;", expect: ["one", "two", "three"] },
     strtok_single_token_no_delim => { includes: ["<stdio.h>", "<string.h>"], decls: "char s[] = \"solo\";", body: "printf(\"%s\\n\", strtok(s, \",\")); return 0;", expect: ["solo"] },

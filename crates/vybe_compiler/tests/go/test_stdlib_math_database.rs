@@ -1,6 +1,5 @@
 //! math/big and math/cmplx — one smoke per distinct API.
 
-
 go_run_cases! {
     big_int_add => ("package main; import \"fmt\"; import \"math/big\"; func main() { a := big.NewInt(10); b := big.NewInt(7); fmt.Println(a.Add(a, b).String()) }", vec!["17"]),
     cmplx_sqrt_neg_one => ("package main; import \"fmt\"; import \"math/cmplx\"; func main() { z := cmplx.Sqrt(-1); fmt.Println(cmplx.Imag(z) > 0) }", vec!["true"]),

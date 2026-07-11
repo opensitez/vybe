@@ -1,6 +1,5 @@
 //! Logical && and || — short-circuit evaluation with observable side effects.
 
-
 c_run_cases! {
     and_skips_rhs_when_lhs_false => { includes: ["<stdio.h>"], decls: "int side=0;", body: "if(0 && (side=1)){} printf(\"%d\\n\", side); return 0;", expect: ["0"] },
     and_evaluates_rhs_when_lhs_true => { includes: ["<stdio.h>"], decls: "int side=0;", body: "if(1 && (side=1)){} printf(\"%d\\n\", side); return 0;", expect: ["1"] },

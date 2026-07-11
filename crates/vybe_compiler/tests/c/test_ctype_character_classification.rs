@@ -1,6 +1,5 @@
 //! ctype.h is* — distinct probe characters per classification function.
 
-
 c_run_cases! {
     isalpha_on_m_accept => { includes: ["<stdio.h>", "<ctype.h>"], decls: "", body: "printf(\"%d\\n\", isalpha('m')!=0); return 0;", expect: ["1"] },
     isalpha_on_4_reject => { includes: ["<stdio.h>", "<ctype.h>"], decls: "", body: "printf(\"%d\\n\", isalpha('4')!=0); return 0;", expect: ["0"] },

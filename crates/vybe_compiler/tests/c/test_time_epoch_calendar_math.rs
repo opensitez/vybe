@@ -1,6 +1,5 @@
 //! Epoch and calendar arithmetic — difftime, mktime normalization, time_t ordering.
 
-
 c_run_cases! {
     difftime_later_minus_earlier_positive => {
         includes: ["<stdio.h>", "<time.h>"],

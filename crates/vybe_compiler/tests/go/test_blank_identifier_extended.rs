@@ -3,7 +3,6 @@
 //! anonymous struct fields.
 //! Distinct from `test_init_blank_import.rs` and `test_declarations_patterns.rs`.
 
-
 go_run_cases! {
     blank_import_side_effect_with_local_init => (
         "package main; import \"fmt\"; import _ \"strings\"; var ready int; func init() { ready = 1 }; func main() { fmt.Println(ready) }",

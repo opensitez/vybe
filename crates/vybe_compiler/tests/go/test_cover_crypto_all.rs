@@ -1,7 +1,6 @@
 //! crypto/aes, des, rc4, cipher, hmac, ed25519, rsa, ecdsa, elliptic, x509, tls
 //! - one distinct API per compile smoke (breadth over depth).
 
-
 go_compile_cases! {
     // crypto/aes
     aes_new_cipher => "package main; import \"crypto/aes\"; func main() { _, _ = aes.NewCipher(make([]byte, 16)) }",

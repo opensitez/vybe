@@ -1,7 +1,6 @@
 //! Advanced `select` patterns: default branches, multi-case readiness, nil and closed
 //! channels, and send-side cases — distinct from `test_channel_select_patterns_extra.rs`.
 
-
 go_run_cases! {
     select_default_when_nil_receive_blocked =>
         ("package main; import \"fmt\"; func main() { var ch chan int; select { case <-ch: fmt.Println(\"recv\"); default: fmt.Println(\"default\") } }", vec!["default"]),

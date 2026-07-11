@@ -1,6 +1,5 @@
 //! Panic and recover rules — defer-only recover, nil returns, nested defers, re-panic compile.
 
-
 go_run_cases! {
     recover_outside_defer_is_always_nil => ("package main; import \"fmt\"; func main() { fmt.Println(recover() == nil); fmt.Println(recover() == nil) }", vec!["true", "true"]),
     recover_in_plain_func_after_no_panic => ("package main; import \"fmt\"; func probe() { fmt.Println(recover() == nil) }; func main() { probe() }", vec!["true"]),

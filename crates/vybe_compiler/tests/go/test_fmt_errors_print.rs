@@ -2,7 +2,6 @@
 //! `test_fmt_sprintf_verbs.rs` (Sprintf format verbs) and `test_errors_package.rs`
 //! (errors.Is / As / Unwrap chains).
 
-
 go_run_cases! {
     // Errorf — formatted error strings (not error-chain semantics)
     errorf_static_message => (

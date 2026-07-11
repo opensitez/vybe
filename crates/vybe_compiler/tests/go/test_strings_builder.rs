@@ -1,6 +1,5 @@
 //! strings.Builder, Reader, Replacer, Compare, EqualFold, Map, Repeat.
 
-
 go_run_cases! {
     builder_write_string => (
         "package main; import \"fmt\"; import \"strings\"; func main() { var b strings.Builder; b.WriteString(\"go\"); fmt.Println(b.String()) }",

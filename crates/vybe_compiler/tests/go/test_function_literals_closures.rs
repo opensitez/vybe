@@ -2,7 +2,6 @@
 //! http.HandlerFunc, recursive var bindings. Distinct from `test_closures.rs`
 //! (basic closure forms) and `test_higher_order_functions.rs` (HOF patterns).
 
-
 go_run_cases! {
     literal_capture_outer_int_increment =>
         ("package main; import \"fmt\"; func main() { n := 0; inc := func() { n++ }; inc(); inc(); fmt.Println(n) }", vec!["2"]),

@@ -1,6 +1,5 @@
 //! Higher-order functions: functions as values, returning closures, callbacks.
 
-
 go_run_cases! {
     function_value_stored_and_called => ("package main; import \"fmt\"; func main() { var f func(int) int = func(x int) int { return x + 1 }; fmt.Println(f(4)) }", vec!["5"]),
     function_returns_closure => ("package main; import \"fmt\"; func adder(base int) func(int) int { return func(x int) int { return base + x } }; func main() { inc := adder(10); fmt.Println(inc(3)) }", vec!["13"]),

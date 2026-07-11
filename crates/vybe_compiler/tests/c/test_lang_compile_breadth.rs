@@ -1,6 +1,5 @@
 //! Language compile breadth batch 2 — one syntax/semantic shape per test.
 
-
 c_compile_cases! {
     lang_for_decl_in_init => { includes: ["<stdio.h>"], decls: "", body: "for(int i=0;i<1;i++){} return 0;" },
     lang_while_break => { includes: ["<stdio.h>"], decls: "", body: "while(0){break;} return 0;" },

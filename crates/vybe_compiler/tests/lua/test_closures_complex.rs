@@ -67,7 +67,7 @@ print(f()())",
 local function get_x() return x end
 local _ENV = {x = 10, get_x = get_x}
 print(get_x())",
-        "1" 
+        "1"
     },
     test_closures_vararg_capture => {
         "local function capture_varargs(...)

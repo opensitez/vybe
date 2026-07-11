@@ -1,6 +1,5 @@
 //! container/list and container/ring compile coverage.
 
-
 go_run_cases! {
     list_push_back_len => ("package main; import \"fmt\"; import \"container/list\"; func main() { l := list.New(); l.PushBack(1); l.PushBack(2); fmt.Println(l.Len()) }", vec!["2"]),
     list_front_back => ("package main; import \"fmt\"; import \"container/list\"; func main() { l := list.New(); l.PushFront(\"a\"); l.PushBack(\"b\"); fmt.Println(l.Front().Value, l.Back().Value) }", vec!["a b"]),

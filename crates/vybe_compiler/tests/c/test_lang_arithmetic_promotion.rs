@@ -1,6 +1,5 @@
 //! Usual arithmetic conversions — mixed signed/unsigned, char promoted to int.
 
-
 c_run_cases! {
     char_plus_char_promotes_to_int => { includes: ["<stdio.h>"], decls: "", body: "char a='1', b='2'; printf(\"%d\\n\", a+b); return 0;", expect: ["99"] },
     char_minus_char_promotes_to_int => { includes: ["<stdio.h>"], decls: "", body: "char a='d', b='a'; printf(\"%d\\n\", a-b); return 0;", expect: ["3"] },

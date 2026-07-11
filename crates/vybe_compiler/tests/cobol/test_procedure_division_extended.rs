@@ -34,15 +34,24 @@ fn procedure_division_display_statement_compiles() {
 
 #[test]
 fn procedure_division_move_statement_compiles() {
-    compile_ok(&p("01 WS-A PIC X(3) VALUE \"ABC\".\n01 WS-B PIC X(3).", "    MOVE WS-A TO WS-B."));
+    compile_ok(&p(
+        "01 WS-A PIC X(3) VALUE \"ABC\".\n01 WS-B PIC X(3).",
+        "    MOVE WS-A TO WS-B.",
+    ));
 }
 
 #[test]
 fn procedure_division_if_statement_compiles() {
-    compile_ok(&p("01 WS-A PIC 9(3) VALUE 3.", "    IF WS-A > 0 DISPLAY \"POS\" END-IF."));
+    compile_ok(&p(
+        "01 WS-A PIC 9(3) VALUE 3.",
+        "    IF WS-A > 0 DISPLAY \"POS\" END-IF.",
+    ));
 }
 
 #[test]
 fn procedure_division_perform_statement_compiles() {
-    compile_ok(&p("", "    PERFORM 2 TIMES\n        DISPLAY \"X\"\n    END-PERFORM."));
+    compile_ok(&p(
+        "",
+        "    PERFORM 2 TIMES\n        DISPLAY \"X\"\n    END-PERFORM.",
+    ));
 }

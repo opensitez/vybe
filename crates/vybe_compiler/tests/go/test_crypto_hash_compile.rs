@@ -1,6 +1,5 @@
 //! crypto/sha256 and hash interfaces — compile coverage for hashing stdlib.
 
-
 go_run_cases! {
     sha256_sum_empty => ("package main; import \"fmt\"; import \"crypto/sha256\"; func main() { sum := sha256.Sum256([]byte{}); fmt.Println(len(sum)) }", vec!["32"]),
     sha256_sum_abc => ("package main; import \"fmt\"; import \"crypto/sha256\"; func main() { sum := sha256.Sum256([]byte(\"abc\")); fmt.Println(int(sum[0])) }", vec!["186"]),

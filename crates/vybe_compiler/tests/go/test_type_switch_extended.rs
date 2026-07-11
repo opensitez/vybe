@@ -1,6 +1,5 @@
 //! Type switch semantics — single/multi cases, nil interface, struct vs pointer, assertions in body.
 
-
 go_run_cases! {
     type_switch_single_int_case_only => ("package main; import \"fmt\"; func tag(v interface{}) { switch v.(type) { case int: fmt.Println(\"int\") } }; func main() { tag(7) }", vec!["int"]),
     type_switch_multi_numeric_one_case => ("package main; import \"fmt\"; func tag(v interface{}) { switch v.(type) { case int, int32, int64: fmt.Println(\"num\") default: fmt.Println(\"other\") } }; func main() { tag(int32(3)) }", vec!["num"]),

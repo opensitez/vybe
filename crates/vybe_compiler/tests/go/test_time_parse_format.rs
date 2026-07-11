@@ -2,7 +2,6 @@
 //! layout and duration semantics distinct from `test_time_package.rs` (RFC3339,
 //! Unix epoch, Sleep/Tick/After compile smoke).
 
-
 go_run_cases! {
     // ParseDuration — units, composites, signs, fractions
     time_parse_duration_one_hour => (

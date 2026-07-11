@@ -1,7 +1,6 @@
 //! Raw string literals (`"""`), interpolation (`$"""`), and multiline forms.
 //! GAP: raw-string coverage is thin beyond a single verbatim/raw smoke test.
 
-
 csharp_cases! {
     raw_string_basic_content_without_escapes => {
         r####"string text="""hello"""; Console.WriteLine(text);"####,

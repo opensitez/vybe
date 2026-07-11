@@ -1,6 +1,5 @@
 //! Interface, embedding, and method-set language rules — one rule per test.
 
-
 go_run_cases! {
     interface_satisfied_by_value => ("package main; import \"fmt\"; type I interface { M() int }; type T int; func (t T) M() int { return int(t) }; func main() { var i I = T(3); fmt.Println(i.M()) }", vec!["3"]),
     interface_satisfied_by_pointer => ("package main; import \"fmt\"; type I interface { M() int }; type T int; func (t *T) M() int { return int(*t) }; func main() { var i I = (*T)(nil); fmt.Println(i == nil) }", vec!["true"]),

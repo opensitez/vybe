@@ -2,7 +2,6 @@
 //! `Total*` properties, and `CompareTo` ordering.
 //! GAP: arithmetic-focused coverage beyond datetime/timespan smoke tests.
 
-
 csharp_cases! {
     timespan_from_days_sets_days_component => {
         r#"var span=System.TimeSpan.FromDays(3); Console.WriteLine(span.Days);"#,

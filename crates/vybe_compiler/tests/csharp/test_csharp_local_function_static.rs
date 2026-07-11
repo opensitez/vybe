@@ -1,7 +1,6 @@
 //! Local functions, `static` local functions, and outer-variable capture.
 //! GAP: static-local and capture semantics need broader structural coverage.
 
-
 csharp_cases! {
     local_function_basic_call_returns_square => {
         r#"int Square(int n){int Sq(int x)=>x*x; return Sq(n);} Console.WriteLine(Square(4));"#,

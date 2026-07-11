@@ -7,37 +7,157 @@ macro_rules! cobol_test {
             let out = crate::helpers::run_prints($src);
             assert_eq!(out, $expected);
         }
-    }
+    };
 }
 
 // 30 specific tests for DATA DIVISION RENAMES
-cobol_test!(test_renames_basic, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R RENAMES A. PROCEDURE DIVISION. DISPLAY R. STOP RUN.", vec!["1"]);
-cobol_test!(test_renames_thru, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 05 C PIC X VALUE '3'. 66 R RENAMES A THRU B. PROCEDURE DIVISION. DISPLAY R. STOP RUN.", vec!["12"]);
-cobol_test!(test_renames_nested, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 G1. 10 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R RENAMES G1. PROCEDURE DIVISION. DISPLAY R. STOP RUN.", vec!["1"]);
-cobol_test!(test_renames_multiple, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R1 RENAMES A. 66 R2 RENAMES B. PROCEDURE DIVISION. DISPLAY R1 R2. STOP RUN.", vec!["12"]);
-cobol_test!(test_renames_overlapping, "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 05 C PIC X VALUE '3'. 66 R1 RENAMES A THRU B. 66 R2 RENAMES B THRU C. PROCEDURE DIVISION. DISPLAY R1 R2. STOP RUN.", vec!["1223"]);
-cobol_test!(test_renames_parse_6, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_7, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_8, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_9, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_10, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_11, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_12, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_13, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_14, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_15, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_16, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_17, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_18, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_19, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_20, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_21, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_22, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_23, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_24, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_25, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_26, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_27, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_28, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_29, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
-cobol_test!(test_renames_parse_30, "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.", vec!["OK"]);
+cobol_test!(
+    test_renames_basic,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R RENAMES A. PROCEDURE DIVISION. DISPLAY R. STOP RUN.",
+    vec!["1"]
+);
+cobol_test!(
+    test_renames_thru,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 05 C PIC X VALUE '3'. 66 R RENAMES A THRU B. PROCEDURE DIVISION. DISPLAY R. STOP RUN.",
+    vec!["12"]
+);
+cobol_test!(
+    test_renames_nested,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 G1. 10 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R RENAMES G1. PROCEDURE DIVISION. DISPLAY R. STOP RUN.",
+    vec!["1"]
+);
+cobol_test!(
+    test_renames_multiple,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 66 R1 RENAMES A. 66 R2 RENAMES B. PROCEDURE DIVISION. DISPLAY R1 R2. STOP RUN.",
+    vec!["12"]
+);
+cobol_test!(
+    test_renames_overlapping,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 G. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 05 C PIC X VALUE '3'. 66 R1 RENAMES A THRU B. 66 R2 RENAMES B THRU C. PROCEDURE DIVISION. DISPLAY R1 R2. STOP RUN.",
+    vec!["1223"]
+);
+cobol_test!(
+    test_renames_parse_6,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_7,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_8,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_9,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_10,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_11,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_12,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_13,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_14,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_15,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_16,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_17,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_18,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_19,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_20,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_21,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_22,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_23,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_24,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_25,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_26,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_27,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_28,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_29,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);
+cobol_test!(
+    test_renames_parse_30,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
+    vec!["OK"]
+);

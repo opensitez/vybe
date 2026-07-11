@@ -59,67 +59,85 @@ fn class_is_instance_false_for_null_reference() {
 
 #[test]
 fn class_is_instance_true_for_boxed_integer() {
-    let out = run_main(r#"Object o = Integer.valueOf(10); System.out.println(Integer.class.isInstance(o));"#);
+    let out = run_main(
+        r#"Object o = Integer.valueOf(10); System.out.println(Integer.class.isInstance(o));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_true_integer_for_number_supertype() {
-    let out = run_main(r#"Object o = Integer.valueOf(10); System.out.println(Number.class.isInstance(o));"#);
+    let out = run_main(
+        r#"Object o = Integer.valueOf(10); System.out.println(Number.class.isInstance(o));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_array_type_for_int_array() {
-    let out = run_main(r#"int[] arr = new int[3]; System.out.println(int[].class.isInstance(arr));"#);
+    let out =
+        run_main(r#"int[] arr = new int[3]; System.out.println(int[].class.isInstance(arr));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_array_false_for_wrong_type() {
-    let out = run_main(r#"int[] arr = new int[3]; System.out.println(String[].class.isInstance(arr));"#);
+    let out =
+        run_main(r#"int[] arr = new int[3]; System.out.println(String[].class.isInstance(arr));"#);
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn class_is_instance_object_class_accepts_any_nonnull() {
-    let out = run_main(r#"Object o = new Object(); System.out.println(Object.class.isInstance(o));"#);
+    let out =
+        run_main(r#"Object o = new Object(); System.out.println(Object.class.isInstance(o));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_list_for_arraylist() {
-    let out = run_main(r#"java.util.ArrayList<String> list = new java.util.ArrayList<String>(); System.out.println(java.util.List.class.isInstance(list));"#);
+    let out = run_main(
+        r#"java.util.ArrayList<String> list = new java.util.ArrayList<String>(); System.out.println(java.util.List.class.isInstance(list));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_arraylist_false_for_linked_list() {
-    let out = run_main(r#"java.util.LinkedList<String> list = new java.util.LinkedList<String>(); System.out.println(java.util.ArrayList.class.isInstance(list));"#);
+    let out = run_main(
+        r#"java.util.LinkedList<String> list = new java.util.LinkedList<String>(); System.out.println(java.util.ArrayList.class.isInstance(list));"#,
+    );
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn class_is_instance_string_builder_instance() {
-    let out = run_main(r#"StringBuilder sb = new StringBuilder(); System.out.println(StringBuilder.class.isInstance(sb));"#);
+    let out = run_main(
+        r#"StringBuilder sb = new StringBuilder(); System.out.println(StringBuilder.class.isInstance(sb));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_string_builder_false_for_string() {
-    let out = run_main(r#"String s = "text"; System.out.println(StringBuilder.class.isInstance(s));"#);
+    let out =
+        run_main(r#"String s = "text"; System.out.println(StringBuilder.class.isInstance(s));"#);
     assert_eq!(out, vec!["false"]);
 }
 
 #[test]
 fn class_is_instance_exception_for_runtime_exception() {
-    let out = run_main(r#"RuntimeException e = new RuntimeException(); System.out.println(Exception.class.isInstance(e));"#);
+    let out = run_main(
+        r#"RuntimeException e = new RuntimeException(); System.out.println(Exception.class.isInstance(e));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_throwable_for_error() {
-    let out = run_main(r#"OutOfMemoryError e = new OutOfMemoryError(); System.out.println(Throwable.class.isInstance(e));"#);
+    let out = run_main(
+        r#"OutOfMemoryError e = new OutOfMemoryError(); System.out.println(Throwable.class.isInstance(e));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -179,43 +197,56 @@ fn class_is_instance_deep_hierarchy_not_reverse() {
 
 #[test]
 fn class_is_instance_autoboxed_boolean() {
-    let out = run_main(r#"Object o = Boolean.TRUE; System.out.println(Boolean.class.isInstance(o));"#);
+    let out =
+        run_main(r#"Object o = Boolean.TRUE; System.out.println(Boolean.class.isInstance(o));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_autoboxed_character() {
-    let out = run_main(r#"Object o = Character.valueOf('Z'); System.out.println(Character.class.isInstance(o));"#);
+    let out = run_main(
+        r#"Object o = Character.valueOf('Z'); System.out.println(Character.class.isInstance(o));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_map_for_hashmap() {
-    let out = run_main(r#"java.util.HashMap<String, Integer> m = new java.util.HashMap<String, Integer>(); System.out.println(java.util.Map.class.isInstance(m));"#);
+    let out = run_main(
+        r#"java.util.HashMap<String, Integer> m = new java.util.HashMap<String, Integer>(); System.out.println(java.util.Map.class.isInstance(m));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_set_for_hashset() {
-    let out = run_main(r#"java.util.HashSet<Integer> s = new java.util.HashSet<Integer>(); System.out.println(java.util.Set.class.isInstance(s));"#);
+    let out = run_main(
+        r#"java.util.HashSet<Integer> s = new java.util.HashSet<Integer>(); System.out.println(java.util.Set.class.isInstance(s));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_collection_for_vector() {
-    let out = run_main(r#"java.util.Vector<Integer> v = new java.util.Vector<Integer>(); System.out.println(java.util.Collection.class.isInstance(v));"#);
+    let out = run_main(
+        r#"java.util.Vector<Integer> v = new java.util.Vector<Integer>(); System.out.println(java.util.Collection.class.isInstance(v));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_serializable_for_string() {
-    let out = run_main(r#"String s = "ser"; System.out.println(java.io.Serializable.class.isInstance(s));"#);
+    let out = run_main(
+        r#"String s = "ser"; System.out.println(java.io.Serializable.class.isInstance(s));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_cloneable_for_arraylist() {
-    let out = run_main(r#"java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); System.out.println(Cloneable.class.isInstance(list));"#);
+    let out = run_main(
+        r#"java.util.ArrayList<Integer> list = new java.util.ArrayList<Integer>(); System.out.println(Cloneable.class.isInstance(list));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
@@ -227,30 +258,39 @@ fn class_is_instance_class_object_itself() {
 
 #[test]
 fn class_is_instance_used_in_conditional_branch() {
-    let out = run_main(r#"Object o = "data"; if (String.class.isInstance(o)) { System.out.println("str"); } else { System.out.println("other"); }"#);
+    let out = run_main(
+        r#"Object o = "data"; if (String.class.isInstance(o)) { System.out.println("str"); } else { System.out.println("other"); }"#,
+    );
     assert_eq!(out, vec!["str"]);
 }
 
 #[test]
 fn class_is_instance_used_in_conditional_else_branch() {
-    let out = run_main(r#"Object o = 42; if (String.class.isInstance(o)) { System.out.println("str"); } else { System.out.println("other"); }"#);
+    let out = run_main(
+        r#"Object o = 42; if (String.class.isInstance(o)) { System.out.println("str"); } else { System.out.println("other"); }"#,
+    );
     assert_eq!(out, vec!["other"]);
 }
 
 #[test]
 fn class_is_instance_double_wrapper() {
-    let out = run_main(r#"Object o = Double.valueOf(3.14); System.out.println(Double.class.isInstance(o));"#);
+    let out = run_main(
+        r#"Object o = Double.valueOf(3.14); System.out.println(Double.class.isInstance(o));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_long_wrapper() {
-    let out = run_main(r#"Object o = Long.valueOf(100L); System.out.println(Long.class.isInstance(o));"#);
+    let out =
+        run_main(r#"Object o = Long.valueOf(100L); System.out.println(Long.class.isInstance(o));"#);
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn class_is_instance_byte_array_primitive() {
-    let out = run_main(r#"byte[] data = new byte[4]; System.out.println(byte[].class.isInstance(data));"#);
+    let out = run_main(
+        r#"byte[] data = new byte[4]; System.out.println(byte[].class.isInstance(data));"#,
+    );
     assert_eq!(out, vec!["true"]);
 }

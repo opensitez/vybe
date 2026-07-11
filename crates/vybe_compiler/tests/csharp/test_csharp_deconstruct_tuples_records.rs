@@ -1,6 +1,5 @@
 //! Deconstruction: tuples, positional records, custom Deconstruct methods, var (x,y)= syntax.
 
-
 csharp_cases! {
     tuple_deconstruct_two => {
         r#"var (a,b)=(1,2); Console.WriteLine(a+b);"#,

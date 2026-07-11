@@ -2,7 +2,6 @@
 //! Encoder indent, decoder token loop, omitempty — distinct from compile-only smokes
 //! in `test_cover_encoding_extra.rs` and `test_stdlib_encoding_misc.rs`.
 
-
 go_run_cases! {
     xml_marshal_int_field_element => (
         "package main; import \"fmt\"; import \"encoding/xml\"; type T struct { N int `xml:\"n\"` }; func main() { b, _ := xml.Marshal(T{N: 7}); fmt.Println(string(b)) }",

@@ -1,7 +1,6 @@
 //! `ref readonly` returns, `readonly ref struct` rules, and `Memory<T>` via print.
 //! GAP: memory/ref-readonly coverage is thin in the existing suite.
 
-
 csharp_cases! {
     ref_readonly_return_reads_array_element_without_copy => {
         r#"int[] data={10,20,30}; ref readonly int Peek(int i)=>ref data[i]; Console.WriteLine(Peek(1));"#,

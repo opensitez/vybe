@@ -1,6 +1,5 @@
 //! Integer literal lexical forms: bases, suffixes, leading zeros.
 
-
 c_run_cases! {
     decimal_zero => {
         includes: ["<stdio.h>"],

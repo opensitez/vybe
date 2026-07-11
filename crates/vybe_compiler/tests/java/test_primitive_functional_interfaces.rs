@@ -34,9 +34,8 @@ fn int_predicate_negate() {
 
 #[test]
 fn int_consumer_accepts_and_prints() {
-    let out = run_main(
-        "java.util.function.IntConsumer c = n -> System.out.println(n); c.accept(9);",
-    );
+    let out =
+        run_main("java.util.function.IntConsumer c = n -> System.out.println(n); c.accept(9);");
     assert_eq!(out, vec!["9"]);
 }
 
@@ -106,9 +105,8 @@ fn int_unary_operator_compose() {
 
 #[test]
 fn int_supplier_constant() {
-    let out = run_main(
-        "java.util.function.IntSupplier s = () -> 42; System.out.println(s.getAsInt());",
-    );
+    let out =
+        run_main("java.util.function.IntSupplier s = () -> 42; System.out.println(s.getAsInt());");
     assert_eq!(out, vec!["42"]);
 }
 
@@ -319,4 +317,3 @@ fn to_double_function_parse() {
     );
     assert_eq!(out, vec!["3"]);
 }
-

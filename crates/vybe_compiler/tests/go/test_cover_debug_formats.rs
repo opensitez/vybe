@@ -1,6 +1,5 @@
 //! debug/buildinfo, debug/dwarf, debug/elf, debug/macho, debug/pe, debug/plan9obj, debug/gosym — breadth-only, one API per test.
 
-
 go_compile_cases! {
     buildinfo_read => "package main; import \"debug/buildinfo\"; import \"bytes\"; func main() { _, _ = buildinfo.Read(bytes.NewReader(nil)) }",
     buildinfo_read_file => "package main; import \"debug/buildinfo\"; func main() { _, _ = buildinfo.ReadFile(\"/dev/null\") }",

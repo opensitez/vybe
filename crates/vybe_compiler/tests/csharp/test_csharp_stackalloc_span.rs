@@ -1,7 +1,6 @@
 //! `stackalloc`, `Span<T>`, slicing, and stackalloc initializers.
 //! GAP: memory/span coverage is thin in the existing suite.
 
-
 csharp_cases! {
     stackalloc_int_zero_length_span_has_zero_length => {
         r#"System.Span<int> buf=stackalloc int[0]; Console.WriteLine(buf.Length);"#,

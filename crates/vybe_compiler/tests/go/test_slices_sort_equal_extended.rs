@@ -2,7 +2,6 @@
 //! `test_slices_maps_stdlib.rs` (Contains/Clone/Compact/Delete/Insert/Grow) and
 //! `test_slices_delete_insert.rs` (basic Delete/Insert/Replace smoke).
 
-
 go_run_cases! {
     slices_sort_ints_ascending => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{5, 1, 4, 2, 3}; slices.Sort(s); fmt.Println(s[0]); fmt.Println(s[4]) }",

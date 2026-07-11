@@ -1,6 +1,5 @@
 //! Channel, select, and concurrency language semantics — one rule per test.
 
-
 go_run_cases! {
     chan_make_unbuffered_zero_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int); fmt.Println(cap(ch)) }", vec!["0"]),
     chan_buffered_send_recv => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 9; fmt.Println(<-ch) }", vec!["9"]),

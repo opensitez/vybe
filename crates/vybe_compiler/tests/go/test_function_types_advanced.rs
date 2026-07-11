@@ -1,7 +1,6 @@
 //! Advanced function types: distinct named signatures, returning functions,
 //! nil comparison, struct fields, and methods with function parameters.
 
-
 go_run_cases! {
     // --- nil comparison on function values ---
     two_zero_value_funcs_same_type_equal =>

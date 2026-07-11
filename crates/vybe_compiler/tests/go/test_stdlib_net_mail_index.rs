@@ -1,6 +1,5 @@
 //! net/mail, net/smtp, index/suffixarray, expvar, plugin — breadth compile smokes.
 
-
 go_compile_cases! {
     mail_parse_address => "package main; import \"net/mail\"; func main() { _, _ = mail.ParseAddress(\"Go <go@example.com>\") }",
     mail_parse_date => "package main; import \"net/mail\"; func main() { _, _ = mail.ParseDate(\"Mon, 02 Jan 2006 15:04:05 MST\") }",

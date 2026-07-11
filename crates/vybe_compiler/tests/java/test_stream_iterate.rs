@@ -159,4 +159,3 @@ fn stream_iterate_concat_with_finite() {
     );
     assert_eq!(out, vec!["3"]);
 }
-

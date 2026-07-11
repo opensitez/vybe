@@ -1,7 +1,6 @@
 //! Type aliases (`type T = U`) vs defined types (`type T U`): identity,
 //! struct fields, method sets, and underlying-type conversions.
 
-
 go_run_cases! {
     // --- alias identical to underlying (no conversion) ---
     alias_assign_from_untyped_literal => (

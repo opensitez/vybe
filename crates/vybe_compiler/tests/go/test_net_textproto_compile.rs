@@ -1,6 +1,5 @@
 //! net and net/textproto compile patterns.
 
-
 go_compile_cases! {
     net_lookup_host_compile => "package main; import \"net\"; func main() { _, _ = net.LookupHost(\"localhost\") }",
     net_resolve_tcp_addr => "package main; import \"net\"; func main() { _, _ = net.ResolveTCPAddr(\"tcp\", \":80\") }",

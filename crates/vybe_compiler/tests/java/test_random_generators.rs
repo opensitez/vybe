@@ -10,9 +10,8 @@ fn random_next_int_bounded() {
 
 #[test]
 fn random_next_int_fixed_seed() {
-    let out = run_main(
-        "java.util.Random r = new java.util.Random(42); System.out.println(r.nextInt());",
-    );
+    let out =
+        run_main("java.util.Random r = new java.util.Random(42); System.out.println(r.nextInt());");
     assert_eq!(out, vec!["-1170105035"]);
 }
 
@@ -199,4 +198,3 @@ fn splittable_random_doubles_limited_average() {
     );
     assert_eq!(out, vec!["true"]);
 }
-

@@ -3,7 +3,6 @@
 //! (RFC3339, basic Unix, Sleep/Tick) and `test_time_parse_format.rs` (ParseDuration,
 //! custom Format/Parse layouts, Add/Sub duration).
 
-
 go_run_cases! {
     time_date_utc_components => (
         "package main; import \"fmt\"; import \"time\"; func main() { t := time.Date(2024, time.March, 15, 14, 30, 45, 0, time.UTC); fmt.Println(t.Year()); fmt.Println(t.Month()); fmt.Println(t.Day()); fmt.Println(t.Hour()) }",

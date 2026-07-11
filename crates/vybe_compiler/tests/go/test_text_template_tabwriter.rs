@@ -1,6 +1,5 @@
 //! text/tabwriter and text/template compile patterns.
 
-
 go_compile_cases! {
     tabwriter_new => "package main; import \"text/tabwriter\"; func main() { w := tabwriter.NewWriter(nil, 0, 0, 1, ' ', 0); _ = w }",
     tabwriter_write => "package main; import \"text/tabwriter\"; import \"os\"; func main() { w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0); _, _ = w.Write([]byte(\"a\\tb\\n\")) }",

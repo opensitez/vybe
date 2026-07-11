@@ -1,7 +1,6 @@
 //! Delegate variance: `Func` covariance on return, `Action` contravariance on params.
 //! GAP: structural assignability via invoke prints is thin in the existing suite.
 
-
 csharp_cases! {
     func_string_to_object_covariant_return_invokes => {
         r#"System.Func<string> getString=()=>"covariant"; System.Func<object> getObject=getString; Console.WriteLine(getObject());"#,

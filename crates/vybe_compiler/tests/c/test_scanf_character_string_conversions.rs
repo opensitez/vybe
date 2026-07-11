@@ -1,6 +1,5 @@
 //! sscanf character/string conversions — %c %s %[] scansets and width limits.
 
-
 c_run_cases! {
     sscanf_c_digit_char => {
         includes: ["<stdio.h>"],

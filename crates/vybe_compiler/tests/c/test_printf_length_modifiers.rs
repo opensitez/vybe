@@ -1,6 +1,5 @@
 //! printf length modifiers — %hd %hhd %ld %lld %zu %td %jd %Lf and related.
 
-
 c_run_cases! {
     printf_hhd_unsigned_char_value => {
         includes: ["<stdio.h>", "<stddef.h>", "<inttypes.h>"],

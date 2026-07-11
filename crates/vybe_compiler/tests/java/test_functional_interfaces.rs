@@ -199,4 +199,3 @@ fn consumer_and_then_with_side_effect_counter() {
     );
     assert_eq!(out, vec!["11"]);
 }
-

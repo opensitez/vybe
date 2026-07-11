@@ -1,7 +1,6 @@
 //! unicode/utf8 package: Valid, ValidString, RuneCount, EncodeRune, DecodeRune,
 //! FullRune, and UTF-8 string iteration — plus distinct rune literal semantics.
 
-
 go_run_cases! {
     utf8_valid_ascii_bytes => (
         "package main; import \"fmt\"; import \"unicode/utf8\"; func main() { fmt.Println(utf8.Valid([]byte(\"go\"))) }",

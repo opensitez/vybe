@@ -2,7 +2,6 @@
 //! slice/map roundtrips, GobEncoder/GobDecoder interfaces — distinct from compile smokes
 //! in `test_cover_encoding_extra.rs` and `test_stdlib_encoding_misc.rs`.
 
-
 go_run_cases! {
     gob_encode_decode_int_roundtrip => (
         "package main; import \"fmt\"; import \"encoding/gob\"; import \"bytes\"; func main() { var buf bytes.Buffer; enc := gob.NewEncoder(&buf); enc.Encode(42); var v int; gob.NewDecoder(&buf).Decode(&v); fmt.Println(v) }",

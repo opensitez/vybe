@@ -1,6 +1,5 @@
 //! compress/* and archive/* — one compile smoke per distinct API.
 
-
 go_compile_cases! {
     flate_new_writer => "package main; import \"compress/flate\"; import \"bytes\"; func main() { _, _ = flate.NewWriter(bytes.NewBuffer(nil), 6) }",
     flate_new_reader => "package main; import \"compress/flate\"; import \"bytes\"; func main() { _ = flate.NewReader(bytes.NewReader(nil)) }",

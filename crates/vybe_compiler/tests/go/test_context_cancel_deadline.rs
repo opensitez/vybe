@@ -1,6 +1,5 @@
 //! context cancel/deadline: WithCancel, WithDeadline, WithTimeout, WithValue chains, Done, Err sentinels.
 
-
 go_run_cases! {
     context_canceled_not_equal_deadline_exceeded => (
         "package main; import \"fmt\"; import \"context\"; func main() { fmt.Println(context.Canceled != context.DeadlineExceeded) }",

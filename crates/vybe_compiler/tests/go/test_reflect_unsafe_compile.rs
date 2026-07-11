@@ -1,6 +1,5 @@
 //! reflect and unsafe: compile-time type introspection and size/align.
 
-
 go_compile_cases! {
     reflect_type_of_int => "package main; import \"reflect\"; func main() { _ = reflect.TypeOf(0) }",
     reflect_value_of_string => "package main; import \"reflect\"; func main() { _ = reflect.ValueOf(\"x\") }",

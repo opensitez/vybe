@@ -1,6 +1,5 @@
 //! Runtime checks for C math.h floating-point classification macros.
 
-
 c_run_cases! {
     isnan_on_log_negative => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%d\\n\", isnan(log(-1.0))); return 0;", expect: ["1"] },
     isnan_on_nan_constant => { includes: ["<stdio.h>", "<math.h>"], decls: "", body: "printf(\"%d\\n\", isnan(NAN)); return 0;", expect: ["1"] },

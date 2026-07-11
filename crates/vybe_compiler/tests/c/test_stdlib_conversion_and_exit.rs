@@ -1,6 +1,5 @@
 //! stdlib.h conversions, div family, atexit registration, getenv assertions.
 
-
 c_run_cases! {
     strtol_leading_whitespace => { includes: ["<stdio.h>", "<stdlib.h>"], decls: "", body: "printf(\"%ld\\n\", strtol(\"   77\", 0, 10)); return 0;", expect: ["77"] },
     strtol_leading_plus_sign => { includes: ["<stdio.h>", "<stdlib.h>"], decls: "", body: "printf(\"%ld\\n\", strtol(\"+15\", 0, 10)); return 0;", expect: ["15"] },

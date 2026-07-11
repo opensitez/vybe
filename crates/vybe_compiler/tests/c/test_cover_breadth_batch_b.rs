@@ -1,6 +1,5 @@
 //! stdint types, signals, setjmp, regex compile breadth.
 
-
 c_compile_cases! {
     stdint_int8_t => { includes: ["<stdint.h>"], decls: "", body: "int8_t x=1; return x;" },
     stdint_uint8_t => { includes: ["<stdint.h>"], decls: "", body: "uint8_t x=1; return x;" },

@@ -2,7 +2,6 @@
 //! `test_slices_maps_stdlib.rs` (Clone/Copy/DeleteFunc) and map iteration in
 //! `test_map_iteration_delete.rs`.
 
-
 go_run_cases! {
     maps_keys_int_map_len => (
         "package main; import \"fmt\"; import \"maps\"; func main() { m := map[int]string{1: \"a\", 2: \"b\", 3: \"c\"}; keys := maps.Keys(m); fmt.Println(len(keys)) }",

@@ -1,6 +1,5 @@
 //! Generics language semantics — one distinct constraint/syntax behavior per test.
 
-
 go_run_cases! {
     generic_func_identity_int => ("package main; import \"fmt\"; func ID[T any](v T) T { return v }; func main() { fmt.Println(ID(7)) }", vec!["7"]),
     generic_func_two_type_params => ("package main; import \"fmt\"; func Pair[A any, B any](a A, b B) (A, B) { return a, b }; func main() { x, y := Pair(1, \"x\"); fmt.Println(x); fmt.Println(y) }", vec!["1", "x"]),

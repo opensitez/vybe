@@ -1,6 +1,5 @@
 //! net/rpc, net/rpc/jsonrpc, net/mail, net/smtp — breadth compile smokes.
 
-
 go_compile_cases! {
     // net/rpc — Server
     rpc_new_server => "package main; import \"net/rpc\"; func main() { _ = rpc.NewServer() }",

@@ -1,6 +1,5 @@
 //! ast and token compile-only (go/parser, go/token) patterns.
 
-
 go_compile_cases! {
     token_file_set => "package main; import \"go/token\"; func main() { fs := token.NewFileSet(); _ = fs }",
     token_file_pos => "package main; import \"go/token\"; func main() { fs := token.NewFileSet(); f := fs.AddFile(\"a.go\", fs.Base(), 100); _ = f.Pos(1) }",

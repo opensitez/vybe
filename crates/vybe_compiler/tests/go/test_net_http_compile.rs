@@ -1,6 +1,5 @@
 //! net/url and net/http: Parse, query escape, Values encoding, Client Get, status constants.
 
-
 go_compile_cases! {
     // net/url — Parse
     url_parse_https_absolute => "package main; import \"net/url\"; func main() { u, _ := url.Parse(\"https://example.com/path\"); _ = u.Scheme }",

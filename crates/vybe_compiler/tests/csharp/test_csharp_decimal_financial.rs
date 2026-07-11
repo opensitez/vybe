@@ -1,6 +1,5 @@
 //! Decimal financial precision: arithmetic, Round, Truncate, Floor, Ceiling, CompareTo.
 
-
 csharp_cases! {
     decimal_financial_add_currency_line_items => {
         r#"decimal subtotal=19.99m+4.50m+0.01m; Console.WriteLine(subtotal);"#,

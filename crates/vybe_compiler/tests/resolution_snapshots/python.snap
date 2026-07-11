@@ -1,0 +1,7 @@
+namespace  json -> ecma:json
+namespace  math -> ecma:math
+namespace  os -> wasi:filesystem
+namespace  random -> ecma:math
+namespace  re -> ecma:regexp
+namespace  sys -> wasi:cli
+namespace  time -> wasi:clocks/wall-clock

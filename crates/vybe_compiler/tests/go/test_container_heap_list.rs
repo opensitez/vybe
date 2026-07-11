@@ -2,7 +2,6 @@
 //! circular buffer — distinct from `test_container_list_ring.rs` (minimal smoke) and
 //! `test_cover_hash_heap_io.rs` (compile-only heap Init/Push/Fix).
 
-
 go_run_cases! {
     heap_push_pop_min_order => (
         "package main; import \"fmt\"; import \"container/heap\"; type IH []int; func (h IH) Len() int { return len(h) }; func (h IH) Less(i, j int) bool { return h[i] < h[j] }; func (h IH) Swap(i, j int) { h[i], h[j] = h[j], h[i] }; func (h *IH) Push(x interface{}) { *h = append(*h, x.(int)) }; func (h *IH) Pop() interface{} { o := *h; n := len(o); x := o[n-1]; *h = o[:n-1]; return x }; func main() { h := &IH{5, 3, 7, 1}; heap.Init(h); fmt.Println(heap.Pop(h)); fmt.Println(heap.Pop(h)) }",

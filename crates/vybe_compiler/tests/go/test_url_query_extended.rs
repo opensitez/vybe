@@ -1,6 +1,5 @@
 //! net/url extended: ParseRequestURI, Query mutations, JoinPath, ResolveReference, User credentials.
 
-
 go_run_cases! {
     url_parse_request_uri_path_and_query => (
         "package main; import \"fmt\"; import \"net/url\"; func main() { u, _ := url.ParseRequestURI(\"/api/v2/items?page=3\"); fmt.Println(u.Path); fmt.Println(u.Query().Get(\"page\")) }",

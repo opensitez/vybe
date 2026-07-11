@@ -1,7 +1,6 @@
 //! bufio: Scanner split modes, custom SplitFunc, Reader ReadString/ReadBytes,
 //! Peek, UnreadByte/Rune — extended coverage distinct from `test_bufio_io.rs`.
 
-
 go_run_cases! {
     scanner_scan_lines_first_row => (
         "package main; import \"fmt\"; import \"bufio\"; import \"strings\"; func main() { sc := bufio.NewScanner(strings.NewReader(\"a\\nb\\n\")); sc.Split(bufio.ScanLines); sc.Scan(); fmt.Println(sc.Text()) }",

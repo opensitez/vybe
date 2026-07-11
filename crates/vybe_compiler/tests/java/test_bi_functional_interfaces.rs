@@ -159,4 +159,3 @@ fn bi_function_identity_style_map() {
     );
     assert_eq!(out, vec!["12"]);
 }
-

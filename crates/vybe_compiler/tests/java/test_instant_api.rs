@@ -367,4 +367,3 @@ fn instant_minus_zero_nanos_unchanged() {
     );
     assert_eq!(out, vec!["42"]);
 }
-

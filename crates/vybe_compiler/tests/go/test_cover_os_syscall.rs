@@ -1,6 +1,5 @@
 //! os/signal, os/user, syscall — breadth compile smokes.
 
-
 go_compile_cases! {
     // os/signal
     signal_notify => "package main; import \"os\"; import \"os/signal\"; import \"syscall\"; func main() { ch := make(chan os.Signal, 1); signal.Notify(ch, syscall.SIGINT) }",

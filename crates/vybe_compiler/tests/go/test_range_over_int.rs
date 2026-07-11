@@ -1,7 +1,6 @@
 //! Go 1.22+ integer range (`for i := range n`) — indices, break/continue, sums.
 //! Distinct from `test_range_iteration_extra.rs` (slice/array/map/string/channel range).
 
-
 go_run_cases! {
     range_int_print_indices => (
         "package main; import \"fmt\"; func main() { for i := range 4 { fmt.Println(i) } }",

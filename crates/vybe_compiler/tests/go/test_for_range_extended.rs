@@ -3,7 +3,6 @@
 //! Distinct from `test_range_over_int.rs`, `test_range_iteration_extra.rs`,
 //! and `test_channel_close_range.rs` (close/ok idioms).
 
-
 go_run_cases! {
     range_int_print_last_index_seven => (
         "package main; import \"fmt\"; func main() { last := -1; for i := range 7 { last = i }; fmt.Println(last) }",

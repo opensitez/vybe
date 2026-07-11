@@ -7,7 +7,6 @@
 //! Runtime `clear(m)` cases document a known VM gap (`clear` compiles but is not
 //! callable at runtime); see also `test_slice_copy_clear.rs`.
 
-
 go_run_cases! {
     map_delete_all_keys_during_single_value_range =>
         ("package main; import \"fmt\"; func main() { values := map[string]int{\"a\": 1, \"b\": 2, \"c\": 3}; for key := range values { delete(values, key) }; fmt.Println(len(values)) }", vec!["0"]),

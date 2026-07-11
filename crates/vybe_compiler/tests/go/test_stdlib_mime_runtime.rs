@@ -1,6 +1,5 @@
 //! mime, html/template, runtime, image — one smoke per distinct API.
 
-
 go_compile_cases! {
     mime_type_by_extension => "package main; import \"mime\"; func main() { _ = mime.TypeByExtension(\".html\") }",
     mime_format_media_type => "package main; import \"mime\"; func main() { _ = mime.FormatMediaType(\"text/html\", map[string]string{\"charset\": \"utf-8\"}) }",

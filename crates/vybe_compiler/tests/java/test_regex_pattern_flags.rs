@@ -394,8 +394,6 @@ fn pattern_dotall_question_quantifier() {
 
 #[test]
 fn pattern_case_insensitive_pattern_constant_value() {
-    let out = run_main(
-        r#"System.out.println(java.util.regex.Pattern.CASE_INSENSITIVE == 2);"#,
-    );
+    let out = run_main(r#"System.out.println(java.util.regex.Pattern.CASE_INSENSITIVE == 2);"#);
     assert_eq!(out, vec!["true"]);
 }

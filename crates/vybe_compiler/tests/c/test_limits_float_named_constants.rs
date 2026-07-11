@@ -1,6 +1,5 @@
 //! limits.h and float.h — one distinct named constant printed per test.
 
-
 c_run_cases! {
     named_char_bit => { includes: ["<stdio.h>", "<limits.h>"], decls: "", body: "printf(\"%d\\n\", CHAR_BIT); return 0;", expect: ["8"] },
     named_schar_min => { includes: ["<stdio.h>", "<limits.h>"], decls: "", body: "printf(\"%d\\n\", SCHAR_MIN); return 0;", expect: ["-128"] },

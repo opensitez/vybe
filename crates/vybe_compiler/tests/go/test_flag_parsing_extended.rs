@@ -2,7 +2,6 @@
 //! Lookup, CommandLine vs New FlagSet, ContinueOnError — extended coverage
 //! distinct from `test_log_flag_packages.rs`.
 
-
 go_run_cases! {
     flag_int64_default_before_set => (
         "package main; import \"fmt\"; import \"flag\"; func main() { size := flag.Int64(\"size\", 1024, \"byte size\"); fmt.Println(*size) }",

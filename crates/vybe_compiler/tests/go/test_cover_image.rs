@@ -1,6 +1,5 @@
 //! image/* packages — one API per test.
 
-
 go_compile_cases! {
     image_new_rgba => "package main; import \"image\"; func main() { _ = image.NewRGBA(image.Rect(0, 0, 2, 2)) }",
     image_new_nrgba => "package main; import \"image\"; func main() { _ = image.NewNRGBA(image.Rect(0, 0, 2, 2)) }",

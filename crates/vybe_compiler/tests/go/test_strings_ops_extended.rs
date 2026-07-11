@@ -4,7 +4,6 @@
 //! Repeat/Compare), and `test_strings_builder.rs` (Builder/Reader/Replacer/
 //! Compare/EqualFold/Map/Repeat).
 
-
 go_run_cases! {
     cut_separator_found => (
         "package main; import \"fmt\"; import \"strings\"; func main() { before, after, found := strings.Cut(\"hello,world\", \",\"); fmt.Println(before); fmt.Println(after); fmt.Println(found) }",

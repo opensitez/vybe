@@ -1,6 +1,5 @@
 //! encoding/binary: BigEndian, LittleEndian, Put/Uint, varint, Size, Read, Write.
 
-
 go_run_cases! {
     binary_big_endian_put_uint16_byte_layout => (
         "package main; import \"fmt\"; import \"encoding/binary\"; func main() { buf := make([]byte, 2); binary.BigEndian.PutUint16(buf, 0x0102); fmt.Println(int(buf[0])); fmt.Println(int(buf[1])) }",

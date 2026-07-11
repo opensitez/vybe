@@ -2,7 +2,6 @@
 //! ToUpper/ToLower, SimpleFold; utf8: Valid, ValidRune, RuneLen, EncodeRune/DecodeRune
 //! — extended coverage distinct from `test_unicode_package.rs` and `test_unicode_utf8.rs`.
 
-
 go_run_cases! {
     utf16_encode_ascii_runes => (
         "package main; import \"fmt\"; import \"unicode/utf16\"; func main() { u := utf16.Encode([]rune(\"AB\")); fmt.Println(len(u)); fmt.Println(int(u[0])); fmt.Println(int(u[1])) }",

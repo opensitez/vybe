@@ -1,6 +1,5 @@
 //! More language runtime rules — one behavior per test (batch 2).
 
-
 c_run_cases! {
     init_brace_single => { includes: ["<stdio.h>"], decls: "", body: "int a={7}; printf(\"%d\\n\", a); return 0;", expect: ["7"] },
     init_nested_braces => { includes: ["<stdio.h>"], decls: "", body: "int a[2][2]={{1,2},{3,4}}; printf(\"%d\\n\", a[1][1]); return 0;", expect: ["4"] },

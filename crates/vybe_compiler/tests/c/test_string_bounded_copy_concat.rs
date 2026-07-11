@@ -1,6 +1,5 @@
 //! strncpy, strncat, strncmp — bounded copy, padding, and truncation.
 
-
 c_run_cases! {
     strncpy_copies_exactly_n_without_auto_null => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[8]; strncpy(d, \"planet\", 6); printf(\"%c%c%c%c%c%c\\n\", d[0],d[1],d[2],d[3],d[4],d[5]); return 0;", expect: ["planet"] },
     strncpy_truncates_long_source_at_n => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "char d[5]; strncpy(d, \"galaxy\", 4); printf(\"%c%c%c%c\\n\", d[0],d[1],d[2],d[3]); return 0;", expect: ["gala"] },

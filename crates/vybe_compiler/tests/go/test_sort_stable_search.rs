@@ -2,7 +2,6 @@
 //! Reverse — distinct from `test_sort_package.rs` (basic smoke) and
 //! `test_sort_slice_find.rs` (Find helper, minimal SliceIsSorted).
 
-
 go_run_cases! {
     sort_ints_negative_values => (
         "package main; import \"fmt\"; import \"sort\"; func main() { a := []int{-3, -1, -2, 0, 1}; sort.Ints(a); fmt.Println(a[0]); fmt.Println(a[4]) }",

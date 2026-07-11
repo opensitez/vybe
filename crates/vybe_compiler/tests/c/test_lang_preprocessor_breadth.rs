@@ -1,6 +1,5 @@
 //! Preprocessor and macro semantics — one distinct directive/pattern per test.
 
-
 c_compile_cases! {
     define_object_macro => { includes: ["<stdio.h>"], decls: "#define N 5", body: "return N;" },
     define_function_macro => { includes: ["<stdio.h>"], decls: "#define SQ(x) ((x)*(x))", body: "return SQ(3);" },

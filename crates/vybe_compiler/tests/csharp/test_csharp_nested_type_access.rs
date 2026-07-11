@@ -1,6 +1,5 @@
 //! Nested class/struct/enum access from outer scope and private nested visibility.
 
-
 csharp_cases! {
     nested_access_outer_instantiates_public_nested_class => {
         r#"class Shell{public class Core{public int Id=7;}} Console.WriteLine(new Shell.Core().Id);"#,

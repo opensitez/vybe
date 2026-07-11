@@ -1,6 +1,5 @@
 //! bufio and io packages: Scanner, Reader, Writer, ReadString, ReadBytes, ReadAll, Copy.
 
-
 go_run_cases! {
     scanner_default_line_first_token => (
         "package main; import \"fmt\"; import \"bufio\"; import \"strings\"; func main() { sc := bufio.NewScanner(strings.NewReader(\"alpha\\nbeta\")); sc.Scan(); fmt.Println(sc.Text()) }",

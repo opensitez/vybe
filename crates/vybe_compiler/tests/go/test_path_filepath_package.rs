@@ -1,6 +1,5 @@
 //! path and path/filepath: Join, Base, Clean, Ext, IsAbs, Split — slash vs OS paths.
 
-
 go_run_cases! {
     path_join_three_forward_segments => (
         "package main; import \"fmt\"; import \"path\"; func main() { fmt.Println(path.Join(\"a\", \"b\", \"c\")) }",

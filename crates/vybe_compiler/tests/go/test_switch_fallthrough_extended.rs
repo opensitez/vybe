@@ -1,6 +1,5 @@
 //! Switch fallthrough and expression forms — init, tagless, bool, string, default, empty compile.
 
-
 go_run_cases! {
     fallthrough_to_next_case => ("package main; import \"fmt\"; func main() { x := 1; switch x { case 1: fmt.Println(\"a\"); fallthrough; case 2: fmt.Println(\"b\") } }", vec!["a", "b"]),
     fallthrough_skips_case_check => ("package main; import \"fmt\"; func main() { x := 1; switch x { case 1: fmt.Println(1); fallthrough; case 3: fmt.Println(3) } }", vec!["1", "3"]),

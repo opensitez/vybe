@@ -1,6 +1,5 @@
 //! errno.h — distinct named error constants and strerror output checks.
 
-
 c_run_cases! {
     errno_starts_at_zero => { includes: ["<stdio.h>", "<errno.h>"], decls: "", body: "errno=0; printf(\"%d\\n\", errno); return 0;", expect: ["0"] },
     errno_assign_and_read => { includes: ["<stdio.h>", "<errno.h>"], decls: "", body: "errno=EINVAL; printf(\"%d\\n\", errno==EINVAL); return 0;", expect: ["1"] },

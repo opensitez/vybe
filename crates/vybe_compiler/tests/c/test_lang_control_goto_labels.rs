@@ -1,6 +1,5 @@
 //! goto forward and backward jumps, labels inside loops and switch.
 
-
 c_run_cases! {
     goto_forward_skips_dead_statement => { includes: ["<stdio.h>"], decls: "", body: "printf(\"a\\n\"); goto end; printf(\"skip\\n\"); end: printf(\"b\\n\"); return 0;", expect: ["a", "b"] },
     goto_backward_counts_three_times => { includes: ["<stdio.h>"], decls: "", body: "int n=0; again: n++; if(n<3) goto again; printf(\"%d\\n\", n); return 0;", expect: ["3"] },

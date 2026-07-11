@@ -1,6 +1,5 @@
 //! copy/clear builtins, full slice expressions, append growth semantics.
 
-
 go_run_cases! {
     copy_overlapping_slices => ("package main; import \"fmt\"; func main() { a := []int{1,2,3,4}; n := copy(a, a[1:]); fmt.Println(n); fmt.Println(a[0]); fmt.Println(a[1]) }", vec!["3", "2", "3"]),
     copy_into_larger_dst => ("package main; import \"fmt\"; func main() { dst := make([]int, 5); src := []int{7,8}; n := copy(dst, src); fmt.Println(n); fmt.Println(dst[0]); fmt.Println(dst[4]) }", vec!["2", "7", "0"]),
