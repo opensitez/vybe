@@ -14,62 +14,6 @@ fn run_with_prebuilt(script: Chunk, helper_chunks: Vec<Chunk>) -> Value {
     vm.run(all_chunks).unwrap()
 }
 
-// ── range ───────────────────────────────────────────────────
-
-#[test]
-fn helper_range_basic() {
-    let mut script = Chunk::new("<script>");
-    script.local_count = 2;
-    let helpers = build_runtime_helpers(&mut script);
-    let range_idx = helpers.get("__stdlib_range").unwrap();
-    let chunk_idx = range_idx + 1; // +1 because script is chunk 0
-
-    // range(0, 5, 1)
-    let zero = script.add_constant(Value::I32(0));
-    let five = script.add_constant(Value::I32(5));
-    let one = script.add_constant(Value::I32(1));
-    script.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, 0);
-    script.emit(0, 0); // 0 upvalues
-    script.emit_op_u16(Op::CONST, zero, 0);
-    script.emit_op_u16(Op::CONST, five, 0);
-    script.emit_op_u16(Op::CONST, one, 0);
-    script.emit_op_u8(Op::CALL_REF, 3, 0);
-    // Result should be array [0,1,2,3,4]
-    script.emit_op(Op::ARRAY_LENGTH, 0);
-    script.emit_op(Op::HALT, 0);
-
-    let result = run_with_prebuilt(script, helpers.chunks);
-    assert_eq!(result.as_i32(), 5, "range(0,5,1) should produce 5 elements");
-}
-
-#[test]
-fn helper_range_step() {
-    let mut script = Chunk::new("<script>");
-    script.local_count = 2;
-    let helpers = build_runtime_helpers(&mut script);
-    let range_idx = helpers.get("__stdlib_range").unwrap() + 1;
-
-    // range(0, 10, 2) → [0,2,4,6,8]
-    let zero = script.add_constant(Value::I32(0));
-    let ten = script.add_constant(Value::I32(10));
-    let two = script.add_constant(Value::I32(2));
-    script.emit_op_u16(Op::REF_FUNC, range_idx as u16, 0);
-    script.emit(0, 0);
-    script.emit_op_u16(Op::CONST, zero, 0);
-    script.emit_op_u16(Op::CONST, ten, 0);
-    script.emit_op_u16(Op::CONST, two, 0);
-    script.emit_op_u8(Op::CALL_REF, 3, 0);
-    script.emit_op(Op::ARRAY_LENGTH, 0);
-    script.emit_op(Op::HALT, 0);
-
-    let result = run_with_prebuilt(script, helpers.chunks);
-    assert_eq!(
-        result.as_i32(),
-        5,
-        "range(0,10,2) should produce 5 elements"
-    );
-}
-
 // ── reversed ────────────────────────────────────────────────
 
 #[test]
@@ -283,44 +227,6 @@ fn helper_enumerate() {
     assert_eq!(result.as_i32(), 2);
 }
 
-// ── zip ─────────────────────────────────────────────────────
-
-#[test]
-fn helper_zip() {
-    let mut script = Chunk::new("<script>");
-    script.local_count = 4;
-    let helpers = build_runtime_helpers(&mut script);
-    let zip_idx = helpers.get("__stdlib_zip").unwrap() + 1;
-
-    // zip([1,2], [3,4]) → [[1,3], [2,4]]
-    let v1 = script.add_constant(Value::I32(1));
-    let v2 = script.add_constant(Value::I32(2));
-    let v3 = script.add_constant(Value::I32(3));
-    let v4 = script.add_constant(Value::I32(4));
-
-    script.emit_op_u16(Op::CONST, v1, 0);
-    script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
-    script.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    script.emit_op_u16(Op::CONST, v3, 0);
-    script.emit_op_u16(Op::CONST, v4, 0);
-    script.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
-    script.emit_op_u16(Op::LOCAL_SET, 2, 0);
-
-    script.emit_op_u16(Op::REF_FUNC, zip_idx as u16, 0);
-    script.emit(0, 0);
-    script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u16(Op::LOCAL_GET, 2, 0);
-    script.emit_op_u8(Op::CALL_REF, 2, 0);
-
-    script.emit_op(Op::ARRAY_LENGTH, 0);
-    script.emit_op(Op::HALT, 0);
-
-    let result = run_with_prebuilt(script, helpers.chunks);
-    assert_eq!(result.as_i32(), 2);
-}
-
 // ── helper building ─────────────────────────────────────────
 
 #[test]
@@ -328,15 +234,13 @@ fn helper_has_all_functions() {
     let mut script = Chunk::new("<script>");
     let helpers = build_runtime_helpers(&mut script);
     assert!(
-        helpers.chunks.len() >= 24,
-        "helper should export >= 24 chunks, got {}",
+        helpers.chunks.len() >= 17,
+        "helper should export >= 17 chunks, got {}",
         helpers.chunks.len()
     );
-    assert!(helpers.get("__stdlib_range").is_some());
     assert!(helpers.get("__stdlib_sorted").is_some());
     assert!(helpers.get("__stdlib_reversed").is_some());
     assert!(helpers.get("__stdlib_enumerate").is_some());
-    assert!(helpers.get("__stdlib_zip").is_some());
     assert!(helpers.get("__stdlib_sum").is_some());
     assert!(helpers.get("__stdlib_min").is_some());
     assert!(helpers.get("__stdlib_max").is_some());

@@ -85,4 +85,41 @@ console.log(new Set([1, 2]).isDisjointFrom(new Set([2, 3])));
 "#,
         ["true", "false"]
     };
+
+    // §24.2.4 composition methods accept ANY set argument, including the
+    // receiver itself — node-verified results for `a.op(a)`.
+    set_union_with_itself_same_elements => {
+        r#"const a = new Set([1, 2]); console.log([...a.union(a)].join(","));"#,
+        ["1,2"]
+    };
+
+    set_intersection_with_itself_same_elements => {
+        r#"const a = new Set([1, 2]); console.log([...a.intersection(a)].join(","));"#,
+        ["1,2"]
+    };
+
+    set_difference_with_itself_empty => {
+        r#"const a = new Set([1, 2]); console.log(a.difference(a).size);"#,
+        ["0"]
+    };
+
+    set_symmetric_difference_with_itself_empty => {
+        r#"const a = new Set([1, 2]); console.log(a.symmetricDifference(a).size);"#,
+        ["0"]
+    };
+
+    set_issubsetof_itself_true => {
+        r#"const a = new Set([1, 2]); console.log(a.isSubsetOf(a));"#,
+        ["true"]
+    };
+
+    set_issupersetof_itself_true => {
+        r#"const a = new Set([1, 2]); console.log(a.isSupersetOf(a));"#,
+        ["true"]
+    };
+
+    set_isdisjointfrom_itself_false_when_nonempty => {
+        r#"const a = new Set([1, 2]); console.log(a.isDisjointFrom(a));"#,
+        ["false"]
+    };
 }

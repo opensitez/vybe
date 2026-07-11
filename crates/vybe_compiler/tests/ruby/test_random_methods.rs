@@ -19,3 +19,7 @@ ruby_test!(test_random_class_bytes, "b = Random.bytes(5); puts b.length", "5");
 ruby_test!(test_random_class_new_seed, "s = Random.new_seed; puts s.class.name", "Integer");
 ruby_test!(test_random_srand, "old = srand(42); new_old = srand(42); puts new_old == 42", "true");
 ruby_test!(test_kernel_rand, "old = srand(42); v1 = rand(10); srand(42); v2 = rand(10); puts v1 == v2", "true");
+
+ruby_test!(tmp_isa_self, "class A; end; puts(A.new.is_a?(A) ? \"Y\" : \"N\")", "Y");
+ruby_test!(tmp_isa_parent, "class A; end; class B < A; end; puts(B.new.is_a?(A) ? \"Y\" : \"N\")", "Y");
+ruby_test!(tmp_isa_neg, "class A; end; class C; end; puts(A.new.is_a?(C) ? \"Y\" : \"N\")", "N");

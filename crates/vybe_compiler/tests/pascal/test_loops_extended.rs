@@ -273,9 +273,12 @@ fn while_repeat_equivalent_count() {
 
 #[test]
 fn repeat_until_not_condition() {
+    // repeat-until exits when the condition is TRUE (ISO 7185 §6.8.3.7);
+    // the previous body (`done:=true; until not done`) made the exit
+    // condition permanently false — an infinite loop in real Pascal too.
     assert_eq!(
         run_pascal(
-            r#"program T; var done:Boolean; begin done:=false; repeat WriteLn('tick'); done:=true; until not done; end."#
+            r#"program T; var running:Boolean; begin running:=true; repeat WriteLn('tick'); running:=false; until not running; end."#
         ),
         &["tick"]
     );
