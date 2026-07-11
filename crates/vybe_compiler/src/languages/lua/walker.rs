@@ -577,13 +577,18 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
     if values.len() > 1 {
-        let elems = values.into_iter().map(|v| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
-        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(elems)))))
+        let elems = values
+            .into_iter()
+            .map(|v| ArrayElement {
+                key: None,
+                value: v,
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(
+            elems,
+        )))))
     } else {
         Ok(StmtKind::Return(values.into_iter().next()))
     }
@@ -619,12 +624,15 @@ fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let value = if values.len() == 1 {
         values.remove(0)
     } else {
-        let elems = values.into_iter().map(|v| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
+        let elems = values
+            .into_iter()
+            .map(|v| ArrayElement {
+                key: None,
+                value: v,
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
         Expression::new(ExprKind::Array(elems))
     };
     Ok(StmtKind::Assign { targets, value })
@@ -926,34 +934,68 @@ fn unescape_lua_string(s: &str) -> String {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
             i += 1;
             match bytes[i] {
-                b'n'  => { out.push('\n'); i += 1; }
-                b't'  => { out.push('\t'); i += 1; }
-                b'r'  => { out.push('\r'); i += 1; }
-                b'a'  => { out.push('\x07'); i += 1; }
-                b'b'  => { out.push('\x08'); i += 1; }
-                b'f'  => { out.push('\x0C'); i += 1; }
-                b'v'  => { out.push('\x0B'); i += 1; }
-                b'\\' => { out.push('\\'); i += 1; }
-                b'\'' => { out.push('\''); i += 1; }
-                b'"'  => { out.push('"'); i += 1; }
-                b'\n' => { out.push('\n'); i += 1; }
-                b'x'  => {
+                b'n' => {
+                    out.push('\n');
+                    i += 1;
+                }
+                b't' => {
+                    out.push('\t');
+                    i += 1;
+                }
+                b'r' => {
+                    out.push('\r');
+                    i += 1;
+                }
+                b'a' => {
+                    out.push('\x07');
+                    i += 1;
+                }
+                b'b' => {
+                    out.push('\x08');
+                    i += 1;
+                }
+                b'f' => {
+                    out.push('\x0C');
+                    i += 1;
+                }
+                b'v' => {
+                    out.push('\x0B');
+                    i += 1;
+                }
+                b'\\' => {
+                    out.push('\\');
+                    i += 1;
+                }
+                b'\'' => {
+                    out.push('\'');
+                    i += 1;
+                }
+                b'"' => {
+                    out.push('"');
+                    i += 1;
+                }
+                b'\n' => {
+                    out.push('\n');
+                    i += 1;
+                }
+                b'x' => {
                     // \xNN — two hex digits
                     if i + 2 < bytes.len() {
-                        let hex = &s[i+1..i+3];
+                        let hex = &s[i + 1..i + 3];
                         if let Ok(n) = u8::from_str_radix(hex, 16) {
                             out.push(n as char);
                         }
                         i += 3;
                     } else {
-                        out.push('x'); i += 1;
+                        out.push('x');
+                        i += 1;
                     }
                 }
-                b'u'  => {
+                b'u' => {
                     // \u{NNNN}
-                    if i + 1 < bytes.len() && bytes[i+1] == b'{' {
-                        if let Some(end) = s[i+2..].find('}') {
-                            let hex = &s[i+2..i+2+end];
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                        if let Some(end) = s[i + 2..].find('}') {
+                            let hex = &s[i + 2..i + 2 + end];
                             if let Ok(n) = u32::from_str_radix(hex, 16) {
                                 if let Some(c) = char::from_u32(n) {
                                     out.push(c);
@@ -961,16 +1003,23 @@ fn unescape_lua_string(s: &str) -> String {
                             }
                             i += 2 + end + 1;
                         } else {
-                            out.push('u'); i += 1;
+                            out.push('u');
+                            i += 1;
                         }
                     } else {
-                        out.push('u'); i += 1;
+                        out.push('u');
+                        i += 1;
                     }
                 }
                 b'z' => {
                     // \z — skip following whitespace
                     i += 1;
-                    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r') {
+                    while i < bytes.len()
+                        && (bytes[i] == b' '
+                            || bytes[i] == b'\t'
+                            || bytes[i] == b'\n'
+                            || bytes[i] == b'\r')
+                    {
                         i += 1;
                     }
                 }
@@ -979,13 +1028,17 @@ fn unescape_lua_string(s: &str) -> String {
                     let start = i;
                     let mut count = 0;
                     while i < bytes.len() && count < 3 && bytes[i].is_ascii_digit() {
-                        i += 1; count += 1;
+                        i += 1;
+                        count += 1;
                     }
                     if let Ok(n) = s[start..i].parse::<u8>() {
                         out.push(n as char);
                     }
                 }
-                other => { out.push(other as char); i += 1; }
+                other => {
+                    out.push(other as char);
+                    i += 1;
+                }
             }
         } else {
             out.push(bytes[i] as char);
@@ -1008,7 +1061,8 @@ fn strip_long_brackets(raw: &str) -> &str {
     let mut eq_count = 0;
     let mut i = 1;
     while i < bytes.len() && bytes[i] == b'=' {
-        eq_count += 1; i += 1;
+        eq_count += 1;
+        i += 1;
     }
     if i >= bytes.len() || bytes[i] != b'[' {
         return raw;
@@ -1022,7 +1076,11 @@ fn strip_long_brackets(raw: &str) -> &str {
     let content_end = raw.len() - suffix_len;
     // Skip optional first newline per Lua spec
     let content = &raw[content_start..content_end];
-    if content.starts_with('\n') { &content[1..] } else { content }
+    if content.starts_with('\n') {
+        &content[1..]
+    } else {
+        content
+    }
 }
 
 fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -1075,7 +1133,11 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     Rule::long_string_0 => {
                         // body_0 is atomic child inside long_string_0
                         let body = child.into_inner().next().map(|p| p.as_str()).unwrap_or("");
-                        if body.starts_with('\n') { body[1..].to_string() } else { body.to_string() }
+                        if body.starts_with('\n') {
+                            body[1..].to_string()
+                        } else {
+                            body.to_string()
+                        }
                     }
                     _ => strip_long_brackets(raw).to_string(),
                 }
@@ -1097,7 +1159,6 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         other => Err(format!("Unhandled primary: {other:?}")),
     }
 }
-
 
 fn walk_table_constructor(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut elements = Vec::new();

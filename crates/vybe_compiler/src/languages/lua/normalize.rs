@@ -16,11 +16,11 @@ fn normalize_expr(expr: &mut Expression) {
             // Recursively normalize operands first
             normalize_expr(left);
             normalize_expr(right);
-            
+
             // Wrap operations in adapters that check for metamethods at runtime
             let adapter_name = match op {
                 BinOp::Add => "__lua_add",
-                BinOp::Sub => "__lua_sub", 
+                BinOp::Sub => "__lua_sub",
                 BinOp::Mul => "__lua_mul",
                 BinOp::Div => "__lua_div",
                 BinOp::Mod => "__lua_mod",
@@ -31,7 +31,7 @@ fn normalize_expr(expr: &mut Expression) {
                 BinOp::Concat => "__lua_concat",
                 _ => return, // Other ops pass through
             };
-            
+
             // Replace with call to adapter: __lua_add(left, right)
             let call = ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident(adapter_name.to_string()))),
@@ -43,7 +43,10 @@ fn normalize_expr(expr: &mut Expression) {
             };
             expr.kind = call;
         }
-        ExprKind::Unary { op: UnaryOp::Neg, expr: inner } => {
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => {
             normalize_expr(inner);
             let call = ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident("__lua_unm".to_string()))),
@@ -131,7 +134,12 @@ fn normalize_stmt(kind: &mut StmtKind) {
                 normalize_stmt(&mut s.kind);
             }
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             normalize_expr(iter);
             for s in body.iter_mut() {
                 normalize_stmt(&mut s.kind);
@@ -197,36 +205,36 @@ pub(crate) fn build_numeric_for(
     let ctrl_var = format!("__lua_for_{}", index_var);
     let limit_var = format!("__lua_limit_{}", index_var);
     let step_var = format!("__lua_step_{}", index_var);
-    
+
     let ctrl_expr = Expression::new(ExprKind::Ident(ctrl_var.clone()));
     let limit_expr = Expression::new(ExprKind::Ident(limit_var.clone()));
     let step_expr_cond = Expression::new(ExprKind::Ident(step_var.clone()));
-    
+
     // Lua numeric for: while (step > 0 && ctrl <= limit) || (step < 0 && ctrl >= limit)
     let step_pos = Expression::new(ExprKind::Binary {
         op: BinOp::Gt,
         left: Box::new(step_expr_cond.clone()),
         right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
     });
-    
+
     let step_neg = Expression::new(ExprKind::Binary {
         op: BinOp::Lt,
         left: Box::new(step_expr_cond),
         right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
     });
-    
+
     let ctrl_lte_limit = Expression::new(ExprKind::Binary {
         op: BinOp::LtEq,
         left: Box::new(ctrl_expr.clone()),
         right: Box::new(limit_expr.clone()),
     });
-    
+
     let ctrl_gte_limit = Expression::new(ExprKind::Binary {
         op: BinOp::GtEq,
         left: Box::new(ctrl_expr.clone()),
         right: Box::new(limit_expr.clone()),
     });
-    
+
     // (step > 0 && ctrl <= limit) || (step < 0 && ctrl >= limit)
     let cond = Expression::new(ExprKind::Binary {
         op: BinOp::Or,
@@ -241,7 +249,7 @@ pub(crate) fn build_numeric_for(
             right: Box::new(ctrl_gte_limit),
         })),
     });
-    
+
     // Bind user-visible loop variable each iteration
     let bind_loop_var = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
@@ -253,10 +261,10 @@ pub(crate) fn build_numeric_for(
         }],
         kind: VarDeclKind::Let,
     });
-    
+
     let mut scoped_body = vec![bind_loop_var];
     scoped_body.extend(body);
-    
+
     let step_var_expr = Expression::new(ExprKind::Ident(step_var.clone()));
     let increment = Statement::new(StmtKind::Assign {
         targets: vec![ctrl_expr.clone()],
@@ -266,11 +274,8 @@ pub(crate) fn build_numeric_for(
             right: Box::new(step_var_expr),
         }),
     });
-    
-    let while_body = vec![
-        Statement::new(StmtKind::Block(scoped_body)),
-        increment,
-    ];
+
+    let while_body = vec![Statement::new(StmtKind::Block(scoped_body)), increment];
 
     StmtKind::Block(vec![
         Statement::new(StmtKind::VarDecl {

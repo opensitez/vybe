@@ -38,7 +38,14 @@ fn push_null(chunk: &mut Chunk, line: u32) {
 }
 
 /// Call a host import on `chunks[current]` with `argc` args already on stack.
-fn call_import(chunks: &mut Vec<Chunk>, current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
 }
@@ -61,7 +68,13 @@ fn call_import(chunks: &mut Vec<Chunk>, current: usize, module: &str, name: &str
 
 // Each substitution: replace `lua_pat` → `js_repl` in the string on top
 // of the stack.  replaceAll(str, search, replacement)  →  new string.
-fn emit_replace_literal(chunks: &mut Vec<Chunk>, current: usize, lua_pat: &str, js_repl: &str, line: u32) {
+fn emit_replace_literal(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    lua_pat: &str,
+    js_repl: &str,
+    line: u32,
+) {
     // Stack: [current_pattern]
     // We need: replaceAll(str, lua_pat_as_regex, js_repl)
     // Pass lua_pat wrapped in /.../ so ecma:regexp:replaceAll treats it as regex.
@@ -81,7 +94,8 @@ fn escape_for_js_regex_pattern(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for c in s.chars() {
         match c {
-            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\' | '/' => {
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\'
+            | '/' => {
                 out.push('\\');
                 out.push(c);
             }
@@ -220,7 +234,13 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     // Alloc locals
     let (s_slot, pat_slot, init_slot, js_pat_slot, result_slot) = {
         let c = &mut chunks[current];
-        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
     };
 
     // Pop args: stack is [s, pat] or [s, pat, init] (last pushed = top)
@@ -292,7 +312,14 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
 pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let (s_slot, pat_slot, _init_slot, _plain_slot, js_pat_slot, result_slot) = {
         let c = &mut chunks[current];
-        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
     };
 
     {
@@ -369,7 +396,13 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let (s_slot, pat_slot, repl_slot, _n_slot, js_pat_slot) = {
         let c = &mut chunks[current];
-        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
     };
 
     {
@@ -417,10 +450,20 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 // Strategy: use ecma:regexp:matchAll to get all matches up front as an
 // array and leave it on the stack.
 
-pub fn emit_lua_string_gmatch_match_all(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_lua_string_gmatch_match_all(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let (s_slot, pat_slot, js_pat_slot, matches_slot) = {
         let c = &mut chunks[current];
-        (alloc_local(c), alloc_local(c), alloc_local(c), alloc_local(c))
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
     };
 
     {

@@ -1,5 +1,5 @@
 //! Lua metamethods runtime support.
-//! 
+//!
 //! Handles metamethod lookups and calls for:
 //! - Arithmetic: __add, __sub, __mul, __div, __mod, __pow, __unm, __idiv
 //! - Comparison: __lt, __le, __eq

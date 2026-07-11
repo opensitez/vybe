@@ -10,6 +10,5 @@
 //! via the per-language dispatch table registered in `languages/mod.rs`.
 
 pub mod dispatch;
-pub mod string_adapter;
 pub mod metamethods_adapter;
-
+pub mod string_adapter;
