@@ -44,6 +44,19 @@ pub fn emit_value_of(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
 }
 
+pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
+    let right_slot = chunks[current].alloc_scratch(1);
+    let left_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    emit_value_of(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_value_of(chunks, current, line);
+    crate::emitter::strings::emit_str_concat(&mut chunks[current], line);
+}
+
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let other_slot = chunk.alloc_scratch(1);

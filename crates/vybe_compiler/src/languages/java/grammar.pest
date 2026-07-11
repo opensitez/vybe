@@ -293,12 +293,12 @@ switch_case = {
     | ("case" ~ switch_label ~ ("," ~ switch_label)* | "default") ~ "->" ~ switch_rule_body
 }
 
-switch_label = { expression }
+switch_label = { unary_op? ~ literal | qualified_name }
 
 switch_rule_body = {
     block_statement
     | throw_statement
-    | expression ~ ";"
+    | expression_statement
 }
 
 // ── Jump ─────────────────────────────────────────────────────────────────────
@@ -453,13 +453,14 @@ new_expression = {
     "new" ~ type_ref ~ type_args?
     ~ (
         "(" ~ argument_list? ~ ")" ~ anonymous_class_body?
+        | array_initializer
         | array_dims
     )
 }
 
 array_dims = {
-    "[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")*
-    ~ array_initializer?
+    ("[" ~ expression ~ "]" ~ ("[" ~ expression? ~ "]")* ~ array_initializer?)
+    | ("[" ~ "]" ~ ("[" ~ "]")* ~ array_initializer)
 }
 
 anonymous_class_body = { "{" ~ class_member* ~ "}" }

@@ -8,5 +8,10 @@
 //! `common:java.<name>` emit targets; `emitter::dispatch::emit_common`
 //! routes those names to the `emit_*` functions in this module.
 
+pub mod arrays_adapter;
+pub mod biginteger_adapter;
 pub mod dispatch;
+pub mod list_adapter;
+pub mod optional_adapter;
+pub mod stream_adapter;
 pub mod string_adapter;

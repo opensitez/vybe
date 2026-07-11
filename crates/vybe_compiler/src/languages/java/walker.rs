@@ -21,8 +21,8 @@
 
 use super::{JavaParser, Rule};
 use crate::ast::*;
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
@@ -59,6 +59,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     hoist_java_nested_types(&mut body);
+    rewrite_java_user_tostring_calls(&mut body);
     normalize_java_class_tree(&mut body);
 
     // Java: inject a top-level call to the class's static main method.
@@ -1165,20 +1166,28 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let span = to_span(&pair);
     let mut inner = pair.into_inner();
     let switch_expr = walk_expr_inner(&mut inner)?;
+    let value_name = format!("__java_switch_value_{}_{}", span.start_line, span.start_col);
+    let matched_name = format!(
+        "__java_switch_matched_{}_{}",
+        span.start_line, span.start_col
+    );
+    let done_name = format!("__java_switch_done_{}_{}", span.start_line, span.start_col);
 
-    let mut cases: Vec<SwitchCase> = Vec::new();
-    let mut default: Option<Vec<Statement>> = None;
+    let mut arms: Vec<JavaSwitchArm> = Vec::new();
+    let mut all_label_matches: Vec<Expression> = Vec::new();
 
     for case_pair in inner {
         if case_pair.as_rule() != Rule::switch_case {
             continue;
         }
         let mut ci = case_pair.into_inner().peekable();
-        let mut conditions: Vec<CaseCondition> = Vec::new();
+        let mut labels: Vec<Expression> = Vec::new();
         let mut body: Vec<Statement> = Vec::new();
         let mut is_default = false;
+        let mut is_arrow = false;
         let src = {
             let tmp = ci
                 .peek()
@@ -1195,17 +1204,16 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         for p in ci {
             match p.as_rule() {
                 Rule::switch_label => {
-                    if let Some(expr_p) = p.into_inner().next() {
-                        if let Ok(e) = walk_expression(expr_p) {
-                            conditions.push(CaseCondition::Value(e));
-                        }
+                    if let Ok(e) = walk_switch_label(p) {
+                        let label = java_switch_label_expr(e);
+                        all_label_matches.push(java_switch_label_match(&value_name, label.clone()));
+                        labels.push(label);
                     }
                 }
                 Rule::switch_rule_body => {
+                    is_arrow = true;
                     for rb in p.into_inner() {
-                        if let Some(s) = walk_statement(rb)? {
-                            body.push(s);
-                        }
+                        body.extend(walk_switch_rule_body_part(rb)?);
                     }
                 }
                 _ => {
@@ -1216,18 +1224,254 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
 
-        if is_default || conditions.is_empty() {
-            default = Some(body);
+        let (body, has_break) = java_strip_top_level_switch_break(body);
+        let is_default_arm = is_default || labels.is_empty();
+        arms.push(JavaSwitchArm {
+            labels,
+            body,
+            is_default: is_default_arm,
+            has_break: has_break || is_arrow,
+        });
+    }
+
+    let any_label_match =
+        java_or_exprs(all_label_matches).unwrap_or_else(|| Expression::bool(false));
+    let mut lowered = vec![
+        java_var_decl(&value_name, Some(switch_expr)),
+        java_var_decl(&matched_name, Some(Expression::bool(false))),
+        java_var_decl(&done_name, Some(Expression::bool(false))),
+    ];
+
+    for arm in arms {
+        let raw_cond = if arm.is_default {
+            java_binary(
+                BinOp::Or,
+                Expression::ident(&matched_name),
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(any_label_match.clone()),
+                }),
+            )
         } else {
-            cases.push(SwitchCase { conditions, body });
+            let label_cond = java_or_exprs(
+                arm.labels
+                    .into_iter()
+                    .map(|label| java_switch_label_match(&value_name, label))
+                    .collect(),
+            )
+            .unwrap_or_else(|| Expression::bool(false));
+            java_binary(BinOp::Or, Expression::ident(&matched_name), label_cond)
+        };
+        let cond = java_binary(
+            BinOp::And,
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(Expression::ident(&done_name)),
+            }),
+            raw_cond,
+        );
+        let mut then_body = vec![java_assign_stmt(&matched_name, Expression::bool(true))];
+        then_body.extend(arm.body);
+        if arm.has_break {
+            then_body.push(java_assign_stmt(&done_name, Expression::bool(true)));
+            then_body.push(java_assign_stmt(&matched_name, Expression::bool(false)));
+        }
+        lowered.push(Statement::new(StmtKind::If {
+            cond,
+            then_body,
+            elifs: vec![],
+            else_body: None,
+        }));
+    }
+
+    Ok(StmtKind::Block(lowered))
+}
+
+struct JavaSwitchArm {
+    labels: Vec<Expression>,
+    body: Vec<Statement>,
+    is_default: bool,
+    has_break: bool,
+}
+
+fn walk_switch_rule_body_part(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+    match pair.as_rule() {
+        Rule::block_statement => walk_block(pair),
+        Rule::throw_statement => Ok(vec![Statement::new(walk_statement(pair)?.unwrap().kind)]),
+        Rule::expression => Ok(vec![Statement::new(StmtKind::Expr(walk_expression(pair)?))]),
+        Rule::expression_statement => Ok(walk_statement(pair)?.into_iter().collect()),
+        _ => Ok(walk_statement(pair)?.into_iter().collect()),
+    }
+}
+
+fn java_strip_top_level_switch_break(body: Vec<Statement>) -> (Vec<Statement>, bool) {
+    let mut out = Vec::new();
+    for stmt in body {
+        if matches!(stmt.kind, StmtKind::Break(BreakTarget::Implicit)) {
+            return (out, true);
+        }
+        out.push(stmt);
+    }
+    (out, false)
+}
+
+fn java_switch_label_expr(expr: Expression) -> Expression {
+    expr
+}
+
+fn walk_switch_label(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut is_negative = false;
+    let mut value = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::unary_op if p.as_str() == "-" => is_negative = true,
+            Rule::literal => value = Some(walk_literal(p)?),
+            Rule::qualified_name => {
+                let text = p.as_str();
+                if text.contains('.') {
+                    let mut parts = text.split('.');
+                    let first = parts.next().unwrap_or_default();
+                    let mut expr = Expression::ident(first);
+                    for part in parts {
+                        expr = Expression::new(ExprKind::Member {
+                            object: Box::new(expr),
+                            field: part.to_string(),
+                            null_safe: false,
+                        });
+                    }
+                    value = Some(expr);
+                } else {
+                    value = Some(Expression::ident(text));
+                }
+            }
+            _ => {}
+        }
+    }
+    let expr = value.unwrap_or_else(Expression::null);
+    if is_negative {
+        Ok(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr: Box::new(expr),
+        }))
+    } else {
+        Ok(expr)
+    }
+}
+
+fn java_switch_label_match(value_name: &str, label: Expression) -> Expression {
+    java_binary(BinOp::Eq, Expression::ident(value_name), label)
+}
+
+fn java_or_exprs(mut exprs: Vec<Expression>) -> Option<Expression> {
+    let first = exprs.pop()?;
+    Some(
+        exprs
+            .into_iter()
+            .fold(first, |acc, expr| java_binary(BinOp::Or, expr, acc)),
+    )
+}
+
+fn java_var_decl(name: &str, init: Option<Expression>) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init,
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+fn java_assign_stmt(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value,
+    })
+}
+
+fn walk_switch_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut inner = pair.into_inner();
+    let subject = walk_expr_inner(&mut inner)?;
+    let mut arms: Vec<(Vec<Expression>, Expression)> = Vec::new();
+    let mut default_expr: Option<Expression> = None;
+
+    for arm in inner {
+        if arm.as_rule() != Rule::switch_expr_arm {
+            continue;
+        }
+        let mut labels = Vec::new();
+        let mut value = None;
+        let mut is_default = false;
+        let mut ai = arm.into_inner().peekable();
+        let src = ai
+            .peek()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default();
+        if src.trim() == "default" {
+            is_default = true;
+            ai.next();
+        }
+        for p in ai {
+            match p.as_rule() {
+                Rule::switch_label => {
+                    labels.push(java_switch_label_expr(walk_switch_label(p)?));
+                }
+                Rule::switch_rule_body => {
+                    value = java_switch_rule_body_expr(p)?;
+                }
+                _ => {}
+            }
+        }
+        if let Some(expr) = value {
+            if is_default || labels.is_empty() {
+                default_expr = Some(expr);
+            } else {
+                arms.push((labels, expr));
+            }
         }
     }
 
-    Ok(StmtKind::Switch {
-        expr: switch_expr,
-        cases,
-        default,
-    })
+    let mut result = default_expr.unwrap_or_else(Expression::null);
+    for (labels, value) in arms.into_iter().rev() {
+        let cond = java_or_exprs(
+            labels
+                .into_iter()
+                .map(|label| java_binary(BinOp::Eq, subject.clone(), label))
+                .collect(),
+        )
+        .unwrap_or_else(|| Expression::bool(false));
+        result = java_ternary(cond, value, result);
+    }
+    Ok(result)
+}
+
+fn java_switch_rule_body_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::expression => return Ok(Some(walk_expression(p)?)),
+            Rule::expression_statement => {
+                if let Some(expr_p) = p.into_inner().next() {
+                    return Ok(Some(walk_expression(expr_p)?));
+                }
+            }
+            Rule::block_statement => {
+                for stmt_pair in p.into_inner() {
+                    if stmt_pair.as_rule() == Rule::yield_statement {
+                        let expr = stmt_pair
+                            .into_inner()
+                            .find(|inner| !is_kw(inner.as_rule()))
+                            .map(walk_expression)
+                            .transpose()?;
+                        return Ok(expr);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -1367,11 +1611,20 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::instanceof_expression => walk_instanceof(pair),
         Rule::unary_expression => walk_unary(pair),
         Rule::cast_expression => {
-            // (Type)expr — erase cast, return expr
             let mut ci = pair.into_inner();
-            let _cast_type = ci.next(); // cast_type
-            if let Some(operand) = ci.next() {
-                walk_expression(operand)
+            let cast_type = ci.next(); // cast_type
+            if let (Some(cast_type), Some(operand)) = (cast_type, ci.next()) {
+                let expr = walk_expression(operand)?;
+                let ty = cast_type.as_str();
+                if matches!(ty, "int" | "long" | "short" | "byte" | "char") {
+                    Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_trunc_cast")),
+                        args: vec![Argument::positional(expr)],
+                        optional: false,
+                    }))
+                } else {
+                    Ok(expr)
+                }
             } else {
                 Ok(Expression::null())
             }
@@ -1380,7 +1633,7 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::primary_chain => walk_primary_chain(pair),
         Rule::primary_atom => walk_primary_atom(pair),
         Rule::lambda_expression => walk_lambda(pair),
-        Rule::switch_expression => Ok(Expression::null()), // simplification
+        Rule::switch_expression => walk_switch_expression(pair),
         _ => {
             let mut inner = pair.into_inner();
             if let Some(first) = inner.next() {
@@ -1446,6 +1699,16 @@ fn walk_binop(pair: Pair<Rule>) -> Result<Expression, String> {
     while let Some(op_pair) = inner.next() {
         let rhs = walk_expression(inner.next().ok_or("binop: missing rhs")?)?;
         let op = str_to_binop(op_pair.as_str().trim());
+        if op == BinOp::Add
+            && (is_java_string_concat_operand(&left) || is_java_string_concat_operand(&rhs))
+        {
+            left = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_string_concat")),
+                args: vec![Argument::positional(left), Argument::positional(rhs)],
+                optional: false,
+            });
+            continue;
+        }
         left = Expression::new(ExprKind::Binary {
             op,
             left: Box::new(left),
@@ -1453,6 +1716,16 @@ fn walk_binop(pair: Pair<Rule>) -> Result<Expression, String> {
         });
     }
     Ok(left)
+}
+
+fn is_java_string_concat_operand(expr: &Expression) -> bool {
+    match expr.kind {
+        ExprKind::Lit(Literal::Str(_)) => true,
+        ExprKind::Call { ref callee, .. } => {
+            matches!(callee.kind, ExprKind::Ident(ref name) if name == "__java_string_concat")
+        }
+        _ => false,
+    }
 }
 
 fn walk_instanceof(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -1653,10 +1926,88 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    if java_expr_dotted_name(&receiver).as_deref() == Some("java.math.BigInteger")
+        && method == "valueOf"
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_bigint")),
+            args,
+            optional: false,
+        });
+    }
+
+    // `List.remove(int)` and `List.remove(Object)` are distinct Java overloads.
+    // The boxed form is explicit in the parsed tree, so preserve that distinction
+    // before profile dispatch erases the receiver type.
+    if method == "remove"
+        && args.len() == 1
+        && matches!(
+            args[0].value.kind,
+            ExprKind::Call { ref callee, .. }
+                if matches!(callee.kind, ExprKind::Ident(ref name) if name == "Integer.valueOf")
+        )
+    {
+        let mut call_args = Vec::with_capacity(2);
+        call_args.push(Argument::positional(receiver));
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_list_remove_value")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if let Some(type_name) = java_qualified_static_type(&receiver) {
+        if type_name == "BigInteger" && method == "valueOf" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_bigint")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "Comparator" {
+            if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
+                return expr;
+            }
+        }
+        if type_name == "String" && method == "valueOf" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_string_value_of")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "String" && method == "format" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_string_format")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "String" && method == "join" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_string_join")),
+                args,
+                optional: false,
+            });
+        }
+        let dotted = format!("{}.{}", type_name, method);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(&dotted)),
+            args,
+            optional: false,
+        });
+    }
+
     // Static type method calls: Integer.parseInt("42") → call "Integer.parseInt"
     // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
     if let ExprKind::Ident(ref type_name) = receiver.kind {
         if is_java_type_or_util(type_name) {
+            if type_name == "Comparator" {
+                if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
+                    return expr;
+                }
+            }
             if type_name == "String" && method == "valueOf" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_string_value_of")),
@@ -1687,6 +2038,16 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    if let ExprKind::Ident(ref type_name) = receiver.kind {
+        if type_name == "BigInteger" && method == "valueOf" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_bigint")),
+                args,
+                optional: false,
+            });
+        }
+    }
+
     if method == "toCharArray" && args.is_empty() {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_to_char_array")),
@@ -1706,6 +2067,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
+    if method == "reversed" && args.is_empty() {
+        return java_comparator_reversed(receiver);
+    }
+
+    if method == "thenComparing" && args.len() == 1 {
+        return java_comparator_then_comparing(receiver, args[0].value.clone());
+    }
+
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
@@ -1715,6 +2084,168 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         args,
         optional: false,
     })
+}
+
+fn java_expr_dotted_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { object, field, .. } => {
+            let mut prefix = java_expr_dotted_name(object)?;
+            prefix.push('.');
+            prefix.push_str(field);
+            Some(prefix)
+        }
+        _ => None,
+    }
+}
+
+fn normalise_comparator_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    match method {
+        "naturalOrder" if args.is_empty() => Some(java_natural_comparator(false)),
+        "reverseOrder" if args.is_empty() => Some(java_natural_comparator(true)),
+        "comparing" if args.len() == 1 => Some(java_comparing_comparator(args[0].value.clone())),
+        _ => None,
+    }
+}
+
+fn java_lambda_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn java_two_arg_lambda(body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![java_lambda_param("__a__"), java_lambda_param("__b__")],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+fn java_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn java_ternary(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then_expr),
+        else_: Box::new(else_expr),
+    })
+}
+
+fn java_call(callee: Expression, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn java_compare_expr(left: Expression, right: Expression, reverse: bool) -> Expression {
+    let (less_value, greater_value) = if reverse { (1, -1) } else { (-1, 1) };
+    java_ternary(
+        java_binary(BinOp::Lt, left.clone(), right.clone()),
+        Expression::int(less_value),
+        java_ternary(
+            java_binary(BinOp::Gt, left, right),
+            Expression::int(greater_value),
+            Expression::int(0),
+        ),
+    )
+}
+
+fn java_natural_comparator(reverse: bool) -> Expression {
+    java_two_arg_lambda(java_compare_expr(
+        Expression::ident("__a__"),
+        Expression::ident("__b__"),
+        reverse,
+    ))
+}
+
+fn java_key_compare_expr(key_fn: Expression, left_name: &str, right_name: &str) -> Expression {
+    let left_key = java_call(key_fn.clone(), vec![Expression::ident(left_name)]);
+    let right_key = java_call(key_fn, vec![Expression::ident(right_name)]);
+    java_compare_expr(left_key, right_key, false)
+}
+
+fn java_comparing_comparator(key_fn: Expression) -> Expression {
+    java_two_arg_lambda(java_key_compare_expr(key_fn, "__a__", "__b__"))
+}
+
+fn java_comparator_call(comparator: Expression, left_name: &str, right_name: &str) -> Expression {
+    java_call(
+        comparator,
+        vec![Expression::ident(left_name), Expression::ident(right_name)],
+    )
+}
+
+fn java_comparator_reversed(comparator: Expression) -> Expression {
+    java_two_arg_lambda(java_comparator_call(comparator, "__b__", "__a__"))
+}
+
+fn java_comparator_then_comparing(comparator: Expression, next: Expression) -> Expression {
+    let primary_for_cond = java_comparator_call(comparator.clone(), "__a__", "__b__");
+    let primary_for_result = java_comparator_call(comparator, "__a__", "__b__");
+    let secondary = match &next.kind {
+        ExprKind::Lambda { params, .. } if params.len() == 2 => {
+            java_comparator_call(next, "__a__", "__b__")
+        }
+        _ => java_key_compare_expr(next, "__a__", "__b__"),
+    };
+    java_two_arg_lambda(java_ternary(
+        java_binary(BinOp::NotEq, primary_for_cond, Expression::int(0)),
+        primary_for_result,
+        secondary,
+    ))
+}
+
+fn java_qualified_static_type(expr: &Expression) -> Option<&str> {
+    let mut parts = Vec::new();
+    collect_member_chain(expr, &mut parts)?;
+    if parts.len() < 2 {
+        return None;
+    }
+    if !(parts.starts_with(&["java", "util"]) || parts.starts_with(&["java", "lang"])) {
+        return None;
+    }
+    let type_name = parts.last().copied()?;
+    if is_java_type_or_util(type_name) {
+        Some(type_name)
+    } else {
+        None
+    }
+}
+
+fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> Option<()> {
+    match expr.kind {
+        ExprKind::Ident(ref name) => {
+            parts.push(name.as_str());
+            Some(())
+        }
+        ExprKind::Member {
+            ref object,
+            ref field,
+            ..
+        } => {
+            collect_member_chain(object, parts)?;
+            parts.push(field.as_str());
+            Some(())
+        }
+        _ => None,
+    }
 }
 
 fn is_java_type_or_util(name: &str) -> bool {
@@ -1731,14 +2262,22 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "String"
             | "Math"
             | "Arrays"
+            | "List"
+            | "Set"
+            | "Map"
             | "Collections"
             | "Objects"
             | "Optional"
+            | "IntStream"
+            | "LongStream"
+            | "DoubleStream"
             | "Stream"
+            | "Collectors"
             | "System"
             | "Thread"
             | "Runtime"
             | "Class"
+            | "Comparator"
     )
 }
 
@@ -1747,7 +2286,7 @@ fn walk_primary_atom(pair: Pair<Rule>) -> Result<Expression, String> {
     match inner.as_rule() {
         Rule::new_expression => walk_new(inner),
         Rule::array_creation => walk_array_creation(inner),
-        Rule::switch_expression => Ok(Expression::null()),
+        Rule::switch_expression => walk_switch_expression(inner),
         Rule::lambda_expression => walk_lambda(inner),
         Rule::paren_expression => walk_expression(inner.into_inner().next().ok_or("paren: empty")?),
         Rule::literal => walk_literal(inner),
@@ -1788,15 +2327,61 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 return walk_initializer_as_array(p);
             }
             Rule::array_dims => {
-                // new int[5] → __new_array(5)
-                if let Some(size_p) = p.into_inner().next() {
-                    if let Ok(sz) = walk_expression(size_p) {
-                        return Ok(Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident("__new_array")),
-                            args: vec![Argument::positional(sz)],
-                            optional: false,
-                        }));
+                let mut sizes = Vec::new();
+                let mut initializer = None;
+                for dim in p.into_inner() {
+                    match dim.as_rule() {
+                        Rule::expression => {
+                            if let Ok(size) = walk_expression(dim) {
+                                sizes.push(size);
+                            }
+                        }
+                        Rule::array_initializer => initializer = Some(dim),
+                        _ => {}
                     }
+                }
+                if sizes.is_empty() {
+                    if let Some(init) = initializer {
+                        return walk_initializer_as_array(init);
+                    }
+                }
+                if sizes.len() >= 2
+                    && matches!(
+                        class_name.as_str(),
+                        "byte"
+                            | "short"
+                            | "int"
+                            | "long"
+                            | "char"
+                            | "byte[]"
+                            | "short[]"
+                            | "int[]"
+                            | "long[]"
+                            | "char[]"
+                    )
+                {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__new_int_2d_array")),
+                        args: vec![
+                            Argument::positional(sizes[0].clone()),
+                            Argument::positional(sizes[1].clone()),
+                        ],
+                        optional: false,
+                    }));
+                }
+                // new int[5] → __new_array(5)
+                if let Some(sz) = sizes.into_iter().next() {
+                    let callee = match class_name.as_str() {
+                        "boolean" | "boolean[]" => "__new_bool_array",
+                        "byte" | "short" | "int" | "long" | "char" | "byte[]" | "short[]"
+                        | "int[]" | "long[]" | "char[]" => "__new_int_array",
+                        _ => "__new_array",
+                    };
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
+                        args: vec![Argument::positional(sz)],
+                        optional: false,
+                    }));
                 }
             }
             Rule::anonymous_class_body => {
@@ -1818,14 +2403,22 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_array_creation(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
-    let _prim_type = inner.next();
+    let prim_type = inner
+        .next()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "Object".to_string());
     for p in inner {
         match p.as_rule() {
             Rule::array_initializer => return walk_initializer_as_array(p),
             Rule::expression => {
                 let sz = walk_expression(p)?;
+                let callee = match prim_type.as_str() {
+                    "boolean" => "__new_bool_array",
+                    "byte" | "short" | "int" | "long" | "char" => "__new_int_array",
+                    _ => "__new_array",
+                };
                 return Ok(Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__new_array")),
+                    callee: Box::new(Expression::ident(callee)),
                     args: vec![Argument::positional(sz)],
                     optional: false,
                 }));
@@ -1876,13 +2469,14 @@ fn walk_super_call(pair: Pair<Rule>) -> Result<Expression, String> {
 fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let obj = inner.next().ok_or("method ref: missing object")?;
+    let obj_name = obj.as_str().to_string();
     let method = inner
         .next()
         .ok_or("method ref: missing method")?
         .as_str()
         .to_string();
 
-    let obj_expr = walk_expression(obj)?;
+    let obj_expr = Expression::ident(&obj_name);
     if method == "new" {
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -1898,6 +2492,96 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::New {
                 class: Box::new(obj_expr),
                 args: vec![],
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
+    if obj_name == "Math" {
+        let callee = format!("{}.{}", obj_name, method);
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&callee)),
+                args: vec![Argument::positional(Expression::ident("__value__"))],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
+    if matches!(
+        (obj_name.as_str(), method.as_str()),
+        ("Integer", "parseInt")
+            | ("Integer", "valueOf")
+            | ("Long", "parseLong")
+            | ("Double", "parseDouble")
+            | ("String", "valueOf")
+    ) {
+        let callee = format!("{}.{}", obj_name, method);
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&callee)),
+                args: vec![Argument::positional(Expression::ident("__value__"))],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
+    if matches!(
+        (obj_name.as_str(), method.as_str()),
+        ("String", "length")
+            | ("String", "toString")
+            | ("String", "toUpperCase")
+            | ("String", "toLowerCase")
+            | ("Integer", "intValue")
+            | ("Long", "longValue")
+            | ("Double", "doubleValue")
+            | ("Double", "intValue")
+            | ("Collection", "stream")
+    ) {
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("__value__")),
+                    field: method,
+                    null_safe: false,
+                })),
+                args: vec![],
+                optional: false,
             }))),
             is_async: false,
             captures: vec![],
@@ -2195,6 +2879,375 @@ fn hoist_java_nested_types_from_stmts(body: &mut [Statement], hoisted: &mut Vec<
     }
 }
 
+fn rewrite_java_user_tostring_calls(body: &mut [Statement]) {
+    let mut tostring_classes = std::collections::HashSet::new();
+    collect_java_tostring_classes(body, &mut tostring_classes);
+    rewrite_java_tostring_stmts(
+        body,
+        &tostring_classes,
+        None,
+        &mut std::collections::HashMap::new(),
+    );
+}
+
+fn collect_java_tostring_classes(body: &[Statement], out: &mut std::collections::HashSet<String>) {
+    for stmt in body {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            if members.iter().any(|member| {
+                matches!(
+                    member,
+                    ClassMember::Method(method)
+                        if matches!(&method.kind, StmtKind::FunctionDecl { name, .. } if name == "toString")
+                )
+            }) {
+                out.insert(name.clone());
+            }
+        }
+    }
+}
+
+fn rewrite_java_tostring_stmts(
+    stmts: &mut [Statement],
+    tostring_classes: &std::collections::HashSet<String>,
+    current_class: Option<&str>,
+    locals: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { name, members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Constructor { params, body, .. } => {
+                            let mut local_types = params
+                                .iter()
+                                .filter_map(|p| {
+                                    p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
+                                })
+                                .collect();
+                            rewrite_java_tostring_stmts(
+                                body,
+                                tostring_classes,
+                                Some(name),
+                                &mut local_types,
+                            );
+                        }
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind {
+                                let mut local_types = params
+                                    .iter()
+                                    .filter_map(|p| {
+                                        p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
+                                    })
+                                    .collect();
+                                rewrite_java_tostring_stmts(
+                                    body,
+                                    tostring_classes,
+                                    Some(name),
+                                    &mut local_types,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        rewrite_java_tostring_expr(init, tostring_classes, current_class, locals);
+                    }
+                    if let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init) {
+                        if name.starts_with("__java_switch_value_") {
+                            if let ExprKind::Ident(source_name) = &init.kind {
+                                if let Some(type_hint) = locals.get(source_name).cloned() {
+                                    locals.insert(name.clone(), type_hint);
+                                }
+                            }
+                        }
+                    }
+                    if let (BindingPattern::Ident(name), Some(type_hint)) =
+                        (&decl.pattern, &decl.type_hint)
+                    {
+                        locals.insert(name.clone(), type_hint.clone());
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                rewrite_java_tostring_expr(value, tostring_classes, current_class, locals);
+                for target in targets {
+                    rewrite_java_tostring_expr(target, tostring_classes, current_class, locals);
+                }
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_java_tostring_expr(value, tostring_classes, current_class, locals);
+                rewrite_java_tostring_expr(target, tostring_classes, current_class, locals);
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                rewrite_java_tostring_expr(expr, tostring_classes, current_class, locals);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                rewrite_java_tostring_expr(cond, tostring_classes, current_class, locals);
+                rewrite_java_tostring_stmts(
+                    then_body,
+                    tostring_classes,
+                    current_class,
+                    &mut locals.clone(),
+                );
+                for (elif_cond, elif_body) in elifs {
+                    rewrite_java_tostring_expr(elif_cond, tostring_classes, current_class, locals);
+                    rewrite_java_tostring_stmts(
+                        elif_body,
+                        tostring_classes,
+                        current_class,
+                        &mut locals.clone(),
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    rewrite_java_tostring_stmts(
+                        else_body,
+                        tostring_classes,
+                        current_class,
+                        &mut locals.clone(),
+                    );
+                }
+            }
+            StmtKind::While { cond, body, .. } => {
+                rewrite_java_tostring_expr(cond, tostring_classes, current_class, locals);
+                rewrite_java_tostring_stmts(
+                    body,
+                    tostring_classes,
+                    current_class,
+                    &mut locals.clone(),
+                );
+            }
+            StmtKind::Block(body) => {
+                rewrite_java_tostring_stmts(
+                    body,
+                    tostring_classes,
+                    current_class,
+                    &mut locals.clone(),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_tostring_expr(
+    expr: &mut Expression,
+    tostring_classes: &std::collections::HashSet<String>,
+    current_class: Option<&str>,
+    locals: &std::collections::HashMap<String, String>,
+) {
+    if let Some(replacement) = java_bigint_constant_replacement(expr) {
+        *expr = replacement;
+        return;
+    }
+
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in &mut *args {
+                rewrite_java_tostring_expr(&mut arg.value, tostring_classes, current_class, locals);
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                rewrite_java_tostring_expr(object, tostring_classes, current_class, locals);
+                if let Some(name) = java_bigint_method_name(field) {
+                    if java_expr_is_bigint(object, locals) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(name)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if field == "toString"
+                    && java_expr_has_user_tostring(object, tostring_classes, current_class, locals)
+                {
+                    *field = "tostring".to_string();
+                }
+            } else {
+                rewrite_java_tostring_expr(callee, tostring_classes, current_class, locals);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_java_tostring_expr(object, tostring_classes, current_class, locals);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_tostring_expr(object, tostring_classes, current_class, locals);
+            rewrite_java_tostring_expr(index, tostring_classes, current_class, locals);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_tostring_expr(left, tostring_classes, current_class, locals);
+            rewrite_java_tostring_expr(right, tostring_classes, current_class, locals);
+            rewrite_java_switch_enum_label(left, right, locals);
+            rewrite_java_switch_enum_label(right, left, locals);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            rewrite_java_tostring_expr(inner, tostring_classes, current_class, locals);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_tostring_expr(value, tostring_classes, current_class, locals);
+            rewrite_java_tostring_expr(target, tostring_classes, current_class, locals);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_java_tostring_expr(cond, tostring_classes, current_class, locals);
+            rewrite_java_tostring_expr(then, tostring_classes, current_class, locals);
+            rewrite_java_tostring_expr(else_, tostring_classes, current_class, locals);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_tostring_expr(
+                    &mut elem.value,
+                    tostring_classes,
+                    current_class,
+                    locals,
+                );
+            }
+        }
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                rewrite_java_tostring_expr(&mut arg.value, tostring_classes, current_class, locals);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_switch_enum_label(
+    maybe_switch_value: &Expression,
+    maybe_label: &mut Expression,
+    locals: &std::collections::HashMap<String, String>,
+) {
+    let switch_type = match &maybe_switch_value.kind {
+        ExprKind::Ident(name) if name.starts_with("__java_switch_value_") => locals.get(name),
+        _ => None,
+    };
+    let Some(type_hint) = switch_type else {
+        return;
+    };
+    let ExprKind::Ident(label) = &maybe_label.kind else {
+        return;
+    };
+    if label.starts_with("__") {
+        return;
+    }
+    *maybe_label = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(java_type_simple_name(type_hint))),
+        field: label.clone(),
+        null_safe: false,
+    });
+}
+
+fn java_bigint_method_name(method: &str) -> Option<&'static str> {
+    match method {
+        "toString" => Some("__java_bigint_to_string"),
+        "add" => Some("__java_bigint_add"),
+        "subtract" => Some("__java_bigint_subtract"),
+        "multiply" => Some("__java_bigint_multiply"),
+        "mod" => Some("__java_bigint_mod"),
+        "gcd" => Some("__java_bigint_gcd"),
+        "pow" => Some("__java_bigint_pow"),
+        "compareTo" => Some("__java_bigint_compare_to"),
+        "negate" => Some("__java_bigint_negate"),
+        "abs" => Some("__java_bigint_abs"),
+        "signum" => Some("__java_bigint_signum"),
+        "max" => Some("__java_bigint_max"),
+        "min" => Some("__java_bigint_min"),
+        "bitLength" => Some("__java_bigint_bit_length"),
+        "testBit" => Some("__java_bigint_test_bit"),
+        "shiftLeft" => Some("__java_bigint_shift_left"),
+        "shiftRight" => Some("__java_bigint_shift_right"),
+        "and" => Some("__java_bigint_and"),
+        "or" => Some("__java_bigint_or"),
+        "xor" => Some("__java_bigint_xor"),
+        "not" => Some("__java_bigint_not"),
+        "isProbablePrime" => Some("__java_bigint_is_probable_prime"),
+        "nextProbablePrime" => Some("__java_bigint_next_probable_prime"),
+        _ => None,
+    }
+}
+
+fn java_expr_is_bigint(
+    expr: &Expression,
+    locals: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => locals
+            .get(name)
+            .is_some_and(|type_hint| java_type_simple_name(type_hint) == "BigInteger"),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => java_type_simple_name(name) == "BigInteger",
+            ExprKind::Member { .. } => {
+                java_qualified_static_type(class).is_some_and(|name| name == "BigInteger")
+            }
+            _ => false,
+        },
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => {
+                name.starts_with("__java_bigint") || name == "BigInteger.valueOf"
+            }
+            _ => false,
+        },
+        _ => java_bigint_constant_replacement(expr).is_some(),
+    }
+}
+
+fn java_bigint_constant_replacement(expr: &Expression) -> Option<Expression> {
+    if let ExprKind::Member { object, field, .. } = &expr.kind {
+        let is_bigint_type = java_qualified_static_type(object)
+            .is_some_and(|name| name == "BigInteger")
+            || java_expr_dotted_name(object).as_deref() == Some("java.math.BigInteger");
+        if is_bigint_type {
+            let value = match field.as_str() {
+                "ZERO" => "0",
+                "ONE" => "1",
+                "TEN" => "10",
+                _ => return None,
+            };
+            return Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_bigint")),
+                args: vec![Argument::positional(Expression::int(
+                    value.parse::<i64>().unwrap_or(0),
+                ))],
+                optional: false,
+            }));
+        }
+    }
+    None
+}
+
+fn java_type_simple_name(type_name: &str) -> &str {
+    type_name.rsplit('.').next().unwrap_or(type_name)
+}
+
+fn java_expr_has_user_tostring(
+    expr: &Expression,
+    tostring_classes: &std::collections::HashSet<String>,
+    current_class: Option<&str>,
+    locals: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => locals
+            .get(name)
+            .is_some_and(|type_hint| tostring_classes.contains(type_hint)),
+        ExprKind::This => current_class.is_some_and(|name| tostring_classes.contains(name)),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => tostring_classes.contains(name),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn normalize_java_class_tree(body: &mut [Statement]) {
     use std::collections::HashMap;
 
@@ -2379,10 +3432,7 @@ fn normalize_java_stmts(
     }
 }
 
-fn collect_binding_names(
-    pattern: &BindingPattern,
-    locals: &mut std::collections::HashSet<String>,
-) {
+fn collect_binding_names(pattern: &BindingPattern, locals: &mut std::collections::HashSet<String>) {
     match pattern {
         BindingPattern::Ident(name) => {
             locals.insert(name.clone());
@@ -2483,19 +3533,29 @@ fn normalize_java_expr(
 fn extract_ref_name(pair: &Pair<Rule>) -> String {
     match pair.as_rule() {
         Rule::type_ref => {
+            let dims = pair
+                .clone()
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::dim_suffix)
+                .count();
             for p in pair.clone().into_inner() {
                 match p.as_rule() {
-                    Rule::primitive_type => return p.as_str().to_string(),
-                    Rule::ref_type => return extract_ref_name(&p),
+                    Rule::primitive_type => return format!("{}{}", p.as_str(), "[]".repeat(dims)),
+                    Rule::ref_type => {
+                        return format!("{}{}", extract_ref_name(&p), "[]".repeat(dims));
+                    }
                     _ => {}
                 }
             }
-            pair.as_str()
+            let base = pair
+                .as_str()
                 .split('<')
                 .next()
                 .unwrap_or("Object")
                 .trim()
-                .to_string()
+                .trim_end_matches("[]")
+                .to_string();
+            format!("{}{}", base, "[]".repeat(dims))
         }
         Rule::ref_type => {
             for p in pair.clone().into_inner() {
