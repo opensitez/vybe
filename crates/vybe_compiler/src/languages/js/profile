@@ -74,6 +74,10 @@ ambient_this_binding = true
 # ECMA-262 §10.2.1.1: a missing argument is `undefined`, distinct from an
 # explicitly-passed `null`, so `f(null)` is one argument and `f()` is none.
 missing_arg_is_undefined = true
+# namespaceplan.md Phase 1: JS namespace-shaped entry points resolve through
+# the common resolver (compiler::resolver) instead of the legacy hardcoded
+# arms. JS is the reference migration; other languages flip this per phase.
+uses_common_resolver = true
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class instead of the legacy compile_class orchestration.
 # Pilot for the classnormalization.md migration — other languages opt
@@ -406,12 +410,12 @@ toLocaleString  = { emit = "host:ecma:number:toLocaleString",  min_args = 0, max
 # (builtin_types.rs) so they work for arrays AND don't intercept
 # user-defined push()/pop() on plain objects.
 
-shift         = { emit = "common:collections.shift",   min_args = 0, max_args = 0 }
-reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
+shift         = { emit = "host:ecma:array:shift",   min_args = 0, max_args = 0 }
+join          = { emit = "host:ecma:array:join",    min_args = 0, max_args = 1 }
 fill          = { emit = "host:ecma:array:fill",    min_args = 1, max_args = 3 }
 unshift       = { emit = "host:ecma:array:unshift", min_args = 1, max_args = 255 }
 splice        = { emit = "host:ecma:array:splice",  min_args = 1, max_args = 255 }
+reverse       = { emit = "host:ecma:array:reverse", min_args = 0, max_args = 0 }
 flat          = { emit = "host:ecma:array:flat",    min_args = 0, max_args = 1 }
 entries       = { emit = "host:ecma:array:entries",   min_args = 0, max_args = 0 }
 findLast      = { emit = "host:ecma:array:findLast",      min_args = 1, max_args = 1 }
@@ -486,6 +490,26 @@ map_size = "dict_keys, array_length"
 #
 # `kind = "namespace"` ≡ `import * as <alias> from "<module>"`.
 # ────────────────────────────────────────────────────────────────────────────
+
+# Component-Model package roots (namespaceplan.md Phase 1): literal host
+# prefix chains (`vybe.gui.setProperty(...)`, `wasi.cli.log(...)`) resolve
+# through the common resolver's package-root step — the same data the
+# hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
+
+[[esm_default]]
+kind = "package-root"
+prefix = "vybe"
+module_root = "vybe:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasi"
+module_root = "wasi:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasm"
+module_root = "wasm:"
 
 [[esm_default]]
 kind = "namespace"

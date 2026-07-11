@@ -1711,7 +1711,13 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let is_generator = has_generator_marker || body_contains_yield(&body);
-    Ok(wrap_generator_if_needed(name, params, body, is_async, is_generator))
+    Ok(wrap_generator_if_needed(
+        name,
+        params,
+        body,
+        is_async,
+        is_generator,
+    ))
 }
 
 fn walk_params_with_prologue(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Statement>), String> {
@@ -2105,7 +2111,16 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     is_generator = body_contains_yield(&body);
                 }
                 let wrapped = wrap_generator_if_needed(name, params, body, is_async, is_generator);
-                if let StmtKind::FunctionDecl { name, params, body, is_async, is_generator, is_sub, .. } = wrapped {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    params,
+                    body,
+                    is_async,
+                    is_generator,
+                    is_sub,
+                    ..
+                } = wrapped
+                {
                     Ok(ClassMember::Method(Box::new(Statement::new(
                         StmtKind::FunctionDecl {
                             name,
@@ -2120,7 +2135,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                             is_async,
                             is_generator,
                             is_sub,
-                        }
+                        },
                     ))))
                 } else {
                     unreachable!()
@@ -5232,15 +5247,28 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
             | ExprKind::Await(i)
             | ExprKind::Void(i)
             | ExprKind::Delete(i) => rwe(i),
-            ExprKind::Binary { left: a, right: b, .. }
+            ExprKind::Binary {
+                left: a, right: b, ..
+            }
             | ExprKind::NullCoalesce { left: a, right: b }
-            | ExprKind::Assign { target: a, value: b }
-            | ExprKind::Walrus { target: a, value: b }
-            | ExprKind::Range { start: a, end: b, .. } => {
+            | ExprKind::Assign {
+                target: a,
+                value: b,
+            }
+            | ExprKind::Walrus {
+                target: a,
+                value: b,
+            }
+            | ExprKind::Range {
+                start: a, end: b, ..
+            } => {
                 rwe(a);
                 rwe(b);
             }
-            ExprKind::StaticAccess { class: a, member: b } => {
+            ExprKind::StaticAccess {
+                class: a,
+                member: b,
+            } => {
                 rwe(a);
                 rwe(b);
             }
@@ -5316,7 +5344,11 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                     rwe(&mut a.body);
                 }
             }
-            ExprKind::Comprehension { element, generators, .. } => {
+            ExprKind::Comprehension {
+                element,
+                generators,
+                ..
+            } => {
                 rwe(element);
                 for g in generators {
                     rwe(&mut g.iter);
@@ -5326,12 +5358,20 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 }
             }
             ExprKind::Slice { lower, upper, step } => {
-                if let Some(x) = lower { rwe(x); }
-                if let Some(x) = upper { rwe(x); }
-                if let Some(x) = step { rwe(x); }
+                if let Some(x) = lower {
+                    rwe(x);
+                }
+                if let Some(x) = upper {
+                    rwe(x);
+                }
+                if let Some(x) = step {
+                    rwe(x);
+                }
             }
             ExprKind::Yield(x) => {
-                if let Some(y) = x { rwe(y); }
+                if let Some(y) = x {
+                    rwe(y);
+                }
             }
             ExprKind::YieldFrom(x) => rwe(x),
             _ => {}
@@ -5356,44 +5396,93 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 }
             }
             StmtKind::Return(e) => {
-                if let Some(x) = e { rwe(x); }
+                if let Some(x) = e {
+                    rwe(x);
+                }
             }
-            StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
                 rwe(cond);
-                for s in then_body { rws(s); }
+                for s in then_body {
+                    rws(s);
+                }
                 for (c, b) in elifs {
                     rwe(c);
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
                 if let Some(b) = else_body {
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
             }
-            StmtKind::While { cond, body, else_body } => {
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => {
                 rwe(cond);
-                for s in body { rws(s); }
+                for s in body {
+                    rws(s);
+                }
                 if let Some(b) = else_body {
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
             }
             StmtKind::DoWhile { body, cond, .. } => {
-                for s in body { rws(s); }
+                for s in body {
+                    rws(s);
+                }
                 rwe(cond);
             }
-            StmtKind::For { init, cond, update, body } => {
-                if let Some(s) = init { rws(s); }
-                if let Some(e) = cond { rwe(e); }
-                if let Some(e) = update { rwe(e); }
-                for s in body { rws(s); }
-            }
-            StmtKind::ForIn { iter, body, else_body, .. } => {
-                rwe(iter);
-                for s in body { rws(s); }
-                if let Some(b) = else_body {
-                    for s in b { rws(s); }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(s) = init {
+                    rws(s);
+                }
+                if let Some(e) = cond {
+                    rwe(e);
+                }
+                if let Some(e) = update {
+                    rwe(e);
+                }
+                for s in body {
+                    rws(s);
                 }
             }
-            StmtKind::Switch { expr, cases, default } => {
+            StmtKind::ForIn {
+                iter,
+                body,
+                else_body,
+                ..
+            } => {
+                rwe(iter);
+                for s in body {
+                    rws(s);
+                }
+                if let Some(b) = else_body {
+                    for s in b {
+                        rws(s);
+                    }
+                }
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 rwe(expr);
                 for c in cases {
                     for cond in &mut c.conditions {
@@ -5406,26 +5495,45 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                             CaseCondition::Comparison { expr, .. } => rwe(expr),
                         }
                     }
-                    for s in &mut c.body { rws(s); }
+                    for s in &mut c.body {
+                        rws(s);
+                    }
                 }
                 if let Some(b) = default {
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
             }
-            StmtKind::Try { body, catches, else_body, finally } => {
-                for s in body { rws(s); }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                for s in body {
+                    rws(s);
+                }
                 for c in catches {
-                    for s in &mut c.body { rws(s); }
+                    for s in &mut c.body {
+                        rws(s);
+                    }
                 }
                 if let Some(b) = else_body {
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
                 if let Some(b) = finally {
-                    for s in b { rws(s); }
+                    for s in b {
+                        rws(s);
+                    }
                 }
             }
             StmtKind::Assign { targets, value } => {
-                for e in targets { rwe(e); }
+                for e in targets {
+                    rwe(e);
+                }
                 rwe(value);
             }
             StmtKind::CompoundAssign { target, value, .. } => {
@@ -5433,33 +5541,55 @@ fn rewrite_this_in_generator_body(stmts: &mut [Statement]) {
                 rwe(value);
             }
             StmtKind::Throw { expr, cause } => {
-                if let Some(e) = expr { rwe(e); }
-                if let Some(e) = cause { rwe(e); }
+                if let Some(e) = expr {
+                    rwe(e);
+                }
+                if let Some(e) = cause {
+                    rwe(e);
+                }
             }
             StmtKind::Labeled { body, .. } => rws(body),
             StmtKind::Echo(es) | StmtKind::Delete(es) => {
-                for e in es { rwe(e); }
+                for e in es {
+                    rwe(e);
+                }
             }
-            StmtKind::Export { declaration, default, .. } => {
-                if let Some(s) = declaration { rws(s); }
-                if let Some(e) = default { rwe(e); }
+            StmtKind::Export {
+                declaration,
+                default,
+                ..
+            } => {
+                if let Some(s) = declaration {
+                    rws(s);
+                }
+                if let Some(e) = default {
+                    rwe(e);
+                }
             }
             StmtKind::With { body, .. }
             | StmtKind::Using { body, .. }
             | StmtKind::Lock { body, .. }
             | StmtKind::NamespaceDecl { body, .. } => {
-                for s in body { rws(s); }
+                for s in body {
+                    rws(s);
+                }
             }
             StmtKind::MatchStatement { subject, cases } => {
                 rwe(subject);
                 for c in cases {
-                    if let Some(e) = &mut c.guard { rwe(e); }
-                    for s in &mut c.body { rws(s); }
+                    if let Some(e) = &mut c.guard {
+                        rwe(e);
+                    }
+                    for s in &mut c.body {
+                        rws(s);
+                    }
                 }
             }
             StmtKind::Assert { test, msg } => {
                 rwe(test);
-                if let Some(e) = msg { rwe(e); }
+                if let Some(e) = msg {
+                    rwe(e);
+                }
             }
             _ => {}
         }
@@ -5489,7 +5619,7 @@ fn wrap_generator(
             is_async,
             is_generator: true,
             is_sub: false,
-        }
+        },
     ))));
 
     let gen_decl = Statement::new(StmtKind::VarDecl {
@@ -5521,14 +5651,12 @@ fn wrap_generator(
     });
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(callee),
-        args: vec![
-            Argument {
-                name: None,
-                value: Expression::ident("__self_captured"),
-                by_ref: false,
-                spread: false,
-            }
-        ],
+        args: vec![Argument {
+            name: None,
+            value: Expression::ident("__self_captured"),
+            by_ref: false,
+            spread: false,
+        }],
         optional: false,
     });
     let ret_stmt = Statement::new(StmtKind::Return(Some(call_expr)));
@@ -5571,4 +5699,3 @@ fn wrap_generator_if_needed(
         }
     }
 }
-
