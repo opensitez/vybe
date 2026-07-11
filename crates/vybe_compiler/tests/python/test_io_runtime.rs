@@ -126,7 +126,7 @@ crate::runtime_case!(
     "True"
 );
 crate::runtime_case!(
-  print_to_stringio,
+    print_to_stringio,
     "import io\nimport sys\nbuf = io.StringIO()\nprint('hi', file=buf)\nprint(buf.getvalue().strip())\n",
     "hi"
 );
@@ -226,8 +226,23 @@ crate::runtime_case!(
     "é"
 );
 
-crate::compile_case!(open_read_write, "f = open(__file__)\ndata = f.read(10)\nf.close()\n");
-crate::compile_case!(open_with_statement, "with open(__file__) as f:\n f.readline()\n");
-crate::compile_case!(open_binary_mode, "with open(__file__, 'rb') as f:\n f.read(1)\n");
-crate::compile_case!(open_write_mode, "import tempfile\nimport os\np = tempfile.mktemp()\nf = open(p, 'w')\nf.write('x')\nf.close()\nos.remove(p)\n");
-crate::compile_case!(io_textiowrapper_reconfigure, "import io\ns = io.StringIO()\nhasattr(s, 'reconfigure')\n");
+crate::compile_case!(
+    open_read_write,
+    "f = open(__file__)\ndata = f.read(10)\nf.close()\n"
+);
+crate::compile_case!(
+    open_with_statement,
+    "with open(__file__) as f:\n f.readline()\n"
+);
+crate::compile_case!(
+    open_binary_mode,
+    "with open(__file__, 'rb') as f:\n f.read(1)\n"
+);
+crate::compile_case!(
+    open_write_mode,
+    "import tempfile\nimport os\np = tempfile.mktemp()\nf = open(p, 'w')\nf.write('x')\nf.close()\nos.remove(p)\n"
+);
+crate::compile_case!(
+    io_textiowrapper_reconfigure,
+    "import io\ns = io.StringIO()\nhasattr(s, 'reconfigure')\n"
+);

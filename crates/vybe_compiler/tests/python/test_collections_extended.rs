@@ -1,6 +1,5 @@
 //! collections.Counter, defaultdict, deque, OrderedDict runtime patterns.
 
-
 crate::runtime_case!(
     counter_from_list,
     "from collections import Counter\nprint(Counter([1, 1, 2]))\n",
@@ -227,8 +226,23 @@ crate::runtime_case!(
     "False"
 );
 
-crate::compile_case!(counter_in_place_add, "from collections import Counter\nc = Counter(a=1)\nc += Counter(a=2)\n");
-crate::compile_case!(deque_maxlen_none, "from collections import deque\nd = deque(maxlen=None)\n");
-crate::compile_case!(ordereddict_popitem, "from collections import OrderedDict\nd = OrderedDict(a=1, b=2)\nd.popitem(last=False)\n");
-crate::compile_case!(chainmap_new_child, "from collections import ChainMap\ncm = ChainMap({'a': 1})\ncm.new_child({'b': 2})\n");
-crate::compile_case!(namedtuple_defaults, "from collections import namedtuple\nP = namedtuple('P', 'x y', defaults=[0])\nP(1)\n");
+crate::compile_case!(
+    counter_in_place_add,
+    "from collections import Counter\nc = Counter(a=1)\nc += Counter(a=2)\n"
+);
+crate::compile_case!(
+    deque_maxlen_none,
+    "from collections import deque\nd = deque(maxlen=None)\n"
+);
+crate::compile_case!(
+    ordereddict_popitem,
+    "from collections import OrderedDict\nd = OrderedDict(a=1, b=2)\nd.popitem(last=False)\n"
+);
+crate::compile_case!(
+    chainmap_new_child,
+    "from collections import ChainMap\ncm = ChainMap({'a': 1})\ncm.new_child({'b': 2})\n"
+);
+crate::compile_case!(
+    namedtuple_defaults,
+    "from collections import namedtuple\nP = namedtuple('P', 'x y', defaults=[0])\nP(1)\n"
+);

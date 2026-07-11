@@ -1,20 +1,31 @@
 //! Extended tuple behaviors: index/count bounds, unpacking, comparison, hash, immutability.
 
-
 crate::runtime_case!(tuple_index_first, "print((10, 20, 30)[0])\n", "10");
 crate::runtime_case!(tuple_index_last, "print((10, 20, 30)[-1])\n", "30");
 crate::runtime_case!(tuple_slice_middle, "print((0, 1, 2, 3)[1:3])\n", "(1, 2)");
-crate::runtime_case!(tuple_slice_step, "print((0, 1, 2, 3, 4)[::2])\n", "(0, 2, 4)");
+crate::runtime_case!(
+    tuple_slice_step,
+    "print((0, 1, 2, 3, 4)[::2])\n",
+    "(0, 2, 4)"
+);
 crate::runtime_case!(tuple_count_value, "print((1, 2, 1, 1).count(1))\n", "3");
 crate::runtime_case!(tuple_count_missing, "print((1, 2, 3).count(9))\n", "0");
-crate::runtime_case!(tuple_index_found, "print(('a', 'b', 'c').index('b'))\n", "1");
+crate::runtime_case!(
+    tuple_index_found,
+    "print(('a', 'b', 'c').index('b'))\n",
+    "1"
+);
 crate::runtime_case!(tuple_len, "print(len((1, 2, 3)))\n", "3");
 crate::runtime_case!(tuple_empty_len, "print(len(()))\n", "0");
 crate::runtime_case!(tuple_concat, "print((1, 2) + (3,))\n", "(1, 2, 3)");
 crate::runtime_case!(tuple_repeat, "print((1,) * 3)\n", "(1, 1, 1)");
 crate::runtime_case!(tuple_membership, "print(2 in (1, 2, 3))\n", "True");
 crate::runtime_case!(tuple_equality, "print((1, 2) == (1, 2))\n", "True");
-crate::runtime_case!(tuple_inequality_len, "print((1, 2) == (1, 2, 3))\n", "False");
+crate::runtime_case!(
+    tuple_inequality_len,
+    "print((1, 2) == (1, 2, 3))\n",
+    "False"
+);
 crate::runtime_case!(tuple_lt_lex, "print((1, 2) < (1, 3))\n", "True");
 crate::runtime_case!(tuple_gt_lex, "print((2, 0) > (1, 9))\n", "True");
 crate::runtime_case!(tuple_bool_nonempty, "print(bool((0,)))\n", "True");
@@ -24,32 +35,93 @@ crate::runtime_case!(tuple_from_str, "print(tuple('ab'))\n", "('a', 'b')");
 crate::runtime_case!(tuple_from_range, "print(tuple(range(3)))\n", "(0, 1, 2)");
 crate::runtime_case!(tuple_nested_index, "print(((1, 2), (3, 4))[1][0])\n", "3");
 crate::runtime_case!(tuple_unpack_two, "a, b = (1, 2)\nprint(a, b)\n", "1 2");
-crate::runtime_case!(tuple_unpack_star, "h, *t = (1, 2, 3)\nprint(h, len(t))\n", "1 2");
-crate::runtime_case!(tuple_unpack_ignore, "a, _, c = (1, 2, 3)\nprint(a, c)\n", "1 3");
+crate::runtime_case!(
+    tuple_unpack_star,
+    "h, *t = (1, 2, 3)\nprint(h, len(t))\n",
+    "1 2"
+);
+crate::runtime_case!(
+    tuple_unpack_ignore,
+    "a, _, c = (1, 2, 3)\nprint(a, c)\n",
+    "1 3"
+);
 crate::runtime_case!(tuple_as_dict_key, "print({(1, 2): 'v'}[(1, 2)])\n", "v");
 crate::runtime_case!(tuple_in_set, "print(len({(1, 2), (1, 2)}))\n", "1");
-crate::runtime_case!(tuple_hash_equal, "print(hash((1, 2)) == hash((1, 2)))\n", "True");
+crate::runtime_case!(
+    tuple_hash_equal,
+    "print(hash((1, 2)) == hash((1, 2)))\n",
+    "True"
+);
 crate::runtime_case!(tuple_single_comma, "print((42,))\n", "(42,)");
 crate::runtime_case!(tuple_literal_no_paren, "print(1, 2)\n", "1 2");
-crate::runtime_case!(tuple_return_from_function, "def f():\n return 1, 2\nprint(f())\n", "(1, 2)");
+crate::runtime_case!(
+    tuple_return_from_function,
+    "def f():\n return 1, 2\nprint(f())\n",
+    "(1, 2)"
+);
 crate::runtime_case!(tuple_swap, "a, b = 1, 2\na, b = b, a\nprint(a, b)\n", "2 1");
-crate::runtime_case!(tuple_compare_nested, "print((1, (2, 3)) < (1, (2, 4)))\n", "True");
-crate::runtime_case!(tuple_contains_mutable_not, "print((1, [2]) == (1, [2]))\n", "False");
+crate::runtime_case!(
+    tuple_compare_nested,
+    "print((1, (2, 3)) < (1, (2, 4)))\n",
+    "True"
+);
+crate::runtime_case!(
+    tuple_contains_mutable_not,
+    "print((1, [2]) == (1, [2]))\n",
+    "False"
+);
 crate::runtime_case!(tuple_iter_sum, "print(sum((1, 2, 3)))\n", "6");
-crate::runtime_case!(tuple_min_max, "print(min((3, 1, 2)), max((3, 1, 2)))\n", "1 3");
-crate::runtime_case!(tuple_any_all, "print(any((0, 1)), all((1, 2)))\n", "True True");
-crate::runtime_case!(tuple_reversed, "print(tuple(reversed((1, 2, 3))))\n", "(3, 2, 1)");
-crate::runtime_case!(tuple_enumerate, "print(list(enumerate((10, 20))))\n", "[(0, 10), (1, 20)]");
-crate::runtime_case!(tuple_zip, "print(list(zip((1, 2), ('a', 'b'))))\n", "[(1, 'a'), (2, 'b')]");
-crate::runtime_case!(tuple_sorted, "print(tuple(sorted((3, 1, 2))))\n", "(1, 2, 3)");
+crate::runtime_case!(
+    tuple_min_max,
+    "print(min((3, 1, 2)), max((3, 1, 2)))\n",
+    "1 3"
+);
+crate::runtime_case!(
+    tuple_any_all,
+    "print(any((0, 1)), all((1, 2)))\n",
+    "True True"
+);
+crate::runtime_case!(
+    tuple_reversed,
+    "print(tuple(reversed((1, 2, 3))))\n",
+    "(3, 2, 1)"
+);
+crate::runtime_case!(
+    tuple_enumerate,
+    "print(list(enumerate((10, 20))))\n",
+    "[(0, 10), (1, 20)]"
+);
+crate::runtime_case!(
+    tuple_zip,
+    "print(list(zip((1, 2), ('a', 'b'))))\n",
+    "[(1, 'a'), (2, 'b')]"
+);
+crate::runtime_case!(
+    tuple_sorted,
+    "print(tuple(sorted((3, 1, 2))))\n",
+    "(1, 2, 3)"
+);
 crate::runtime_case!(tuple_index_negative, "print((10, 20, 30)[-2])\n", "20");
 crate::runtime_case!(tuple_slice_negative, "print((0, 1, 2, 3)[-2:])\n", "(2, 3)");
 crate::runtime_case!(tuple_count_start, "print((1, 2, 1, 1).count(1, 1))\n", "2");
 crate::runtime_case!(tuple_index_start, "print((1, 2, 3, 2).index(2, 2))\n", "3");
-crate::runtime_case!(tuple_unpack_nested, "((a, b), c) = ((1, 2), 3)\nprint(a, b, c)\n", "1 2 3");
+crate::runtime_case!(
+    tuple_unpack_nested,
+    "((a, b), c) = ((1, 2), 3)\nprint(a, b, c)\n",
+    "1 2 3"
+);
 
-crate::compile_case!(tuple_index_missing_raises, "t = (1, 2)\ntry:\n    t.index(9)\nexcept ValueError:\n    pass\n");
-crate::compile_case!(tuple_del_raises, "t = (1, 2)\ntry:\n    del t[0]\nexcept TypeError:\n    pass\n");
-crate::compile_case!(tuple_item_assign_raises, "t = (1, 2)\ntry:\n    t[0] = 9\nexcept TypeError:\n    pass\n");
+crate::compile_case!(
+    tuple_index_missing_raises,
+    "t = (1, 2)\ntry:\n    t.index(9)\nexcept ValueError:\n    pass\n"
+);
+crate::compile_case!(
+    tuple_del_raises,
+    "t = (1, 2)\ntry:\n    del t[0]\nexcept TypeError:\n    pass\n"
+);
+crate::compile_case!(
+    tuple_item_assign_raises,
+    "t = (1, 2)\ntry:\n    t[0] = 9\nexcept TypeError:\n    pass\n"
+);
 crate::compile_case!(tuple_rindex, "t = (1, 2, 3, 2)\nt.rindex(2)\n");
 crate::compile_case!(tuple_index_stop, "t = (1, 2, 3, 2)\nt.index(2, 0, 3)\n");

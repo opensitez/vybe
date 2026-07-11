@@ -1,6 +1,5 @@
 //! Generator send/throw/close, yield from, and iterator protocol edge cases.
 
-
 crate::runtime_case!(
     generator_yield_values,
     "def g():\n yield 1\n yield 2\nprint(list(g()))\n",
@@ -136,11 +135,7 @@ crate::runtime_case!(
     "print(list(filter(None, (0, 1, 0, 2))))\n",
     "[1, 2]"
 );
-crate::runtime_case!(
-    generator_sum,
-    "print(sum(i for i in range(5)))\n",
-    "10"
-);
+crate::runtime_case!(generator_sum, "print(sum(i for i in range(5)))\n", "10");
 crate::runtime_case!(
     generator_any,
     "print(any(i > 3 for i in range(5)))\n",
@@ -151,16 +146,8 @@ crate::runtime_case!(
     "print(all(i >= 0 for i in range(3)))\n",
     "True"
 );
-crate::runtime_case!(
-    generator_max,
-    "print(max(i for i in [3, 1, 2]))\n",
-    "3"
-);
-crate::runtime_case!(
-    generator_min,
-    "print(min(i for i in [3, 1, 2]))\n",
-    "1"
-);
+crate::runtime_case!(generator_max, "print(max(i for i in [3, 1, 2]))\n", "3");
+crate::runtime_case!(generator_min, "print(min(i for i in [3, 1, 2]))\n", "1");
 crate::runtime_case!(
     generator_sorted,
     "print(sorted((i for i in [3, 1, 2])))\n",
@@ -232,8 +219,17 @@ crate::runtime_case!(
     "[1, 3]"
 );
 
-crate::compile_case!(generator_yield_from_generator, "def inner():\n yield 1\ndef outer():\n yield from inner()\nlist(outer())\n");
+crate::compile_case!(
+    generator_yield_from_generator,
+    "def inner():\n yield 1\ndef outer():\n yield from inner()\nlist(outer())\n"
+);
 crate::compile_case!(generator_async_def, "async def ag():\n yield 1\n");
 crate::compile_case!(generator_peek_pattern, "def g():\n yield 1\nit = g()\n");
-crate::compile_case!(generator_throw_while_running, "def g():\n yield 1\n yield 2\nit = g()\nnext(it)\nit.throw(RuntimeError)\n");
-crate::compile_case!(generator_yield_classmethod, "class C:\n @classmethod\n def f(cls):\n  yield cls\nlist(C.f())\n");
+crate::compile_case!(
+    generator_throw_while_running,
+    "def g():\n yield 1\n yield 2\nit = g()\nnext(it)\nit.throw(RuntimeError)\n"
+);
+crate::compile_case!(
+    generator_yield_classmethod,
+    "class C:\n @classmethod\n def f(cls):\n  yield cls\nlist(C.f())\n"
+);

@@ -226,8 +226,20 @@ crate::runtime_case!(
     "[('a', '1'), ('b', '2')]"
 );
 
-crate::compile_case!(csv_register_dialect, "import csv\ncsv.register_dialect('x', delimiter=';')\n");
-crate::compile_case!(html_parser_feed, "from html.parser import HTMLParser\np = HTMLParser()\np.feed('<p>')\n");
-crate::compile_case!(xml_iterparse, "import xml.etree.ElementTree as ET\nET.iterparse\n");
-crate::compile_case!(urllib_request, "import urllib.request\nurllib.request.urlopen\n");
+crate::compile_case!(
+    csv_register_dialect,
+    "import csv\ncsv.register_dialect('x', delimiter=';')\n"
+);
+crate::compile_case!(
+    html_parser_feed,
+    "from html.parser import HTMLParser\np = HTMLParser()\np.feed('<p>')\n"
+);
+crate::compile_case!(
+    xml_iterparse,
+    "import xml.etree.ElementTree as ET\nET.iterparse\n"
+);
+crate::compile_case!(
+    urllib_request,
+    "import urllib.request\nurllib.request.urlopen\n"
+);
 crate::compile_case!(urllib_error, "import urllib.error\nurllib.error.URLError\n");

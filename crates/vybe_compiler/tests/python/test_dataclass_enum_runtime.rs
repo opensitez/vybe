@@ -231,8 +231,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(dataclass_kw_only, "from dataclasses import dataclass, KW_ONLY\n@dataclass(kw_only=True)\nclass P:\n x: int\n");
-crate::compile_case!(enum_unique_decorator, "from enum import Enum, unique\n@unique\nclass E(Enum):\n A = 1\n");
-crate::compile_case!(typeddict_required_notrequired, "from typing import TypedDict, Required, NotRequired\nclass D(TypedDict):\n x: Required[int]\n");
-crate::compile_case!(protocol_runtime, "from typing import Protocol\nclass P(Protocol):\n def m(self) -> int: ...\n");
-crate::compile_case!(enum_strenum, "from enum import StrEnum\nclass E(StrEnum):\n A = 'a'\n");
+crate::compile_case!(
+    dataclass_kw_only,
+    "from dataclasses import dataclass, KW_ONLY\n@dataclass(kw_only=True)\nclass P:\n x: int\n"
+);
+crate::compile_case!(
+    enum_unique_decorator,
+    "from enum import Enum, unique\n@unique\nclass E(Enum):\n A = 1\n"
+);
+crate::compile_case!(
+    typeddict_required_notrequired,
+    "from typing import TypedDict, Required, NotRequired\nclass D(TypedDict):\n x: Required[int]\n"
+);
+crate::compile_case!(
+    protocol_runtime,
+    "from typing import Protocol\nclass P(Protocol):\n def m(self) -> int: ...\n"
+);
+crate::compile_case!(
+    enum_strenum,
+    "from enum import StrEnum\nclass E(StrEnum):\n A = 'a'\n"
+);

@@ -1,6 +1,5 @@
 //! re module extended: compile flags, groups, split, sub, finditer, escape.
 
-
 crate::runtime_case!(
     re_search_group,
     "import re\nm = re.search(r'(\\d+)', 'a123b')\nprint(m.group(1))\n",
@@ -237,7 +236,10 @@ crate::runtime_case!(
     "bad"
 );
 
-crate::compile_case!(re_template_flag, "import re\nre.findall('(a)', 'aba', re.T)\n");
+crate::compile_case!(
+    re_template_flag,
+    "import re\nre.findall('(a)', 'aba', re.T)\n"
+);
 crate::compile_case!(re_debug_flag, "import re\nre.compile('a', re.DEBUG)\n");
 crate::compile_case!(re_locale_flag, "import re\nre.compile(r'\\w', re.L)\n");
 crate::compile_case!(re_unicode_flag, "import re\nre.compile(r'\\w', re.U)\n");

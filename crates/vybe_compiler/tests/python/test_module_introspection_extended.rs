@@ -1,10 +1,6 @@
 //! __name__, __main__, __spec__, module attributes.
 
-crate::runtime_case!(
-    dunder_name_main,
-    "print(__name__)\n",
-    "__main__"
-);
+crate::runtime_case!(dunder_name_main, "print(__name__)\n", "__main__");
 crate::runtime_case!(
     module_name_attr,
     "import json\nprint(json.__name__)\n",
@@ -65,11 +61,7 @@ crate::runtime_case!(
     "import builtins\nprint(hasattr(builtins, 'len'))\n",
     "True"
 );
-crate::runtime_case!(
-    main_guard_false,
-    "print(__name__ == '__main__')\n",
-    "True"
-);
+crate::runtime_case!(main_guard_false, "print(__name__ == '__main__')\n", "True");
 crate::runtime_case!(
     inspect_getmodule,
     "import inspect\nimport json\nprint(inspect.getmodule(json.dumps).__name__)\n",
@@ -227,7 +219,19 @@ crate::runtime_case!(
 );
 
 crate::compile_case!(if_name_main_block, "if __name__ == '__main__':\n pass\n");
-crate::compile_case!(importlib_resources_files, "from importlib import resources\nresources.files('json')\n");
-crate::compile_case!(pkgutil_get_data, "import pkgutil\npkgutil.get_data('json', 'decoder.py')\n");
-crate::compile_case!(module_spec_from_loader, "import importlib.util\nimport json\nimportlib.util.spec_from_loader('x', json.__loader__)\n");
-crate::compile_case!(runpy_run_path, "import runpy\nrunpy.run_path('.', run_name='__main__')\n");
+crate::compile_case!(
+    importlib_resources_files,
+    "from importlib import resources\nresources.files('json')\n"
+);
+crate::compile_case!(
+    pkgutil_get_data,
+    "import pkgutil\npkgutil.get_data('json', 'decoder.py')\n"
+);
+crate::compile_case!(
+    module_spec_from_loader,
+    "import importlib.util\nimport json\nimportlib.util.spec_from_loader('x', json.__loader__)\n"
+);
+crate::compile_case!(
+    runpy_run_path,
+    "import runpy\nrunpy.run_path('.', run_name='__main__')\n"
+);

@@ -240,8 +240,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(asyncio_run_simple, "import asyncio\nasync def main():\n return 1\nasyncio.run(main())\n");
-crate::compile_case!(async_with_contextlib, "from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def cm():\n yield 1\n");
-crate::compile_case!(async_gather_two, "import asyncio\nasync def f():\n return 1\nasync def g():\n return 2\nasyncio.run(asyncio.gather(f(), g()))\n");
-crate::compile_case!(async_wait_for, "import asyncio\nasync def f():\n return 1\nasyncio.run(asyncio.wait_for(f(), timeout=1))\n");
-crate::compile_case!(async_task_group, "import asyncio\nasync def main():\n async with asyncio.TaskGroup() as tg:\n  pass\nasyncio.run(main())\n");
+crate::compile_case!(
+    asyncio_run_simple,
+    "import asyncio\nasync def main():\n return 1\nasyncio.run(main())\n"
+);
+crate::compile_case!(
+    async_with_contextlib,
+    "from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def cm():\n yield 1\n"
+);
+crate::compile_case!(
+    async_gather_two,
+    "import asyncio\nasync def f():\n return 1\nasync def g():\n return 2\nasyncio.run(asyncio.gather(f(), g()))\n"
+);
+crate::compile_case!(
+    async_wait_for,
+    "import asyncio\nasync def f():\n return 1\nasyncio.run(asyncio.wait_for(f(), timeout=1))\n"
+);
+crate::compile_case!(
+    async_task_group,
+    "import asyncio\nasync def main():\n async with asyncio.TaskGroup() as tg:\n  pass\nasyncio.run(main())\n"
+);

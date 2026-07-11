@@ -236,8 +236,23 @@ crate::runtime_case!(
     "INFO"
 );
 
-crate::compile_case!(logging_dictconfig, "import logging.config\nlogging.config.dictConfig({})\n");
-crate::compile_case!(logging_handlers_rotating, "import logging.handlers\nlogging.handlers.RotatingFileHandler\n");
-crate::compile_case!(traceback_print_stack, "import traceback\ntraceback.print_stack()\n");
-crate::compile_case!(warnings_warn_stacklevel, "import warnings\nwarnings.warn('m', stacklevel=2)\n");
-crate::compile_case!(logging_logrecord_factory, "import logging\nlogging.setLogRecordFactory(logging.LogRecord)\n");
+crate::compile_case!(
+    logging_dictconfig,
+    "import logging.config\nlogging.config.dictConfig({})\n"
+);
+crate::compile_case!(
+    logging_handlers_rotating,
+    "import logging.handlers\nlogging.handlers.RotatingFileHandler\n"
+);
+crate::compile_case!(
+    traceback_print_stack,
+    "import traceback\ntraceback.print_stack()\n"
+);
+crate::compile_case!(
+    warnings_warn_stacklevel,
+    "import warnings\nwarnings.warn('m', stacklevel=2)\n"
+);
+crate::compile_case!(
+    logging_logrecord_factory,
+    "import logging\nlogging.setLogRecordFactory(logging.LogRecord)\n"
+);

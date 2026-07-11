@@ -1,6 +1,5 @@
 //! Extended bytes/bytearray: split, join, strip, find, hex, decode, mutable ops.
 
-
 crate::runtime_case!(bytes_literal, "print(b'abc')\n", "b'abc'");
 crate::runtime_case!(bytes_len, "print(len(b'hello'))\n", "5");
 crate::runtime_case!(bytes_index, "print(b'abc'[1])\n", "98");
@@ -8,15 +7,35 @@ crate::runtime_case!(bytes_slice, "print(b'abcdef'[2:4])\n", "b'cd'");
 crate::runtime_case!(bytes_concat, "print(b'ab' + b'cd')\n", "b'abcd'");
 crate::runtime_case!(bytes_repeat, "print(b'x' * 3)\n", "b'xxx'");
 crate::runtime_case!(bytes_membership, "print(b'a' in b'abc')\n", "True");
-crate::runtime_case!(bytes_startswith, "print(b'hello'.startswith(b'he'))\n", "True");
+crate::runtime_case!(
+    bytes_startswith,
+    "print(b'hello'.startswith(b'he'))\n",
+    "True"
+);
 crate::runtime_case!(bytes_endswith, "print(b'hello'.endswith(b'lo'))\n", "True");
-crate::runtime_case!(bytes_split, "print(b'a,b,c'.split(b','))\n", "[b'a', b'b', b'c']");
-crate::runtime_case!(bytes_rsplit, "print(b'a.b.c'.rsplit(b'.', 1))\n", "[b'a.b', b'c']");
-crate::runtime_case!(bytes_partition, "print(b'a=b'.partition(b'='))\n", "(b'a', b'=', b'b')");
+crate::runtime_case!(
+    bytes_split,
+    "print(b'a,b,c'.split(b','))\n",
+    "[b'a', b'b', b'c']"
+);
+crate::runtime_case!(
+    bytes_rsplit,
+    "print(b'a.b.c'.rsplit(b'.', 1))\n",
+    "[b'a.b', b'c']"
+);
+crate::runtime_case!(
+    bytes_partition,
+    "print(b'a=b'.partition(b'='))\n",
+    "(b'a', b'=', b'b')"
+);
 crate::runtime_case!(bytes_strip, "print(b'  hi  '.strip())\n", "b'hi'");
 crate::runtime_case!(bytes_lstrip, "print(b'  hi'.lstrip())\n", "b'hi'");
 crate::runtime_case!(bytes_rstrip, "print(b'hi  '.rstrip())\n", "b'hi'");
-crate::runtime_case!(bytes_replace, "print(b'aaa'.replace(b'a', b'b', 2))\n", "b'bba'");
+crate::runtime_case!(
+    bytes_replace,
+    "print(b'aaa'.replace(b'a', b'b', 2))\n",
+    "b'bba'"
+);
 crate::runtime_case!(bytes_find, "print(b'abcabc'.find(b'ca'))\n", "2");
 crate::runtime_case!(bytes_rfind, "print(b'abcabc'.rfind(b'ca'))\n", "5");
 crate::runtime_case!(bytes_count, "print(b'banana'.count(b'an'))\n", "2");
@@ -24,35 +43,105 @@ crate::runtime_case!(bytes_upper_ascii, "print(b'abc'.upper())\n", "b'ABC'");
 crate::runtime_case!(bytes_lower_ascii, "print(b'ABC'.lower())\n", "b'abc'");
 crate::runtime_case!(bytes_join, "print(b','.join([b'a', b'b']))\n", "b'a,b'");
 crate::runtime_case!(bytes_hex, "print(b'\\xff'.hex())\n", "ff");
-crate::runtime_case!(bytes_fromhex, "print(bytes.fromhex('ff00'))\n", "b'\\xff\\x00'");
+crate::runtime_case!(
+    bytes_fromhex,
+    "print(bytes.fromhex('ff00'))\n",
+    "b'\\xff\\x00'"
+);
 crate::runtime_case!(bytes_decode_utf8, "print(b'hi'.decode('utf-8'))\n", "hi");
 crate::runtime_case!(bytes_decode_ascii, "print(b'OK'.decode('ascii'))\n", "OK");
-crate::runtime_case!(bytes_maketrans, "print(b'abc'.translate(bytes.maketrans(b'ab', b'xy')))\n", "b'xyc'");
-crate::runtime_case!(bytearray_mutable_setitem, "b = bytearray(b'abc')\nb[0] = ord('x')\nprint(b)\n", "bytearray(b'xbc')");
-crate::runtime_case!(bytearray_append, "b = bytearray()\nb.append(65)\nprint(b)\n", "bytearray(b'A')");
-crate::runtime_case!(bytearray_extend, "b = bytearray(b'a')\nb.extend(b'bc')\nprint(b)\n", "bytearray(b'abc')");
-crate::runtime_case!(bytearray_pop, "b = bytearray(b'abc')\nprint(b.pop())\n", "99");
-crate::runtime_case!(bytearray_insert, "b = bytearray(b'ac')\nb.insert(1, ord('b'))\nprint(b)\n", "bytearray(b'abc')");
-crate::runtime_case!(bytearray_remove, "b = bytearray(b'aba')\nb.remove(ord('a'))\nprint(b)\n", "bytearray(b'ba')");
-crate::runtime_case!(bytearray_clear, "b = bytearray(b'abc')\nb.clear()\nprint(len(b))\n", "0");
-crate::runtime_case!(bytearray_reverse, "b = bytearray(b'abc')\nb.reverse()\nprint(b)\n", "bytearray(b'cba')");
-crate::runtime_case!(bytes_from_iterable, "print(bytes([65, 66, 67]))\n", "b'ABC'");
-crate::runtime_case!(bytearray_from_str_encode, "print(bytearray('hi', 'utf-8'))\n", "bytearray(b'hi')");
+crate::runtime_case!(
+    bytes_maketrans,
+    "print(b'abc'.translate(bytes.maketrans(b'ab', b'xy')))\n",
+    "b'xyc'"
+);
+crate::runtime_case!(
+    bytearray_mutable_setitem,
+    "b = bytearray(b'abc')\nb[0] = ord('x')\nprint(b)\n",
+    "bytearray(b'xbc')"
+);
+crate::runtime_case!(
+    bytearray_append,
+    "b = bytearray()\nb.append(65)\nprint(b)\n",
+    "bytearray(b'A')"
+);
+crate::runtime_case!(
+    bytearray_extend,
+    "b = bytearray(b'a')\nb.extend(b'bc')\nprint(b)\n",
+    "bytearray(b'abc')"
+);
+crate::runtime_case!(
+    bytearray_pop,
+    "b = bytearray(b'abc')\nprint(b.pop())\n",
+    "99"
+);
+crate::runtime_case!(
+    bytearray_insert,
+    "b = bytearray(b'ac')\nb.insert(1, ord('b'))\nprint(b)\n",
+    "bytearray(b'abc')"
+);
+crate::runtime_case!(
+    bytearray_remove,
+    "b = bytearray(b'aba')\nb.remove(ord('a'))\nprint(b)\n",
+    "bytearray(b'ba')"
+);
+crate::runtime_case!(
+    bytearray_clear,
+    "b = bytearray(b'abc')\nb.clear()\nprint(len(b))\n",
+    "0"
+);
+crate::runtime_case!(
+    bytearray_reverse,
+    "b = bytearray(b'abc')\nb.reverse()\nprint(b)\n",
+    "bytearray(b'cba')"
+);
+crate::runtime_case!(
+    bytes_from_iterable,
+    "print(bytes([65, 66, 67]))\n",
+    "b'ABC'"
+);
+crate::runtime_case!(
+    bytearray_from_str_encode,
+    "print(bytearray('hi', 'utf-8'))\n",
+    "bytearray(b'hi')"
+);
 crate::runtime_case!(bytes_equality, "print(b'abc' == b'abc')\n", "True");
 crate::runtime_case!(bytes_inequality, "print(b'ab' == b'abc')\n", "False");
 crate::runtime_case!(bytes_compare_lt, "print(b'a' < b'b')\n", "True");
 crate::runtime_case!(bytes_iter_values, "print(list(b'abc'))\n", "[97, 98, 99]");
-crate::runtime_case!(bytes_splitlines, "print(b'a\\nb'.splitlines())\n", "[b'a', b'b']");
+crate::runtime_case!(
+    bytes_splitlines,
+    "print(b'a\\nb'.splitlines())\n",
+    "[b'a', b'b']"
+);
 crate::runtime_case!(bytes_center, "print(b'ab'.center(6, b'-'))\n", "b'--ab--'");
 crate::runtime_case!(bytes_zfill, "print(b'42'.zfill(5))\n", "b'00042'");
 crate::runtime_case!(bytes_isdigit, "print(b'123'.isdigit())\n", "True");
 crate::runtime_case!(bytes_isalpha, "print(b'abc'.isalpha())\n", "True");
-crate::runtime_case!(bytes_startswith_tuple, "print(b'hello'.startswith((b'he', b'ha')))\n", "True");
-crate::runtime_case!(bytes_removeprefix, "print(b'foobar'.removeprefix(b'foo'))\n", "b'bar'");
-crate::runtime_case!(bytes_removesuffix, "print(b'foobar'.removesuffix(b'bar'))\n", "b'foo'");
+crate::runtime_case!(
+    bytes_startswith_tuple,
+    "print(b'hello'.startswith((b'he', b'ha')))\n",
+    "True"
+);
+crate::runtime_case!(
+    bytes_removeprefix,
+    "print(b'foobar'.removeprefix(b'foo'))\n",
+    "b'bar'"
+);
+crate::runtime_case!(
+    bytes_removesuffix,
+    "print(b'foobar'.removesuffix(b'bar'))\n",
+    "b'foo'"
+);
 
-crate::compile_case!(bytes_decode_error, "try:\n    b'\\xff'.decode('ascii')\nexcept UnicodeDecodeError:\n    pass\n");
+crate::compile_case!(
+    bytes_decode_error,
+    "try:\n    b'\\xff'.decode('ascii')\nexcept UnicodeDecodeError:\n    pass\n"
+);
 crate::compile_case!(bytearray_del_slice, "b = bytearray(b'abcd')\ndel b[1:3]\n");
 crate::compile_case!(bytes_split_maxsplit, "b'a,b,c'.split(b',', 1)\n");
 crate::compile_case!(bytes_expandtabs, "b'a\\tb'.expandtabs(4)\n");
-crate::compile_case!(bytearray_extend_iterable, "b = bytearray()\nb.extend([65, 66])\n");
+crate::compile_case!(
+    bytearray_extend_iterable,
+    "b = bytearray()\nb.extend([65, 66])\n"
+);

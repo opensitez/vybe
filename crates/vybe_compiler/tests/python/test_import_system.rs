@@ -140,11 +140,7 @@ crate::runtime_case!(
     "import runpy\nprint(hasattr(runpy, 'run_module'))\n",
     "True"
 );
-crate::runtime_case!(
-    __name_in_module,
-    "print(__name__)\n",
-    "__main__"
-);
+crate::runtime_case!(__name_in_module, "print(__name__)\n", "__main__");
 crate::runtime_case!(
     __doc_optional,
     "print(isinstance(__doc__, str) or __doc__ is None)\n",
@@ -238,6 +234,12 @@ crate::runtime_case!(
 
 crate::compile_case!(relative_import_package, "from . import sibling\n");
 crate::compile_case!(relative_import_parent, "from .. import pkg\n");
-crate::compile_case!(importlib_import_module_reload, "import importlib\nm = importlib.import_module('json')\nimportlib.reload(m)\n");
-crate::compile_case!(runpy_run_path, "import runpy\nrunpy.run_path('.', run_name='__main__')\n");
+crate::compile_case!(
+    importlib_import_module_reload,
+    "import importlib\nm = importlib.import_module('json')\nimportlib.reload(m)\n"
+);
+crate::compile_case!(
+    runpy_run_path,
+    "import runpy\nrunpy.run_path('.', run_name='__main__')\n"
+);
 crate::compile_case!(import_all_list, "from json import *\n");

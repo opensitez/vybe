@@ -1,6 +1,5 @@
 //! random module: randint, randrange, uniform, seed, choices, sample edge cases.
 
-
 crate::runtime_case!(
     random_choice_from_list,
     "import random\nprint(random.choice([7]))\n",
@@ -227,8 +226,23 @@ crate::runtime_case!(
     "bad"
 );
 
-crate::compile_case!(random_sample_k_equals_n, "import random\nrandom.sample([1, 2, 3], 3)\n");
-crate::compile_case!(random_choices_cum_weights, "import random\nrandom.choices([1, 2], cum_weights=[1, 3], k=2)\n");
-crate::compile_case!(random_shuffle_copy, "import random\na = [1, 2]\nrandom.shuffle(a)\n");
-crate::compile_case!(random_randrange_zero_step_raises, "import random\ntry:\n    random.randrange(0, 10, 0)\nexcept ValueError:\n    pass\n");
-crate::compile_case!(random_sample_k_too_large, "import random\ntry:\n    random.sample([1, 2], 3)\nexcept ValueError:\n    pass\n");
+crate::compile_case!(
+    random_sample_k_equals_n,
+    "import random\nrandom.sample([1, 2, 3], 3)\n"
+);
+crate::compile_case!(
+    random_choices_cum_weights,
+    "import random\nrandom.choices([1, 2], cum_weights=[1, 3], k=2)\n"
+);
+crate::compile_case!(
+    random_shuffle_copy,
+    "import random\na = [1, 2]\nrandom.shuffle(a)\n"
+);
+crate::compile_case!(
+    random_randrange_zero_step_raises,
+    "import random\ntry:\n    random.randrange(0, 10, 0)\nexcept ValueError:\n    pass\n"
+);
+crate::compile_case!(
+    random_sample_k_too_large,
+    "import random\ntry:\n    random.sample([1, 2], 3)\nexcept ValueError:\n    pass\n"
+);

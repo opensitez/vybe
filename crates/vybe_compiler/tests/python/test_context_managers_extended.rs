@@ -1,5 +1,3 @@
-
-
 crate::runtime_case!(
     with_basic,
     "class CM:\n def __enter__(self):\n  return self\n def __exit__(self, *a):\n  pass\nwith CM() as c:\n print('in')\n",
@@ -231,8 +229,20 @@ crate::runtime_case!(
     "3"
 );
 
-crate::compile_case!(with_async_context, "class CM:\n async def __aenter__(self):\n  return self\n async def __aexit__(self, *a):\n  pass\n");
-crate::compile_case!(contextlib_asynccontextmanager, "from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def cm():\n yield 1\n");
-crate::compile_case!(with_open_builtin, "with open('/dev/null', 'w') as f:\n pass\n");
+crate::compile_case!(
+    with_async_context,
+    "class CM:\n async def __aenter__(self):\n  return self\n async def __aexit__(self, *a):\n  pass\n"
+);
+crate::compile_case!(
+    contextlib_asynccontextmanager,
+    "from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def cm():\n yield 1\n"
+);
+crate::compile_case!(
+    with_open_builtin,
+    "with open('/dev/null', 'w') as f:\n pass\n"
+);
 crate::compile_case!(contextlib_chdir, "from contextlib import chdir\n");
-crate::compile_case!(contextlib_suppress_multiple, "from contextlib import suppress\nwith suppress(ValueError, TypeError):\n pass\n");
+crate::compile_case!(
+    contextlib_suppress_multiple,
+    "from contextlib import suppress\nwith suppress(ValueError, TypeError):\n pass\n"
+);

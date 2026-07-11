@@ -80,11 +80,7 @@ crate::runtime_case!(
     "import zlib\nprint(zlib.__name__)\n",
     "zlib"
 );
-crate::runtime_case!(
-    bz2_module_name,
-    "import bz2\nprint(bz2.__name__)\n",
-    "bz2"
-);
+crate::runtime_case!(bz2_module_name, "import bz2\nprint(bz2.__name__)\n", "bz2");
 crate::runtime_case!(
     lzma_module_name,
     "import lzma\nprint(lzma.__name__)\n",
@@ -130,11 +126,7 @@ crate::runtime_case!(
     "import gzip\nprint(hasattr(gzip, 'GzipFile'))\n",
     "True"
 );
-crate::runtime_case!(
-    bz2_open,
-    "import bz2\nprint(callable(bz2.open))\n",
-    "True"
-);
+crate::runtime_case!(bz2_open, "import bz2\nprint(callable(bz2.open))\n", "True");
 crate::runtime_case!(
     lzma_open,
     "import lzma\nprint(callable(lzma.open))\n",
@@ -170,11 +162,7 @@ crate::runtime_case!(
     "import gzip\nimport io\ndata = gzip.compress(b'test')\nf = gzip.GzipFile(fileobj=io.BytesIO(data), mode='rb')\nprint(f.read())\n",
     "b'test'"
 );
-crate::runtime_case!(
-    zlib_windowbits,
-    "import zlib\nprint(zlib.DEFLATED)\n",
-    "8"
-);
+crate::runtime_case!(zlib_windowbits, "import zlib\nprint(zlib.DEFLATED)\n", "8");
 crate::runtime_case!(
     lzma_check,
     "import lzma\nprint(hasattr(lzma, 'CHECK_CRC32'))\n",
@@ -230,4 +218,7 @@ crate::compile_case!(zipfile_zip, "import zipfile\nzipfile.ZipFile\n");
 crate::compile_case!(tarfile_open, "import tarfile\ntarfile.open\n");
 crate::compile_case!(gzip_open_path, "import gzip\ngzip.open\n");
 crate::compile_case!(lzma_lzmafile, "import lzma\nlzma.LZMAFile\n");
-crate::compile_case!(zlib_compressobj_wbits, "import zlib\nzlib.compressobj(wbits=-zlib.MAX_WBITS)\n");
+crate::compile_case!(
+    zlib_compressobj_wbits,
+    "import zlib\nzlib.compressobj(wbits=-zlib.MAX_WBITS)\n"
+);

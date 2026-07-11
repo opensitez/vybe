@@ -248,10 +248,7 @@ fn augmented_assign_on_nested_list_cell() {
 
 #[test]
 fn set_iadd_alias_for_ior() {
-    assert_eq!(
-        run_python_one("s = {1}\ns += {2}\nprint(sorted(s))\n"),
-        ""
-    );
+    assert_eq!(run_python_one("s = {1}\ns += {2}\nprint(sorted(s))\n"), "");
 }
 
 #[test]

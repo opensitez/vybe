@@ -1,6 +1,5 @@
 //! Walrus operator in comprehensions, loops, if, and nested scopes.
 
-
 crate::runtime_case!(
     walrus_if_body,
     "x = 0\nif (n := 5) > 3:\n x = n\nprint(x)\n",
@@ -21,16 +20,8 @@ crate::runtime_case!(
     "print({k: (v := k * 2) for k in range(3)})\n",
     "{0: 0, 1: 2, 2: 4}"
 );
-crate::runtime_case!(
-    walrus_nested_paren,
-    "print((a := 1) + (b := 2))\n",
-    "3"
-);
-crate::runtime_case!(
-    walrus_assign_then_use,
-    "if (x := 10):\n print(x)\n",
-    "10"
-);
+crate::runtime_case!(walrus_nested_paren, "print((a := 1) + (b := 2))\n", "3");
+crate::runtime_case!(walrus_assign_then_use, "if (x := 10):\n print(x)\n", "10");
 crate::runtime_case!(
     walrus_false_branch_skipped,
     "y = 1\nif (z := 0):\n y = 9\nprint(y)\n",
@@ -66,11 +57,7 @@ crate::runtime_case!(
     "print((a := 3) and (b := 4))\n",
     "4"
 );
-crate::runtime_case!(
-    walrus_in_fstring,
-    "x = 7\nprint(f'{(y := x + 1)}')\n",
-    "8"
-);
+crate::runtime_case!(walrus_in_fstring, "x = 7\nprint(f'{(y := x + 1)}')\n", "8");
 crate::runtime_case!(
     walrus_function_arg,
     "def f(v):\n return v\nprint(f((z := 9)))\n",
@@ -91,11 +78,7 @@ crate::runtime_case!(
     "print(list((y := x) for x in range(2)))\n",
     "[0, 1]"
 );
-crate::runtime_case!(
-    walrus_chained_compare,
-    "print(1 < (n := 2) < 3)\n",
-    "True"
-);
+crate::runtime_case!(walrus_chained_compare, "print(1 < (n := 2) < 3)\n", "True");
 crate::runtime_case!(
     walrus_attribute_read,
     "class C:\n x = 5\nc = C()\nprint((v := c.x))\n",
@@ -131,16 +114,8 @@ crate::runtime_case!(
     "a = [10, 20]\nprint(a[(i := 1)])\n",
     "20"
 );
-crate::runtime_case!(
-    walrus_bool_context,
-    "print(bool((x := 0)))\n",
-    "False"
-);
-crate::runtime_case!(
-    walrus_truthy_context,
-    "print(bool((x := 1)))\n",
-    "True"
-);
+crate::runtime_case!(walrus_bool_context, "print(bool((x := 0)))\n", "False");
+crate::runtime_case!(walrus_truthy_context, "print(bool((x := 1)))\n", "True");
 crate::runtime_case!(
     walrus_while_counter,
     "n = 3\nc = 0\nwhile (n := n - 1) >= 0:\n c += 1\nprint(c)\n",
@@ -161,11 +136,7 @@ crate::runtime_case!(
     "if (x := [1, 2]):\n del x[0]\nprint('done')\n",
     "done"
 );
-crate::runtime_case!(
-    walrus_augmented,
-    "x = 1\n(x := x + 2)\nprint(x)\n",
-    "3"
-);
+crate::runtime_case!(walrus_augmented, "x = 1\n(x := x + 2)\nprint(x)\n", "3");
 crate::runtime_case!(
     walrus_in_dict_get,
     "d = {'a': 1}\nprint(d.get('a') if (k := 'a') else 0)\n",
@@ -224,6 +195,12 @@ crate::runtime_case!(
 
 crate::compile_case!(walrus_named_expr_in_lambda, "f = lambda x: (y := x)\n");
 crate::compile_case!(walrus_in_class_body, "class C:\n x = (y := 1)\n");
-crate::compile_case!(walrus_with_statement, "class CM:\n def __enter__(self): return self\n def __exit__(self, *a): pass\nwith CM() as (c := CM()):\n pass\n");
-crate::compile_case!(walrus_async_comp, "async def f():\n return [(x := i) async for i in async_range(2)]\n");
+crate::compile_case!(
+    walrus_with_statement,
+    "class CM:\n def __enter__(self): return self\n def __exit__(self, *a): pass\nwith CM() as (c := CM()):\n pass\n"
+);
+crate::compile_case!(
+    walrus_async_comp,
+    "async def f():\n return [(x := i) async for i in async_range(2)]\n"
+);
 crate::compile_case!(walrus_yield_from, "def g():\n if (x := 1):\n  yield x\n");

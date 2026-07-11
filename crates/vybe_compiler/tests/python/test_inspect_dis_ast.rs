@@ -210,16 +210,8 @@ crate::runtime_case!(
     "import inspect\nprint(inspect.__name__)\n",
     "inspect"
 );
-crate::runtime_case!(
-    dis_module_name,
-    "import dis\nprint(dis.__name__)\n",
-    "dis"
-);
-crate::runtime_case!(
-    ast_module_name,
-    "import ast\nprint(ast.__name__)\n",
-    "ast"
-);
+crate::runtime_case!(dis_module_name, "import dis\nprint(dis.__name__)\n", "dis");
+crate::runtime_case!(ast_module_name, "import ast\nprint(ast.__name__)\n", "ast");
 crate::runtime_case!(
     inspect_get_annotations,
     "import inspect\ndef f(x: int) -> str: pass\nprint(inspect.get_annotations(f)['x'].__name__)\n",
@@ -231,8 +223,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(dis_dis_function, "import dis\ndef f(): return 1\ndis.dis(f)\n");
-crate::compile_case!(dis_get_instructions, "import dis\nc = compile('1', '<s>', 'eval')\nlist(dis.get_instructions(c))\n");
-crate::compile_case!(ast_compile, "import ast\nast.compile('1+1', '<s>', 'eval')\n");
-crate::compile_case!(tokenize_generate_tokens, "import tokenize\nimport io\ntokenize.generate_tokens(io.StringIO('x=1').readline)\n");
-crate::compile_case!(inspect_signature_bind, "import inspect\ndef f(a, *, b): pass\ninspect.signature(f).bind(1, b=2)\n");
+crate::compile_case!(
+    dis_dis_function,
+    "import dis\ndef f(): return 1\ndis.dis(f)\n"
+);
+crate::compile_case!(
+    dis_get_instructions,
+    "import dis\nc = compile('1', '<s>', 'eval')\nlist(dis.get_instructions(c))\n"
+);
+crate::compile_case!(
+    ast_compile,
+    "import ast\nast.compile('1+1', '<s>', 'eval')\n"
+);
+crate::compile_case!(
+    tokenize_generate_tokens,
+    "import tokenize\nimport io\ntokenize.generate_tokens(io.StringIO('x=1').readline)\n"
+);
+crate::compile_case!(
+    inspect_signature_bind,
+    "import inspect\ndef f(a, *, b): pass\ninspect.signature(f).bind(1, b=2)\n"
+);

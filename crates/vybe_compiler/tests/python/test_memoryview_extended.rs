@@ -30,21 +30,13 @@ crate::runtime_case!(
     "mv = memoryview(b'abc')\nprint(mv.readonly)\n",
     "True"
 );
-crate::runtime_case!(
-    memoryview_ndim,
-    "print(memoryview(b'abc').ndim)\n",
-    "1"
-);
+crate::runtime_case!(memoryview_ndim, "print(memoryview(b'abc').ndim)\n", "1");
 crate::runtime_case!(
     memoryview_itemsize,
     "print(memoryview(b'abc').itemsize)\n",
     "1"
 );
-crate::runtime_case!(
-    memoryview_format,
-    "print(memoryview(b'abc').format)\n",
-    "B"
-);
+crate::runtime_case!(memoryview_format, "print(memoryview(b'abc').format)\n", "B");
 crate::runtime_case!(
     memoryview_strides,
     "print(memoryview(b'abc').strides)\n",
@@ -80,21 +72,13 @@ crate::runtime_case!(
     "print(list(memoryview(b'ab')))\n",
     "[97, 98]"
 );
-crate::runtime_case!(
-    memoryview_hex,
-    "print(memoryview(b'\\xff').hex())\n",
-    "ff"
-);
+crate::runtime_case!(memoryview_hex, "print(memoryview(b'\\xff').hex())\n", "ff");
 crate::runtime_case!(
     memoryview_obj,
     "mv = memoryview(b'abc')\nprint(mv.obj)\n",
     "b'abc'"
 );
-crate::runtime_case!(
-    memoryview_nbytes,
-    "print(memoryview(b'abc').nbytes)\n",
-    "3"
-);
+crate::runtime_case!(memoryview_nbytes, "print(memoryview(b'abc').nbytes)\n", "3");
 crate::runtime_case!(
     memoryview_c_contiguous,
     "print(memoryview(b'abc').c_contiguous)\n",
@@ -145,21 +129,13 @@ crate::runtime_case!(
     "mv = memoryview(b'abcdef')\nprint(bytes(mv[1:4]))\n",
     "b'bcd'"
 );
-crate::runtime_case!(
-    memoryview_bool,
-    "print(bool(memoryview(b'')))\n",
-    "False"
-);
+crate::runtime_case!(memoryview_bool, "print(bool(memoryview(b'')))\n", "False");
 crate::runtime_case!(
     memoryview_bool_nonempty,
     "print(bool(memoryview(b'a')))\n",
     "True"
 );
-crate::runtime_case!(
-    memoryview_len,
-    "print(len(memoryview(b'hello')))\n",
-    "5"
-);
+crate::runtime_case!(memoryview_len, "print(len(memoryview(b'hello')))\n", "5");
 crate::runtime_case!(
     memoryview_repr,
     "print('memory' in repr(memoryview(b'a')))\n",
@@ -221,8 +197,20 @@ crate::runtime_case!(
     "2"
 );
 
-crate::compile_case!(memoryview_from_array_multi, "import array\na = array.array('d', [1.0, 2.0])\nmemoryview(a)\n");
-crate::compile_case!(memoryview_release_twice, "mv = memoryview(b'a')\nmv.release()\n");
-crate::compile_case!(memoryview_cast_shape, "mv = memoryview(b'1234')\nmv.cast('I')\n");
+crate::compile_case!(
+    memoryview_from_array_multi,
+    "import array\na = array.array('d', [1.0, 2.0])\nmemoryview(a)\n"
+);
+crate::compile_case!(
+    memoryview_release_twice,
+    "mv = memoryview(b'a')\nmv.release()\n"
+);
+crate::compile_case!(
+    memoryview_cast_shape,
+    "mv = memoryview(b'1234')\nmv.cast('I')\n"
+);
 crate::compile_case!(numpy_not_required, "mv = memoryview(b'abc')\n");
-crate::compile_case!(memoryview_subclass, "class M(memoryview):\n pass\nM(b'a')\n");
+crate::compile_case!(
+    memoryview_subclass,
+    "class M(memoryview):\n pass\nM(b'a')\n"
+);

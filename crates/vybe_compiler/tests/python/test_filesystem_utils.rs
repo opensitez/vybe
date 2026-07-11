@@ -231,8 +231,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(shutil_unpack_archive, "import shutil\nshutil.unpack_archive\n");
-crate::compile_case!(tempfile_temporarydirectory_ctx, "import tempfile\nwith tempfile.TemporaryDirectory() as d:\n pass\n");
-crate::compile_case!(argparse_filetype, "import argparse\nargparse.FileType('r')\n");
-crate::compile_case!(configparser_raw, "import configparser\nc = configparser.ConfigParser()\nc.read_string('[s]\\nk=%(name)s\\n', source='s')\n");
-crate::compile_case!(glob_recursive, "import glob\nglob.glob('**/*', recursive=True)\n");
+crate::compile_case!(
+    shutil_unpack_archive,
+    "import shutil\nshutil.unpack_archive\n"
+);
+crate::compile_case!(
+    tempfile_temporarydirectory_ctx,
+    "import tempfile\nwith tempfile.TemporaryDirectory() as d:\n pass\n"
+);
+crate::compile_case!(
+    argparse_filetype,
+    "import argparse\nargparse.FileType('r')\n"
+);
+crate::compile_case!(
+    configparser_raw,
+    "import configparser\nc = configparser.ConfigParser()\nc.read_string('[s]\\nk=%(name)s\\n', source='s')\n"
+);
+crate::compile_case!(
+    glob_recursive,
+    "import glob\nglob.glob('**/*', recursive=True)\n"
+);

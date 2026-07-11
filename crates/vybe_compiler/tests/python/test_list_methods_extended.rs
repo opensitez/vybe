@@ -1,6 +1,5 @@
 //! Extended list methods: sort keys, bisect-style insert, comprehensions, index/count, slice assign.
 
-
 crate::runtime_case!(
     list_sort_key_abs,
     "a = [-3, 1, -2]\na.sort(key=abs)\nprint(a)\n",
@@ -121,16 +120,8 @@ crate::runtime_case!(
     "print([10, 20, 30, 40].index(30))\n",
     "2"
 );
-crate::runtime_case!(
-    list_count_zero,
-    "print([1, 2, 3].count(9))\n",
-    "0"
-);
-crate::runtime_case!(
-    list_count_all_same,
-    "print([7, 7, 7].count(7))\n",
-    "3"
-);
+crate::runtime_case!(list_count_zero, "print([1, 2, 3].count(9))\n", "0");
+crate::runtime_case!(list_count_all_same, "print([7, 7, 7].count(7))\n", "3");
 crate::runtime_case!(
     list_count_bool_coercion,
     "print([True, 1, False, 0].count(True))\n",
@@ -224,11 +215,5 @@ crate::compile_case!(
     list_remove_all_duplicates_loop,
     "a = [1, 2, 2, 3]\nwhile 2 in a:\n    a.remove(2)\n"
 );
-crate::compile_case!(
-    list_del_item_by_index,
-    "a = [1, 2, 3]\ndel a[1]\n"
-);
-crate::compile_case!(
-    list_del_slice_step,
-    "a = [0, 1, 2, 3, 4, 5]\ndel a[::2]\n"
-);
+crate::compile_case!(list_del_item_by_index, "a = [1, 2, 3]\ndel a[1]\n");
+crate::compile_case!(list_del_slice_step, "a = [0, 1, 2, 3, 4, 5]\ndel a[::2]\n");

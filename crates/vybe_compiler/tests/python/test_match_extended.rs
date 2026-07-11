@@ -1,6 +1,5 @@
 //! Extended match/case: guards, class patterns, mapping patterns, or-patterns, as-names.
 
-
 crate::runtime_case!(
     match_int_literal,
     "x = 42\nmatch x:\n case 42:\n  print('yes')\n",
@@ -233,7 +232,19 @@ crate::runtime_case!(
 );
 
 crate::compile_case!(match_soft_keyword, "match x:\n case 1:\n  pass\n");
-crate::compile_case!(match_capture_walrus, "match x:\n case n if (d := n // 2):\n  pass\n");
-crate::compile_case!(match_class_nested, "class A:\n pass\nmatch o:\n case A():\n  pass\n");
-crate::compile_case!(match_sequence_or, "match x:\n case [1, 2] | [3, 4]:\n  pass\n");
-crate::compile_case!(match_mapping_or, "match d:\n case {'a': 1} | {'b': 2}:\n  pass\n");
+crate::compile_case!(
+    match_capture_walrus,
+    "match x:\n case n if (d := n // 2):\n  pass\n"
+);
+crate::compile_case!(
+    match_class_nested,
+    "class A:\n pass\nmatch o:\n case A():\n  pass\n"
+);
+crate::compile_case!(
+    match_sequence_or,
+    "match x:\n case [1, 2] | [3, 4]:\n  pass\n"
+);
+crate::compile_case!(
+    match_mapping_or,
+    "match d:\n case {'a': 1} | {'b': 2}:\n  pass\n"
+);

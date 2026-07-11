@@ -145,21 +145,9 @@ crate::runtime_case!(
     "import cmath\nprint(cmath.rect(1, 0))\n",
     "(1+0j)"
 );
-crate::runtime_case!(
-    cmath_log,
-    "import cmath\nprint(cmath.log(1))\n",
-    "0j"
-);
-crate::runtime_case!(
-    cmath_sin,
-    "import cmath\nprint(cmath.sin(0))\n",
-    "0j"
-);
-crate::runtime_case!(
-    cmath_cos,
-    "import cmath\nprint(cmath.cos(0))\n",
-    "(1+0j)"
-);
+crate::runtime_case!(cmath_log, "import cmath\nprint(cmath.log(1))\n", "0j");
+crate::runtime_case!(cmath_sin, "import cmath\nprint(cmath.sin(0))\n", "0j");
+crate::runtime_case!(cmath_cos, "import cmath\nprint(cmath.cos(0))\n", "(1+0j)");
 crate::runtime_case!(
     cmath_isnan,
     "import cmath\nprint(cmath.isnan(complex(float('nan'), 0)))\n",
@@ -200,11 +188,7 @@ crate::runtime_case!(
     "from fractions import Fraction\nprint(abs(Fraction(-3, 4)))\n",
     "3/4"
 );
-crate::runtime_case!(
-    cmath_tanh,
-    "import cmath\nprint(cmath.tanh(0))\n",
-    "0j"
-);
+crate::runtime_case!(cmath_tanh, "import cmath\nprint(cmath.tanh(0))\n", "0j");
 crate::runtime_case!(
     numbers_integral,
     "import numbers\nprint(issubclass(int, numbers.Integral))\n",
@@ -225,14 +209,25 @@ crate::runtime_case!(
     "from fractions import Fraction\nprint(Fraction(4, 8))\n",
     "1/2"
 );
-crate::runtime_case!(
-    cmath_acos,
-    "import cmath\nprint(cmath.acos(1))\n",
-    "0j"
-);
+crate::runtime_case!(cmath_acos, "import cmath\nprint(cmath.acos(1))\n", "0j");
 
-crate::compile_case!(decimal_localcontext, "from decimal import localcontext, Decimal\nwith localcontext() as ctx:\n Decimal('1')\n");
-crate::compile_case!(decimal_clamp, "from decimal import Decimal, Context, Clamped\n");
-crate::compile_case!(fractions_from_decimal, "from fractions import Fraction\nfrom decimal import Decimal\nFraction(Decimal('0.5'))\n");
-crate::compile_case!(cmath_matrix, "import cmath\ncmath.sqrt(-1) * cmath.sqrt(-1)\n");
-crate::compile_case!(decimal_compare_total, "from decimal import Decimal\nDecimal('1.0').compare_total(Decimal('1'))\n");
+crate::compile_case!(
+    decimal_localcontext,
+    "from decimal import localcontext, Decimal\nwith localcontext() as ctx:\n Decimal('1')\n"
+);
+crate::compile_case!(
+    decimal_clamp,
+    "from decimal import Decimal, Context, Clamped\n"
+);
+crate::compile_case!(
+    fractions_from_decimal,
+    "from fractions import Fraction\nfrom decimal import Decimal\nFraction(Decimal('0.5'))\n"
+);
+crate::compile_case!(
+    cmath_matrix,
+    "import cmath\ncmath.sqrt(-1) * cmath.sqrt(-1)\n"
+);
+crate::compile_case!(
+    decimal_compare_total,
+    "from decimal import Decimal\nDecimal('1.0').compare_total(Decimal('1'))\n"
+);

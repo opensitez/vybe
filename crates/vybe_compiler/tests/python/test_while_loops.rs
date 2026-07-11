@@ -1,4 +1,4 @@
-use crate::helpers::{run_python_one, run_python, run_print};
+use crate::helpers::{run_print, run_python, run_python_one};
 
 #[test]
 fn while_decrements_until_zero() {
@@ -10,7 +10,10 @@ fn while_decrements_until_zero() {
 
 #[test]
 fn while_zero_iterations_skips_body() {
-    assert_eq!(run_python_one("n = 0\nwhile n > 0:\n print('x')\nprint('ok')\n"), "ok");
+    assert_eq!(
+        run_python_one("n = 0\nwhile n > 0:\n print('x')\nprint('ok')\n"),
+        "ok"
+    );
 }
 
 #[test]
@@ -24,7 +27,9 @@ fn while_else_runs_when_not_broken() {
 #[test]
 fn while_else_skipped_on_break() {
     assert_eq!(
-        run_python_one("n = 5\nwhile n:\n n -= 1\n if n == 2:\n  break\nelse:\n print('no')\nprint('yes')\n"),
+        run_python_one(
+            "n = 5\nwhile n:\n n -= 1\n if n == 2:\n  break\nelse:\n print('no')\nprint('yes')\n"
+        ),
         "yes"
     );
 }
@@ -80,7 +85,9 @@ fn while_iterates_list_pop_from_end() {
 #[test]
 fn while_reads_input_sentinel_pattern() {
     assert_eq!(
-        run_python_one("data = [1, 2, -1, 3]\ni = 0\ntotal = 0\nwhile True:\n v = data[i]\n i += 1\n if v < 0:\n  break\n total += v\nprint(total)\n"),
+        run_python_one(
+            "data = [1, 2, -1, 3]\ni = 0\ntotal = 0\nwhile True:\n v = data[i]\n i += 1\n if v < 0:\n  break\n total += v\nprint(total)\n"
+        ),
         "3"
     );
 }
@@ -119,13 +126,20 @@ fn while_accumulates_factorial() {
 
 #[test]
 fn while_with_boolean_flag() {
-    assert_eq!(run_python_one("running = True\nc = 0\nwhile running:\n c += 1\n if c == 3:\n  running = False\nprint(c)\n"), "3");
+    assert_eq!(
+        run_python_one(
+            "running = True\nc = 0\nwhile running:\n c += 1\n if c == 3:\n  running = False\nprint(c)\n"
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn while_membership_scan_finds_target() {
     assert_eq!(
-        run_python_one("xs = [4, 7, 9]\ni = 0\nfound = False\nwhile i < len(xs) and not found:\n found = xs[i] == 7\n i += 1\nprint(found)\n"),
+        run_python_one(
+            "xs = [4, 7, 9]\ni = 0\nfound = False\nwhile i < len(xs) and not found:\n found = xs[i] == 7\n i += 1\nprint(found)\n"
+        ),
         "True"
     );
 }
@@ -133,7 +147,9 @@ fn while_membership_scan_finds_target() {
 #[test]
 fn while_else_not_run_on_return_emulated() {
     assert_eq!(
-        run_python_one("n = 1\nwhile n:\n print('loop')\n break\nelse:\n print('else')\nprint('after')\n"),
+        run_python_one(
+            "n = 1\nwhile n:\n print('loop')\n break\nelse:\n print('else')\nprint('after')\n"
+        ),
         "loop\nafter"
     );
 }
@@ -156,7 +172,10 @@ fn while_decrements_by_two() {
 
 #[test]
 fn while_with_not_condition() {
-    assert_eq!(run_python_one("done = False\nc = 0\nwhile not done:\n c += 1\n done = c == 2\nprint(c)\n"), "2");
+    assert_eq!(
+        run_python_one("done = False\nc = 0\nwhile not done:\n c += 1\n done = c == 2\nprint(c)\n"),
+        "2"
+    );
 }
 
 #[test]
@@ -170,7 +189,9 @@ fn while_short_circuit_and_in_condition() {
 #[test]
 fn while_short_circuit_or_keeps_looping() {
     assert_eq!(
-        run_python_one("a = 0\nb = 1\nc = 0\nwhile a or b:\n c += 1\n b = 0\n if c == 2:\n  break\nprint(c)\n"),
+        run_python_one(
+            "a = 0\nb = 1\nc = 0\nwhile a or b:\n c += 1\n b = 0\n if c == 2:\n  break\nprint(c)\n"
+        ),
         "1"
     );
 }
@@ -178,7 +199,9 @@ fn while_short_circuit_or_keeps_looping() {
 #[test]
 fn while_nested_break_only_inner() {
     assert_eq!(
-        run_python_one("out = []\ni = 0\nwhile i < 3:\n j = 0\n while j < 3:\n  if j == 1:\n   break\n  out.append(j)\n  j += 1\n i += 1\nprint(len(out))\n"),
+        run_python_one(
+            "out = []\ni = 0\nwhile i < 3:\n j = 0\n while j < 3:\n  if j == 1:\n   break\n  out.append(j)\n  j += 1\n i += 1\nprint(len(out))\n"
+        ),
         "3"
     );
 }
@@ -186,7 +209,9 @@ fn while_nested_break_only_inner() {
 #[test]
 fn while_reads_dict_keys_via_popitem() {
     assert_eq!(
-        run_python_one("d = {'a': 1, 'b': 2}\nkeys = []\nwhile d:\n k, v = d.popitem()\n keys.append(k)\nprint(len(keys))\n"),
+        run_python_one(
+            "d = {'a': 1, 'b': 2}\nkeys = []\nwhile d:\n k, v = d.popitem()\n keys.append(k)\nprint(len(keys))\n"
+        ),
         "2"
     );
 }
@@ -210,7 +235,9 @@ fn while_counts_bits_in_integer() {
 #[test]
 fn while_reverses_digits_of_number() {
     assert_eq!(
-        run_python_one("n = 123\nrev = 0\nwhile n:\n rev = rev * 10 + n % 10\n n //= 10\nprint(rev)\n"),
+        run_python_one(
+            "n = 123\nrev = 0\nwhile n:\n rev = rev * 10 + n % 10\n n //= 10\nprint(rev)\n"
+        ),
         "321"
     );
 }
@@ -218,7 +245,9 @@ fn while_reverses_digits_of_number() {
 #[test]
 fn while_string_builder_concat() {
     assert_eq!(
-        run_python_one("parts = ['a', 'b', 'c']\ni = 0\ns = ''\nwhile i < len(parts):\n s += parts[i]\n i += 1\nprint(s)\n"),
+        run_python_one(
+            "parts = ['a', 'b', 'c']\ni = 0\ns = ''\nwhile i < len(parts):\n s += parts[i]\n i += 1\nprint(s)\n"
+        ),
         "abc"
     );
 }
@@ -226,7 +255,9 @@ fn while_string_builder_concat() {
 #[test]
 fn while_waits_until_predicate_true() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 5]\ni = 0\nwhile i < len(xs) and xs[i] < 5:\n i += 1\nprint(xs[i])\n"),
+        run_python_one(
+            "xs = [1, 2, 5]\ni = 0\nwhile i < len(xs) and xs[i] < 5:\n i += 1\nprint(xs[i])\n"
+        ),
         "5"
     );
 }
@@ -234,7 +265,9 @@ fn while_waits_until_predicate_true() {
 #[test]
 fn while_modulo_cycle_detects_period() {
     assert_eq!(
-        run_python_one("n = 1\nsteps = 0\nwhile steps < 4:\n n = (n * 3) % 7\n steps += 1\nprint(n)\n"),
+        run_python_one(
+            "n = 1\nsteps = 0\nwhile steps < 4:\n n = (n * 3) % 7\n steps += 1\nprint(n)\n"
+        ),
         "4"
     );
 }
@@ -247,7 +280,9 @@ fn while_float_counter_halving() {
 #[test]
 fn while_list_comprehension_alternative_sum() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3]\ni = 0\ntotal = 0\nwhile i < len(xs):\n total += xs[i]\n i += 1\nprint(total)\n"),
+        run_python_one(
+            "xs = [1, 2, 3]\ni = 0\ntotal = 0\nwhile i < len(xs):\n total += xs[i]\n i += 1\nprint(total)\n"
+        ),
         "6"
     );
 }
@@ -255,7 +290,9 @@ fn while_list_comprehension_alternative_sum() {
 #[test]
 fn while_removes_matching_elements() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3, 2, 1]\ni = 0\nwhile i < len(xs):\n if xs[i] == 2:\n  xs.pop(i)\n else:\n  i += 1\nprint(xs.count(2))\n"),
+        run_python_one(
+            "xs = [1, 2, 3, 2, 1]\ni = 0\nwhile i < len(xs):\n if xs[i] == 2:\n  xs.pop(i)\n else:\n  i += 1\nprint(xs.count(2))\n"
+        ),
         "0"
     );
 }
@@ -263,7 +300,9 @@ fn while_removes_matching_elements() {
 #[test]
 fn while_zip_two_lists_manually() {
     assert_eq!(
-        run_python_one("a = [1, 2]\nb = [3, 4]\ni = 0\nwhile i < len(a):\n print(a[i] + b[i])\n i += 1\n"),
+        run_python_one(
+            "a = [1, 2]\nb = [3, 4]\ni = 0\nwhile i < len(a):\n print(a[i] + b[i])\n i += 1\n"
+        ),
         "4\n6"
     );
 }
@@ -271,7 +310,9 @@ fn while_zip_two_lists_manually() {
 #[test]
 fn while_enumerate_manual_index_value() {
     assert_eq!(
-        run_python_one("xs = ['x', 'y']\ni = 0\nwhile i < len(xs):\n print(str(i) + xs[i])\n i += 1\n"),
+        run_python_one(
+            "xs = ['x', 'y']\ni = 0\nwhile i < len(xs):\n print(str(i) + xs[i])\n i += 1\n"
+        ),
         "0x\n1y"
     );
 }
@@ -279,7 +320,9 @@ fn while_enumerate_manual_index_value() {
 #[test]
 fn while_parses_digits_from_string() {
     assert_eq!(
-        run_python_one("s = '1234'\ni = 0\nn = 0\nwhile i < len(s):\n n = n * 10 + int(s[i])\n i += 1\nprint(n)\n"),
+        run_python_one(
+            "s = '1234'\ni = 0\nn = 0\nwhile i < len(s):\n n = n * 10 + int(s[i])\n i += 1\nprint(n)\n"
+        ),
         "1234"
     );
 }
@@ -287,7 +330,9 @@ fn while_parses_digits_from_string() {
 #[test]
 fn while_finds_first_negative() {
     assert_eq!(
-        run_python_one("xs = [1, 3, -2, 4]\ni = 0\nwhile i < len(xs) and xs[i] >= 0:\n i += 1\nprint(xs[i])\n"),
+        run_python_one(
+            "xs = [1, 3, -2, 4]\ni = 0\nwhile i < len(xs) and xs[i] >= 0:\n i += 1\nprint(xs[i])\n"
+        ),
         "-2"
     );
 }
@@ -303,7 +348,9 @@ fn while_doubles_until_threshold() {
 #[test]
 fn while_counts_vowels_in_string() {
     assert_eq!(
-        run_python_one("s = 'hello'\ni = 0\nc = 0\nwhile i < len(s):\n if s[i] in 'aeiou':\n  c += 1\n i += 1\nprint(c)\n"),
+        run_python_one(
+            "s = 'hello'\ni = 0\nc = 0\nwhile i < len(s):\n if s[i] in 'aeiou':\n  c += 1\n i += 1\nprint(c)\n"
+        ),
         "2"
     );
 }
@@ -311,7 +358,9 @@ fn while_counts_vowels_in_string() {
 #[test]
 fn while_merges_sorted_lists_step() {
     assert_eq!(
-        run_python_one("a = [1, 3]\nb = [2, 4]\ni = j = 0\nout = []\nwhile i < len(a) and j < len(b):\n if a[i] < b[j]:\n  out.append(a[i])\n  i += 1\n else:\n  out.append(b[j])\n  j += 1\nprint(out[2])\n"),
+        run_python_one(
+            "a = [1, 3]\nb = [2, 4]\ni = j = 0\nout = []\nwhile i < len(a) and j < len(b):\n if a[i] < b[j]:\n  out.append(a[i])\n  i += 1\n else:\n  out.append(b[j])\n  j += 1\nprint(out[2])\n"
+        ),
         "3"
     );
 }
@@ -319,7 +368,9 @@ fn while_merges_sorted_lists_step() {
 #[test]
 fn while_spins_on_flag_then_clears() {
     assert_eq!(
-        run_python_one("flag = True\nc = 0\nwhile flag:\n c += 1\n if c == 1:\n  flag = False\nprint(c)\n"),
+        run_python_one(
+            "flag = True\nc = 0\nwhile flag:\n c += 1\n if c == 1:\n  flag = False\nprint(c)\n"
+        ),
         "1"
     );
 }
@@ -335,7 +386,9 @@ fn while_empty_body_still_advances_counter() {
 #[test]
 fn while_negated_membership_search() {
     assert_eq!(
-        run_python_one("xs = [1, 2, 3]\ntarget = 4\ni = 0\nwhile i < len(xs) and xs[i] != target:\n i += 1\nprint(i == len(xs))\n"),
+        run_python_one(
+            "xs = [1, 2, 3]\ntarget = 4\ni = 0\nwhile i < len(xs) and xs[i] != target:\n i += 1\nprint(i == len(xs))\n"
+        ),
         "True"
     );
 }

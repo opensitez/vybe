@@ -232,7 +232,19 @@ crate::runtime_case!(
 );
 
 crate::compile_case!(dunder_await, "class V:\n def __await__(self):\n  yield 1\n");
-crate::compile_case!(dunder_aiter_aenter, "class V:\n async def __aenter__(self): return self\n async def __aexit__(self, *a): pass\n");
-crate::compile_case!(dunder_getnewargs, "class V:\n def __getnewargs__(self):\n  return ()\n");
-crate::compile_case!(dunder_reduce, "class V:\n def __reduce__(self):\n  return (V, ())\n");
-crate::compile_case!(dunder_copy, "class V:\n def __copy__(self):\n  return V()\n");
+crate::compile_case!(
+    dunder_aiter_aenter,
+    "class V:\n async def __aenter__(self): return self\n async def __aexit__(self, *a): pass\n"
+);
+crate::compile_case!(
+    dunder_getnewargs,
+    "class V:\n def __getnewargs__(self):\n  return ()\n"
+);
+crate::compile_case!(
+    dunder_reduce,
+    "class V:\n def __reduce__(self):\n  return (V, ())\n"
+);
+crate::compile_case!(
+    dunder_copy,
+    "class V:\n def __copy__(self):\n  return V()\n"
+);

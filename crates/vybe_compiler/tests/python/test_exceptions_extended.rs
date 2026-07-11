@@ -1,6 +1,5 @@
 //! Exception hierarchy, raise from, chained exceptions, else/finally interaction.
 
-
 crate::runtime_case!(
     except_valueerror_type,
     "try:\n int('x')\nexcept ValueError:\n print('ve')\n",
@@ -217,8 +216,20 @@ crate::runtime_case!(
     "2"
 );
 
-crate::compile_case!(except_bare_except, "try:\n raise ValueError()\nexcept:\n pass\n");
+crate::compile_case!(
+    except_bare_except,
+    "try:\n raise ValueError()\nexcept:\n pass\n"
+);
 crate::compile_case!(raise_not_implemented, "raise NotImplementedError('todo')\n");
-crate::compile_case!(except_exception_chaining_context, "try:\n 1/0\nexcept ZeroDivisionError as e:\n raise ValueError() from e\n");
-crate::compile_case!(try_finally_return, "def f():\n try:\n  return 1\n finally:\n  return 2\n");
-crate::compile_case!(except_match_case, "try:\n raise ValueError()\nexcept ValueError:\n match 1:\n  case 1:\n   pass\n");
+crate::compile_case!(
+    except_exception_chaining_context,
+    "try:\n 1/0\nexcept ZeroDivisionError as e:\n raise ValueError() from e\n"
+);
+crate::compile_case!(
+    try_finally_return,
+    "def f():\n try:\n  return 1\n finally:\n  return 2\n"
+);
+crate::compile_case!(
+    except_match_case,
+    "try:\n raise ValueError()\nexcept ValueError:\n match 1:\n  case 1:\n   pass\n"
+);

@@ -226,8 +226,23 @@ crate::runtime_case!(
     "err"
 );
 
-crate::compile_case!(pickle_pickleable_objects, "import pickle\nclass C:\n pass\ntry:\n pickle.dumps(C())\nexcept:\n pass\n");
-crate::compile_case!(marshal_code_object, "import marshal\ncompile('1+1', '<s>', 'eval')\n");
-crate::compile_case!(pickle_multiprocessing_reducer, "import pickle\npickle.Pickler\n");
-crate::compile_case!(pickle_dbm_persist, "import pickle\nimport io\npickle.Pickler(io.BytesIO())\n");
-crate::compile_case!(marshal_read_write_file, "import marshal\nimport tempfile\nf = tempfile.NamedTemporaryFile()\nmarshal.dump(1, f)\n");
+crate::compile_case!(
+    pickle_pickleable_objects,
+    "import pickle\nclass C:\n pass\ntry:\n pickle.dumps(C())\nexcept:\n pass\n"
+);
+crate::compile_case!(
+    marshal_code_object,
+    "import marshal\ncompile('1+1', '<s>', 'eval')\n"
+);
+crate::compile_case!(
+    pickle_multiprocessing_reducer,
+    "import pickle\npickle.Pickler\n"
+);
+crate::compile_case!(
+    pickle_dbm_persist,
+    "import pickle\nimport io\npickle.Pickler(io.BytesIO())\n"
+);
+crate::compile_case!(
+    marshal_read_write_file,
+    "import marshal\nimport tempfile\nf = tempfile.NamedTemporaryFile()\nmarshal.dump(1, f)\n"
+);

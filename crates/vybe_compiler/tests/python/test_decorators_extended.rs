@@ -1,5 +1,3 @@
-
-
 crate::runtime_case!(
     decorator_plain_wraps,
     "def deco(f):\n def w():\n  return f() + 1\n return w\n@deco\ndef g():\n return 1\nprint(g())\n",
@@ -216,8 +214,23 @@ crate::runtime_case!(
     "i"
 );
 
-crate::compile_case!(decorator_async, "def deco(f):\n return f\n@deco\nasync def ag():\n return 1\n");
-crate::compile_case!(decorator_classmethod_property, "class C:\n @classmethod\n @property\n def x(cls):\n  return 1\n");
-crate::compile_case!(decorator_abstractmethod, "from abc import abstractmethod\nclass B:\n @abstractmethod\n def m(self):\n  pass\n");
-crate::compile_case!(decorator_cached_property, "class C:\n @property\n def x(self):\n  return 1\n");
-crate::compile_case!(decorator_parametrized_stack, "def a(x):\n def deco(f):\n  return f\n return deco\n@a(1)\n@a(2)\ndef f():\n pass\n");
+crate::compile_case!(
+    decorator_async,
+    "def deco(f):\n return f\n@deco\nasync def ag():\n return 1\n"
+);
+crate::compile_case!(
+    decorator_classmethod_property,
+    "class C:\n @classmethod\n @property\n def x(cls):\n  return 1\n"
+);
+crate::compile_case!(
+    decorator_abstractmethod,
+    "from abc import abstractmethod\nclass B:\n @abstractmethod\n def m(self):\n  pass\n"
+);
+crate::compile_case!(
+    decorator_cached_property,
+    "class C:\n @property\n def x(self):\n  return 1\n"
+);
+crate::compile_case!(
+    decorator_parametrized_stack,
+    "def a(x):\n def deco(f):\n  return f\n return deco\n@a(1)\n@a(2)\ndef f():\n pass\n"
+);

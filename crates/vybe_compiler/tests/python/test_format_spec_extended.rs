@@ -1,9 +1,20 @@
 //! str.format / f-string format specs: alignment, fill, precision, type codes.
 
-
-crate::runtime_case!(format_fill_align_left, "print('{:<5}'.format('x'))\n", "x    ");
-crate::runtime_case!(format_fill_align_right, "print('{:>5}'.format('x'))\n", "    x");
-crate::runtime_case!(format_fill_align_center, "print('{:^5}'.format('x'))\n", "  x  ");
+crate::runtime_case!(
+    format_fill_align_left,
+    "print('{:<5}'.format('x'))\n",
+    "x    "
+);
+crate::runtime_case!(
+    format_fill_align_right,
+    "print('{:>5}'.format('x'))\n",
+    "    x"
+);
+crate::runtime_case!(
+    format_fill_align_center,
+    "print('{:^5}'.format('x'))\n",
+    "  x  "
+);
 crate::runtime_case!(format_fill_char, "print('{:*^5}'.format('x'))\n", "**x**");
 crate::runtime_case!(format_int_zero_pad, "print('{:05d}'.format(7))\n", "00007");
 crate::runtime_case!(format_int_sign_plus, "print('{:+d}'.format(7))\n", "+7");
@@ -13,47 +24,137 @@ crate::runtime_case!(format_int_hex_upper, "print('{:X}'.format(255))\n", "FF");
 crate::runtime_case!(format_int_hex_alt, "print('{:#x}'.format(255))\n", "0xff");
 crate::runtime_case!(format_int_octal, "print('{:o}'.format(8))\n", "10");
 crate::runtime_case!(format_int_binary, "print('{:b}'.format(5))\n", "101");
-crate::runtime_case!(format_float_precision, "print('{:.2f}'.format(3.14159))\n", "3.14");
-crate::runtime_case!(format_float_scientific, "print('{:.2e}'.format(1000))\n", "1.00e+03");
-crate::runtime_case!(format_float_general, "print('{:.3g}'.format(1234.5))\n", "1.23e+03");
-crate::runtime_case!(format_float_percent, "print('{:.1%}'.format(0.25))\n", "25.0%");
-crate::runtime_case!(format_thousands_comma, "print('{:,}'.format(1000000))\n", "1,000,000");
-crate::runtime_case!(format_named_fields, "print('{a}-{b}'.format(a=1, b=2))\n", "1-2");
-crate::runtime_case!(format_positional_mix, "print('{1}-{0}'.format('b', 'a'))\n", "a-b");
-crate::runtime_case!(format_nested_field, "print('{0[a]}'.format({'a': 9}))\n", "9");
-crate::runtime_case!(format_access_attribute, "class P:\n x = 5\nprint('{0.x}'.format(P))\n", "5");
+crate::runtime_case!(
+    format_float_precision,
+    "print('{:.2f}'.format(3.14159))\n",
+    "3.14"
+);
+crate::runtime_case!(
+    format_float_scientific,
+    "print('{:.2e}'.format(1000))\n",
+    "1.00e+03"
+);
+crate::runtime_case!(
+    format_float_general,
+    "print('{:.3g}'.format(1234.5))\n",
+    "1.23e+03"
+);
+crate::runtime_case!(
+    format_float_percent,
+    "print('{:.1%}'.format(0.25))\n",
+    "25.0%"
+);
+crate::runtime_case!(
+    format_thousands_comma,
+    "print('{:,}'.format(1000000))\n",
+    "1,000,000"
+);
+crate::runtime_case!(
+    format_named_fields,
+    "print('{a}-{b}'.format(a=1, b=2))\n",
+    "1-2"
+);
+crate::runtime_case!(
+    format_positional_mix,
+    "print('{1}-{0}'.format('b', 'a'))\n",
+    "a-b"
+);
+crate::runtime_case!(
+    format_nested_field,
+    "print('{0[a]}'.format({'a': 9}))\n",
+    "9"
+);
+crate::runtime_case!(
+    format_access_attribute,
+    "class P:\n x = 5\nprint('{0.x}'.format(P))\n",
+    "5"
+);
 crate::runtime_case!(format_conversion_str, "print('{!s}'.format('hi'))\n", "hi");
-crate::runtime_case!(format_conversion_repr, "print('{!r}'.format('hi'))\n", "'hi'");
-crate::runtime_case!(format_conversion_ascii, "print('{!a}'.format('hi'))\n", "'hi'");
+crate::runtime_case!(
+    format_conversion_repr,
+    "print('{!r}'.format('hi'))\n",
+    "'hi'"
+);
+crate::runtime_case!(
+    format_conversion_ascii,
+    "print('{!a}'.format('hi'))\n",
+    "'hi'"
+);
 crate::runtime_case!(fstring_format_spec_width, "print(f'{'x':>3}')\n", "  x");
 crate::runtime_case!(fstring_format_spec_zero, "print(f'{7:03d}')\n", "007");
 crate::runtime_case!(fstring_format_spec_float, "print(f'{3.5:.1f}')\n", "3.5");
 crate::runtime_case!(fstring_nested_expression, "print(f'{2 + 3}')\n", "5");
 crate::runtime_case!(fstring_dict_key, "print(f\"{ {'k': 1}['k'] }\")\n", "1");
 crate::runtime_case!(fstring_call_expression, "print(f'{len(\"abc\")}')\n", "3");
-crate::runtime_case!(fstring_escape_braces, "print(f'{{literal}}')\n", "{literal}");
+crate::runtime_case!(
+    fstring_escape_braces,
+    "print(f'{{literal}}')\n",
+    "{literal}"
+);
 crate::runtime_case!(fstring_multiline_expression, "x = 1\nprint(f'{x}')\n", "1");
 crate::runtime_case!(format_braces_literal, "print('{{}}'.format())\n", "{}");
 crate::runtime_case!(format_empty_spec, "print('{}'.format(42))\n", "42");
 crate::runtime_case!(format_bool, "print('{}'.format(True))\n", "True");
 crate::runtime_case!(format_none, "print('{}'.format(None))\n", "None");
 crate::runtime_case!(format_list_repr, "print('{}'.format([1, 2]))\n", "[1, 2]");
-crate::runtime_case!(format_width_star, "print('{0:*>{1}}'.format('x', 5))\n", "****x");
-crate::runtime_case!(format_precision_star, "print('{:.{}f}'.format(3.14159, 2))\n", "3.14");
-crate::runtime_case!(format_replace_fields, "print('{a} {a}'.format(a=1))\n", "1 1");
-crate::runtime_case!(format_auto_numbering, "print('{} {}'.format(1, 2))\n", "1 2");
+crate::runtime_case!(
+    format_width_star,
+    "print('{0:*>{1}}'.format('x', 5))\n",
+    "****x"
+);
+crate::runtime_case!(
+    format_precision_star,
+    "print('{:.{}f}'.format(3.14159, 2))\n",
+    "3.14"
+);
+crate::runtime_case!(
+    format_replace_fields,
+    "print('{a} {a}'.format(a=1))\n",
+    "1 1"
+);
+crate::runtime_case!(
+    format_auto_numbering,
+    "print('{} {}'.format(1, 2))\n",
+    "1 2"
+);
 crate::runtime_case!(format_padding_int, "print('{:5d}'.format(7))\n", "    7");
 crate::runtime_case!(format_negative_int, "print('{:d}'.format(-7))\n", "-7");
-crate::runtime_case!(format_float_inf, "import math\nprint('{:f}'.format(math.inf))\n", "inf");
-crate::runtime_case!(format_string_trunc, "print('{:.2}'.format('hello'))\n", "he");
-crate::runtime_case!(format_string_align, "print('{:*<6}'.format('ab'))\n", "ab****");
-crate::runtime_case!(format_chained_method, "print('  hi  '.strip().format())\n", "hi");
+crate::runtime_case!(
+    format_float_inf,
+    "import math\nprint('{:f}'.format(math.inf))\n",
+    "inf"
+);
+crate::runtime_case!(
+    format_string_trunc,
+    "print('{:.2}'.format('hello'))\n",
+    "he"
+);
+crate::runtime_case!(
+    format_string_align,
+    "print('{:*<6}'.format('ab'))\n",
+    "ab****"
+);
+crate::runtime_case!(
+    format_chained_method,
+    "print('  hi  '.strip().format())\n",
+    "hi"
+);
 crate::runtime_case!(fstring_debug_equal, "x = 42\nprint(f'{x=}')\n", "x=42");
-crate::runtime_case!(fstring_format_debug, "x = 3.5\nprint(f'{x=:.1f}')\n", "x=3.5");
+crate::runtime_case!(
+    fstring_format_debug,
+    "x = 3.5\nprint(f'{x=:.1f}')\n",
+    "x=3.5"
+);
 crate::runtime_case!(format_bytes_object, "print('{}'.format(b'hi'))\n", "b'hi'");
 
-crate::compile_case!(format_invalid_spec, "try:\n '{:z}'.format(1)\nexcept ValueError:\n pass\n");
-crate::compile_case!(format_missing_key, "try:\n '{x}'.format()\nexcept KeyError:\n pass\n");
+crate::compile_case!(
+    format_invalid_spec,
+    "try:\n '{:z}'.format(1)\nexcept ValueError:\n pass\n"
+);
+crate::compile_case!(
+    format_missing_key,
+    "try:\n '{x}'.format()\nexcept KeyError:\n pass\n"
+);
 crate::compile_case!(format_extra_args, "'{} {}'.format(1, 2, 3)\n");
 crate::compile_case!(fstring_backslash_in_expr, "print(f'{ord(\"a\")}')\n");
 crate::compile_case!(format_map_override, "'{a}'.format_map({'a': 1})\n");

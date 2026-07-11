@@ -195,11 +195,7 @@ crate::runtime_case!(
     "import weakref\nprint(weakref.__name__)\n",
     "weakref"
 );
-crate::runtime_case!(
-    gc_module_name,
-    "import gc\nprint(gc.__name__)\n",
-    "gc"
-);
+crate::runtime_case!(gc_module_name, "import gc\nprint(gc.__name__)\n", "gc");
 crate::runtime_case!(
     tracemalloc_module_name,
     "import tracemalloc\nprint(tracemalloc.__name__)\n",
@@ -221,8 +217,20 @@ crate::runtime_case!(
     "False"
 );
 
-crate::compile_case!(weakref_proxy_del_attr, "import weakref\nclass C:\n x = 1\np = weakref.proxy(C())\ndel p.x\n");
+crate::compile_case!(
+    weakref_proxy_del_attr,
+    "import weakref\nclass C:\n x = 1\np = weakref.proxy(C())\ndel p.x\n"
+);
 crate::compile_case!(gc_get_callbacks, "import gc\ngc.callbacks\n");
-crate::compile_case!(tracemalloc_compare_snapshots, "import tracemalloc\ntracemalloc.start()\ns1 = tracemalloc.take_snapshot()\ns2 = tracemalloc.take_snapshot()\ntracemalloc.stop()\n");
-crate::compile_case!(weakref_callable_proxy, "import weakref\nclass C:\n def __call__(self):\n  return 1\np = weakref.proxy(C())\np()\n");
-crate::compile_case!(gc_get_objects_filter, "import gc\n[o for o in gc.get_objects() if isinstance(o, list)][:1]\n");
+crate::compile_case!(
+    tracemalloc_compare_snapshots,
+    "import tracemalloc\ntracemalloc.start()\ns1 = tracemalloc.take_snapshot()\ns2 = tracemalloc.take_snapshot()\ntracemalloc.stop()\n"
+);
+crate::compile_case!(
+    weakref_callable_proxy,
+    "import weakref\nclass C:\n def __call__(self):\n  return 1\np = weakref.proxy(C())\np()\n"
+);
+crate::compile_case!(
+    gc_get_objects_filter,
+    "import gc\n[o for o in gc.get_objects() if isinstance(o, list)][:1]\n"
+);

@@ -1,21 +1,12 @@
 //! Extended dict methods: get/setdefault, popitem, merge, views, comprehension patterns.
 
-
-crate::runtime_case!(
-    dict_get_existing,
-    "d = {'a': 1}\nprint(d.get('a'))\n",
-    "1"
-);
+crate::runtime_case!(dict_get_existing, "d = {'a': 1}\nprint(d.get('a'))\n", "1");
 crate::runtime_case!(
     dict_get_missing_default,
     "d = {}\nprint(d.get('x', 99))\n",
     "99"
 );
-crate::runtime_case!(
-    dict_get_missing_none,
-    "d = {}\nprint(d.get('x'))\n",
-    "None"
-);
+crate::runtime_case!(dict_get_missing_none, "d = {}\nprint(d.get('x'))\n", "None");
 crate::runtime_case!(
     dict_setdefault_inserts,
     "d = {}\nd.setdefault('k', 5)\nprint(d['k'])\n",
@@ -126,16 +117,8 @@ crate::runtime_case!(
     "d = {'a': 1, 'b': 2}\ndel d['a']\nprint(list(d))\n",
     "['b']"
 );
-crate::runtime_case!(
-    dict_bool_nonempty,
-    "print(bool({'a': 1}))\n",
-    "True"
-);
-crate::runtime_case!(
-    dict_bool_empty,
-    "print(bool({}))\n",
-    "False"
-);
+crate::runtime_case!(dict_bool_nonempty, "print(bool({'a': 1}))\n", "True");
+crate::runtime_case!(dict_bool_empty, "print(bool({}))\n", "False");
 crate::runtime_case!(
     dict_equality_same_pairs,
     "print({'a': 1, 'b': 2} == {'b': 2, 'a': 1})\n",
@@ -222,8 +205,20 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(dict_popitem_twice, "d = {'a': 1, 'b': 2}\nd.popitem()\nd.popitem()\n");
-crate::compile_case!(dict_update_iterable, "d = {}\nd.update([('a', 1), ('b', 2)])\n");
-crate::compile_case!(dict_view_set_difference, "d = {'a': 1, 'b': 2}\nk = d.keys()\n");
+crate::compile_case!(
+    dict_popitem_twice,
+    "d = {'a': 1, 'b': 2}\nd.popitem()\nd.popitem()\n"
+);
+crate::compile_case!(
+    dict_update_iterable,
+    "d = {}\nd.update([('a', 1), ('b', 2)])\n"
+);
+crate::compile_case!(
+    dict_view_set_difference,
+    "d = {'a': 1, 'b': 2}\nk = d.keys()\n"
+);
 crate::compile_case!(dict_comp_nested, "d = {k: {k: k} for k in range(2)}\n");
-crate::compile_case!(dict_del_missing_compile, "d = {}\ntry:\n    del d['x']\nexcept KeyError:\n    pass\n");
+crate::compile_case!(
+    dict_del_missing_compile,
+    "d = {}\ntry:\n    del d['x']\nexcept KeyError:\n    pass\n"
+);

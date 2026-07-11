@@ -216,8 +216,23 @@ crate::runtime_case!(
     "A"
 );
 
-crate::compile_case!(metaclass_conflict, "class M1(type): pass\nclass M2(type): pass\ntry:\n class C(metaclass=M1, metaclass=M2): pass\nexcept TypeError: pass\n");
-crate::compile_case!(slots_weakref, "class C:\n __slots__ = ('__weakref__', 'x')\n");
-crate::compile_case!(descriptor_getset, "class D:\n def __get__(self, obj, owner): return 1\n def __set__(self, obj, val): pass\nclass C:\n x = D()\n");
-crate::compile_case!(abc_register_virtual, "from abc import ABC\nclass B(ABC):\n pass\nclass C: pass\nB.register(C)\n");
-crate::compile_case!(dataclass_with_slots, "from dataclasses import dataclass\n@dataclass(slots=True)\nclass P:\n x: int\n");
+crate::compile_case!(
+    metaclass_conflict,
+    "class M1(type): pass\nclass M2(type): pass\ntry:\n class C(metaclass=M1, metaclass=M2): pass\nexcept TypeError: pass\n"
+);
+crate::compile_case!(
+    slots_weakref,
+    "class C:\n __slots__ = ('__weakref__', 'x')\n"
+);
+crate::compile_case!(
+    descriptor_getset,
+    "class D:\n def __get__(self, obj, owner): return 1\n def __set__(self, obj, val): pass\nclass C:\n x = D()\n"
+);
+crate::compile_case!(
+    abc_register_virtual,
+    "from abc import ABC\nclass B(ABC):\n pass\nclass C: pass\nB.register(C)\n"
+);
+crate::compile_case!(
+    dataclass_with_slots,
+    "from dataclasses import dataclass\n@dataclass(slots=True)\nclass P:\n x: int\n"
+);

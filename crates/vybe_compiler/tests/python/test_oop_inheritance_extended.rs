@@ -1,6 +1,5 @@
 //! OOP: MRO, super(), descriptors, __slots__, class/static vars, metaclass basics.
 
-
 crate::runtime_case!(
     class_instance_attr,
     "class C:\n def __init__(self, x):\n  self.x = x\nprint(C(5).x)\n",
@@ -132,7 +131,7 @@ crate::runtime_case!(
     "C"
 );
 crate::runtime_case!(
-  super_two_arg_form,
+    super_two_arg_form,
     "class B:\n def f(self):\n  return 1\nclass D(B):\n def f(self):\n  return super(D, self).f() + 10\nprint(D().f())\n",
     "11"
 );
@@ -141,11 +140,7 @@ crate::runtime_case!(
     "class C: pass\nprint(isinstance(C(), object))\n",
     "True"
 );
-crate::runtime_case!(
-    type_name,
-    "class C: pass\nprint(C.__name__)\n",
-    "C"
-);
+crate::runtime_case!(type_name, "class C: pass\nprint(C.__name__)\n", "C");
 crate::runtime_case!(
     type_bases,
     "class B: pass\nclass D(B): pass\nprint(D.__bases__[0].__name__)\n",
@@ -237,8 +232,23 @@ crate::runtime_case!(
     "1"
 );
 
-crate::compile_case!(oop_metaclass_type, "class M(type):\n pass\nclass C(metaclass=M):\n pass\n");
-crate::compile_case!(oop_abstract_base, "from abc import ABC, abstractmethod\nclass B(ABC):\n @abstractmethod\n def m(self):\n  pass\n");
-crate::compile_case!(oop_slots_subclass, "class B:\n __slots__ = ()\nclass D(B):\n __slots__ = ('x',)\n");
-crate::compile_case!(oop_descriptors, "class D:\n def __get__(self, obj, owner):\n  return 1\nclass C:\n x = D()\n");
-crate::compile_case!(oop_init_subclass, "class B:\n def __init_subclass__(cls, **kw):\n  pass\nclass D(B):\n pass\n");
+crate::compile_case!(
+    oop_metaclass_type,
+    "class M(type):\n pass\nclass C(metaclass=M):\n pass\n"
+);
+crate::compile_case!(
+    oop_abstract_base,
+    "from abc import ABC, abstractmethod\nclass B(ABC):\n @abstractmethod\n def m(self):\n  pass\n"
+);
+crate::compile_case!(
+    oop_slots_subclass,
+    "class B:\n __slots__ = ()\nclass D(B):\n __slots__ = ('x',)\n"
+);
+crate::compile_case!(
+    oop_descriptors,
+    "class D:\n def __get__(self, obj, owner):\n  return 1\nclass C:\n x = D()\n"
+);
+crate::compile_case!(
+    oop_init_subclass,
+    "class B:\n def __init_subclass__(cls, **kw):\n  pass\nclass D(B):\n pass\n"
+);

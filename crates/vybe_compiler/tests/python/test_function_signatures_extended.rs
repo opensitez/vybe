@@ -236,8 +236,14 @@ crate::runtime_case!(
     "inner"
 );
 
-crate::compile_case!(positional_only_after_slash_error, "def f(a, /, /, b): pass\n");
+crate::compile_case!(
+    positional_only_after_slash_error,
+    "def f(a, /, /, b): pass\n"
+);
 crate::compile_case!(async_def_signature, "async def f(a, /, *, b): pass\n");
 crate::compile_case!(type_params_pep695, "def f[T](x: T) -> T: return x\n");
 crate::compile_case!(keyword_only_before_star, "def f(*, a, b): pass\n");
-crate::compile_case!(inspect_bound_arguments, "import inspect\ndef f(a, b=1): pass\ninspect.signature(f).bind(1)\n");
+crate::compile_case!(
+    inspect_bound_arguments,
+    "import inspect\ndef f(a, b=1): pass\ninspect.signature(f).bind(1)\n"
+);

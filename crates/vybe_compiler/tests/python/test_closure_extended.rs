@@ -226,8 +226,23 @@ crate::runtime_case!(
     "[1, 3]"
 );
 
-crate::compile_case!(closure_nonlocal_error, "def outer():\n def inner():\n  nonlocal x\n");
-crate::compile_case!(closure_global_nonlocal_mix, "x = 1\ndef outer():\n def inner():\n  global x\n  x = 2\n");
-crate::compile_case!(closure_class_scope, "def outer():\n class C:\n  def m(self):\n   return x\n");
-crate::compile_case!(closure_annotations, "def outer():\n x: int = 1\n def inner() -> int:\n  return x\n");
-crate::compile_case!(closure_yield_from, "def outer():\n def inner():\n  yield from range(2)\n return inner\n");
+crate::compile_case!(
+    closure_nonlocal_error,
+    "def outer():\n def inner():\n  nonlocal x\n"
+);
+crate::compile_case!(
+    closure_global_nonlocal_mix,
+    "x = 1\ndef outer():\n def inner():\n  global x\n  x = 2\n"
+);
+crate::compile_case!(
+    closure_class_scope,
+    "def outer():\n class C:\n  def m(self):\n   return x\n"
+);
+crate::compile_case!(
+    closure_annotations,
+    "def outer():\n x: int = 1\n def inner() -> int:\n  return x\n"
+);
+crate::compile_case!(
+    closure_yield_from,
+    "def outer():\n def inner():\n  yield from range(2)\n return inner\n"
+);

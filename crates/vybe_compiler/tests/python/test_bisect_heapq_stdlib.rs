@@ -1,56 +1,258 @@
+crate::runtime_case!(
+    bisect_insort_sorted,
+    "import bisect\na = [1, 3, 5]\nbisect.insort(a, 4)\nprint(a)\n",
+    "[1, 3, 4, 5]"
+);
+crate::runtime_case!(
+    bisect_left,
+    "import bisect\nprint(bisect.bisect_left([1, 2, 2, 3], 2))\n",
+    "1"
+);
+crate::runtime_case!(
+    bisect_right,
+    "import bisect\nprint(bisect.bisect_right([1, 2, 2, 3], 2))\n",
+    "3"
+);
+crate::runtime_case!(
+    bisect_insort_left,
+    "import bisect\na = [1, 2, 2]\nbisect.insort_left(a, 2)\nprint(len(a))\n",
+    "4"
+);
+crate::runtime_case!(
+    bisect_insort_right,
+    "import bisect\na = [1, 2, 3]\nbisect.insort_right(a, 2)\nprint(a)\n",
+    "[1, 2, 2, 3]"
+);
+crate::runtime_case!(
+    heapq_pushpop,
+    "import heapq\nh = [3, 1, 2]\nprint(heapq.pushpop(h, 0))\n",
+    "0"
+);
+crate::runtime_case!(
+    heapq_replace,
+    "import heapq\nh = [1, 2, 3]\nprint(heapq.heapreplace(h, 0))\n",
+    "1"
+);
+crate::runtime_case!(
+    heapq_nsmallest,
+    "import heapq\nprint(heapq.nsmallest(2, [5, 3, 1, 4]))\n",
+    "[1, 3]"
+);
+crate::runtime_case!(
+    heapq_nlargest,
+    "import heapq\nprint(heapq.nlargest(2, [5, 3, 1, 4]))\n",
+    "[5, 4]"
+);
+crate::runtime_case!(
+    heapq_heapify,
+    "import heapq\nh = [3, 1, 2]\nheapq.heapify(h)\nprint(h[0])\n",
+    "1"
+);
+crate::runtime_case!(
+    heapq_heappush,
+    "import heapq\nh = []\nheapq.heappush(h, 2)\nheapq.heappush(h, 1)\nprint(heapq.heappop(h))\n",
+    "1"
+);
+crate::runtime_case!(
+    heapq_merge,
+    "import heapq\nprint(list(heapq.merge([1, 3], [2, 4])))\n",
+    "[1, 2, 3, 4]"
+);
+crate::runtime_case!(
+    array_from_list,
+    "import array\na = array.array('i', [1, 2, 3])\nprint(a[1])\n",
+    "2"
+);
+crate::runtime_case!(
+    array_append,
+    "import array\na = array.array('i')\na.append(5)\nprint(a[0])\n",
+    "5"
+);
+crate::runtime_case!(
+    array_tolist,
+    "import array\nprint(array.array('i', [1, 2]).tolist())\n",
+    "[1, 2]"
+);
+crate::runtime_case!(
+    array_typecode,
+    "import array\na = array.array('b', [1, 2])\nprint(a.typecode)\n",
+    "b"
+);
+crate::runtime_case!(
+    array_itemsize,
+    "import array\na = array.array('i', [1])\nprint(a.itemsize > 0)\n",
+    "True"
+);
+crate::runtime_case!(
+    statistics_mean,
+    "import statistics\nprint(statistics.mean([1, 2, 3, 4]))\n",
+    "2.5"
+);
+crate::runtime_case!(
+    statistics_median,
+    "import statistics\nprint(statistics.median([1, 3, 2]))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_mode,
+    "import statistics\nprint(statistics.mode([1, 2, 2, 3]))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_stdev,
+    "import statistics\nprint(round(statistics.stdev([2, 4, 4, 4, 5, 5, 7, 9]), 2))\n",
+    "2.14"
+);
+crate::runtime_case!(
+    statistics_variance,
+    "import statistics\nprint(statistics.variance([1, 2, 3]))\n",
+    "1"
+);
+crate::runtime_case!(
+    statistics_pstdev,
+    "import statistics\nprint(round(statistics.pstdev([1, 2, 3]), 3))\n",
+    "0.816"
+);
+crate::runtime_case!(
+    statistics_pvariance,
+    "import statistics\nprint(statistics.pvariance([1, 2, 3]))\n",
+    "0.6666666666666666"
+);
+crate::runtime_case!(
+    statistics_harmonic_mean,
+    "import statistics\nprint(statistics.harmonic_mean([1, 4]))\n",
+    "1.6"
+);
+crate::runtime_case!(
+    statistics_geometric_mean,
+    "import statistics\nprint(statistics.geometric_mean([1, 2, 4]))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_quantiles,
+    "import statistics\nprint(len(statistics.quantiles([1, 2, 3, 4])))\n",
+    "3"
+);
+crate::runtime_case!(
+    bisect_empty,
+    "import bisect\nprint(bisect.bisect_left([], 1))\n",
+    "0"
+);
+crate::runtime_case!(
+    heapq_empty_pop,
+    "import heapq\nh = []\nheapq.heappush(h, 1)\nprint(heapq.heappop(h))\n",
+    "1"
+);
+crate::runtime_case!(
+    heapq_tuple_order,
+    "import heapq\nh = [(2, 'b'), (1, 'a')]\nheapq.heapify(h)\nprint(heapq.heappop(h)[1])\n",
+    "a"
+);
+crate::runtime_case!(
+    array_extend,
+    "import array\na = array.array('i', [1])\na.extend([2, 3])\nprint(len(a))\n",
+    "3"
+);
+crate::runtime_case!(
+    array_count,
+    "import array\nprint(array.array('i', [1, 2, 1]).count(1))\n",
+    "2"
+);
+crate::runtime_case!(
+    array_reverse,
+    "import array\na = array.array('i', [1, 2, 3])\na.reverse()\nprint(a[0])\n",
+    "3"
+);
+crate::runtime_case!(
+    array_buffer_info,
+    "import array\na = array.array('i', [1])\nprint(a.buffer_info()[1])\n",
+    "1"
+);
+crate::runtime_case!(
+    statistics_median_low,
+    "import statistics\nprint(statistics.median_low([1, 2, 3, 4]))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_median_high,
+    "import statistics\nprint(statistics.median_high([1, 2, 3, 4]))\n",
+    "3"
+);
+crate::runtime_case!(
+    statistics_median_grouped,
+    "import statistics\nprint(statistics.median_grouped([1, 2, 2, 3]))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_multimode,
+    "import statistics\nprint(sorted(statistics.multimode([1, 1, 2, 2])))\n",
+    "[1, 2]"
+);
+crate::runtime_case!(
+    statistics_fmean,
+    "import statistics\nprint(statistics.fmean([1.0, 2.0, 3.0]))\n",
+    "2.0"
+);
+crate::runtime_case!(
+    heapq_nsmallest_with_key,
+    "import heapq\nprint(heapq.nsmallest(2, ['bbb', 'a', 'cc'], key=len))\n",
+    "['a', 'cc']"
+);
+crate::runtime_case!(
+    heapq_nlargest_with_key,
+    "import heapq\nprint(heapq.nlargest(2, ['bbb', 'a', 'cc'], key=len))\n",
+    "['bbb', 'cc']"
+);
+crate::runtime_case!(
+    bisect_insort_existing,
+    "import bisect\na = [1, 2, 3]\nbisect.insort(a, 2)\nprint(a.count(2))\n",
+    "2"
+);
+crate::runtime_case!(
+    array_byteswap,
+    "import array\na = array.array('h', [1])\nprint(hasattr(a, 'byteswap'))\n",
+    "True"
+);
+crate::runtime_case!(
+    array_frombytes,
+    "import array\na = array.array('b')\na.frombytes(b'\\x01\\x02')\nprint(len(a))\n",
+    "2"
+);
+crate::runtime_case!(
+    statistics_mean_single,
+    "import statistics\nprint(statistics.mean([42]))\n",
+    "42"
+);
+crate::runtime_case!(
+    statistics_mode_single,
+    "import statistics\nprint(statistics.mode([7]))\n",
+    "7"
+);
+crate::runtime_case!(
+    heapq_merge_empty,
+    "import heapq\nprint(list(heapq.merge([], [1])))\n",
+    "[1]"
+);
+crate::runtime_case!(
+    bisect_with_lo_hi,
+    "import bisect\nprint(bisect.bisect_left([1, 2, 3, 4], 3, 1, 3))\n",
+    "2"
+);
 
-
-crate::runtime_case!(bisect_insort_sorted, "import bisect\na = [1, 3, 5]\nbisect.insort(a, 4)\nprint(a)\n", "[1, 3, 4, 5]");
-crate::runtime_case!(bisect_left, "import bisect\nprint(bisect.bisect_left([1, 2, 2, 3], 2))\n", "1");
-crate::runtime_case!(bisect_right, "import bisect\nprint(bisect.bisect_right([1, 2, 2, 3], 2))\n", "3");
-crate::runtime_case!(bisect_insort_left, "import bisect\na = [1, 2, 2]\nbisect.insort_left(a, 2)\nprint(len(a))\n", "4");
-crate::runtime_case!(bisect_insort_right, "import bisect\na = [1, 2, 3]\nbisect.insort_right(a, 2)\nprint(a)\n", "[1, 2, 2, 3]");
-crate::runtime_case!(heapq_pushpop, "import heapq\nh = [3, 1, 2]\nprint(heapq.pushpop(h, 0))\n", "0");
-crate::runtime_case!(heapq_replace, "import heapq\nh = [1, 2, 3]\nprint(heapq.heapreplace(h, 0))\n", "1");
-crate::runtime_case!(heapq_nsmallest, "import heapq\nprint(heapq.nsmallest(2, [5, 3, 1, 4]))\n", "[1, 3]");
-crate::runtime_case!(heapq_nlargest, "import heapq\nprint(heapq.nlargest(2, [5, 3, 1, 4]))\n", "[5, 4]");
-crate::runtime_case!(heapq_heapify, "import heapq\nh = [3, 1, 2]\nheapq.heapify(h)\nprint(h[0])\n", "1");
-crate::runtime_case!(heapq_heappush, "import heapq\nh = []\nheapq.heappush(h, 2)\nheapq.heappush(h, 1)\nprint(heapq.heappop(h))\n", "1");
-crate::runtime_case!(heapq_merge, "import heapq\nprint(list(heapq.merge([1, 3], [2, 4])))\n", "[1, 2, 3, 4]");
-crate::runtime_case!(array_from_list, "import array\na = array.array('i', [1, 2, 3])\nprint(a[1])\n", "2");
-crate::runtime_case!(array_append, "import array\na = array.array('i')\na.append(5)\nprint(a[0])\n", "5");
-crate::runtime_case!(array_tolist, "import array\nprint(array.array('i', [1, 2]).tolist())\n", "[1, 2]");
-crate::runtime_case!(array_typecode, "import array\na = array.array('b', [1, 2])\nprint(a.typecode)\n", "b");
-crate::runtime_case!(array_itemsize, "import array\na = array.array('i', [1])\nprint(a.itemsize > 0)\n", "True");
-crate::runtime_case!(statistics_mean, "import statistics\nprint(statistics.mean([1, 2, 3, 4]))\n", "2.5");
-crate::runtime_case!(statistics_median, "import statistics\nprint(statistics.median([1, 3, 2]))\n", "2");
-crate::runtime_case!(statistics_mode, "import statistics\nprint(statistics.mode([1, 2, 2, 3]))\n", "2");
-crate::runtime_case!(statistics_stdev, "import statistics\nprint(round(statistics.stdev([2, 4, 4, 4, 5, 5, 7, 9]), 2))\n", "2.14");
-crate::runtime_case!(statistics_variance, "import statistics\nprint(statistics.variance([1, 2, 3]))\n", "1");
-crate::runtime_case!(statistics_pstdev, "import statistics\nprint(round(statistics.pstdev([1, 2, 3]), 3))\n", "0.816");
-crate::runtime_case!(statistics_pvariance, "import statistics\nprint(statistics.pvariance([1, 2, 3]))\n", "0.6666666666666666");
-crate::runtime_case!(statistics_harmonic_mean, "import statistics\nprint(statistics.harmonic_mean([1, 4]))\n", "1.6");
-crate::runtime_case!(statistics_geometric_mean, "import statistics\nprint(statistics.geometric_mean([1, 2, 4]))\n", "2");
-crate::runtime_case!(statistics_quantiles, "import statistics\nprint(len(statistics.quantiles([1, 2, 3, 4])))\n", "3");
-crate::runtime_case!(bisect_empty, "import bisect\nprint(bisect.bisect_left([], 1))\n", "0");
-crate::runtime_case!(heapq_empty_pop, "import heapq\nh = []\nheapq.heappush(h, 1)\nprint(heapq.heappop(h))\n", "1");
-crate::runtime_case!(heapq_tuple_order, "import heapq\nh = [(2, 'b'), (1, 'a')]\nheapq.heapify(h)\nprint(heapq.heappop(h)[1])\n", "a");
-crate::runtime_case!(array_extend, "import array\na = array.array('i', [1])\na.extend([2, 3])\nprint(len(a))\n", "3");
-crate::runtime_case!(array_count, "import array\nprint(array.array('i', [1, 2, 1]).count(1))\n", "2");
-crate::runtime_case!(array_reverse, "import array\na = array.array('i', [1, 2, 3])\na.reverse()\nprint(a[0])\n", "3");
-crate::runtime_case!(array_buffer_info, "import array\na = array.array('i', [1])\nprint(a.buffer_info()[1])\n", "1");
-crate::runtime_case!(statistics_median_low, "import statistics\nprint(statistics.median_low([1, 2, 3, 4]))\n", "2");
-crate::runtime_case!(statistics_median_high, "import statistics\nprint(statistics.median_high([1, 2, 3, 4]))\n", "3");
-crate::runtime_case!(statistics_median_grouped, "import statistics\nprint(statistics.median_grouped([1, 2, 2, 3]))\n", "2");
-crate::runtime_case!(statistics_multimode, "import statistics\nprint(sorted(statistics.multimode([1, 1, 2, 2])))\n", "[1, 2]");
-crate::runtime_case!(statistics_fmean, "import statistics\nprint(statistics.fmean([1.0, 2.0, 3.0]))\n", "2.0");
-crate::runtime_case!(heapq_nsmallest_with_key, "import heapq\nprint(heapq.nsmallest(2, ['bbb', 'a', 'cc'], key=len))\n", "['a', 'cc']");
-crate::runtime_case!(heapq_nlargest_with_key, "import heapq\nprint(heapq.nlargest(2, ['bbb', 'a', 'cc'], key=len))\n", "['bbb', 'cc']");
-crate::runtime_case!(bisect_insort_existing, "import bisect\na = [1, 2, 3]\nbisect.insort(a, 2)\nprint(a.count(2))\n", "2");
-crate::runtime_case!(array_byteswap, "import array\na = array.array('h', [1])\nprint(hasattr(a, 'byteswap'))\n", "True");
-crate::runtime_case!(array_frombytes, "import array\na = array.array('b')\na.frombytes(b'\\x01\\x02')\nprint(len(a))\n", "2");
-crate::runtime_case!(statistics_mean_single, "import statistics\nprint(statistics.mean([42]))\n", "42");
-crate::runtime_case!(statistics_mode_single, "import statistics\nprint(statistics.mode([7]))\n", "7");
-crate::runtime_case!(heapq_merge_empty, "import heapq\nprint(list(heapq.merge([], [1])))\n", "[1]");
-crate::runtime_case!(bisect_with_lo_hi, "import bisect\nprint(bisect.bisect_left([1, 2, 3, 4], 3, 1, 3))\n", "2");
-
-crate::compile_case!(array_tobytes, "import array\narray.array('i', [1]).tobytes()\n");
+crate::compile_case!(
+    array_tobytes,
+    "import array\narray.array('i', [1]).tobytes()\n"
+);
 crate::compile_case!(array_fromfile, "import array\na = array.array('i')\n");
-crate::compile_case!(heapq_heappushpop, "import heapq\nheapq.heappushpop([1, 2], 0)\n");
-crate::compile_case!(statistics_linear_regression, "import statistics\nstatistics.linear_regression([(1,2),(2,4)])\n");
-crate::compile_case!(statistics_correlation, "import statistics\nstatistics.correlation([1,2,3], [2,4,6])\n");
+crate::compile_case!(
+    heapq_heappushpop,
+    "import heapq\nheapq.heappushpop([1, 2], 0)\n"
+);
+crate::compile_case!(
+    statistics_linear_regression,
+    "import statistics\nstatistics.linear_regression([(1,2),(2,4)])\n"
+);
+crate::compile_case!(
+    statistics_correlation,
+    "import statistics\nstatistics.correlation([1,2,3], [2,4,6])\n"
+);

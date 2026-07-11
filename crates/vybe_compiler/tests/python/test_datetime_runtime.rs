@@ -236,8 +236,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(datetime_astimezone, "import datetime\ndt = datetime.datetime(2020,1,1,tzinfo=datetime.timezone.utc)\ndt.astimezone()\n");
-crate::compile_case!(zoneinfo_datetime, "from zoneinfo import ZoneInfo\nimport datetime\ndt = datetime.datetime(2020,1,1,tzinfo=ZoneInfo('UTC'))\n");
-crate::compile_case!(calendar_monthcalendar, "import calendar\ncalendar.monthcalendar(2020, 6)\n");
-crate::compile_case!(calendar_calendar_iter, "import calendar\ncal = calendar.Calendar()\nlist(cal.itermonthdays(2020, 6))\n");
-crate::compile_case!(datetime_fold_attribute, "import datetime\ndt = datetime.datetime(2020,1,1)\nhasattr(dt, 'fold')\n");
+crate::compile_case!(
+    datetime_astimezone,
+    "import datetime\ndt = datetime.datetime(2020,1,1,tzinfo=datetime.timezone.utc)\ndt.astimezone()\n"
+);
+crate::compile_case!(
+    zoneinfo_datetime,
+    "from zoneinfo import ZoneInfo\nimport datetime\ndt = datetime.datetime(2020,1,1,tzinfo=ZoneInfo('UTC'))\n"
+);
+crate::compile_case!(
+    calendar_monthcalendar,
+    "import calendar\ncalendar.monthcalendar(2020, 6)\n"
+);
+crate::compile_case!(
+    calendar_calendar_iter,
+    "import calendar\ncal = calendar.Calendar()\nlist(cal.itermonthdays(2020, 6))\n"
+);
+crate::compile_case!(
+    datetime_fold_attribute,
+    "import datetime\ndt = datetime.datetime(2020,1,1)\nhasattr(dt, 'fold')\n"
+);

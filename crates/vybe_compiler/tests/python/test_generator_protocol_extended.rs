@@ -222,7 +222,13 @@ crate::runtime_case!(
 );
 
 crate::compile_case!(generator_async, "async def ag():\n yield 1\n");
-crate::compile_case!(generator_yield_from_await, "async def ag():\n yield from async_iter()\n");
+crate::compile_case!(
+    generator_yield_from_await,
+    "async def ag():\n yield from async_iter()\n"
+);
 crate::compile_case!(generator_pep479, "def g():\n return\n yield 1\n");
-crate::compile_case!(generator_throw_generator, "def g():\n yield 1\nit = g()\nit.throw(GeneratorExit)\n");
+crate::compile_case!(
+    generator_throw_generator,
+    "def g():\n yield 1\nit = g()\nit.throw(GeneratorExit)\n"
+);
 crate::compile_case!(generator_asend, "async def ag():\n yield 1\n");

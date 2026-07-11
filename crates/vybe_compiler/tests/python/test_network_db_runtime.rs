@@ -1,10 +1,6 @@
 //! socket, sqlite3, ssl, http.client — runtime where possible.
 
-crate::runtime_case!(
-    socket_module,
-    "import socket\nprint(socket.AF_INET)\n",
-    "2"
-);
+crate::runtime_case!(socket_module, "import socket\nprint(socket.AF_INET)\n", "2");
 crate::runtime_case!(
     socket_sock_stream,
     "import socket\nprint(socket.SOCK_STREAM)\n",
@@ -90,11 +86,7 @@ crate::runtime_case!(
     "import ssl\nprint(hasattr(ssl, 'PROTOCOL_TLS'))\n",
     "True"
 );
-crate::runtime_case!(
-    ssl_cert_none,
-    "import ssl\nprint(ssl.CERT_NONE)\n",
-    "0"
-);
+crate::runtime_case!(ssl_cert_none, "import ssl\nprint(ssl.CERT_NONE)\n", "0");
 crate::runtime_case!(
     ssl_wrap_socket_exists,
     "import ssl\nprint(callable(ssl.wrap_socket))\n",
@@ -236,8 +228,20 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(socket_connect_ex, "import socket\ns = socket.socket()\ns.connect_ex(('127.0.0.1', 9))\n");
-crate::compile_case!(sqlite3_backup, "import sqlite3\nsrc = sqlite3.connect(':memory:')\n");
+crate::compile_case!(
+    socket_connect_ex,
+    "import socket\ns = socket.socket()\ns.connect_ex(('127.0.0.1', 9))\n"
+);
+crate::compile_case!(
+    sqlite3_backup,
+    "import sqlite3\nsrc = sqlite3.connect(':memory:')\n"
+);
 crate::compile_case!(ssl_sslsocket, "import ssl\nssl.SSLSocket\n");
-crate::compile_case!(http_client_request, "import http.client\nhttp.client.HTTPConnection('localhost')\n");
-crate::compile_case!(socketserver_tcpserver, "import socketserver\nsocketserver.TCPServer\n");
+crate::compile_case!(
+    http_client_request,
+    "import http.client\nhttp.client.HTTPConnection('localhost')\n"
+);
+crate::compile_case!(
+    socketserver_tcpserver,
+    "import socketserver\nsocketserver.TCPServer\n"
+);

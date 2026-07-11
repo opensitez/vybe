@@ -241,8 +241,23 @@ crate::runtime_case!(
     "ok"
 );
 
-crate::compile_case!(threading_thread_start, "import threading\nt = threading.Thread(target=lambda: None)\nt.start()\nt.join()\n");
-crate::compile_case!(subprocess_run_echo, "import subprocess\nsubprocess.run(['echo', 'hi'], capture_output=True)\n");
-crate::compile_case!(multiprocessing_pool, "import multiprocessing\nmultiprocessing.Pool\n");
-crate::compile_case!(concurrent_futures_submit, "import concurrent.futures\nwith concurrent.futures.ThreadPoolExecutor() as ex:\n ex.submit(lambda: 1)\n");
-crate::compile_case!(multiprocessing_spawn, "import multiprocessing\nmultiprocessing.get_context('spawn')\n");
+crate::compile_case!(
+    threading_thread_start,
+    "import threading\nt = threading.Thread(target=lambda: None)\nt.start()\nt.join()\n"
+);
+crate::compile_case!(
+    subprocess_run_echo,
+    "import subprocess\nsubprocess.run(['echo', 'hi'], capture_output=True)\n"
+);
+crate::compile_case!(
+    multiprocessing_pool,
+    "import multiprocessing\nmultiprocessing.Pool\n"
+);
+crate::compile_case!(
+    concurrent_futures_submit,
+    "import concurrent.futures\nwith concurrent.futures.ThreadPoolExecutor() as ex:\n ex.submit(lambda: 1)\n"
+);
+crate::compile_case!(
+    multiprocessing_spawn,
+    "import multiprocessing\nmultiprocessing.get_context('spawn')\n"
+);

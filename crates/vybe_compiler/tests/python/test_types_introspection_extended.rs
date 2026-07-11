@@ -1,6 +1,5 @@
 //! type(), isinstance, issubclass, id, hash, callable, getattr extended.
 
-
 crate::runtime_case!(type_int_name, "print(type(1).__name__)\n", "int");
 crate::runtime_case!(type_str_name, "print(type('').__name__)\n", "str");
 crate::runtime_case!(type_list_name, "print(type([]).__name__)\n", "list");
@@ -11,48 +10,145 @@ crate::runtime_case!(type_bool_name, "print(type(True).__name__)\n", "bool");
 crate::runtime_case!(type_none_type, "print(type(None).__name__)\n", "NoneType");
 crate::runtime_case!(type_float_name, "print(type(1.0).__name__)\n", "float");
 crate::runtime_case!(type_bytes_name, "print(type(b'').__name__)\n", "bytes");
-crate::runtime_case!(type_bytearray_name, "print(type(bytearray()).__name__)\n", "bytearray");
+crate::runtime_case!(
+    type_bytearray_name,
+    "print(type(bytearray()).__name__)\n",
+    "bytearray"
+);
 crate::runtime_case!(type_complex_name, "print(type(1j).__name__)\n", "complex");
 crate::runtime_case!(type_range_name, "print(type(range(1)).__name__)\n", "range");
-crate::runtime_case!(type_function, "print(type(lambda: None).__name__)\n", "function");
-crate::runtime_case!(type_builtin, "print(type(len).__name__)\n", "builtin_function_or_method");
-crate::runtime_case!(type_method, "print(type([].append).__name__)\n", "builtin_function_or_method");
+crate::runtime_case!(
+    type_function,
+    "print(type(lambda: None).__name__)\n",
+    "function"
+);
+crate::runtime_case!(
+    type_builtin,
+    "print(type(len).__name__)\n",
+    "builtin_function_or_method"
+);
+crate::runtime_case!(
+    type_method,
+    "print(type([].append).__name__)\n",
+    "builtin_function_or_method"
+);
 crate::runtime_case!(isinstance_int, "print(isinstance(1, int))\n", "True");
-crate::runtime_case!(isinstance_bool_int, "print(isinstance(True, int))\n", "True");
-crate::runtime_case!(isinstance_subclass, "print(isinstance([], (list, tuple)))\n", "True");
+crate::runtime_case!(
+    isinstance_bool_int,
+    "print(isinstance(True, int))\n",
+    "True"
+);
+crate::runtime_case!(
+    isinstance_subclass,
+    "print(isinstance([], (list, tuple)))\n",
+    "True"
+);
 crate::runtime_case!(isinstance_false, "print(isinstance('x', int))\n", "False");
-crate::runtime_case!(issubclass_bool_int, "print(issubclass(bool, int))\n", "True");
-crate::runtime_case!(issubclass_user, "class B: pass\nclass D(B): pass\nprint(issubclass(D, B))\n", "True");
-crate::runtime_case!(issubclass_tuple, "print(issubclass(int, (float, int)))\n", "True");
+crate::runtime_case!(
+    issubclass_bool_int,
+    "print(issubclass(bool, int))\n",
+    "True"
+);
+crate::runtime_case!(
+    issubclass_user,
+    "class B: pass\nclass D(B): pass\nprint(issubclass(D, B))\n",
+    "True"
+);
+crate::runtime_case!(
+    issubclass_tuple,
+    "print(issubclass(int, (float, int)))\n",
+    "True"
+);
 crate::runtime_case!(callable_function, "print(callable(lambda: 1))\n", "True");
 crate::runtime_case!(callable_int, "print(callable(1))\n", "False");
-crate::runtime_case!(callable_class, "class C: pass\nprint(callable(C))\n", "True");
-crate::runtime_case!(callable_instance, "class C:\n def __call__(self):\n  return 1\nprint(callable(C()))\n", "True");
+crate::runtime_case!(
+    callable_class,
+    "class C: pass\nprint(callable(C))\n",
+    "True"
+);
+crate::runtime_case!(
+    callable_instance,
+    "class C:\n def __call__(self):\n  return 1\nprint(callable(C()))\n",
+    "True"
+);
 crate::runtime_case!(id_stable, "x = []\nprint(id(x) == id(x))\n", "True");
 crate::runtime_case!(id_different_objects, "print(id([]) == id([]))\n", "False");
 crate::runtime_case!(hash_int, "print(hash(42) == hash(42))\n", "True");
 crate::runtime_case!(hash_str, "print(isinstance(hash('a'), int))\n", "True");
 crate::runtime_case!(hash_tuple, "print(hash((1, 2)) == hash((1, 2)))\n", "True");
 crate::runtime_case!(hash_none, "print(hash(None))\n", "0");
-crate::runtime_case!(getattr_default, "class C:\n x = 1\nprint(getattr(C, 'x'))\n", "1");
-crate::runtime_case!(getattr_missing_default, "class C: pass\nprint(getattr(C(), 'z', 9))\n", "9");
-crate::runtime_case!(setattr_dynamic, "class C: pass\nc = C()\nsetattr(c, 'k', 'v')\nprint(getattr(c, 'k'))\n", "v");
-crate::runtime_case!(hasattr_true, "class C:\n x = 1\nprint(hasattr(C(), 'x'))\n", "True");
-crate::runtime_case!(hasattr_false, "class C: pass\nprint(hasattr(C(), 'y'))\n", "False");
-crate::runtime_case!(delattr_removes, "class C:\n def __init__(self):\n  self.a = 1\nc = C()\ndelattr(c, 'a')\nprint(hasattr(c, 'a'))\n", "False");
-crate::runtime_case!(vars_dict, "class C:\n def __init__(self):\n  self.x = 1\nprint(vars(C())['x'])\n", "1");
+crate::runtime_case!(
+    getattr_default,
+    "class C:\n x = 1\nprint(getattr(C, 'x'))\n",
+    "1"
+);
+crate::runtime_case!(
+    getattr_missing_default,
+    "class C: pass\nprint(getattr(C(), 'z', 9))\n",
+    "9"
+);
+crate::runtime_case!(
+    setattr_dynamic,
+    "class C: pass\nc = C()\nsetattr(c, 'k', 'v')\nprint(getattr(c, 'k'))\n",
+    "v"
+);
+crate::runtime_case!(
+    hasattr_true,
+    "class C:\n x = 1\nprint(hasattr(C(), 'x'))\n",
+    "True"
+);
+crate::runtime_case!(
+    hasattr_false,
+    "class C: pass\nprint(hasattr(C(), 'y'))\n",
+    "False"
+);
+crate::runtime_case!(
+    delattr_removes,
+    "class C:\n def __init__(self):\n  self.a = 1\nc = C()\ndelattr(c, 'a')\nprint(hasattr(c, 'a'))\n",
+    "False"
+);
+crate::runtime_case!(
+    vars_dict,
+    "class C:\n def __init__(self):\n  self.x = 1\nprint(vars(C())['x'])\n",
+    "1"
+);
 crate::runtime_case!(dir_builtins, "print('len' in dir(__builtins__))\n", "True");
-crate::runtime_case!(dir_instance, "class C:\n y = 2\nc = C()\nprint('y' in dir(c))\n", "True");
+crate::runtime_case!(
+    dir_instance,
+    "class C:\n y = 2\nc = C()\nprint('y' in dir(c))\n",
+    "True"
+);
 crate::runtime_case!(type_compare_same, "print(type(1) is int)\n", "True");
 crate::runtime_case!(type_of_type, "print(type(type(1)).__name__)\n", "type");
 crate::runtime_case!(object_is_base, "print(issubclass(int, object))\n", "True");
-crate::runtime_case!(mro_list, "class B: pass\nclass D(B): pass\nprint(D.mro()[0].__name__)\n", "D");
-crate::runtime_case!(class_bases, "class B: pass\nclass D(B): pass\nprint(D.__bases__[0].__name__)\n", "B");
-crate::runtime_case!(instance_class, "class C: pass\nprint(C().__class__ is C)\n", "True");
+crate::runtime_case!(
+    mro_list,
+    "class B: pass\nclass D(B): pass\nprint(D.mro()[0].__name__)\n",
+    "D"
+);
+crate::runtime_case!(
+    class_bases,
+    "class B: pass\nclass D(B): pass\nprint(D.__bases__[0].__name__)\n",
+    "B"
+);
+crate::runtime_case!(
+    instance_class,
+    "class C: pass\nprint(C().__class__ is C)\n",
+    "True"
+);
 crate::runtime_case!(super_type, "print(isinstance(super(), super))\n", "True");
 
 crate::compile_case!(type_annotations, "def f(x: int) -> str:\n return str(x)\n");
 crate::compile_case!(type_generic_alias, "from typing import List\nList[int]\n");
-crate::compile_case!(getattr_raises, "class C: pass\ntry:\n getattr(C(), 'x')\nexcept AttributeError:\n pass\n");
-crate::compile_case!(hash_unhashable, "try:\n hash([])\nexcept TypeError:\n pass\n");
-crate::compile_case!(isinstance_metaclass, "class M(type):\n pass\nclass C(metaclass=M):\n pass\nisinstance(C(), C)\n");
+crate::compile_case!(
+    getattr_raises,
+    "class C: pass\ntry:\n getattr(C(), 'x')\nexcept AttributeError:\n pass\n"
+);
+crate::compile_case!(
+    hash_unhashable,
+    "try:\n hash([])\nexcept TypeError:\n pass\n"
+);
+crate::compile_case!(
+    isinstance_metaclass,
+    "class M(type):\n pass\nclass C(metaclass=M):\n pass\nisinstance(C(), C)\n"
+);

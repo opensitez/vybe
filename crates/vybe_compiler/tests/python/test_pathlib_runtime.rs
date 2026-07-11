@@ -231,8 +231,23 @@ crate::runtime_case!(
     "True"
 );
 
-crate::compile_case!(pathlib_rglob, "from pathlib import Path\nlist(Path('.').rglob('*.rs'))\n");
-crate::compile_case!(pathlib_walk, "from pathlib import Path\n[p for p in Path('.').iterdir()]\n");
-crate::compile_case!(pathlib_hardlink, "from pathlib import Path\nhasattr(Path('.'), 'hardlink_to')\n");
-crate::compile_case!(pathlib_symlink, "from pathlib import Path\nhasattr(Path('.'), 'symlink_to')\n");
-crate::compile_case!(pathlib_chmod, "from pathlib import Path\nhasattr(Path('.'), 'chmod')\n");
+crate::compile_case!(
+    pathlib_rglob,
+    "from pathlib import Path\nlist(Path('.').rglob('*.rs'))\n"
+);
+crate::compile_case!(
+    pathlib_walk,
+    "from pathlib import Path\n[p for p in Path('.').iterdir()]\n"
+);
+crate::compile_case!(
+    pathlib_hardlink,
+    "from pathlib import Path\nhasattr(Path('.'), 'hardlink_to')\n"
+);
+crate::compile_case!(
+    pathlib_symlink,
+    "from pathlib import Path\nhasattr(Path('.'), 'symlink_to')\n"
+);
+crate::compile_case!(
+    pathlib_chmod,
+    "from pathlib import Path\nhasattr(Path('.'), 'chmod')\n"
+);
