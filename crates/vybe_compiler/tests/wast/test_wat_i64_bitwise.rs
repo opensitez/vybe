@@ -120,7 +120,7 @@ wat_exec! {
   call $log_i64
 )
 "#, "0" },
-    
+
     test_i64_popcnt_all => { r#"
 (func (export "_start")
   i64.const -1

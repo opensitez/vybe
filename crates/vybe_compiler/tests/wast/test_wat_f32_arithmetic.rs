@@ -68,7 +68,7 @@ wat_exec! {
   call $log_f32
 )
 "#, "4.0" },
-    
+
     test_f32_ceil_neg => { r#"
 (func (export "_start")
   f32.const -3.14

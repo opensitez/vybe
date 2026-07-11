@@ -25,7 +25,7 @@ wat_exec! {
     test_i32_div_s_neg_neg => { r#"(func (export "_start") i32.const -20 i32.const -10 i32.div_s call $log)"#, "2" },
 
     test_i32_div_u_pos_pos => { r#"(func (export "_start") i32.const 20 i32.const 10 i32.div_u call $log)"#, "2" },
-    
+
     test_i32_rem_s_pos_pos => { r#"(func (export "_start") i32.const 20 i32.const 3 i32.rem_s call $log)"#, "2" },
     test_i32_rem_s_pos_neg => { r#"(func (export "_start") i32.const 20 i32.const -3 i32.rem_s call $log)"#, "2" },
     test_i32_rem_s_neg_pos => { r#"(func (export "_start") i32.const -20 i32.const 3 i32.rem_s call $log)"#, "-2" },

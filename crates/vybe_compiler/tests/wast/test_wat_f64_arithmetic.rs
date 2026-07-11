@@ -68,7 +68,7 @@ wat_exec! {
   call $log_f64
 )
 "#, "4.0" },
-    
+
     test_f64_ceil_neg => { r#"
 (func (export "_start")
   f64.const -3.14

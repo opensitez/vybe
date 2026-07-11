@@ -18,7 +18,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_f32_eq_nan => { r#"
 (func (export "_start")
   f32.const nan

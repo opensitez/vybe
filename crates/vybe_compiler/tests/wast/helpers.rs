@@ -96,7 +96,7 @@ macro_rules! wat_exec {
 "#,
                     $src
                 );
-                
+
                 // If it already is a module, don't wrap it. Just assume if it starts with (module it's complete.
                 let final_src = if $src.trim().starts_with("(module") {
                     $src.to_string()

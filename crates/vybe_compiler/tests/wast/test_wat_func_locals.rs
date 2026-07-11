@@ -80,7 +80,7 @@ wat_exec! {
   call $log
 )
 "#, "42" },
-    
+
     test_local_shadowing_global => { r#"
 (global $g (mut i32) (i32.const 10))
 (func (export "_start") (local $g i32)
@@ -128,7 +128,7 @@ wat_exec! {
   call $log
 )
 "#, "1" },
-    
+
     test_local_index_access => { r#"
 (func (export "_start") (local i32) (local i32)
   i32.const 10

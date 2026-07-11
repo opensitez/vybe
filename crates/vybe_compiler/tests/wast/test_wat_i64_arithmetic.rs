@@ -25,7 +25,7 @@ wat_exec! {
     test_i64_div_s_neg_neg => { r#"(func (export "_start") i64.const -20 i64.const -10 i64.div_s call $log_i64)"#, "2" },
 
     test_i64_div_u_pos_pos => { r#"(func (export "_start") i64.const 20 i64.const 10 i64.div_u call $log_i64)"#, "2" },
-    
+
     test_i64_rem_s_pos_pos => { r#"(func (export "_start") i64.const 20 i64.const 3 i64.rem_s call $log_i64)"#, "2" },
     test_i64_rem_s_pos_neg => { r#"(func (export "_start") i64.const 20 i64.const -3 i64.rem_s call $log_i64)"#, "2" },
     test_i64_rem_s_neg_pos => { r#"(func (export "_start") i64.const -20 i64.const 3 i64.rem_s call $log_i64)"#, "-2" },

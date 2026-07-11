@@ -118,9 +118,11 @@ fn string_hex_escapes() {
 
 #[test]
 fn string_multiline() {
-    parse_ok(r#"(module (import "env" "multi
+    parse_ok(
+        r#"(module (import "env" "multi
 line
-string" (func)))"#);
+string" (func)))"#,
+    );
 }
 
 #[test]

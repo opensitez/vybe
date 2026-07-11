@@ -99,7 +99,7 @@ wat_exec! {
   call $log
 )
 "#, "1" },
-    
+
     test_i64_eqz => { r#"
 (func (export "_start")
   i64.const 0

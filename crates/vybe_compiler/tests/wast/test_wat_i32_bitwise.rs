@@ -120,7 +120,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_i32_popcnt_all => { r#"
 (func (export "_start")
   i32.const -1

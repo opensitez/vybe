@@ -18,7 +18,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_f64_eq_nan => { r#"
 (func (export "_start")
   f64.const nan

@@ -1,5 +1,5 @@
 /// High-quality execution tests for WAT/WAST instructions asserting concrete values.
-use super::helpers::{run_wast_one, parse_ok};
+use super::helpers::{parse_ok, run_wast_one};
 
 // ── Integer Edge Cases & Traps ────────────────────────────────────────────────
 
@@ -7,50 +7,58 @@ use super::helpers::{run_wast_one, parse_ok};
 fn test_i32_div_s_overflow_trap() {
     // division of minimum signed value by -1 traps in WebAssembly (integer overflow)
     // We parse it as a WAST script assert_trap to verify the VM trap matches
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "run") (result i32)
     i32.const -2147483648
     i32.const -1
     i32.div_s))
 (assert_trap (invoke "run") "integer overflow")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_i64_div_s_overflow_trap() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "run") (result i64)
     i64.const -9223372036854775808
     i64.const -1
     i64.div_s))
 (assert_trap (invoke "run") "integer overflow")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_i32_div_by_zero_trap() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "run") (result i32)
     i32.const 42
     i32.const 0
     i32.div_s))
 (assert_trap (invoke "run") "integer divide by zero")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_i64_rem_u_by_zero_trap() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "run") (result i64)
     i64.const 42
     i64.const 0
     i64.rem_u))
 (assert_trap (invoke "run") "integer divide by zero")
-"#);
+"#,
+    );
 }
 
 #[test]
@@ -157,13 +165,15 @@ fn test_float_copysign_zero() {
 #[test]
 fn test_conversion_trunc_trap() {
     // Trying to truncate a float that exceeds signed i32 bounds should trap
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "run") (result i32)
     f32.const 3e10
     i32.trunc_f32_s))
 (assert_trap (invoke "run") "invalid conversion to integer")
-"#);
+"#,
+    );
 }
 
 #[test]
@@ -204,7 +214,8 @@ fn test_conversion_trunc_sat_negative() {
 #[test]
 fn test_global_mutation_flow() {
     // Ensures global gets and sets modify and retain state across invocations
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (global $g (mut i32) (i32.const 10))
   (func (export "inc") (result i32)
@@ -215,7 +226,8 @@ fn test_global_mutation_flow() {
     global.get $g))
 (assert_return (invoke "inc") (i32.const 15))
 (assert_return (invoke "inc") (i32.const 20))
-"#);
+"#,
+    );
 }
 
 // ── Memory, Table & Pointer Offsets ───────────────────────────────────────────
@@ -262,7 +274,8 @@ fn test_memory_load_alignments() {
 #[test]
 fn test_call_indirect_signature_check() {
     // call_indirect checks runtime signature and traps on signature mismatch
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (type $t_void (func))
   (type $t_i32 (func (result i32)))
@@ -273,5 +286,6 @@ fn test_call_indirect_signature_check() {
     i32.const 0
     call_indirect (type $t_void)))
 (assert_trap (invoke "run") "indirect call signature mismatch")
-"#);
+"#,
+    );
 }

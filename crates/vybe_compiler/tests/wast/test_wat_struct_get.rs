@@ -68,7 +68,7 @@ wat_exec! {
   call $log
 )
 "#, "255" },
-    
+
     test_struct_get_s_16 => { r#"
 (type $S (struct (field i8) (field i16)))
 (func (export "_start") (local $s (ref null $S))
