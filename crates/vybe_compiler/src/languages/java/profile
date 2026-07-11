@@ -34,6 +34,8 @@ has_ecma_bigint    = true
 println             = { emit = "print",                          min_args = 0, max_args = 255 }
 print               = { emit = "common:java.print_no_newline",   min_args = 0, max_args = 255 }
 printf              = { emit = "common:java.printf",             min_args = 1, max_args = 255 }
+__java_field_set    = { emit = "common:java.field_set",           min_args = 3, max_args = 3 }
+__java_field_inc    = { emit = "common:java.field_inc",           min_args = 3, max_args = 3 }
 
 # ── Type parsing / conversion ─────────────────────────────────────────────────
 
@@ -41,11 +43,15 @@ printf              = { emit = "common:java.printf",             min_args = 1, m
 "Integer.valueOf"        = { emit = "common:java.parse_int",     min_args = 1, max_args = 1 }
 "Integer.compare"        = { emit = "common:java.compare",       min_args = 2, max_args = 2 }
 "Long.parseLong"         = { emit = "common:java.parse_int",     min_args = 1, max_args = 2 }
+"Long.valueOf"           = { emit = "common:java.parse_int",     min_args = 1, max_args = 1 }
 "Long.compare"           = { emit = "common:java.compare",       min_args = 2, max_args = 2 }
 "Double.parseDouble"     = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
+"Double.valueOf"         = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
 "Double.compare"         = { emit = "common:java.compare",       min_args = 2, max_args = 2 }
 "Float.parseFloat"       = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
+"Float.valueOf"          = { emit = "host:ecma:number:Number",   min_args = 1, max_args = 1 }
 "Boolean.parseBoolean"   = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
+"Boolean.valueOf"        = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
 "String.valueOf"         = { emit = "intrinsic:tostring",        min_args = 1, max_args = 1 }
 "UUID.fromString"        = { emit = "common:java.uuid_from_string", min_args = 1, max_args = 1 }
 "UUID.randomUUID"        = { emit = "host:web:crypto:randomUUID", min_args = 0, max_args = 0 }
@@ -73,21 +79,71 @@ __java_enum_set_get_class = { emit = "common:java.enum_set_get_class", min_args 
 "java.time.Instant.ofEpochSecond" = { emit = "common:java.instant_of_epoch_second", min_args = 1, max_args = 2 }
 "java.time.Instant.ofEpochMilli" = { emit = "common:java.instant_of_epoch_milli", min_args = 1, max_args = 1 }
 "java.time.Instant.parse" = { emit = "common:java.instant_parse", min_args = 1, max_args = 1 }
+"java.time.LocalDate.of" = { emit = "common:java.local_date_of", min_args = 3, max_args = 3 }
+"java.time.LocalDate.parse" = { emit = "common:java.local_date_parse", min_args = 1, max_args = 1 }
+"java.time.LocalTime.of" = { emit = "common:java.local_time_of", min_args = 2, max_args = 4 }
+"java.time.LocalTime.parse" = { emit = "common:java.local_time_parse", min_args = 1, max_args = 1 }
+"java.time.LocalDateTime.of" = { emit = "common:java.local_datetime_of", min_args = 5, max_args = 7 }
+"java.time.LocalDateTime.parse" = { emit = "common:java.local_datetime_parse", min_args = 1, max_args = 1 }
+"java.time.OffsetDateTime.of" = { emit = "common:java.offset_datetime_of", min_args = 2, max_args = 8 }
+"java.time.OffsetDateTime.ofInstant" = { emit = "common:java.offset_datetime_of_instant", min_args = 2, max_args = 2 }
+"java.time.OffsetDateTime.parse" = { emit = "common:java.offset_datetime_parse", min_args = 1, max_args = 1 }
+"java.time.ZonedDateTime.of" = { emit = "common:java.zoned_datetime_of", min_args = 2, max_args = 8 }
+"java.time.ZonedDateTime.ofInstant" = { emit = "common:java.zoned_datetime_of_instant", min_args = 2, max_args = 2 }
+"java.time.ZonedDateTime.ofStrict" = { emit = "common:java.zoned_datetime_of_strict", min_args = 3, max_args = 3 }
+"java.time.ZonedDateTime.parse" = { emit = "common:java.zoned_datetime_parse", min_args = 1, max_args = 1 }
+"java.time.Period.ofDays" = { emit = "common:java.period_days", min_args = 1, max_args = 1 }
+"java.time.Period.ofMonths" = { emit = "common:java.period_months", min_args = 1, max_args = 1 }
+"java.time.Period.between" = { emit = "common:java.period_between", min_args = 2, max_args = 2 }
+"java.time.Duration.ofHours" = { emit = "common:java.duration_of_hours", min_args = 1, max_args = 1 }
 "java.time.Duration.ofMinutes" = { emit = "common:java.duration_of_minutes", min_args = 1, max_args = 1 }
+"java.time.Duration.ofSeconds" = { emit = "common:java.duration_of_seconds", min_args = 1, max_args = 1 }
 "java.time.Duration.between" = { emit = "common:java.duration_between", min_args = 2, max_args = 2 }
 "java.time.ZoneOffset.ofHours" = { emit = "common:java.zone_offset_of_hours", min_args = 1, max_args = 1 }
 "java.time.ZoneId.of" = { emit = "common:java.zone_id_of", min_args = 1, max_args = 1 }
+"java.time.ZoneId.systemDefault" = { emit = "common:java.zone_id_system_default", min_args = 0, max_args = 0 }
+"java.time.ZoneId.from" = { emit = "common:java.zone_id_from", min_args = 1, max_args = 1 }
+"java.time.ZoneId.ofOffset" = { emit = "common:java.zone_id_of_offset", min_args = 2, max_args = 2 }
 "Instant.ofEpochSecond" = { emit = "common:java.instant_of_epoch_second", min_args = 1, max_args = 2 }
 "Instant.ofEpochMilli" = { emit = "common:java.instant_of_epoch_milli", min_args = 1, max_args = 1 }
 "Instant.parse" = { emit = "common:java.instant_parse", min_args = 1, max_args = 1 }
+"LocalDate.of" = { emit = "common:java.local_date_of", min_args = 3, max_args = 3 }
+"LocalDate.parse" = { emit = "common:java.local_date_parse", min_args = 1, max_args = 1 }
+"LocalTime.of" = { emit = "common:java.local_time_of", min_args = 2, max_args = 4 }
+"LocalTime.parse" = { emit = "common:java.local_time_parse", min_args = 1, max_args = 1 }
+"LocalDateTime.of" = { emit = "common:java.local_datetime_of", min_args = 5, max_args = 7 }
+"LocalDateTime.parse" = { emit = "common:java.local_datetime_parse", min_args = 1, max_args = 1 }
+"OffsetDateTime.of" = { emit = "common:java.offset_datetime_of", min_args = 2, max_args = 8 }
+"OffsetDateTime.ofInstant" = { emit = "common:java.offset_datetime_of_instant", min_args = 2, max_args = 2 }
+"OffsetDateTime.parse" = { emit = "common:java.offset_datetime_parse", min_args = 1, max_args = 1 }
+"ZonedDateTime.of" = { emit = "common:java.zoned_datetime_of", min_args = 2, max_args = 8 }
+"ZonedDateTime.ofInstant" = { emit = "common:java.zoned_datetime_of_instant", min_args = 2, max_args = 2 }
+"ZonedDateTime.ofStrict" = { emit = "common:java.zoned_datetime_of_strict", min_args = 3, max_args = 3 }
+"ZonedDateTime.parse" = { emit = "common:java.zoned_datetime_parse", min_args = 1, max_args = 1 }
+"Period.ofDays" = { emit = "common:java.period_days", min_args = 1, max_args = 1 }
+"Period.ofMonths" = { emit = "common:java.period_months", min_args = 1, max_args = 1 }
+"Period.between" = { emit = "common:java.period_between", min_args = 2, max_args = 2 }
+"Duration.ofHours" = { emit = "common:java.duration_of_hours", min_args = 1, max_args = 1 }
 "Duration.ofMinutes" = { emit = "common:java.duration_of_minutes", min_args = 1, max_args = 1 }
+"Duration.ofSeconds" = { emit = "common:java.duration_of_seconds", min_args = 1, max_args = 1 }
 "Duration.between" = { emit = "common:java.duration_between", min_args = 2, max_args = 2 }
 "ZoneOffset.ofHours" = { emit = "common:java.zone_offset_of_hours", min_args = 1, max_args = 1 }
 "ZoneId.of" = { emit = "common:java.zone_id_of", min_args = 1, max_args = 1 }
+"ZoneId.systemDefault" = { emit = "common:java.zone_id_system_default", min_args = 0, max_args = 0 }
+"ZoneId.from" = { emit = "common:java.zone_id_from", min_args = 1, max_args = 1 }
+"ZoneId.ofOffset" = { emit = "common:java.zone_id_of_offset", min_args = 2, max_args = 2 }
 __java_instant_compare_to = { emit = "common:java.instant_compare_to", min_args = 2, max_args = 2 }
 __java_instant_equals = { emit = "common:java.instant_equals", min_args = 2, max_args = 2 }
+__java_instant_is_before = { emit = "common:java.instant_is_before", min_args = 2, max_args = 2 }
+__java_instant_is_after = { emit = "common:java.instant_is_after", min_args = 2, max_args = 2 }
 __java_instant_to_string = { emit = "common:java.instant_to_string", min_args = 1, max_args = 1 }
 __java_instant_hash_code = { emit = "common:java.instant_hash_code", min_args = 1, max_args = 1 }
+__java_time_to_string = { emit = "common:java.time_to_string", min_args = 1, max_args = 1 }
+__java_duration_plus_hours = { emit = "common:java.duration_plus_hours", min_args = 2, max_args = 2 }
+__java_duration_minus_minutes = { emit = "common:java.duration_minus_minutes", min_args = 2, max_args = 2 }
+__java_zone_id_short_ids = { emit = "common:java.zone_id_short_ids", min_args = 0, max_args = 0 }
+__java_zone_compare_to = { emit = "common:java.zone_compare_to", min_args = 2, max_args = 2 }
+__java_zone_hash_code = { emit = "common:java.zone_hash_code", min_args = 1, max_args = 1 }
 __java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
 __java_string_concat     = { emit = "common:java.string_concat",   min_args = 2, max_args = 2 }
 __java_to_char_array     = { emit = "common:java.to_char_array",   min_args = 1, max_args = 1 }
@@ -229,6 +285,7 @@ __java_uuid_hash_code = { emit = "common:java.uuid_hash_code", min_args = 1, max
 "Character.toUpperCase"   = { emit = "common:java.char_to_upper",     min_args = 1, max_args = 1 }
 "Character.toLowerCase"   = { emit = "common:java.char_to_lower",     min_args = 1, max_args = 1 }
 "Character.getNumericValue" = { emit = "common:java.char_numeric",    min_args = 1, max_args = 1 }
+"Character.valueOf"      = { emit = "common:java.identity",            min_args = 1, max_args = 1 }
 
 # ── Collections ───────────────────────────────────────────────────────────────
 
@@ -334,6 +391,7 @@ __new_array = { emit = "common:java.new_array", min_args = 1, max_args = 1 }
 __new_int_array = { emit = "common:java.new_int_array", min_args = 1, max_args = 1 }
 __new_bool_array = { emit = "common:java.new_bool_array", min_args = 1, max_args = 1 }
 __new_int_2d_array = { emit = "common:java.new_int_2d_array", min_args = 2, max_args = 2 }
+__java_class_is_instance = { emit = "common:java.class_is_instance", min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on values
@@ -403,17 +461,66 @@ isBefore     = { emit = "common:java.instant_is_before", min_args = 1, max_args 
 isAfter      = { emit = "common:java.instant_is_after", min_args = 1, max_args = 1 }
 atZone       = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
 atOffset     = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
-getOffset    = { emit = "common:java.instant_get_offset", min_args = 0, max_args = 0 }
-getTotalSeconds = { emit = "noop", min_args = 0, max_args = 0 }
+getId        = { emit = "noop", min_args = 0, max_args = 0 }
+getRules     = { emit = "noop", min_args = 0, max_args = 0 }
+normalized   = { emit = "common:java.zone_normalized", min_args = 0, max_args = 0 }
+getDisplayName = { emit = "common:java.zone_display_name", min_args = 2, max_args = 2 }
+isFixedOffset = { emit = "common:java.zone_rules_fixed", min_args = 0, max_args = 0 }
+getOffset    = [
+    { emit = "common:java.instant_get_offset", min_args = 0, max_args = 0 },
+    { emit = "common:java.zone_rules_get_offset", min_args = 1, max_args = 1 },
+]
+getTotalSeconds = { emit = "common:java.zone_offset_total_seconds", min_args = 0, max_args = 0 }
 getSeconds   = { emit = "noop", min_args = 0, max_args = 0 }
 getYear      = { emit = "common:java.instant_get_year", min_args = 0, max_args = 0 }
 getMonthValue = { emit = "common:java.instant_get_month", min_args = 0, max_args = 0 }
 getDayOfMonth = { emit = "common:java.instant_get_day", min_args = 0, max_args = 0 }
 getHour      = { emit = "common:java.instant_get_hour", min_args = 0, max_args = 0 }
 getMinute    = { emit = "common:java.instant_get_minute", min_args = 0, max_args = 0 }
+getSecond    = { emit = "common:java.instant_get_second", min_args = 0, max_args = 0 }
 toLocalDate  = { emit = "common:java.instant_to_local_date", min_args = 0, max_args = 0 }
 toLocalTime  = { emit = "noop", min_args = 0, max_args = 0 }
+toLocalDateTime = { emit = "noop", min_args = 0, max_args = 0 }
+toInstant    = { emit = "noop", min_args = 0, max_args = 0 }
+toZonedDateTime = { emit = "noop", min_args = 0, max_args = 0 }
+toOffsetDateTime = { emit = "noop", min_args = 0, max_args = 0 }
+getZone      = { emit = "common:java.instant_get_zone", min_args = 0, max_args = 0 }
+format       = { emit = "common:java.time_format", min_args = 1, max_args = 1 }
+atZoneSameInstant = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
+atZoneSimilarLocal = { emit = "common:java.time_with_offset_same_local", min_args = 1, max_args = 1 }
+withOffsetSameInstant = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
+withOffsetSameLocal = { emit = "common:java.time_with_offset_same_local", min_args = 1, max_args = 1 }
+withZoneSameInstant = { emit = "common:java.instant_with_zone", min_args = 1, max_args = 1 }
+withZoneSameLocal = { emit = "common:java.time_with_zone_same_local", min_args = 1, max_args = 1 }
+withLaterOffsetAtOverlap = { emit = "common:java.zoned_later_overlap", min_args = 0, max_args = 0 }
+withEarlierOffsetAtOverlap = { emit = "common:java.zoned_earlier_overlap", min_args = 0, max_args = 0 }
+range       = { emit = "common:java.time_range_day", min_args = 1, max_args = 1 }
+getMaximum  = { emit = "noop", min_args = 0, max_args = 0 }
+toEpochSecond = { emit = "common:java.instant_get_epoch_second", min_args = 0, max_args = 0 }
 truncatedTo  = { emit = "common:java.instant_truncated", min_args = 1, max_args = 1 }
+plusDays     = { emit = "common:java.time_plus_days", min_args = 1, max_args = 1 }
+minusDays    = { emit = "common:java.time_minus_days", min_args = 1, max_args = 1 }
+plusWeeks    = { emit = "common:java.time_plus_weeks", min_args = 1, max_args = 1 }
+plusMonths   = { emit = "common:java.time_plus_months", min_args = 1, max_args = 1 }
+minusMonths  = { emit = "common:java.time_minus_months", min_args = 1, max_args = 1 }
+plusHours    = { emit = "common:java.time_plus_hours", min_args = 1, max_args = 1 }
+minusHours   = { emit = "common:java.time_minus_hours", min_args = 1, max_args = 1 }
+plusMinutes  = { emit = "common:java.time_plus_minutes", min_args = 1, max_args = 1 }
+minusMinutes = { emit = "common:java.time_minus_minutes", min_args = 1, max_args = 1 }
+withYear     = { emit = "common:java.time_with_year", min_args = 1, max_args = 1 }
+withMonth    = { emit = "common:java.time_with_month", min_args = 1, max_args = 1 }
+withDayOfMonth = { emit = "common:java.time_with_day", min_args = 1, max_args = 1 }
+withHour     = { emit = "common:java.time_with_hour", min_args = 1, max_args = 1 }
+withMinute   = { emit = "common:java.time_with_minute", min_args = 1, max_args = 1 }
+withSecond   = { emit = "common:java.time_with_second", min_args = 1, max_args = 1 }
+lengthOfMonth = { emit = "common:java.time_length_of_month", min_args = 0, max_args = 0 }
+isLeapYear   = { emit = "common:java.time_is_leap_year", min_args = 0, max_args = 0 }
+getDayOfYear = { emit = "common:java.time_day_of_year", min_args = 0, max_args = 0 }
+getDayOfWeek = { emit = "common:java.time_day_of_week", min_args = 0, max_args = 0 }
+getDays      = { emit = "noop", min_args = 0, max_args = 0 }
+getMonths    = { emit = "noop", min_args = 0, max_args = 0 }
+toHours      = { emit = "common:java.duration_to_hours", min_args = 0, max_args = 0 }
+toMinutes    = { emit = "common:java.duration_to_minutes", min_args = 0, max_args = 0 }
 version       = { emit = "common:java.uuid_version",     min_args = 0, max_args = 0 }
 variant       = { emit = "common:java.uuid_variant",     min_args = 0, max_args = 0 }
 getMostSignificantBits = { emit = "common:java.uuid_most_bits", min_args = 0, max_args = 0 }
@@ -578,11 +685,27 @@ tostring  = [["to_string"]]
 "Double.MAX_VALUE"    = 1.7976931348623157e308
 "Double.NaN"          = "NaN"
 "Double.POSITIVE_INFINITY" = "Infinity"
+"ZoneOffset.UTC" = "Z"
+"java.time.ZoneOffset.UTC" = "Z"
+"ZoneId.SHORT_IDS" = "common:java.zone_id_short_ids"
+"java.time.ZoneId.SHORT_IDS" = "common:java.zone_id_short_ids"
 "ChronoUnit.SECONDS" = "SECONDS"
 "ChronoUnit.MILLIS" = "MILLIS"
+"ChronoUnit.MINUTES" = "MINUTES"
+"ChronoUnit.HOURS" = "HOURS"
 "java.time.temporal.ChronoUnit.SECONDS" = "SECONDS"
 "java.time.temporal.ChronoUnit.MILLIS" = "MILLIS"
+"java.time.temporal.ChronoUnit.MINUTES" = "MINUTES"
+"java.time.temporal.ChronoUnit.HOURS" = "HOURS"
+"ChronoField.DAY_OF_MONTH" = "DAY_OF_MONTH"
+"java.time.temporal.ChronoField.DAY_OF_MONTH" = "DAY_OF_MONTH"
+"DateTimeFormatter.ISO_OFFSET_DATE_TIME" = "ISO_OFFSET_DATE_TIME"
+"DateTimeFormatter.ISO_ZONED_DATE_TIME" = "ISO_ZONED_DATE_TIME"
+"java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME" = "ISO_OFFSET_DATE_TIME"
+"java.time.format.DateTimeFormatter.ISO_ZONED_DATE_TIME" = "ISO_ZONED_DATE_TIME"
 "Double.NEGATIVE_INFINITY" = "-Infinity"
+"Boolean.TRUE" = true
+"Boolean.FALSE" = false
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor resolution for `new X()`
@@ -593,8 +716,13 @@ tostring  = [["to_string"]]
 # StringBuilder: mutable string — backed by dotnet stringbuilder_adapter
 StringBuilder = ["common", "dotnet.stringbuilder_new"]
 StringBuffer  = ["common", "dotnet.stringbuilder_new"]
+Object        = ["common", "java.hash_map_new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
 BigInteger    = ["ecma:bigint", "BigInt"]
+ArrayList     = ["common", "java.list_of"]
+LinkedList    = ["common", "java.list_of"]
+Vector        = ["common", "java.list_of"]
+HashSet       = ["common", "java.list_of"]
 TreeSet       = ["common", "java.sorted_set_new"]
 PriorityQueue = ["common", "java.sorted_set_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
@@ -602,6 +730,7 @@ HashMap       = ["common", "java.hash_map_new"]
 LinkedHashMap = ["common", "java.hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]
+OutOfMemoryError = ["common", "java.hash_map_new"]
 UUID          = ["common", "java.uuid_new"]
 BitSet        = ["common", "java.bitset_new"]
 

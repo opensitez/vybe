@@ -452,7 +452,7 @@ paren_expression = { "(" ~ expression ~ ")" }
 new_expression = {
     "new" ~ type_ref ~ type_args?
     ~ (
-        "(" ~ argument_list? ~ ")" ~ anonymous_class_body?
+        "(" ~ argument_list? ~ ")" ~ ("implements" ~ type_ref ~ ("," ~ type_ref)*)? ~ anonymous_class_body?
         | array_initializer
         | array_dims
     )
@@ -471,7 +471,7 @@ array_creation = {
     ~ array_initializer?
 }
 
-class_literal = { qualified_name ~ ("[" ~ "]")* ~ "." ~ "class" }
+class_literal = { type_ref ~ "." ~ "class" }
 
 method_reference = {
     qualified_name ~ "::" ~ (ident_name | "new")

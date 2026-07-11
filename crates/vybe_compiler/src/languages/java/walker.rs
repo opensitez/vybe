@@ -23,13 +23,22 @@ use super::{JavaParser, Rule};
 use crate::ast::*;
 use pest::iterators::Pair;
 use pest::Parser;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+thread_local! {
+    static JAVA_INTERFACE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_NESTED_TYPE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    JAVA_INTERFACE_NAMES.with(|names| names.borrow_mut().clear());
+    JAVA_NESTED_TYPE_NAMES.with(|names| names.borrow_mut().clear());
+
     let mut pairs =
         JavaParser::parse(Rule::program, source).map_err(|e| format!("Java parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
@@ -59,8 +68,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
-    hoist_java_nested_types(&mut body);
+    qualify_java_nested_types(&mut body);
     rewrite_java_user_tostring_calls(&mut body);
+    erase_java_interface_param_hints(&mut body);
     normalize_java_class_tree(&mut body);
 
     // Java: inject a top-level call to the class's static main method.
@@ -78,6 +88,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             },
         ))));
     }
+
+    reject_java_direct_abstract_instantiation(&body)?;
 
     Ok(Module {
         name: String::new(),
@@ -508,6 +520,9 @@ fn walk_interface(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .ok_or("interface: missing name")?
         .as_str()
         .to_string();
+    JAVA_INTERFACE_NAMES.with(|names| {
+        names.borrow_mut().insert(name.clone());
+    });
     // skip type_params
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
         inner.next();
@@ -1888,6 +1903,25 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
 
 /// Normalise Java-specific call patterns to a compiler-friendly shape.
 fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argument>) -> Expression {
+    if method == "isInstance" && args.len() == 1 {
+        if let ExprKind::Lit(Literal::Str(type_name)) = &receiver.kind {
+            if java_builtin_class_is_instance_type(type_name) {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_class_is_instance")),
+                    args: vec![
+                        Argument::positional(Expression::string(java_type_simple_name(type_name))),
+                        args[0].clone(),
+                    ],
+                    optional: false,
+                });
+            }
+            return Expression::new(ExprKind::IsType {
+                expr: Box::new(args[0].value.clone()),
+                type_name: type_name.clone(),
+            });
+        }
+    }
+
     // System.out.println(x) → println(x)
     // System.out.print(x)   → print(x)
     // receiver = Member { Ident("System"), "out" }, method = "println"
@@ -1988,6 +2022,17 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if type_name == "String" && method == "join" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_string_join")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name.contains('.') {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&type_name)),
+                    field: method,
+                    null_safe: false,
+                })),
                 args,
                 optional: false,
             });
@@ -2213,11 +2258,15 @@ fn java_comparator_then_comparing(comparator: Expression, next: Expression) -> E
     ))
 }
 
-fn java_qualified_static_type(expr: &Expression) -> Option<&str> {
+fn java_qualified_static_type(expr: &Expression) -> Option<String> {
     let mut parts = Vec::new();
     collect_member_chain(expr, &mut parts)?;
     if parts.len() < 2 {
         return None;
+    }
+    let dotted = parts.join(".");
+    if JAVA_NESTED_TYPE_NAMES.with(|names| names.borrow().contains(&dotted)) {
+        return Some(dotted);
     }
     if !(parts.starts_with(&["java", "util"])
         || parts.starts_with(&["java", "lang"])
@@ -2227,7 +2276,7 @@ fn java_qualified_static_type(expr: &Expression) -> Option<&str> {
     }
     let type_name = parts.last().copied()?;
     if is_java_type_or_util(type_name) {
-        Some(type_name)
+        Some(type_name.to_string())
     } else {
         None
     }
@@ -2327,6 +2376,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         inner.next();
     }
 
+    let mut anonymous_interfaces = Vec::new();
     while let Some(p) = inner.next() {
         match p.as_rule() {
             Rule::argument_list => {
@@ -2338,10 +2388,28 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         return Ok(comparator);
                     }
                 }
+                let mut interfaces = Vec::new();
+                while inner.peek().map(|next| next.as_rule()) == Some(Rule::type_ref) {
+                    interfaces.push(extract_ref_name(&inner.next().unwrap()));
+                }
+                if interfaces.is_empty() {
+                    interfaces = std::mem::take(&mut anonymous_interfaces);
+                }
+                if inner.peek().map(|next| next.as_rule()) == Some(Rule::anonymous_class_body) {
+                    return walk_anonymous_class_new(
+                        &class_name,
+                        args,
+                        interfaces,
+                        inner.next().unwrap(),
+                    );
+                }
                 return Ok(Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident(&class_name)),
                     args,
                 }));
+            }
+            Rule::type_ref => {
+                anonymous_interfaces.push(extract_ref_name(&p));
             }
             Rule::array_initializer => {
                 // new Type[] {1, 2, 3} → array literal
@@ -2407,15 +2475,16 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::anonymous_class_body => {
                 if class_name.contains("Comparator") {
-                    if let Some(comparator) = walk_anonymous_comparator(p)? {
+                    if let Some(comparator) = walk_anonymous_comparator(p.clone())? {
                         return Ok(comparator);
                     }
                 }
-                // Anonymous class: just create new instance
-                return Ok(Expression::new(ExprKind::New {
-                    class: Box::new(Expression::ident(&class_name)),
-                    args: vec![],
-                }));
+                return walk_anonymous_class_new(
+                    &class_name,
+                    vec![],
+                    std::mem::take(&mut anonymous_interfaces),
+                    p,
+                );
             }
             _ => {}
         }
@@ -2425,6 +2494,273 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         class: Box::new(Expression::ident(&class_name)),
         args: vec![],
     }))
+}
+
+fn walk_anonymous_class_new(
+    class_name: &str,
+    args: Vec<Argument>,
+    mut interfaces: Vec<String>,
+    body: Pair<Rule>,
+) -> Result<Expression, String> {
+    let members = walk_class_body(body)?;
+    let parent = if interfaces.is_empty() && java_anonymous_interface_target(class_name) {
+        interfaces.push(class_name.to_string());
+        None
+    } else if interfaces.is_empty() && java_anonymous_root_class(class_name) {
+        None
+    } else {
+        Some(Box::new(Expression::ident(class_name)))
+    };
+    let class_expr = Expression::new(ExprKind::ClassExpr {
+        name: None,
+        parent,
+        interfaces,
+        members,
+    });
+    Ok(Expression::new(ExprKind::New {
+        class: Box::new(class_expr),
+        args,
+    }))
+}
+
+fn java_anonymous_interface_target(class_name: &str) -> bool {
+    let simple_name = class_name.rsplit('.').next().unwrap_or(class_name);
+    matches!(simple_name, "Runnable")
+        || JAVA_INTERFACE_NAMES.with(|names| names.borrow().contains(simple_name))
+}
+
+fn java_anonymous_root_class(class_name: &str) -> bool {
+    matches!(
+        class_name.rsplit('.').next().unwrap_or(class_name),
+        "Object"
+    )
+}
+
+fn erase_java_interface_param_hints(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
+                erase_java_interface_params(params);
+                if return_type
+                    .as_deref()
+                    .is_some_and(java_anonymous_interface_target)
+                {
+                    *return_type = None;
+                }
+                erase_java_interface_param_hints(body);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::EnumDecl {
+                body_members: members,
+                ..
+            } => {
+                for member in members {
+                    match member {
+                        ClassMember::Constructor { params, body, .. } => {
+                            erase_java_interface_params(params);
+                            erase_java_interface_param_hints(body);
+                        }
+                        ClassMember::Method(method) => {
+                            erase_java_interface_param_hints(std::slice::from_mut(method));
+                        }
+                        ClassMember::NestedType(nested) => {
+                            erase_java_interface_param_hints(std::slice::from_mut(nested));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+                erase_java_interface_param_hints(stmts);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn erase_java_interface_params(params: &mut [Param]) {
+    for param in params {
+        if param
+            .type_hint
+            .as_deref()
+            .is_some_and(java_anonymous_interface_target)
+        {
+            param.type_hint = None;
+        }
+    }
+}
+
+fn reject_java_direct_abstract_instantiation(body: &[Statement]) -> Result<(), String> {
+    let mut abstract_classes = HashSet::new();
+    collect_java_abstract_classes(body, &mut abstract_classes);
+    for stmt in body {
+        reject_java_direct_abstract_instantiation_stmt(stmt, &abstract_classes)?;
+    }
+    Ok(())
+}
+
+fn collect_java_abstract_classes(body: &[Statement], out: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                members,
+                modifiers,
+                ..
+            } => {
+                if modifiers.is_abstract {
+                    out.insert(name.clone());
+                }
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_abstract_classes(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
+            StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+                collect_java_abstract_classes(stmts, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn reject_java_direct_abstract_instantiation_stmt(
+    stmt: &Statement,
+    abstract_classes: &HashSet<String>,
+) -> Result<(), String> {
+    match &stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            reject_java_direct_abstract_instantiation_expr(expr, abstract_classes)?;
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    reject_java_direct_abstract_instantiation_expr(init, abstract_classes)?;
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::EnumDecl {
+            body_members: members,
+            ..
+        } => {
+            for member in members {
+                match member {
+                    ClassMember::Field {
+                        init: Some(init), ..
+                    } => {
+                        reject_java_direct_abstract_instantiation_expr(init, abstract_classes)?;
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        for stmt in body {
+                            reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
+                        }
+                    }
+                    ClassMember::Method(method) | ClassMember::NestedType(method) => {
+                        reject_java_direct_abstract_instantiation_stmt(method, abstract_classes)?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            reject_java_direct_abstract_instantiation_expr(cond, abstract_classes)?;
+            for stmt in then_body {
+                reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
+            }
+            for (cond, body) in elifs {
+                reject_java_direct_abstract_instantiation_expr(cond, abstract_classes)?;
+                for stmt in body {
+                    reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
+                }
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                reject_java_direct_abstract_instantiation_expr(target, abstract_classes)?;
+            }
+            reject_java_direct_abstract_instantiation_expr(value, abstract_classes)?;
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            reject_java_direct_abstract_instantiation_expr(target, abstract_classes)?;
+            reject_java_direct_abstract_instantiation_expr(value, abstract_classes)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_java_direct_abstract_instantiation_expr(
+    expr: &Expression,
+    abstract_classes: &HashSet<String>,
+) -> Result<(), String> {
+    match &expr.kind {
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                if abstract_classes.contains(name) {
+                    return Err(format!("cannot instantiate abstract class {name}"));
+                }
+            }
+            reject_java_direct_abstract_instantiation_expr(class, abstract_classes)?;
+            for arg in args {
+                reject_java_direct_abstract_instantiation_expr(&arg.value, abstract_classes)?;
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            reject_java_direct_abstract_instantiation_expr(left, abstract_classes)?;
+            reject_java_direct_abstract_instantiation_expr(right, abstract_classes)?;
+        }
+        ExprKind::Unary { expr, .. } => {
+            reject_java_direct_abstract_instantiation_expr(expr, abstract_classes)?;
+        }
+        ExprKind::Member { object, .. } => {
+            reject_java_direct_abstract_instantiation_expr(object, abstract_classes)?;
+        }
+        ExprKind::Call { callee, args, .. } => {
+            reject_java_direct_abstract_instantiation_expr(callee, abstract_classes)?;
+            for arg in args {
+                reject_java_direct_abstract_instantiation_expr(&arg.value, abstract_classes)?;
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            reject_java_direct_abstract_instantiation_expr(target, abstract_classes)?;
+            reject_java_direct_abstract_instantiation_expr(value, abstract_classes)?;
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                reject_java_direct_abstract_instantiation_expr(&elem.value, abstract_classes)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn walk_anonymous_comparator(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
@@ -2906,28 +3242,767 @@ fn default_expr_for_java_type(type_name: &str) -> Option<Expression> {
     }
 }
 
-fn hoist_java_nested_types(body: &mut Vec<Statement>) {
-    let mut hoisted = Vec::new();
-    hoist_java_nested_types_from_stmts(body, &mut hoisted);
-    body.extend(hoisted);
+fn qualify_java_nested_types(body: &mut [Statement]) {
+    for stmt in body {
+        qualify_java_nested_types_stmt(stmt, None);
+    }
 }
 
-fn hoist_java_nested_types_from_stmts(body: &mut [Statement], hoisted: &mut Vec<Statement>) {
-    for stmt in body {
-        if let StmtKind::ClassDecl { members, .. } = &mut stmt.kind {
-            let mut kept = Vec::with_capacity(members.len());
-            for member in std::mem::take(members) {
-                match member {
-                    ClassMember::NestedType(nested) => {
-                        let mut nested_body = vec![*nested];
-                        hoist_java_nested_types_from_stmts(&mut nested_body, hoisted);
-                        hoisted.extend(nested_body);
-                    }
-                    other => kept.push(other),
+fn qualify_java_nested_types_stmt(stmt: &mut Statement, owner: Option<&str>) {
+    match &mut stmt.kind {
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            if let Some(owner_name) = owner.filter(|owner_name| *owner_name != "Main") {
+                if !name.contains('.') {
+                    *name = format!("{}.{}", owner_name, name);
                 }
             }
-            *members = kept;
+            if name.contains('.') {
+                JAVA_NESTED_TYPE_NAMES.with(|names| {
+                    names.borrow_mut().insert(name.clone());
+                });
+            }
+            let current_name = name.clone();
+            let owner_fields = java_instance_field_names(members);
+            let owner_static_fields = java_static_field_names(members);
+            let owner_methods = java_instance_method_names(members);
+            for member in &mut *members {
+                if let ClassMember::NestedType(nested) = member {
+                    qualify_java_nested_types_stmt(nested, Some(&current_name));
+                }
+            }
+            let nested_types = java_immediate_nested_types(members);
+            for member in &mut *members {
+                if let ClassMember::NestedType(nested) = member {
+                    rewrite_java_outer_static_refs_nested(
+                        nested,
+                        &current_name,
+                        &owner_static_fields,
+                    );
+                    adapt_java_inner_class(nested, &current_name, &owner_fields, &owner_methods);
+                }
+            }
+            rewrite_java_nested_type_refs_in_members(members, &nested_types);
         }
+        StmtKind::InterfaceDecl { name, .. } => {
+            if let Some(owner_name) = owner.filter(|owner_name| *owner_name != "Main") {
+                if !name.contains('.') {
+                    *name = format!("{}.{}", owner_name, name);
+                }
+            }
+            if name.contains('.') {
+                JAVA_NESTED_TYPE_NAMES.with(|names| {
+                    names.borrow_mut().insert(name.clone());
+                });
+            }
+        }
+        StmtKind::EnumDecl {
+            name, body_members, ..
+        } => {
+            if let Some(owner_name) = owner.filter(|owner_name| *owner_name != "Main") {
+                if !name.contains('.') {
+                    *name = format!("{}.{}", owner_name, name);
+                }
+            }
+            if name.contains('.') {
+                JAVA_NESTED_TYPE_NAMES.with(|names| {
+                    names.borrow_mut().insert(name.clone());
+                });
+            }
+            let current_name = name.clone();
+            for member in body_members {
+                if let ClassMember::NestedType(nested) = member {
+                    qualify_java_nested_types_stmt(nested, Some(&current_name));
+                }
+            }
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            for stmt in stmts {
+                qualify_java_nested_types_stmt(stmt, owner);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_instance_field_names(members: &[ClassMember]) -> HashSet<String> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name, modifiers, ..
+            } if !modifiers.is_static => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn java_static_field_names(members: &[ClassMember]) -> HashSet<String> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name, modifiers, ..
+            } if modifiers.is_static => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn java_instance_method_names(members: &[ClassMember]) -> HashSet<String> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Method(stmt) => match &stmt.kind {
+                StmtKind::FunctionDecl {
+                    name, modifiers, ..
+                } if !modifiers.is_static => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn java_immediate_nested_types(members: &[ClassMember]) -> HashMap<String, (String, bool)> {
+    let mut nested = HashMap::new();
+    for member in members {
+        let ClassMember::NestedType(stmt) = member else {
+            continue;
+        };
+        match &stmt.kind {
+            StmtKind::ClassDecl {
+                name, modifiers, ..
+            } => {
+                let simple = name.rsplit('.').next().unwrap_or(name).to_string();
+                nested.insert(simple, (name.clone(), modifiers.is_static));
+            }
+            StmtKind::StructDecl { name, .. }
+            | StmtKind::InterfaceDecl { name, .. }
+            | StmtKind::EnumDecl { name, .. } => {
+                let simple = name.rsplit('.').next().unwrap_or(name).to_string();
+                nested.insert(simple, (name.clone(), true));
+            }
+            _ => {}
+        }
+    }
+    nested
+}
+
+fn adapt_java_inner_class(
+    nested: &mut Statement,
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) {
+    let StmtKind::ClassDecl {
+        members, modifiers, ..
+    } = &mut nested.kind
+    else {
+        return;
+    };
+    if modifiers.is_static {
+        return;
+    }
+
+    if !members.iter().any(|member| {
+        matches!(
+            member,
+            ClassMember::Field { name, .. } if name == "__java_outer"
+        )
+    }) {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: "__java_outer".to_string(),
+                type_hint: Some(owner_name.to_string()),
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+            },
+        );
+    }
+
+    let mut saw_constructor = false;
+    for member in members.iter_mut() {
+        match member {
+            ClassMember::Constructor { params, body, .. } => {
+                saw_constructor = true;
+                java_prepend_outer_constructor_param(params, body, owner_name);
+            }
+            ClassMember::Method(stmt) => {
+                rewrite_java_inner_outer_refs_stmt(stmt, owner_name, owner_fields, owner_methods);
+            }
+            ClassMember::Field {
+                init: Some(init), ..
+            } => {
+                rewrite_java_inner_outer_refs_expr(init, owner_name, owner_fields, owner_methods);
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_constructor {
+        members.push(ClassMember::Constructor {
+            params: vec![java_outer_param(owner_name)],
+            body: vec![java_outer_assign_stmt()],
+            base_args: None,
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        });
+    }
+}
+
+fn rewrite_java_outer_static_refs_nested(
+    nested: &mut Statement,
+    owner_name: &str,
+    owner_static_fields: &HashSet<String>,
+) {
+    let StmtKind::ClassDecl { members, .. } = &mut nested.kind else {
+        return;
+    };
+    for member in members {
+        match member {
+            ClassMember::Field {
+                init: Some(init), ..
+            } => {
+                rewrite_java_outer_static_refs_expr(init, owner_name, owner_static_fields);
+            }
+            ClassMember::Constructor { body, .. } => {
+                rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+            }
+            ClassMember::Method(stmt) => {
+                rewrite_java_outer_static_refs_stmt(stmt, owner_name, owner_static_fields);
+            }
+            ClassMember::NestedType(nested) => {
+                rewrite_java_outer_static_refs_nested(nested, owner_name, owner_static_fields);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_outer_static_refs_stmt(
+    stmt: &mut Statement,
+    owner_name: &str,
+    owner_static_fields: &HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_java_outer_static_refs_expr(init, owner_name, owner_static_fields);
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_java_outer_static_refs_expr(expr, owner_name, owner_static_fields);
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
+            for target in targets {
+                rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_stmts(then_body, owner_name, owner_static_fields);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_java_outer_static_refs_expr(elif_cond, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_stmts(elif_body, owner_name, owner_static_fields);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_java_outer_static_refs_stmts(else_body, owner_name, owner_static_fields);
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_outer_static_refs_stmts(
+    stmts: &mut [Statement],
+    owner_name: &str,
+    owner_static_fields: &HashSet<String>,
+) {
+    for stmt in stmts {
+        rewrite_java_outer_static_refs_stmt(stmt, owner_name, owner_static_fields);
+    }
+}
+
+fn rewrite_java_outer_static_refs_expr(
+    expr: &mut Expression,
+    owner_name: &str,
+    owner_static_fields: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if owner_static_fields.contains(name) => {
+            let field = name.clone();
+            expr.kind = ExprKind::Member {
+                object: Box::new(Expression::ident(owner_name)),
+                field,
+                null_safe: false,
+            };
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_java_outer_static_refs_expr(callee, owner_name, owner_static_fields);
+            for arg in args {
+                rewrite_java_outer_static_refs_expr(
+                    &mut arg.value,
+                    owner_name,
+                    owner_static_fields,
+                );
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_java_outer_static_refs_expr(object, owner_name, owner_static_fields);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_outer_static_refs_expr(object, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(index, owner_name, owner_static_fields);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_outer_static_refs_expr(left, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(right, owner_name, owner_static_fields);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            rewrite_java_outer_static_refs_expr(inner, owner_name, owner_static_fields);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(then, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(else_, owner_name, owner_static_fields);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_outer_static_refs_expr(
+                    &mut elem.value,
+                    owner_name,
+                    owner_static_fields,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_prepend_outer_constructor_param(
+    params: &mut Vec<Param>,
+    body: &mut Vec<Statement>,
+    owner_name: &str,
+) {
+    if !params.iter().any(|param| param.name == "__java_outer") {
+        params.insert(0, java_outer_param(owner_name));
+    }
+    if !matches!(
+        body.first().map(|stmt| &stmt.kind),
+        Some(StmtKind::Assign { targets, .. })
+            if matches!(
+                targets.first().map(|target| &target.kind),
+                Some(ExprKind::Member { field, .. }) if field == "__java_outer"
+            )
+    ) {
+        body.insert(0, java_outer_assign_stmt());
+    }
+}
+
+fn java_outer_param(owner_name: &str) -> Param {
+    Param {
+        name: "__java_outer".to_string(),
+        type_hint: Some(owner_name.to_string()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn java_outer_assign_stmt() -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: "__java_outer".to_string(),
+            null_safe: false,
+        })],
+        value: Expression::ident("__java_outer"),
+    })
+}
+
+fn java_outer_expr() -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::This)),
+        field: "__java_outer".to_string(),
+        null_safe: false,
+    })
+}
+
+fn java_typed_outer_expr(owner_name: &str) -> Expression {
+    Expression::new(ExprKind::Cast {
+        expr: Box::new(java_outer_expr()),
+        type_name: owner_name.to_string(),
+    })
+}
+
+fn rewrite_java_nested_type_refs_in_members(
+    members: &mut [ClassMember],
+    nested_types: &HashMap<String, (String, bool)>,
+) {
+    for member in members {
+        match member {
+            ClassMember::Field {
+                init: Some(init), ..
+            } => {
+                rewrite_java_nested_type_refs_expr(init, nested_types);
+            }
+            ClassMember::Constructor { body, .. } => {
+                rewrite_java_nested_type_refs_stmts(body, nested_types);
+            }
+            ClassMember::Method(stmt) => rewrite_java_nested_type_refs_stmt(stmt, nested_types),
+            ClassMember::NestedType(_) => {}
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_nested_type_refs_stmt(
+    stmt: &mut Statement,
+    nested_types: &HashMap<String, (String, bool)>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl {
+            return_type, body, ..
+        } => {
+            if let Some(type_hint) = return_type {
+                if let Some((qualified, _)) = nested_types.get(type_hint) {
+                    *type_hint = qualified.clone();
+                }
+            }
+            rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        StmtKind::Block(body) => {
+            rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_java_nested_type_refs_expr(init, nested_types);
+                }
+                if let Some(type_hint) = &mut decl.type_hint {
+                    if let Some((qualified, _)) = nested_types.get(type_hint) {
+                        *type_hint = qualified.clone();
+                    }
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_java_nested_type_refs_expr(expr, nested_types);
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_java_nested_type_refs_expr(value, nested_types);
+            for target in targets {
+                rewrite_java_nested_type_refs_expr(target, nested_types);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_java_nested_type_refs_expr(cond, nested_types);
+            rewrite_java_nested_type_refs_stmts(then_body, nested_types);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_java_nested_type_refs_expr(elif_cond, nested_types);
+                rewrite_java_nested_type_refs_stmts(elif_body, nested_types);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_java_nested_type_refs_stmts(else_body, nested_types);
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_java_nested_type_refs_expr(cond, nested_types);
+            rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_nested_type_refs_stmts(
+    stmts: &mut [Statement],
+    nested_types: &HashMap<String, (String, bool)>,
+) {
+    for stmt in stmts {
+        rewrite_java_nested_type_refs_stmt(stmt, nested_types);
+    }
+}
+
+fn rewrite_java_nested_type_refs_expr(
+    expr: &mut Expression,
+    nested_types: &HashMap<String, (String, bool)>,
+) {
+    match &mut expr.kind {
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                if let Some((qualified, is_static)) = nested_types.get(name) {
+                    class.kind = ExprKind::Ident(qualified.clone());
+                    if !*is_static {
+                        args.insert(0, Argument::positional(Expression::new(ExprKind::This)));
+                    }
+                }
+            }
+            for arg in args {
+                rewrite_java_nested_type_refs_expr(&mut arg.value, nested_types);
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if let Some(type_name) = java_registered_nested_type_name(object) {
+                    callee.kind = ExprKind::StaticAccess {
+                        class: Box::new(Expression::ident(&type_name)),
+                        member: Box::new(Expression::ident(field)),
+                    };
+                }
+            }
+            rewrite_java_nested_type_refs_expr(callee, nested_types);
+            for arg in args {
+                rewrite_java_nested_type_refs_expr(&mut arg.value, nested_types);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            if let Some(type_name) = java_registered_nested_type_name(object) {
+                let ExprKind::Member { field, .. } = &expr.kind else {
+                    return;
+                };
+                expr.kind = ExprKind::StaticAccess {
+                    class: Box::new(Expression::ident(&type_name)),
+                    member: Box::new(Expression::ident(field)),
+                };
+                return;
+            }
+            rewrite_java_nested_type_refs_expr(object, nested_types);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_nested_type_refs_expr(object, nested_types);
+            rewrite_java_nested_type_refs_expr(index, nested_types);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_nested_type_refs_expr(left, nested_types);
+            rewrite_java_nested_type_refs_expr(right, nested_types);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            rewrite_java_nested_type_refs_expr(inner, nested_types)
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_nested_type_refs_expr(target, nested_types);
+            rewrite_java_nested_type_refs_expr(value, nested_types);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_java_nested_type_refs_expr(cond, nested_types);
+            rewrite_java_nested_type_refs_expr(then, nested_types);
+            rewrite_java_nested_type_refs_expr(else_, nested_types);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_nested_type_refs_expr(&mut elem.value, nested_types);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_registered_nested_type_name(expr: &Expression) -> Option<String> {
+    let mut parts = Vec::new();
+    collect_member_chain(expr, &mut parts)?;
+    if parts.len() < 2 {
+        return None;
+    }
+    let dotted = parts.join(".");
+    JAVA_NESTED_TYPE_NAMES.with(|names| {
+        if names.borrow().contains(&dotted) {
+            Some(dotted)
+        } else {
+            None
+        }
+    })
+}
+
+fn rewrite_java_inner_outer_refs_stmt(
+    stmt: &mut Statement,
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            rewrite_java_inner_outer_refs_stmts(body, owner_name, owner_fields, owner_methods);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_java_inner_outer_refs_expr(
+                        init,
+                        owner_name,
+                        owner_fields,
+                        owner_methods,
+                    );
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_java_inner_outer_refs_expr(expr, owner_name, owner_fields, owner_methods);
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_java_inner_outer_refs_expr(value, owner_name, owner_fields, owner_methods);
+            for target in targets {
+                rewrite_java_inner_outer_refs_expr(target, owner_name, owner_fields, owner_methods);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_java_inner_outer_refs_expr(cond, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_stmts(then_body, owner_name, owner_fields, owner_methods);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_java_inner_outer_refs_expr(
+                    elif_cond,
+                    owner_name,
+                    owner_fields,
+                    owner_methods,
+                );
+                rewrite_java_inner_outer_refs_stmts(
+                    elif_body,
+                    owner_name,
+                    owner_fields,
+                    owner_methods,
+                );
+            }
+            if let Some(else_body) = else_body {
+                rewrite_java_inner_outer_refs_stmts(
+                    else_body,
+                    owner_name,
+                    owner_fields,
+                    owner_methods,
+                );
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_java_inner_outer_refs_expr(cond, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_stmts(body, owner_name, owner_fields, owner_methods);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_inner_outer_refs_stmts(
+    stmts: &mut [Statement],
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) {
+    for stmt in stmts {
+        rewrite_java_inner_outer_refs_stmt(stmt, owner_name, owner_fields, owner_methods);
+    }
+}
+
+fn rewrite_java_inner_outer_refs_expr(
+    expr: &mut Expression,
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if owner_fields.contains(name) => {
+            let field = name.clone();
+            expr.kind = ExprKind::Member {
+                object: Box::new(java_typed_outer_expr(owner_name)),
+                field,
+                null_safe: false,
+            };
+        }
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args {
+                rewrite_java_inner_outer_refs_expr(
+                    &mut arg.value,
+                    owner_name,
+                    owner_fields,
+                    owner_methods,
+                );
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if owner_methods.contains(name) {
+                    let method = name.clone();
+                    callee.kind = ExprKind::Member {
+                        object: Box::new(java_typed_outer_expr(owner_name)),
+                        field: method,
+                        null_safe: false,
+                    };
+                    return;
+                }
+            }
+            rewrite_java_inner_outer_refs_expr(callee, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Member { object, field, .. } => {
+            if field == "this" && java_expr_dotted_name(object).as_deref() == Some(owner_name) {
+                expr.kind = java_typed_outer_expr(owner_name).kind;
+                return;
+            }
+            rewrite_java_inner_outer_refs_expr(object, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_inner_outer_refs_expr(object, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_expr(index, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_inner_outer_refs_expr(left, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_expr(right, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Unary { expr: inner, .. } => {
+            rewrite_java_inner_outer_refs_expr(inner, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_inner_outer_refs_expr(target, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_expr(value, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_java_inner_outer_refs_expr(cond, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_expr(then, owner_name, owner_fields, owner_methods);
+            rewrite_java_inner_outer_refs_expr(else_, owner_name, owner_fields, owner_methods);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_inner_outer_refs_expr(
+                    &mut elem.value,
+                    owner_name,
+                    owner_fields,
+                    owner_methods,
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2938,7 +4013,10 @@ fn rewrite_java_user_tostring_calls(body: &mut [Statement]) {
     collect_java_enum_values(body, &mut enum_values);
     let mut double_fields = HashSet::new();
     collect_java_double_fields(body, &mut double_fields);
+    let mut double_methods = HashSet::new();
+    collect_java_double_methods(body, &mut double_methods);
     rewrite_java_double_field_print_tree(body, &double_fields);
+    rewrite_java_double_method_print_tree(body, &double_methods);
     rewrite_java_tostring_stmts(
         body,
         &tostring_classes,
@@ -2989,10 +4067,38 @@ fn collect_java_double_fields(stmts: &[Statement], out: &mut HashSet<String>) {
     }
 }
 
-fn rewrite_java_double_field_print_tree(
-    stmts: &mut [Statement],
-    double_fields: &HashSet<String>,
-) {
+fn collect_java_double_methods(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl {
+                                name,
+                                return_type: Some(return_type),
+                                ..
+                            } = &method.kind
+                            {
+                                if matches!(return_type.as_str(), "double" | "Double") {
+                                    out.insert(name.clone());
+                                }
+                            }
+                        }
+                        ClassMember::NestedType(nested) => {
+                            collect_java_double_methods(std::slice::from_ref(nested), out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Block(stmts) => collect_java_double_methods(stmts, out),
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_double_field_print_tree(stmts: &mut [Statement], double_fields: &HashSet<String>) {
     for stmt in stmts {
         rewrite_java_double_field_prints(std::slice::from_mut(stmt), double_fields);
         if let StmtKind::ClassDecl { members, .. } = &mut stmt.kind {
@@ -3004,6 +4110,30 @@ fn rewrite_java_double_field_print_tree(
                     ClassMember::Method(method) => {
                         if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
                             rewrite_java_double_field_print_tree(body, double_fields);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn rewrite_java_double_method_print_tree(
+    stmts: &mut [Statement],
+    double_methods: &HashSet<String>,
+) {
+    for stmt in stmts {
+        rewrite_java_double_method_prints(std::slice::from_mut(stmt), double_methods);
+        if let StmtKind::ClassDecl { members, .. } = &mut stmt.kind {
+            for member in members {
+                match member {
+                    ClassMember::Constructor { body, .. } => {
+                        rewrite_java_double_method_print_tree(body, double_methods);
+                    }
+                    ClassMember::Method(method) => {
+                        if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                            rewrite_java_double_method_print_tree(body, double_methods);
                         }
                     }
                     _ => {}
@@ -3119,17 +4249,47 @@ fn rewrite_java_tostring_stmts(
                 }
             }
             StmtKind::Assign { targets, value } => {
-                rewrite_java_tostring_expr(value, tostring_classes, enum_values, current_class, locals);
-                for target in targets {
-                    rewrite_java_tostring_expr(target, tostring_classes, enum_values, current_class, locals);
+                rewrite_java_tostring_expr(
+                    value,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
+                for target in &mut *targets {
+                    rewrite_java_tostring_expr(
+                        target,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
                 }
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                rewrite_java_tostring_expr(value, tostring_classes, enum_values, current_class, locals);
-                rewrite_java_tostring_expr(target, tostring_classes, enum_values, current_class, locals);
+                rewrite_java_tostring_expr(
+                    value,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
+                rewrite_java_tostring_expr(
+                    target,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
             }
             StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-                rewrite_java_tostring_expr(expr, tostring_classes, enum_values, current_class, locals);
+                rewrite_java_tostring_expr(
+                    expr,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
             }
             StmtKind::If {
                 cond,
@@ -3137,7 +4297,13 @@ fn rewrite_java_tostring_stmts(
                 elifs,
                 else_body,
             } => {
-                rewrite_java_tostring_expr(cond, tostring_classes, enum_values, current_class, locals);
+                rewrite_java_tostring_expr(
+                    cond,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
                 rewrite_java_tostring_stmts(
                     then_body,
                     tostring_classes,
@@ -3146,7 +4312,13 @@ fn rewrite_java_tostring_stmts(
                     &mut locals.clone(),
                 );
                 for (elif_cond, elif_body) in elifs {
-                    rewrite_java_tostring_expr(elif_cond, tostring_classes, enum_values, current_class, locals);
+                    rewrite_java_tostring_expr(
+                        elif_cond,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
                     rewrite_java_tostring_stmts(
                         elif_body,
                         tostring_classes,
@@ -3166,7 +4338,13 @@ fn rewrite_java_tostring_stmts(
                 }
             }
             StmtKind::While { cond, body, .. } => {
-                rewrite_java_tostring_expr(cond, tostring_classes, enum_values, current_class, locals);
+                rewrite_java_tostring_expr(
+                    cond,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
                 rewrite_java_tostring_stmts(
                     body,
                     tostring_classes,
@@ -3189,10 +4367,7 @@ fn rewrite_java_tostring_stmts(
     }
 }
 
-fn rewrite_java_double_field_prints(
-    stmts: &mut [Statement],
-    double_fields: &HashSet<String>,
-) {
+fn rewrite_java_double_field_prints(stmts: &mut [Statement], double_fields: &HashSet<String>) {
     for stmt in stmts {
         let StmtKind::Expr(expr) = &mut stmt.kind else {
             continue;
@@ -3209,6 +4384,37 @@ fn rewrite_java_double_field_prints(
             continue;
         };
         if !double_fields.contains(field) {
+            continue;
+        }
+        let value = args[0].value.clone();
+        args[0].value = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_double_to_string")),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        });
+    }
+}
+
+fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &HashSet<String>) {
+    for stmt in stmts {
+        let StmtKind::Expr(expr) = &mut stmt.kind else {
+            continue;
+        };
+        let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+            continue;
+        };
+        if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "println" || name == "print")
+            || args.len() != 1
+        {
+            continue;
+        }
+        let ExprKind::Call { callee: inner, .. } = &args[0].value.kind else {
+            continue;
+        };
+        let ExprKind::Member { field, .. } = &inner.kind else {
+            continue;
+        };
+        if !double_methods.contains(field) {
             continue;
         }
         let value = args[0].value.clone();
@@ -3330,6 +4536,45 @@ fn rewrite_java_tostring_expr(
                             return;
                         }
                     }
+                    if java_type_is_time_value(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_time_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_duration(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_duration_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_zone_id(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_zone_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
                     if java_type_is_bitset(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_bitset_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -3424,16 +4669,50 @@ fn rewrite_java_tostring_expr(
             }
         }
         ExprKind::Member { object, field, .. } => {
-            if matches!(field.as_str(), "SECONDS" | "MILLIS")
+            if java_member_chain_ends_with(object, "Boolean") {
+                if field == "TRUE" {
+                    *expr = Expression::bool(true);
+                    return;
+                }
+                if field == "FALSE" {
+                    *expr = Expression::bool(false);
+                    return;
+                }
+            }
+            if matches!(field.as_str(), "SECONDS" | "MILLIS" | "MINUTES" | "HOURS")
                 && java_member_chain_ends_with(object, "ChronoUnit")
             {
                 *expr = Expression::string(field);
                 return;
             }
-            rewrite_java_tostring_expr(object, tostring_classes, enum_values, current_class, locals);
+            if field == "UTC" && java_member_chain_ends_with(object, "ZoneOffset") {
+                *expr = Expression::string("Z");
+                return;
+            }
+            if field == "SHORT_IDS" && java_member_chain_ends_with(object, "ZoneId") {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_zone_id_short_ids")),
+                    args: vec![],
+                    optional: false,
+                });
+                return;
+            }
+            rewrite_java_tostring_expr(
+                object,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_java_tostring_expr(object, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                object,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
             rewrite_java_tostring_expr(index, tostring_classes, enum_values, current_class, locals);
         }
         ExprKind::Binary { left, right, .. } => {
@@ -3445,9 +4724,28 @@ fn rewrite_java_tostring_expr(
         ExprKind::Unary { expr: inner, .. } => {
             rewrite_java_tostring_expr(inner, tostring_classes, enum_values, current_class, locals);
         }
+        ExprKind::IsType {
+            expr: inner,
+            type_name,
+        } => {
+            rewrite_java_tostring_expr(inner, tostring_classes, enum_values, current_class, locals);
+            if enum_values.contains_key(java_type_simple_name(type_name)) {
+                if java_enum_type_from_member_expr(inner).map(java_type_simple_name)
+                    == Some(java_type_simple_name(type_name))
+                {
+                    *expr = Expression::bool(true);
+                }
+            }
+        }
         ExprKind::Assign { target, value } => {
             rewrite_java_tostring_expr(value, tostring_classes, enum_values, current_class, locals);
-            rewrite_java_tostring_expr(target, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                target,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
         }
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_java_tostring_expr(cond, tostring_classes, enum_values, current_class, locals);
@@ -3518,7 +4816,9 @@ fn rewrite_java_enum_set_static_call(
     }
     let names = match field.as_str() {
         "noneOf" | "allOf" => {
-            let enum_name = args.first().and_then(|arg| java_string_literal(&arg.value))?;
+            let enum_name = args
+                .first()
+                .and_then(|arg| java_string_literal(&arg.value))?;
             java_enum_names_expr(enum_values, enum_name)?
         }
         "of" => {
@@ -3739,12 +5039,120 @@ fn java_type_is_instant(type_name: Option<&str>) -> bool {
     base == "Instant"
 }
 
+fn java_type_is_time_value(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let base = type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim();
+    matches!(
+        base,
+        "LocalDate" | "LocalTime" | "LocalDateTime" | "OffsetDateTime" | "ZonedDateTime"
+    )
+}
+
+fn java_type_is_duration(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let base = type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim();
+    base == "Duration"
+}
+
+fn java_builtin_class_is_instance_type(type_name: &str) -> bool {
+    let base = java_type_simple_name(type_name);
+    matches!(
+        base,
+        "String"
+            | "Integer"
+            | "Long"
+            | "Double"
+            | "Float"
+            | "Number"
+            | "Boolean"
+            | "Character"
+            | "Object"
+            | "Class"
+            | "Comparable"
+            | "Serializable"
+            | "Cloneable"
+            | "List"
+            | "ArrayList"
+            | "Collection"
+            | "Vector"
+            | "Set"
+            | "HashSet"
+            | "Map"
+            | "HashMap"
+            | "Throwable"
+            | "int[]"
+            | "byte[]"
+            | "String[]"
+    )
+}
+
+fn java_type_is_zone_id(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let base = type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim();
+    matches!(base, "ZoneId" | "ZoneOffset")
+}
+
 fn java_instant_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
         "compareTo" => "__java_instant_compare_to",
         "equals" => "__java_instant_equals",
         "toString" => "__java_instant_to_string",
         "hashCode" => "__java_instant_hash_code",
+        _ => return None,
+    })
+}
+
+fn java_time_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "compareTo" => "__java_instant_compare_to",
+        "equals" | "isEqual" => "__java_instant_equals",
+        "isBefore" => "__java_instant_is_before",
+        "isAfter" => "__java_instant_is_after",
+        "hashCode" => "__java_instant_hash_code",
+        "toString" => "__java_time_to_string",
+        _ => return None,
+    })
+}
+
+fn java_duration_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "plusHours" => "__java_duration_plus_hours",
+        "minusMinutes" => "__java_duration_minus_minutes",
+        _ => return None,
+    })
+}
+
+fn java_zone_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "compareTo" => "__java_zone_compare_to",
+        "hashCode" => "__java_zone_hash_code",
         _ => return None,
     })
 }
@@ -3893,6 +5301,9 @@ fn normalize_java_class_tree(body: &mut [Statement]) {
     let mut class_members = HashMap::new();
     collect_java_class_member_names(body, &mut class_members);
     normalize_java_class_tree_with_members(body, &class_members);
+    let mut locals = std::collections::HashSet::new();
+    lower_java_anonymous_class_captures_tree(body, &mut locals);
+    normalize_java_anonymous_class_tree(body, &class_members);
 }
 
 fn collect_java_class_member_names(
@@ -3947,6 +5358,1060 @@ fn normalize_java_class_tree_with_members(
             StmtKind::Block(stmts) => normalize_java_class_tree_with_members(stmts, class_members),
             _ => {}
         }
+    }
+}
+
+fn normalize_java_anonymous_class_tree(
+    body: &mut [Statement],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    for stmt in body {
+        normalize_java_anonymous_class_stmt(stmt, class_members);
+    }
+}
+
+fn lower_java_anonymous_class_captures_tree(
+    body: &mut [Statement],
+    locals: &mut std::collections::HashSet<String>,
+) {
+    for stmt in body {
+        lower_java_anonymous_class_captures_stmt(stmt, locals);
+    }
+}
+
+fn lower_java_anonymous_class_captures_members(
+    members: &mut [ClassMember],
+    locals: &std::collections::HashSet<String>,
+) {
+    for member in members {
+        match member {
+            ClassMember::Field { init, .. } => {
+                if let Some(init) = init {
+                    lower_java_anonymous_class_captures_expr(init, &mut locals.clone());
+                }
+            }
+            ClassMember::Constructor { params, body, .. } => {
+                let mut member_locals = locals.clone();
+                for param in params {
+                    member_locals.insert(param.name.clone());
+                }
+                lower_java_anonymous_class_captures_tree(body, &mut member_locals);
+            }
+            ClassMember::Method(method) => {
+                if let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind {
+                    let mut member_locals = locals.clone();
+                    for param in params {
+                        member_locals.insert(param.name.clone());
+                    }
+                    lower_java_anonymous_class_captures_tree(body, &mut member_locals);
+                }
+            }
+            ClassMember::NestedType(nested) => {
+                lower_java_anonymous_class_captures_stmt(nested, &mut locals.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn lower_java_anonymous_class_captures_stmt(
+    stmt: &mut Statement,
+    locals: &mut std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            lower_java_anonymous_class_captures_expr(expr, locals);
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            lower_java_anonymous_class_captures_tree(stmts, &mut locals.clone());
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    lower_java_anonymous_class_captures_expr(init, locals);
+                }
+                collect_binding_names(&decl.pattern, locals);
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut fn_locals = locals.clone();
+            for param in params {
+                fn_locals.insert(param.name.clone());
+            }
+            lower_java_anonymous_class_captures_tree(body, &mut fn_locals);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::EnumDecl {
+            body_members: members,
+            ..
+        } => lower_java_anonymous_class_captures_members(members, locals),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_java_anonymous_class_captures_expr(cond, locals);
+            lower_java_anonymous_class_captures_tree(then_body, &mut locals.clone());
+            for (elif_cond, elif_body) in elifs {
+                lower_java_anonymous_class_captures_expr(elif_cond, locals);
+                lower_java_anonymous_class_captures_tree(elif_body, &mut locals.clone());
+            }
+            if let Some(else_body) = else_body {
+                lower_java_anonymous_class_captures_tree(else_body, &mut locals.clone());
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut loop_locals = locals.clone();
+            if let Some(init) = init {
+                lower_java_anonymous_class_captures_stmt(init, &mut loop_locals);
+            }
+            if let Some(cond) = cond {
+                lower_java_anonymous_class_captures_expr(cond, &mut loop_locals);
+            }
+            if let Some(update) = update {
+                lower_java_anonymous_class_captures_expr(update, &mut loop_locals);
+            }
+            lower_java_anonymous_class_captures_tree(body, &mut loop_locals);
+        }
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            lower_java_anonymous_class_captures_expr(iter, locals);
+            let mut loop_locals = locals.clone();
+            loop_locals.insert(var.clone());
+            if let Some(key) = key {
+                loop_locals.insert(key.clone());
+            }
+            lower_java_anonymous_class_captures_tree(body, &mut loop_locals);
+            if let Some(else_body) = else_body {
+                lower_java_anonymous_class_captures_tree(else_body, &mut locals.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            lower_java_anonymous_class_captures_expr(cond, locals);
+            lower_java_anonymous_class_captures_tree(body, &mut locals.clone());
+            if let Some(else_body) = else_body {
+                lower_java_anonymous_class_captures_tree(else_body, &mut locals.clone());
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            lower_java_anonymous_class_captures_tree(body, &mut locals.clone());
+            lower_java_anonymous_class_captures_expr(cond, locals);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                lower_java_anonymous_class_captures_expr(target, locals);
+            }
+            lower_java_anonymous_class_captures_expr(value, locals);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_java_anonymous_class_captures_expr(target, locals);
+            lower_java_anonymous_class_captures_expr(value, locals);
+        }
+        _ => {}
+    }
+}
+
+fn lower_java_anonymous_class_captures_expr(
+    expr: &mut Expression,
+    locals: &mut std::collections::HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::New { class, args } => {
+            for arg in args.iter_mut() {
+                lower_java_anonymous_class_captures_expr(&mut arg.value, locals);
+            }
+            lower_java_anonymous_class_captures_expr(class, locals);
+            if let ExprKind::ClassExpr {
+                parent, members, ..
+            } = &mut class.kind
+            {
+                inject_java_anonymous_captures(parent.as_deref(), members, args, locals);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            lower_java_anonymous_class_captures_expr(left, locals);
+            lower_java_anonymous_class_captures_expr(right, locals);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Spread(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::RefLoad(inner) => lower_java_anonymous_class_captures_expr(inner, locals),
+        ExprKind::Yield(Some(inner)) => lower_java_anonymous_class_captures_expr(inner, locals),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_java_anonymous_class_captures_expr(cond, locals);
+            lower_java_anonymous_class_captures_expr(then, locals);
+            lower_java_anonymous_class_captures_expr(else_, locals);
+        }
+        ExprKind::Member { object, .. } => lower_java_anonymous_class_captures_expr(object, locals),
+        ExprKind::Index { object, index, .. } => {
+            lower_java_anonymous_class_captures_expr(object, locals);
+            lower_java_anonymous_class_captures_expr(index, locals);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            lower_java_anonymous_class_captures_expr(callee, locals);
+            for arg in args {
+                lower_java_anonymous_class_captures_expr(&mut arg.value, locals);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            lower_java_anonymous_class_captures_expr(target, locals);
+            lower_java_anonymous_class_captures_expr(value, locals);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                lower_java_anonymous_class_captures_expr(&mut elem.value, locals);
+            }
+        }
+        ExprKind::Tuple(elems) | ExprKind::Set(elems) | ExprKind::Sequence(elems) => {
+            for elem in elems {
+                lower_java_anonymous_class_captures_expr(elem, locals);
+            }
+        }
+        ExprKind::Lambda { body, params, .. } => {
+            let mut lambda_locals = locals.clone();
+            for param in params {
+                lambda_locals.insert(param.name.clone());
+            }
+            match body {
+                LambdaBody::Expr(inner) => {
+                    lower_java_anonymous_class_captures_expr(inner, &mut lambda_locals)
+                }
+                LambdaBody::Block(stmts) => {
+                    lower_java_anonymous_class_captures_tree(stmts, &mut lambda_locals)
+                }
+            }
+        }
+        ExprKind::ClassExpr { members, .. } => {
+            lower_java_anonymous_class_captures_members(members, locals);
+        }
+        ExprKind::FunctionExpr(func) => lower_java_anonymous_class_captures_stmt(func, locals),
+        _ => {}
+    }
+}
+
+fn inject_java_anonymous_captures(
+    parent: Option<&Expression>,
+    members: &mut Vec<ClassMember>,
+    args: &mut Vec<Argument>,
+    locals: &std::collections::HashSet<String>,
+) {
+    let member_names = JavaClassMemberNames::from_members(members);
+    let mut used = std::collections::HashSet::new();
+    collect_java_anonymous_member_idents(members, &member_names, &mut used);
+    let mut captures: Vec<String> = used
+        .into_iter()
+        .filter(|name| locals.contains(name))
+        .collect();
+    captures.sort();
+    captures.dedup();
+    if captures.is_empty() {
+        return;
+    }
+
+    let original_args: Vec<Expression> = args.iter().map(|arg| arg.value.clone()).collect();
+    let original_arg_count = original_args.len();
+    let capture_fields: Vec<(String, String)> = captures
+        .iter()
+        .map(|name| (name.clone(), format!("__java_capture_{name}")))
+        .collect();
+
+    for (_, field_name) in &capture_fields {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: field_name.clone(),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+            },
+        );
+    }
+
+    rewrite_java_anonymous_capture_refs(members, &capture_fields);
+
+    for capture in &captures {
+        args.push(Argument::positional(Expression::ident(capture)));
+    }
+
+    let mut params = Vec::new();
+    let mut base_args = Vec::new();
+    for index in 0..original_arg_count {
+        let name = format!("__java_super_arg_{index}");
+        params.push(Param {
+            name: name.clone(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        });
+        base_args.push(Expression::ident(&name));
+    }
+    for (_, field_name) in &capture_fields {
+        params.push(Param {
+            name: field_name.clone(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        });
+    }
+
+    let body = capture_fields
+        .iter()
+        .map(|(_, field_name)| {
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: field_name.clone(),
+                    null_safe: false,
+                })],
+                value: Expression::ident(field_name),
+            })
+        })
+        .collect();
+
+    members.insert(
+        0,
+        ClassMember::Constructor {
+            params,
+            body,
+            base_args: (parent.is_some() && original_arg_count > 0).then_some(base_args),
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        },
+    );
+}
+
+fn collect_java_anonymous_member_idents(
+    members: &[ClassMember],
+    member_names: &JavaClassMemberNames,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for member in members {
+        if let ClassMember::Method(method) = member {
+            if let StmtKind::FunctionDecl { params, body, .. } = &method.kind {
+                let mut locals: std::collections::HashSet<String> =
+                    params.iter().map(|param| param.name.clone()).collect();
+                collect_java_capture_idents_stmts(body, &mut locals, member_names, out);
+            }
+        }
+    }
+}
+
+fn collect_java_capture_idents_stmts(
+    stmts: &[Statement],
+    locals: &mut std::collections::HashSet<String>,
+    member_names: &JavaClassMemberNames,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &decl.init {
+                        collect_java_capture_idents_expr(init, locals, member_names, out);
+                    }
+                    collect_binding_names(&decl.pattern, locals);
+                }
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                collect_java_capture_idents_expr(expr, locals, member_names, out);
+            }
+            StmtKind::Block(body) => {
+                collect_java_capture_idents_stmts(body, &mut locals.clone(), member_names, out);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                collect_java_capture_idents_expr(cond, locals, member_names, out);
+                collect_java_capture_idents_stmts(
+                    then_body,
+                    &mut locals.clone(),
+                    member_names,
+                    out,
+                );
+                for (elif_cond, elif_body) in elifs {
+                    collect_java_capture_idents_expr(elif_cond, locals, member_names, out);
+                    collect_java_capture_idents_stmts(
+                        elif_body,
+                        &mut locals.clone(),
+                        member_names,
+                        out,
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    collect_java_capture_idents_stmts(
+                        else_body,
+                        &mut locals.clone(),
+                        member_names,
+                        out,
+                    );
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                for target in targets {
+                    collect_java_capture_idents_expr(target, locals, member_names, out);
+                }
+                collect_java_capture_idents_expr(value, locals, member_names, out);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                collect_java_capture_idents_expr(target, locals, member_names, out);
+                collect_java_capture_idents_expr(value, locals, member_names, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_java_capture_idents_expr(
+    expr: &Expression,
+    locals: &std::collections::HashSet<String>,
+    member_names: &JavaClassMemberNames,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Ident(name)
+            if !locals.contains(name)
+                && !member_names.fields.contains(name)
+                && !member_names.methods.contains(name)
+                && !is_java_type_or_util(name) =>
+        {
+            out.insert(name.clone());
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_java_capture_idents_expr(left, locals, member_names, out);
+            collect_java_capture_idents_expr(right, locals, member_names, out);
+        }
+        ExprKind::Unary { expr, .. } => {
+            collect_java_capture_idents_expr(expr, locals, member_names, out)
+        }
+        ExprKind::Member { object, .. } => {
+            collect_java_capture_idents_expr(object, locals, member_names, out)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_java_capture_idents_expr(callee, locals, member_names, out);
+            for arg in args {
+                collect_java_capture_idents_expr(&arg.value, locals, member_names, out);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            collect_java_capture_idents_expr(target, locals, member_names, out);
+            collect_java_capture_idents_expr(value, locals, member_names, out);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                collect_java_capture_idents_expr(&elem.value, locals, member_names, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_anonymous_capture_refs(
+    members: &mut [ClassMember],
+    capture_fields: &[(String, String)],
+) {
+    for member in members {
+        if let ClassMember::Method(method) = member {
+            if let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind {
+                let mut locals: std::collections::HashSet<String> =
+                    params.iter().map(|param| param.name.clone()).collect();
+                rewrite_java_capture_refs_stmts(body, &mut locals, capture_fields);
+            }
+        }
+    }
+}
+
+fn rewrite_java_capture_refs_stmts(
+    stmts: &mut [Statement],
+    locals: &mut std::collections::HashSet<String>,
+    capture_fields: &[(String, String)],
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        rewrite_java_capture_refs_expr(init, locals, capture_fields);
+                    }
+                    collect_binding_names(&decl.pattern, locals);
+                }
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                rewrite_java_capture_refs_expr(expr, locals, capture_fields);
+            }
+            StmtKind::Block(body) => {
+                rewrite_java_capture_refs_stmts(body, &mut locals.clone(), capture_fields)
+            }
+            StmtKind::Assign { targets, value } => {
+                for target in targets {
+                    rewrite_java_capture_refs_expr(target, locals, capture_fields);
+                }
+                rewrite_java_capture_refs_expr(value, locals, capture_fields);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_java_capture_refs_expr(target, locals, capture_fields);
+                rewrite_java_capture_refs_expr(value, locals, capture_fields);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_capture_refs_expr(
+    expr: &mut Expression,
+    locals: &std::collections::HashSet<String>,
+    capture_fields: &[(String, String)],
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if !locals.contains(name) => {
+            if let Some((_, field_name)) =
+                capture_fields.iter().find(|(capture, _)| capture == name)
+            {
+                expr.kind = ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: field_name.clone(),
+                    null_safe: false,
+                };
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_capture_refs_expr(left, locals, capture_fields);
+            rewrite_java_capture_refs_expr(right, locals, capture_fields);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_java_capture_refs_expr(expr, locals, capture_fields)
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_java_capture_refs_expr(object, locals, capture_fields)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_java_capture_refs_expr(callee, locals, capture_fields);
+            for arg in args {
+                rewrite_java_capture_refs_expr(&mut arg.value, locals, capture_fields);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_capture_refs_expr(target, locals, capture_fields);
+            rewrite_java_capture_refs_expr(value, locals, capture_fields);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_capture_refs_expr(&mut elem.value, locals, capture_fields);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_java_anonymous_class_members(
+    members: &mut [ClassMember],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    for member in members {
+        match member {
+            ClassMember::Field { init, .. } => {
+                if let Some(init) = init {
+                    normalize_java_anonymous_class_expr(init, class_members);
+                }
+            }
+            ClassMember::Constructor { body, .. } => {
+                normalize_java_anonymous_class_tree(body, class_members);
+            }
+            ClassMember::Method(method) => {
+                if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                    normalize_java_anonymous_class_tree(body, class_members);
+                }
+            }
+            ClassMember::NestedType(nested) => {
+                normalize_java_anonymous_class_stmt(nested, class_members);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_java_anonymous_class_stmt(
+    stmt: &mut Statement,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            normalize_java_anonymous_class_expr(expr, class_members);
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            normalize_java_anonymous_class_tree(stmts, class_members);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    normalize_java_anonymous_class_expr(init, class_members);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            normalize_java_anonymous_class_tree(body, class_members)
+        }
+        StmtKind::ClassDecl {
+            members,
+            decorators,
+            ..
+        }
+        | StmtKind::StructDecl {
+            members,
+            decorators,
+            ..
+        }
+        | StmtKind::EnumDecl {
+            body_members: members,
+            decorators,
+            ..
+        } => {
+            for decorator in decorators {
+                normalize_java_anonymous_class_expr(decorator, class_members);
+            }
+            normalize_java_anonymous_class_members(members, class_members);
+        }
+        StmtKind::InterfaceDecl { decorators, .. } => {
+            for decorator in decorators {
+                normalize_java_anonymous_class_expr(decorator, class_members);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            normalize_java_anonymous_class_expr(cond, class_members);
+            normalize_java_anonymous_class_tree(then_body, class_members);
+            for (elif_cond, elif_body) in elifs {
+                normalize_java_anonymous_class_expr(elif_cond, class_members);
+                normalize_java_anonymous_class_tree(elif_body, class_members);
+            }
+            if let Some(else_body) = else_body {
+                normalize_java_anonymous_class_tree(else_body, class_members);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                normalize_java_anonymous_class_stmt(init, class_members);
+            }
+            if let Some(cond) = cond {
+                normalize_java_anonymous_class_expr(cond, class_members);
+            }
+            if let Some(update) = update {
+                normalize_java_anonymous_class_expr(update, class_members);
+            }
+            normalize_java_anonymous_class_tree(body, class_members);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            normalize_java_anonymous_class_expr(iter, class_members);
+            normalize_java_anonymous_class_tree(body, class_members);
+            if let Some(else_body) = else_body {
+                normalize_java_anonymous_class_tree(else_body, class_members);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            normalize_java_anonymous_class_expr(cond, class_members);
+            normalize_java_anonymous_class_tree(body, class_members);
+            if let Some(else_body) = else_body {
+                normalize_java_anonymous_class_tree(else_body, class_members);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            normalize_java_anonymous_class_tree(body, class_members);
+            normalize_java_anonymous_class_expr(cond, class_members);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            normalize_java_anonymous_class_expr(expr, class_members);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    normalize_java_anonymous_case_condition(condition, class_members);
+                }
+                normalize_java_anonymous_class_tree(&mut case.body, class_members);
+            }
+            if let Some(default) = default {
+                normalize_java_anonymous_class_tree(default, class_members);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_java_anonymous_class_tree(body, class_members);
+            for catch in catches {
+                normalize_java_anonymous_class_tree(&mut catch.body, class_members);
+            }
+            if let Some(else_body) = else_body {
+                normalize_java_anonymous_class_tree(else_body, class_members);
+            }
+            if let Some(finally) = finally {
+                normalize_java_anonymous_class_tree(finally, class_members);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                normalize_java_anonymous_class_expr(&mut item.expr, class_members);
+            }
+            normalize_java_anonymous_class_tree(body, class_members);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            normalize_java_anonymous_class_expr(resource, class_members);
+            normalize_java_anonymous_class_tree(body, class_members);
+        }
+        StmtKind::Lock { expr, body } => {
+            normalize_java_anonymous_class_expr(expr, class_members);
+            normalize_java_anonymous_class_tree(body, class_members);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                normalize_java_anonymous_class_expr(target, class_members);
+            }
+            normalize_java_anonymous_class_expr(value, class_members);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            normalize_java_anonymous_class_expr(target, class_members);
+            normalize_java_anonymous_class_expr(value, class_members);
+        }
+        StmtKind::AddHandler {
+            control, handler, ..
+        } => {
+            normalize_java_anonymous_class_expr(control, class_members);
+            normalize_java_anonymous_class_expr(handler, class_members);
+        }
+        StmtKind::RemoveHandler {
+            control, handler, ..
+        } => {
+            normalize_java_anonymous_class_expr(control, class_members);
+            normalize_java_anonymous_class_expr(handler, class_members);
+        }
+        StmtKind::RaiseEvent { args, .. }
+        | StmtKind::PrintFile { items: args, .. }
+        | StmtKind::WriteFile { items: args, .. }
+        | StmtKind::Echo(args)
+        | StmtKind::Delete(args) => {
+            for arg in args {
+                normalize_java_anonymous_class_expr(arg, class_members);
+            }
+        }
+        StmtKind::OpenFile {
+            path, file_number, ..
+        } => {
+            normalize_java_anonymous_class_expr(path, class_members);
+            normalize_java_anonymous_class_expr(file_number, class_members);
+        }
+        StmtKind::CloseFile(Some(expr)) | StmtKind::Assert { test: expr, .. } => {
+            normalize_java_anonymous_class_expr(expr, class_members);
+        }
+        StmtKind::InputFile {
+            file_number,
+            variables,
+        } => {
+            normalize_java_anonymous_class_expr(file_number, class_members);
+            for variable in variables {
+                normalize_java_anonymous_class_expr(variable, class_members);
+            }
+        }
+        StmtKind::LineInput { file_number, .. } => {
+            normalize_java_anonymous_class_expr(file_number, class_members);
+        }
+        StmtKind::StartFile {
+            file_number,
+            key_value,
+            ..
+        } => {
+            normalize_java_anonymous_class_expr(file_number, class_members);
+            normalize_java_anonymous_class_expr(key_value, class_members);
+        }
+        StmtKind::InputRecordFile {
+            file_number,
+            key_value,
+            ..
+        } => {
+            normalize_java_anonymous_class_expr(file_number, class_members);
+            if let Some(key_value) = key_value {
+                normalize_java_anonymous_class_expr(key_value, class_members);
+            }
+        }
+        StmtKind::RewriteRecordFile {
+            file_number, items, ..
+        } => {
+            normalize_java_anonymous_class_expr(file_number, class_members);
+            for item in items {
+                normalize_java_anonymous_class_expr(item, class_members);
+            }
+        }
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            if let Some(declaration) = declaration {
+                normalize_java_anonymous_class_stmt(declaration, class_members);
+            }
+            if let Some(default) = default {
+                normalize_java_anonymous_class_expr(default, class_members);
+            }
+        }
+        StmtKind::Labeled { body, .. } => normalize_java_anonymous_class_stmt(body, class_members),
+        StmtKind::MatchStatement { subject, cases } => {
+            normalize_java_anonymous_class_expr(subject, class_members);
+            for case in cases {
+                if let Some(guard) = &mut case.guard {
+                    normalize_java_anonymous_class_expr(guard, class_members);
+                }
+                normalize_java_anonymous_class_tree(&mut case.body, class_members);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_java_anonymous_class_expr(
+    expr: &mut Expression,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            normalize_java_anonymous_class_expr(left, class_members);
+            normalize_java_anonymous_class_expr(right, class_members);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Spread(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::RefLoad(inner) => {
+            normalize_java_anonymous_class_expr(inner, class_members);
+        }
+        ExprKind::Yield(Some(inner)) => normalize_java_anonymous_class_expr(inner, class_members),
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_java_anonymous_class_expr(cond, class_members);
+            normalize_java_anonymous_class_expr(then, class_members);
+            normalize_java_anonymous_class_expr(else_, class_members);
+        }
+        ExprKind::Member { object, .. } => {
+            normalize_java_anonymous_class_expr(object, class_members)
+        }
+        ExprKind::Index { object, index, .. } => {
+            normalize_java_anonymous_class_expr(object, class_members);
+            normalize_java_anonymous_class_expr(index, class_members);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_java_anonymous_class_expr(callee, class_members);
+            for arg in args {
+                normalize_java_anonymous_class_expr(&mut arg.value, class_members);
+            }
+        }
+        ExprKind::New { class, args } => {
+            normalize_java_anonymous_class_expr(class, class_members);
+            for arg in args {
+                normalize_java_anonymous_class_expr(&mut arg.value, class_members);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            normalize_java_anonymous_class_expr(target, class_members);
+            normalize_java_anonymous_class_expr(value, class_members);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(inner) => normalize_java_anonymous_class_expr(inner, class_members),
+            LambdaBody::Block(stmts) => normalize_java_anonymous_class_tree(stmts, class_members),
+        },
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                normalize_java_anonymous_class_expr(&mut elem.value, class_members);
+            }
+        }
+        ExprKind::Tuple(elems) | ExprKind::Set(elems) | ExprKind::Sequence(elems) => {
+            for elem in elems {
+                normalize_java_anonymous_class_expr(elem, class_members);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                normalize_java_anonymous_object_property(prop, class_members);
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(inner) = part {
+                    normalize_java_anonymous_class_expr(inner, class_members);
+                }
+            }
+        }
+        ExprKind::IsType { expr: inner, .. }
+        | ExprKind::Cast { expr: inner, .. }
+        | ExprKind::NullCoalesce { left: inner, .. } => {
+            normalize_java_anonymous_class_expr(inner, class_members);
+            if let ExprKind::NullCoalesce { right, .. } = &mut expr.kind {
+                normalize_java_anonymous_class_expr(right, class_members);
+            }
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            normalize_java_anonymous_class_expr(element, class_members);
+            for generator in generators {
+                normalize_java_anonymous_class_expr(&mut generator.target, class_members);
+                normalize_java_anonymous_class_expr(&mut generator.iter, class_members);
+                for condition in &mut generator.conditions {
+                    normalize_java_anonymous_class_expr(condition, class_members);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for part in [lower, upper, step] {
+                if let Some(part) = part {
+                    normalize_java_anonymous_class_expr(part, class_members);
+                }
+            }
+        }
+        ExprKind::Walrus { target, value } => {
+            normalize_java_anonymous_class_expr(target, class_members);
+            normalize_java_anonymous_class_expr(value, class_members);
+        }
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
+            if let Some(parent) = parent {
+                normalize_java_anonymous_class_expr(parent, class_members);
+            }
+            let mut names = JavaClassMemberNames::from_members(members);
+            if let Some(parent_name) = parent.as_deref().and_then(java_parent_expr_name) {
+                if let Some(parent_names) = class_members.get(parent_name) {
+                    names.fields.extend(parent_names.fields.iter().cloned());
+                    names.methods.extend(parent_names.methods.iter().cloned());
+                }
+            }
+            normalize_java_class_members(members, &names);
+            normalize_java_anonymous_class_members(members, class_members);
+        }
+        ExprKind::FunctionExpr(func) => normalize_java_anonymous_class_stmt(func, class_members),
+        ExprKind::Range { start, end, .. } => {
+            normalize_java_anonymous_class_expr(start, class_members);
+            normalize_java_anonymous_class_expr(end, class_members);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            normalize_java_anonymous_class_expr(class, class_members);
+            normalize_java_anonymous_class_expr(member, class_members);
+        }
+        ExprKind::Match { subject, arms } => {
+            normalize_java_anonymous_class_expr(subject, class_members);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        normalize_java_anonymous_class_expr(condition, class_members);
+                    }
+                }
+                normalize_java_anonymous_class_expr(&mut arm.body, class_members);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_java_anonymous_case_condition(
+    condition: &mut CaseCondition,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    match condition {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            normalize_java_anonymous_class_expr(expr, class_members);
+        }
+        CaseCondition::Range { from, to } => {
+            normalize_java_anonymous_class_expr(from, class_members);
+            normalize_java_anonymous_class_expr(to, class_members);
+        }
+    }
+}
+
+fn normalize_java_anonymous_object_property(
+    prop: &mut ObjectProperty,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    match prop {
+        ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
+            normalize_java_anonymous_class_expr(key, class_members);
+            normalize_java_anonymous_class_expr(value, class_members);
+        }
+        ObjectProperty::Spread(expr) => normalize_java_anonymous_class_expr(expr, class_members),
+        ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+            normalize_java_anonymous_class_stmt(value, class_members);
+        }
+        ObjectProperty::Shorthand(_) => {}
+    }
+}
+
+fn java_parent_expr_name(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::Member { field, .. } => Some(field.as_str()),
+        _ => None,
     }
 }
 
@@ -4032,7 +6497,7 @@ fn normalize_java_stmts(
             }
             StmtKind::Assign { targets, value } => {
                 normalize_java_expr(value, fields, methods, locals, false);
-                for target in targets {
+                for target in &mut *targets {
                     normalize_java_expr(target, fields, methods, locals, true);
                 }
             }
@@ -4133,6 +6598,12 @@ fn normalize_java_expr(
             normalize_java_expr(callee, fields, methods, locals, false);
         }
         ExprKind::Member { object, .. } => {
+            if let Some(type_name) = java_qualified_static_type(object) {
+                if type_name.contains('.') {
+                    *object = Box::new(Expression::ident(&type_name));
+                    return;
+                }
+            }
             normalize_java_expr(object, fields, methods, locals, false);
         }
         ExprKind::Index { object, index, .. } => {
@@ -4145,10 +6616,12 @@ fn normalize_java_expr(
         }
         ExprKind::Unary { expr: inner, .. } => {
             normalize_java_expr(inner, fields, methods, locals, is_assignment_target);
+            rewrite_java_this_field_update(expr);
         }
         ExprKind::Assign { target, value } => {
             normalize_java_expr(value, fields, methods, locals, false);
             normalize_java_expr(target, fields, methods, locals, true);
+            rewrite_java_this_field_assign(expr);
         }
         ExprKind::Ternary { cond, then, else_ } => {
             normalize_java_expr(cond, fields, methods, locals, false);
@@ -4162,6 +6635,52 @@ fn normalize_java_expr(
         }
         _ => {}
     }
+}
+
+fn java_this_member(expr: &Expression) -> Option<(Expression, String)> {
+    let _ = expr;
+    None
+}
+
+fn rewrite_java_this_field_assign(expr: &mut Expression) {
+    let ExprKind::Assign { target, value } = &expr.kind else {
+        return;
+    };
+    let Some((object, field)) = java_this_member(target) else {
+        return;
+    };
+    *expr = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__java_field_set")),
+        args: vec![
+            Argument::positional(object),
+            Argument::positional(Expression::string(&field)),
+            Argument::positional((**value).clone()),
+        ],
+        optional: false,
+    });
+}
+
+fn rewrite_java_this_field_update(expr: &mut Expression) {
+    let ExprKind::Unary { op, expr: inner } = &expr.kind else {
+        return;
+    };
+    let delta = match op {
+        UnaryOp::PreInc | UnaryOp::PostInc => 1,
+        UnaryOp::PreDec | UnaryOp::PostDec => -1,
+        _ => return,
+    };
+    let Some((object, field)) = java_this_member(inner) else {
+        return;
+    };
+    *expr = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__java_field_inc")),
+        args: vec![
+            Argument::positional(object),
+            Argument::positional(Expression::string(&field)),
+            Argument::positional(Expression::int(delta)),
+        ],
+        optional: false,
+    });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4199,12 +6718,7 @@ fn extract_ref_name(pair: &Pair<Rule>) -> String {
         Rule::ref_type => {
             for p in pair.clone().into_inner() {
                 if p.as_rule() == Rule::qualified_name {
-                    return p
-                        .as_str()
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(p.as_str())
-                        .to_string();
+                    return p.as_str().to_string();
                 }
             }
             pair.as_str()

@@ -21,6 +21,42 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit(1, line);
             host::emit(&mut chunks[current], "wasi:cli", "print", 1, line);
         }
+        "java.identity" => {}
+        "java.field_set" => {
+            let value = chunks[current].alloc_scratch(1);
+            let field = chunks[current].alloc_scratch(1);
+            let object = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+            host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        }
+        "java.field_inc" => {
+            let delta = chunks[current].alloc_scratch(1);
+            let field = chunks[current].alloc_scratch(1);
+            let object = chunks[current].alloc_scratch(1);
+            let value = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, delta, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+            host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, delta, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+            host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        }
         "java.printf" => {
             crate::emitter::sprintf::emit_sprintf(chunks, current, argc, line);
             host::emit(&mut chunks[current], "wasi:logging/logging", "log", 1, line);
@@ -382,6 +418,45 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.instant_parse" => {
             super::instant_adapter::emit_parse(chunks, current, line);
         }
+        "java.local_date_of" => {
+            super::instant_adapter::emit_local_date_of(chunks, current, line);
+        }
+        "java.local_date_parse" => {
+            super::instant_adapter::emit_local_date_parse(chunks, current, line);
+        }
+        "java.local_time_of" => {
+            super::instant_adapter::emit_local_time_of(chunks, current, argc, line);
+        }
+        "java.local_time_parse" => {
+            super::instant_adapter::emit_local_time_parse(chunks, current, line);
+        }
+        "java.local_datetime_of" => {
+            super::instant_adapter::emit_local_datetime_of(chunks, current, argc, line);
+        }
+        "java.local_datetime_parse" => {
+            super::instant_adapter::emit_local_datetime_parse(chunks, current, line);
+        }
+        "java.offset_datetime_of" => {
+            super::instant_adapter::emit_offset_datetime_of(chunks, current, argc, line);
+        }
+        "java.offset_datetime_of_instant" => {
+            super::instant_adapter::emit_offset_datetime_of_instant(chunks, current, line);
+        }
+        "java.offset_datetime_parse" => {
+            super::instant_adapter::emit_offset_datetime_parse(chunks, current, line);
+        }
+        "java.zoned_datetime_of" => {
+            super::instant_adapter::emit_zoned_datetime_of(chunks, current, argc, line);
+        }
+        "java.zoned_datetime_of_instant" => {
+            super::instant_adapter::emit_zoned_datetime_of_instant(chunks, current, line);
+        }
+        "java.zoned_datetime_of_strict" => {
+            super::instant_adapter::emit_zoned_datetime_of_strict(chunks, current, line);
+        }
+        "java.zoned_datetime_parse" => {
+            super::instant_adapter::emit_zoned_datetime_parse(chunks, current, line);
+        }
         "java.instant_get_epoch_second" => {
             super::instant_adapter::emit_get_epoch_second(chunks, current, line);
         }
@@ -424,11 +499,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.instant_to_string" => {
             super::instant_adapter::emit_to_string(chunks, current, line);
         }
+        "java.duration_of_hours" => {
+            super::instant_adapter::emit_duration_hours(chunks, current, line);
+        }
         "java.duration_of_minutes" => {
             super::instant_adapter::emit_duration_minutes(chunks, current, line);
         }
+        "java.duration_of_seconds" => {
+            super::instant_adapter::emit_duration_seconds(chunks, current, line);
+        }
         "java.duration_between" => {
             super::instant_adapter::emit_duration_between(chunks, current, line);
+        }
+        "java.period_days" => {
+            super::instant_adapter::emit_period_days(chunks, current, line);
+        }
+        "java.period_months" => {
+            super::instant_adapter::emit_period_months(chunks, current, line);
+        }
+        "java.period_between" => {
+            super::instant_adapter::emit_period_between(chunks, current, line);
+        }
+        "java.class_is_instance" => {
+            super::class_adapter::emit_is_instance(chunks, current, line);
         }
         "java.zone_offset_of_hours" => {
             super::instant_adapter::emit_zone_offset_hours(chunks, current, line);
@@ -436,11 +529,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.zone_id_of" => {
             super::instant_adapter::emit_zone_id_utc(chunks, current, line);
         }
+        "java.zone_id_system_default" => {
+            super::instant_adapter::emit_zone_id_system_default(chunks, current, line);
+        }
+        "java.zone_id_short_ids" => {
+            super::instant_adapter::emit_zone_id_short_ids(chunks, current, line);
+        }
+        "java.zone_id_from" => {
+            super::instant_adapter::emit_zone_id_from(chunks, current, line);
+        }
+        "java.zone_id_of_offset" => {
+            super::instant_adapter::emit_zone_id_of_offset(chunks, current, line);
+        }
+        "java.zone_normalized" => {
+            super::instant_adapter::emit_zone_normalized(chunks, current, line);
+        }
+        "java.zone_display_name" => {
+            super::instant_adapter::emit_zone_display_name(chunks, current, argc, line);
+        }
+        "java.zone_rules_fixed" => {
+            super::instant_adapter::emit_zone_rules_fixed(chunks, current, line);
+        }
+        "java.zone_rules_get_offset" => {
+            super::instant_adapter::emit_zone_rules_get_offset(chunks, current, line);
+        }
+        "java.zone_offset_total_seconds" => {
+            super::instant_adapter::emit_get_total_seconds(chunks, current, line);
+        }
+        "java.zone_compare_to" => {
+            super::instant_adapter::emit_zone_compare_to(chunks, current, line);
+        }
+        "java.zone_hash_code" => {
+            super::instant_adapter::emit_zone_hash_code(chunks, current, line);
+        }
         "java.instant_with_offset" => {
             super::instant_adapter::emit_with_offset(chunks, current, line);
         }
+        "java.instant_with_zone" => {
+            super::instant_adapter::emit_with_zone_same_instant(chunks, current, line);
+        }
         "java.instant_get_offset" => {
             super::instant_adapter::emit_get_offset(chunks, current, line);
+        }
+        "java.instant_get_zone" => {
+            super::instant_adapter::emit_get_zone(chunks, current, line);
         }
         "java.instant_get_year" => {
             super::instant_adapter::emit_component(chunks, current, "getUTCFullYear", false, line);
@@ -457,8 +589,101 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.instant_get_minute" => {
             super::instant_adapter::emit_component(chunks, current, "getUTCMinutes", false, line);
         }
+        "java.instant_get_second" => {
+            super::instant_adapter::emit_component(chunks, current, "getUTCSeconds", false, line);
+        }
         "java.instant_to_local_date" => {
             super::instant_adapter::emit_local_date_string(chunks, current, line);
+        }
+        "java.time_to_string" => {
+            super::instant_adapter::emit_time_to_string(chunks, current, line);
+        }
+        "java.time_format" => {
+            super::instant_adapter::emit_time_format(chunks, current, line);
+        }
+        "java.time_plus_days" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, 1.0, 86400.0, line);
+        }
+        "java.time_minus_days" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, -1.0, 86400.0, line);
+        }
+        "java.time_plus_weeks" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, 1.0, 604800.0, line);
+        }
+        "java.time_plus_months" => {
+            super::instant_adapter::emit_time_plus_months(chunks, current, 1.0, line);
+        }
+        "java.time_minus_months" => {
+            super::instant_adapter::emit_time_plus_months(chunks, current, -1.0, line);
+        }
+        "java.time_plus_hours" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, 1.0, 3600.0, line);
+        }
+        "java.time_minus_hours" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, -1.0, 3600.0, line);
+        }
+        "java.time_plus_minutes" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, 1.0, 60.0, line);
+        }
+        "java.time_minus_minutes" => {
+            super::instant_adapter::emit_time_plus_unit(chunks, current, -1.0, 60.0, line);
+        }
+        "java.time_with_year" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCFullYear", false, line);
+        }
+        "java.time_with_month" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCMonth", true, line);
+        }
+        "java.time_with_day" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCDate", false, line);
+        }
+        "java.time_with_hour" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCHours", false, line);
+        }
+        "java.time_with_minute" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCMinutes", false, line);
+        }
+        "java.time_with_second" => {
+            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCSeconds", false, line);
+        }
+        "java.time_length_of_month" => {
+            super::instant_adapter::emit_time_length_of_month(chunks, current, line);
+        }
+        "java.time_range_day" => {
+            super::instant_adapter::emit_time_range_day(chunks, current, line);
+        }
+        "java.time_is_leap_year" => {
+            super::instant_adapter::emit_time_is_leap_year(chunks, current, line);
+        }
+        "java.time_day_of_year" => {
+            super::instant_adapter::emit_time_day_of_year(chunks, current, line);
+        }
+        "java.time_day_of_week" => {
+            super::instant_adapter::emit_time_day_of_week(chunks, current, line);
+        }
+        "java.duration_to_hours" => {
+            super::instant_adapter::emit_duration_to_hours(chunks, current, line);
+        }
+        "java.duration_to_minutes" => {
+            super::instant_adapter::emit_duration_to_minutes(chunks, current, line);
+        }
+        "java.duration_plus_hours" => {
+            super::instant_adapter::emit_duration_plus_hours(chunks, current, 1.0, line);
+        }
+        "java.duration_minus_minutes" => {
+            super::instant_adapter::emit_duration_plus_minutes(chunks, current, -1.0, line);
+        }
+        "java.time_with_offset_same_local" => {
+            super::instant_adapter::emit_time_with_offset_same_local(chunks, current, line);
+        }
+        "java.time_with_zone_same_local" => {
+            super::instant_adapter::emit_with_zone_same_local(chunks, current, line);
+        }
+        "java.zoned_later_overlap" => {
+            super::instant_adapter::emit_overlap_offset(chunks, current, 1, line);
+        }
+        "java.zoned_earlier_overlap" => {
+            super::instant_adapter::emit_overlap_offset(chunks, current, 2, line);
         }
         "java.instant_truncated" => {
             super::instant_adapter::emit_truncated(chunks, current, line);

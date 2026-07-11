@@ -11,6 +11,7 @@
 pub mod arrays_adapter;
 pub mod biginteger_adapter;
 pub mod bitset_adapter;
+pub mod class_adapter;
 pub mod dispatch;
 pub mod enum_set_adapter;
 pub mod instant_adapter;
