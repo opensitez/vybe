@@ -8,8 +8,8 @@
 //!   - pointer deref `*p` / address-of `&x` lower to common reference AST
 //!   - `a->b` is treated as `a.b`
 
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 
 use super::{CParser, Rule};
@@ -10447,6 +10447,21 @@ impl Walker {
 }
 
 pub(crate) fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
+    lower_gotos(body, "__c_goto_pc", "__c_goto_dispatch")
+}
+
+/// Language-agnostic `goto`/label → structured control flow: split the block at
+/// each label into numbered sub-blocks, then run a `while(true) { switch(pc) }`
+/// state machine (`goto L` becomes `pc = block(L); continue dispatch`). WASM has
+/// no goto, so every language that supports it lowers here. `pc_name` is the
+/// program-counter variable name in the TARGET language's convention (C uses a
+/// bare identifier; PHP passes a `$`-prefixed name); `dispatch_label` names the
+/// wrapping loop for the labeled `continue`.
+pub(crate) fn lower_gotos(
+    body: Vec<Statement>,
+    pc_name_arg: &str,
+    dispatch_label_arg: &str,
+) -> Vec<Statement> {
     let mut label_to_block: HashMap<String, i64> = HashMap::new();
     let mut blocks: Vec<Vec<Statement>> = vec![Vec::new()];
 
@@ -10477,8 +10492,8 @@ pub(crate) fn lower_c_gotos(body: Vec<Statement>) -> Vec<Statement> {
         }
     }
 
-    let dispatch_label = "__c_goto_dispatch".to_string();
-    let pc_name = "__c_goto_pc".to_string();
+    let dispatch_label = dispatch_label_arg.to_string();
+    let pc_name = pc_name_arg.to_string();
 
     let mut switch_cases = Vec::new();
     let total_blocks = blocks.len();
@@ -11250,11 +11265,7 @@ impl Walker {
         } else {
             per_field * fields.len() as i64
         };
-        if has_array {
-            size * array_count
-        } else {
-            size
-        }
+        if has_array { size * array_count } else { size }
     }
 
     fn alignof_struct_union(&self, text: &str) -> i64 {
@@ -11951,11 +11962,7 @@ fn sizeof_from_type_text(text: &str) -> i64 {
         "void" => 1,
         _ => 8, // unknown / struct / pointer-like → pointer size
     };
-    if has_array {
-        size * array_count
-    } else {
-        size
-    }
+    if has_array { size * array_count } else { size }
 }
 
 fn sizeof_array_element_type(text: &str) -> i64 {

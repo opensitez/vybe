@@ -402,23 +402,16 @@ fn build_prelude() -> Vec<Statement> {
             if_stmt(
                 call_member(ident("piece"), "endsWith", vec![str_lit("\n")]),
                 vec![
+                    // Flush the completed line to stdout via wasi:io directly
+                    // (NOT the `print`/wasi:logging vybelib builtin). wasi:io is
+                    // byte-faithful — no implicit newline — so write `buffer +
+                    // piece` verbatim (piece still carries its trailing '\n').
                     stmt(StmtKind::Expr(call_expr(
-                        ident("puts"),
+                        ident("__c_write_stdout"),
                         vec![expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(ident(buffer_name)),
-                            right: Box::new(call_member(
-                                ident("piece"),
-                                "slice",
-                                vec![
-                                    int_lit(0),
-                                    expr(ExprKind::Binary {
-                                        op: BinOp::Sub,
-                                        left: Box::new(member(ident("piece"), "length")),
-                                        right: Box::new(int_lit(1)),
-                                    }),
-                                ],
-                            )),
+                            right: Box::new(ident("piece")),
                         })],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(ident(buffer_name), str_lit("")))),

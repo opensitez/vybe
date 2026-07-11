@@ -18,6 +18,11 @@ string_indexing = "zero_based"
 entry_point = "main"
 dynamic_add = true
 uses_normalize_class = false
+# Route function/method resolution through the common namespace resolver
+# (namespaceplan.md) like JS/PHP/VB — so libc + ecma/wasi calls resolve via
+# the one tree instead of the profile-builtin fallback that dies inside
+# injected runtime helpers.
+uses_common_resolver = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -51,6 +56,11 @@ uses_normalize_class = false
 # wasi:io/streams.blocking-read. WASM/WASI under the hood; the libc surface is
 # shared across languages via platforms/libc/stdio_adapter.rs.
 "__libc_readline" = { emit = "intrinsic:readline", min_args = 0, max_args = 0 }
+
+# stdout write primitive → wasi:io DIRECTLY (wasi:cli/stdout.get-stdout +
+# wasi:io/streams.blocking-write-and-flush). Byte-faithful, no implicit newline.
+# libc output must NOT route through the `print`/wasi:logging vybelib builtin.
+"__c_write_stdout" = { emit = "intrinsic:write_stdout", min_args = 1, max_args = 1 }
 
 # ── stdio.h extras ───────────────────────────────────────────────────────────
 # `fflush(stdout)` and stream flushes route through the walker's handle-based
@@ -161,6 +171,22 @@ uses_normalize_class = false
 # ────────────────────────────────────────────────────────────────────────────
 
 [value_methods]
+
+# ── libc runtime-helper surface ──
+# The injected libc helpers (platforms/libc/src/emitter/c_runtime.rs) are
+# JS-shaped ASTs: C strings are host strings, so their member methods route
+# straight to ecma:string (receiver-first host calls). Without these entries
+# the member call compiles to a raw struct.get (undefined) and every stdout
+# write traps at the first printf flush.
+"endsWith"    = { emit = "host:ecma:string:endsWith",    min_args = 1, max_args = 1 }
+"substring"   = { emit = "host:ecma:string:substring",   min_args = 1, max_args = 2 }
+"indexOf"     = { emit = "common:c.index_of",            min_args = 1, max_args = 2 }
+"lastIndexOf" = { emit = "common:c.last_index_of",       min_args = 1, max_args = 2 }
+"slice"       = { emit = "common:c.slice",               min_args = 1, max_args = 2 }
+"charAt"      = { emit = "host:ecma:string:charAt",      min_args = 1, max_args = 1 }
+"charCodeAt"  = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
+"split"       = { emit = "host:ecma:string:split",       min_args = 1, max_args = 2 }
+"push"        = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — common math.h / limits.h macros
