@@ -110,15 +110,19 @@ const MENU_PROPERTIES: &[&str] = &[
 ];
 
 const SHOW_METHODS: &[GclMethod] = &[
+    // Same targets as the dotnet WinForms adapters: `Show` marks the form
+    // visible + should_run, `ShowModal` returns a DialogResult. The event
+    // loop itself belongs to `Application.Run` (HOST_FN_RUN_APPLICATION) —
+    // routing Show/ShowModal there blocked the VM in the native loop.
     GclMethod {
         name: "Show",
         arity: 1,
-        target: GclMethodTarget::host(gui::HOST_FN_RUN_APPLICATION),
+        target: GclMethodTarget::host("__ctrl_show"),
     },
     GclMethod {
         name: "ShowModal",
         arity: 1,
-        target: GclMethodTarget::host(gui::HOST_FN_RUN_APPLICATION),
+        target: GclMethodTarget::host("__dlg_showdialog"),
     },
     GclMethod {
         name: "Close",
