@@ -9,12 +9,21 @@ extensions = ["cs"]
 
 [compiler]
 reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
+# namespaceplan.md (dotnet phase): qualified System.* chains resolve through
+# the common resolver over the dotnet.* tree; legacy cascade is the fallback
+# during the transition.
+uses_common_resolver = true
 function_return = "explicit"
 self_keyword = "this"
 base_keyword = "base"
 constructor_name = "ctor"
 enum_as_ordinals = true
 case_sensitive = true
+# C# is over ECMA: `bool`/`System.Boolean` is an ECMA boolean, not a C-style
+# i32. Materialize comparison + bool-decl results as real booleans so
+# `bool f = 5>3`, `flag switch{true=>…}`, and `n.HasValue` behave/print as
+# `True`/`False` instead of flattening to `1`/`0`.
+materialize_bool_results = true
 string_indexing = "zero_based"
 entry_point = "Main"
 dynamic_add = true
@@ -284,6 +293,16 @@ Peek          = { emit = "invoke:Peek",                 min_args = 0, max_args =
 # ESM DEFAULTS — C# namespace objects → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
 
+# namespaceplan.md (dotnet phase): `System.*` qualified chains resolve by
+# walking the global namespace tree at `dotnet.system.*` — the surface the
+# dotnet platform registers from its component-model descriptors. One
+# resolver for every language; the platform contributes data only.
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "System"
+path = "dotnet.system"
+
 [[esm_default]]
 kind = "namespace"
 alias = "Console"
@@ -426,3 +445,32 @@ use_dotnet = true
 # imports, so `MathUtils.Fact(5)` still uses the normal static-method path
 # while real .NET namespace/type calls share the same surface as VB.
 use_dotnet_resolver = true
+
+# Ambient tree roots — .NET default Imports/using context as data: bare
+# qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
+# search under these tree paths in order.
+
+
+
+
+
+
+
+
+
+# NOTE: `dotnet.system.threading.tasks` is deliberately NOT ambient —
+# bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
+# special path, which the descriptor's common-emit duplicate must not
+# shadow (three task_combinators tests regressed when it did).
+
+
+
+
+
+
+
+
+
+
+
+

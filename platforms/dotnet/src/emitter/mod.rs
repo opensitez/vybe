@@ -15,13 +15,10 @@ mod descriptor;
 pub mod host_map;
 pub mod imports;
 pub mod namespaces;
-pub mod resolver;
+pub mod tree_register;
 pub mod types;
 pub mod winforms;
 pub use core::dotnet_core_component_descriptor;
-pub use resolver::{
-    DottedResolution, ResolutionContext, resolve_dotted_name, resolve_interface_call,
-};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use vybe_bytecode::component_model::{

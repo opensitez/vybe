@@ -505,15 +505,16 @@ pub fn emit_linq_where(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `arr.Any()` — `Length(arr) > 0`. Stack: [seq] → [bool].
+/// `arr.Any()` — true iff the sequence has any elements. Emits a proper
+/// boxed bool (`i32_to_bool` of the length) so it prints `True`/`False`.
+/// Stack: [seq] → [bool].
 pub fn emit_linq_any(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = alloc_locals(&mut chunks[current], 1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     materialize_receiver_slot(chunks, current, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// `arr.Contains(x)` — `arr.includes(x)`. Stack: [arr, x] → [bool].
@@ -646,6 +647,69 @@ pub fn emit_linq_take_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(push_block);
 
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.Chunk(size)` — split into consecutive sub-arrays of length `size`
+/// (the final batch may be shorter). Stack: [arr, size] → [array of arrays].
+pub fn emit_linq_chunk(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let size_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let batch_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, size_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, batch_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // batch.push(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, batch_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // if batch.length >= size: result.push(batch); batch = []
+    let flush_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, batch_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // batch not full yet → keep filling
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, batch_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, batch_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(flush_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    // trailing partial batch: if batch.length >= 1: result.push(batch)
+    let tail_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, batch_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line); // empty → nothing to append
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, batch_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(tail_block);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 

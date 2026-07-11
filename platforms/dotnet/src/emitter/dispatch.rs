@@ -870,6 +870,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_take_while" => {
             crate::emitter::core::linq_adapter::emit_linq_take_while(chunks, current, line)
         }
+        "dotnet.linq_chunk" => {
+            crate::emitter::core::linq_adapter::emit_linq_chunk(chunks, current, line)
+        }
         "dotnet.linq_skip_last" => {
             crate::emitter::core::linq_adapter::emit_linq_skip_last(chunks, current, line)
         }

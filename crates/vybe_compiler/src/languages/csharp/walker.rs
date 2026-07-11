@@ -6327,11 +6327,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                                 // so `class X : System.Exception` resolves to
                                 // the synthesized short-named class.
                                 parents.push(
-                                    type_str
-                                        .rsplit('.')
-                                        .next()
-                                        .unwrap_or(&type_str)
-                                        .to_string(),
+                                    type_str.rsplit('.').next().unwrap_or(&type_str).to_string(),
                                 );
                             }
                             first = false;
@@ -8856,13 +8852,16 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     }));
                 }
                 if !ctor_params.is_empty() {
-                    members.insert(0, ClassMember::Constructor {
-                        params: ctor_params,
-                        body: field_inits,
-                        base_args: None,
-                        initializer_target: ConstructorInitializerTarget::Base,
-                        visibility: Visibility::Public,
-                    });
+                    members.insert(
+                        0,
+                        ClassMember::Constructor {
+                            params: ctor_params,
+                            body: field_inits,
+                            base_args: None,
+                            initializer_target: ConstructorInitializerTarget::Base,
+                            visibility: Visibility::Public,
+                        },
+                    );
                 }
             }
             Rule::class_body => {
@@ -8991,7 +8990,9 @@ fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMe
             Rule::param_list => params = walk_params(p)?,
             Rule::expression_body => {
                 if let Some(e) = p.into_inner().next() {
-                    body = Some(vec![Statement::new(StmtKind::Return(Some(walk_expression(e)?)))]);
+                    body = Some(vec![Statement::new(StmtKind::Return(Some(
+                        walk_expression(e)?,
+                    )))]);
                 }
             }
             Rule::block_statement => body = Some(walk_body(p)?),
@@ -9037,11 +9038,15 @@ fn inject_interface_defaults(statements: &mut [Statement]) {
     }
     for stmt in statements.iter_mut() {
         if let StmtKind::ClassDecl {
-            interfaces, members, ..
+            interfaces,
+            members,
+            ..
         } = &mut stmt.kind
         {
-            let existing: std::collections::HashSet<String> =
-                members.iter().filter_map(class_member_method_name).collect();
+            let existing: std::collections::HashSet<String> = members
+                .iter()
+                .filter_map(class_member_method_name)
+                .collect();
             for iface in interfaces.iter() {
                 let leaf = iface.rsplit('.').next().unwrap_or(iface);
                 if let Some(dms) = defaults.get(leaf) {
@@ -9087,8 +9092,7 @@ fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<St
                     }
                 }
                 if !defaults.is_empty() {
-                    INTERFACE_DEFAULTS
-                        .with(|d| d.borrow_mut().insert(name.clone(), defaults));
+                    INTERFACE_DEFAULTS.with(|d| d.borrow_mut().insert(name.clone(), defaults));
                 }
             }
             _ => {}
@@ -10917,7 +10921,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let raw = pair.as_str();
             if raw.starts_with("u8\"") {
                 // UTF-8 string literal → byte array
-                let text = &raw[3..raw.len()-1];
+                let text = &raw[3..raw.len() - 1];
                 let unescaped = text
                     .replace("\\\"", "\"")
                     .replace("\\\\", "\\")
@@ -10925,14 +10929,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     .replace("\\t", "\t")
                     .replace("\\r", "\r")
                     .replace("\\0", "\0");
-                let bytes: Vec<ArrayElement> = unescaped.as_bytes().iter().map(|&b| {
-                    ArrayElement {
+                let bytes: Vec<ArrayElement> = unescaped
+                    .as_bytes()
+                    .iter()
+                    .map(|&b| ArrayElement {
                         key: None,
                         spread: false,
                         by_ref: false,
                         value: Expression::int(b as i64),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 Ok(ExprKind::Array(bytes))
             } else {
                 Ok(ExprKind::Lit(Literal::Str(unquote(raw))))
@@ -12743,8 +12749,7 @@ fn build_switch_pattern_cond(
             ),
         });
     }
-    Ok(or_cond
-        .unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span)))
+    Ok(or_cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span)))
 }
 
 fn build_switch_primary_cond(
@@ -14231,7 +14236,9 @@ fn rewrite_csharp_string_instance_call(
     }
 
     if field.eq_ignore_ascii_case("Contains") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let ignore_case = args
+            .get(1)
+            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
         let haystack = if ignore_case {
             lower_case_expr(receiver.clone())
         } else {
@@ -14254,7 +14261,9 @@ fn rewrite_csharp_string_instance_call(
         }));
     }
     if field.eq_ignore_ascii_case("StartsWith") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let ignore_case = args
+            .get(1)
+            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
         let haystack = if ignore_case {
             lower_case_expr(receiver.clone())
         } else {
@@ -14281,7 +14290,9 @@ fn rewrite_csharp_string_instance_call(
         ));
     }
     if field.eq_ignore_ascii_case("IndexOf") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let ignore_case = args
+            .get(1)
+            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
         let haystack = if ignore_case {
             lower_case_expr(receiver.clone())
         } else {
@@ -14300,7 +14311,9 @@ fn rewrite_csharp_string_instance_call(
         return Some(call_builtin("__csharp_str_index_of", call_args));
     }
     if field.eq_ignore_ascii_case("Equals") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args.get(1).is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
+        let ignore_case = args
+            .get(1)
+            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
         let left = if ignore_case {
             lower_case_expr(receiver)
         } else {
@@ -14365,18 +14378,24 @@ fn rewrite_csharp_string_instance_call(
                 left: Box::new(start.clone()),
                 right: Box::new(length),
             });
-            return Some(call_builtin("__csharp_str_substring", vec![
-                Argument::positional(receiver),
-                Argument::positional(start),
-                Argument::positional(end),
-            ]));
+            return Some(call_builtin(
+                "__csharp_str_substring",
+                vec![
+                    Argument::positional(receiver),
+                    Argument::positional(start),
+                    Argument::positional(end),
+                ],
+            ));
         }
         // 1-arg: Substring(start) → substring(start)
-        return Some(call_builtin("__csharp_str_substring", vec![
-            Argument::positional(receiver),
-            args[0].clone(),
-            Argument::positional(Expression::int(i32::MAX as i64)),
-        ]));
+        return Some(call_builtin(
+            "__csharp_str_substring",
+            vec![
+                Argument::positional(receiver),
+                args[0].clone(),
+                Argument::positional(Expression::int(i32::MAX as i64)),
+            ],
+        ));
     }
     if field.eq_ignore_ascii_case("PadLeft") && (args.len() == 1 || args.len() == 2) {
         let mut call_args = vec![Argument::positional(receiver), args[0].clone()];
@@ -15313,7 +15332,9 @@ fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
     let object_name = Expression::new(ExprKind::Ternary {
         cond: Box::new(inst_type.clone()),
         then: Box::new(inst_type),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Object".into())))),
+        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+            "Object".into(),
+        )))),
     });
     let bool_branch = Expression::new(ExprKind::Ternary {
         cond: Box::new(is_boolean),

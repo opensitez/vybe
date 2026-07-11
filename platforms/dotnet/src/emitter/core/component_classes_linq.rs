@@ -80,6 +80,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_take_while".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Chunk",
+        1,
+        MethodBody::Common("dotnet.linq_chunk".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "First",
         0,
         MethodBody::Common("dotnet.linq_first".into()),

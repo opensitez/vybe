@@ -8,6 +8,10 @@ extensions = ["vb"]
 
 [compiler]
 reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
+# namespaceplan.md (dotnet phase): qualified System.* chains resolve through
+# the common resolver over the dotnet.* tree; legacy cascade is the fallback
+# during the transition.
+uses_common_resolver = true
 function_return = "result_slot"        # VB uses FunctionName = value AND Return
 result_slot_name = "__result__"        # internal — not user-visible (VB users
                                        # write `FunctionName := X`, not
@@ -18,6 +22,11 @@ base_keyword = "mybase"
 constructor_name = "New"               # Sub New()
 enum_as_ordinals = false
 case_sensitive = false
+# VB is over ECMA/.NET: `Boolean` is an ECMA boolean, not a C-style i32.
+# Materialize comparison + bool-decl results as real booleans so
+# `Dim f As Boolean = True`, `f = True`, and `n > 3` behave/print as
+# `True`/`False` instead of flattening to `1`/`0` (mirrors csharp).
+materialize_bool_results = true
 string_indexing = "one_based"          # Mid(), InStr() are 1-based
 array_upper_bound_inclusive = true     # Dim arr(5) means 0..5 inclusive (6 elements)
 parens_for_index = true                # arr(i) not arr[i] — () is both call and index
@@ -704,3 +713,44 @@ extra_imports = [
 "regexoptions.righttoleft"             = 64.0
 "regexoptions.ecmascript"              = 256.0
 "regexoptions.cultureinvariant"        = 512.0
+
+# ────────────────────────────────────────────────────────────────────────────
+# ESM DEFAULTS (namespaceplan.md, dotnet phase): `System.*` qualified chains
+# resolve by walking the global namespace tree at `dotnet.system.*` — the
+# surface the dotnet platform registers from its component-model descriptors.
+# One resolver for every language; the platform contributes data only.
+# ────────────────────────────────────────────────────────────────────────────
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "System"
+path = "dotnet.system"
+
+# Ambient tree roots — .NET default Imports/using context as data: bare
+# qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
+# search under these tree paths in order.
+
+
+
+
+
+
+
+
+
+# NOTE: `dotnet.system.threading.tasks` is deliberately NOT ambient —
+# bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
+# special path, which the descriptor's common-emit duplicate must not
+# shadow (three task_combinators tests regressed when it did).
+
+
+
+
+
+
+
+
+
+
+
+
