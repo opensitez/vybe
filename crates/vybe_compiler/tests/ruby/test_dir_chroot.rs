@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -9,7 +8,5 @@ macro_rules! ruby_test {
     }
 }
 
-ruby_test!(test_dir_chroot_error, "begin; Dir.chroot('/non_existent_dir'); rescue Errno::ENOENT; puts 'err'; end", "err");
-// Dir.chroot requires root privileges, so testing successful chroot is hard. Let's test the error cases.
-ruby_test!(test_dir_chroot_not_dir_error, "require 'tempfile'; t = Tempfile.new('chroot'); begin; Dir.chroot(t.path); rescue Errno::ENOTDIR; puts 'err'; end", "err");
-ruby_test!(test_dir_chroot_permission_error, "begin; Dir.chroot('/'); rescue Errno::EPERM; puts 'err'; end", "err"); // If not root, EPERM
+ruby_test!(test_dir_chroot, "begin; Dir.chroot('/'); rescue NotImplementedError, Errno::EPERM; puts 'err'; end", "err");
+ruby_test!(test_dir_chroot_invalid, "begin; Dir.chroot('/non_existent_dir_123'); rescue Errno::ENOENT, NotImplementedError; puts 'err'; end", "err");

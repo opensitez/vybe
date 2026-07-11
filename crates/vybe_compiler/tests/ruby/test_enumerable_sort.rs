@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -9,15 +8,9 @@ macro_rules! ruby_test {
     }
 }
 
-ruby_test!(test_enumerable_min_basic, "puts [3, 1, 2].min", "1");
-ruby_test!(test_enumerable_max_basic, "puts [3, 1, 2].max", "3");
-ruby_test!(test_enumerable_minmax_basic, "puts [3, 1, 2].minmax.join('-')", "1-3");
-ruby_test!(test_enumerable_min_block, "puts ['a', 'ccc', 'bb'].min { |a, b| a.length <=> b.length }", "a");
-ruby_test!(test_enumerable_max_block, "puts ['a', 'ccc', 'bb'].max { |a, b| a.length <=> b.length }", "ccc");
-ruby_test!(test_enumerable_minmax_block, "puts ['a', 'ccc', 'bb'].minmax { |a, b| a.length <=> b.length }.join('-')", "a-ccc");
-ruby_test!(test_enumerable_min_by_basic, "puts ['a', 'ccc', 'bb'].min_by { |s| s.length }", "a");
-ruby_test!(test_enumerable_max_by_basic, "puts ['a', 'ccc', 'bb'].max_by { |s| s.length }", "ccc");
-ruby_test!(test_enumerable_minmax_by_basic, "puts ['a', 'ccc', 'bb'].minmax_by { |s| s.length }.join('-')", "a-ccc");
-ruby_test!(test_enumerable_min_empty, "puts [].min.nil?", "true");
-ruby_test!(test_enumerable_max_empty, "puts [].max.nil?", "true");
-ruby_test!(test_enumerable_minmax_empty, "puts [].minmax.map{|x| x.nil?}.join('-')", "true-true");
+ruby_test!(test_enumerable_sort_basic, "puts [1, 5, 2].sort.join('-')", "1-2-5");
+ruby_test!(test_enumerable_sort_block, "puts [1, 5, 2].sort { |a, b| b <=> a }.join('-')", "5-2-1");
+ruby_test!(test_enumerable_sort_by, "puts %w[a abc ab].sort_by { |x| x.length }.join('-')", "a-ab-abc");
+ruby_test!(test_enumerable_sort_by_no_block, "puts %w[a].sort_by.class.name", "Enumerator");
+ruby_test!(test_enumerable_reverse_each, "acc = []; [1, 2, 3].reverse_each { |x| acc << x }; puts acc.join('-')", "3-2-1");
+ruby_test!(test_enumerable_reverse_each_no_block, "puts [1].reverse_each.class.name", "Enumerator");

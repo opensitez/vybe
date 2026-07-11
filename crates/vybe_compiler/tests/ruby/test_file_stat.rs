@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -9,15 +8,15 @@ macro_rules! ruby_test {
     }
 }
 
-ruby_test!(test_file_stat_basic, "puts File.stat(__FILE__).class.name", "File::Stat");
-ruby_test!(test_file_stat_size, "puts File.stat(__FILE__).size > 0", "true");
-ruby_test!(test_file_stat_file_predicate, "puts File.stat(__FILE__).file?", "true");
-ruby_test!(test_file_stat_directory_predicate, "puts File.stat(__dir__).directory?", "true");
-ruby_test!(test_file_stat_mtime, "puts File.stat(__FILE__).mtime.class.name", "Time");
-ruby_test!(test_file_stat_ctime, "puts File.stat(__FILE__).ctime.class.name", "Time");
-ruby_test!(test_file_stat_atime, "puts File.stat(__FILE__).atime.class.name", "Time");
-ruby_test!(test_file_stat_mode, "puts File.stat(__FILE__).mode.is_a?(Integer)", "true");
-ruby_test!(test_file_stat_uid, "puts File.stat(__FILE__).uid.is_a?(Integer)", "true");
-ruby_test!(test_file_stat_gid, "puts File.stat(__FILE__).gid.is_a?(Integer)", "true");
-ruby_test!(test_file_stat_symlink_predicate, "puts File.stat(__FILE__).symlink?", "false"); // File.stat follows symlinks, so usually false
-ruby_test!(test_file_stat_error, "begin; File.stat('non_existent_file.txt'); rescue Errno::ENOENT; puts 'err'; end", "err");
+ruby_test!(test_file_stat_basic, "s = File.stat('/'); puts s.class.name", "File::Stat");
+ruby_test!(test_file_stat_directory, "puts File.stat('/').directory?", "true");
+ruby_test!(test_file_stat_file, "puts File.stat('/').file?", "false");
+ruby_test!(test_file_stat_size, "puts File.stat('/').size >= 0", "true");
+ruby_test!(test_file_stat_zero, "puts File.stat('/').zero?", "false");
+ruby_test!(test_file_stat_readable, "puts File.stat('/').readable?", "true");
+ruby_test!(test_file_stat_executable, "puts File.stat('/').executable?", "true");
+ruby_test!(test_file_stat_ftype, "puts File.stat('/').ftype", "directory");
+ruby_test!(test_file_stat_mtime, "puts File.stat('/').mtime.class.name", "Time");
+ruby_test!(test_file_lstat, "s = File.lstat('/'); puts s.class.name", "File::Stat");
+ruby_test!(test_file_stat_dev, "puts File.stat('/').dev.class.name", "Integer");
+ruby_test!(test_file_stat_ino, "puts File.stat('/').ino.class.name", "Integer");

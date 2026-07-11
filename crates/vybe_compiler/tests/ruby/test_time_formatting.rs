@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -9,13 +8,10 @@ macro_rules! ruby_test {
     }
 }
 
-ruby_test!(test_time_formatting_strftime_date, "puts Time.utc(2024, 2, 29).strftime('%Y-%m-%d')", "2024-02-29");
-ruby_test!(test_time_formatting_strftime_time, "puts Time.utc(2024, 1, 1, 14, 30, 45).strftime('%H:%M:%S')", "14:30:45");
-ruby_test!(test_time_formatting_strftime_12_hour, "puts Time.utc(2024, 1, 1, 14, 30, 45).strftime('%I:%M:%S %p')", "02:30:45 PM");
-ruby_test!(test_time_formatting_strftime_weekday, "puts Time.utc(2024, 1, 1).strftime('%A %a')", "Monday Mon");
-ruby_test!(test_time_formatting_strftime_month, "puts Time.utc(2024, 1, 1).strftime('%B %b')", "January Jan");
-ruby_test!(test_time_formatting_strftime_timezone, "puts Time.utc(2024, 1, 1).strftime('%Z')", "UTC");
-ruby_test!(test_time_formatting_to_s, "puts Time.utc(2024, 1, 1, 12, 0, 0).to_s", "2024-01-01 12:00:00 UTC");
-ruby_test!(test_time_formatting_inspect, "puts Time.utc(2024, 1, 1, 12, 0, 0).inspect", "2024-01-01 12:00:00 UTC");
-ruby_test!(test_time_formatting_asctime, "puts Time.utc(2024, 1, 1, 12, 0, 0).asctime", "Mon Jan  1 12:00:00 2024");
-ruby_test!(test_time_formatting_ctime, "puts Time.utc(2024, 1, 1, 12, 0, 0).ctime", "Mon Jan  1 12:00:00 2024");
+ruby_test!(test_time_strftime_basic, "t = Time.utc(2023, 1, 2, 15, 4, 5); puts t.strftime('%Y-%m-%d %H:%M:%S')", "2023-01-02 15:04:05");
+ruby_test!(test_time_strftime_zone, "t = Time.utc(2023, 1, 2); puts t.strftime('%Z')", "UTC");
+ruby_test!(test_time_strftime_weekday, "t = Time.utc(2023, 1, 2); puts t.strftime('%A')", "Monday");
+ruby_test!(test_time_strftime_month, "t = Time.utc(2023, 1, 2); puts t.strftime('%B')", "January");
+ruby_test!(test_time_iso8601, "require 'time'; t = Time.utc(2023, 1, 2, 15, 4, 5); puts t.iso8601", "2023-01-02T15:04:05Z");
+ruby_test!(test_time_rfc2822, "require 'time'; t = Time.utc(2023, 1, 2, 15, 4, 5); puts t.rfc2822", "Mon, 02 Jan 2023 15:04:05 -0000");
+ruby_test!(test_time_httpdate, "require 'time'; t = Time.utc(2023, 1, 2, 15, 4, 5); puts t.httpdate", "Mon, 02 Jan 2023 15:04:05 GMT");

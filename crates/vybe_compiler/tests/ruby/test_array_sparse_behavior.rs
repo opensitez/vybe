@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {

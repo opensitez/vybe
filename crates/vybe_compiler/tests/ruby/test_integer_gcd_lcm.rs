@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -9,13 +8,14 @@ macro_rules! ruby_test {
     }
 }
 
-ruby_test!(test_gcd_basic, "puts 2.gcd(2)", "2");
-ruby_test!(test_gcd_coprime, "puts 3.gcd(5)", "1");
-ruby_test!(test_gcd_zero, "puts 0.gcd(5)", "5");
-ruby_test!(test_gcd_negative, "puts -5.gcd(10)", "5"); // gcd is always positive
-ruby_test!(test_lcm_basic, "puts 2.lcm(2)", "2");
-ruby_test!(test_lcm_coprime, "puts 3.lcm(5)", "15");
-ruby_test!(test_lcm_zero, "puts 0.lcm(5)", "0");
-ruby_test!(test_lcm_negative, "puts -5.lcm(10)", "10"); // lcm is always positive
-ruby_test!(test_gcdlcm_basic, "puts 3.gcdlcm(5).join('-')", "1-15");
-ruby_test!(test_gcdlcm_zero, "puts 0.gcdlcm(5).join('-')", "5-0");
+ruby_test!(test_integer_gcd_basic, "puts 12.gcd(8)", "4");
+ruby_test!(test_integer_gcd_prime, "puts 13.gcd(7)", "1");
+ruby_test!(test_integer_gcd_zero, "puts 12.gcd(0)", "12");
+ruby_test!(test_integer_gcd_negative, "puts (-12).gcd(8)", "4");
+ruby_test!(test_integer_lcm_basic, "puts 12.lcm(8)", "24");
+ruby_test!(test_integer_lcm_prime, "puts 13.lcm(7)", "91");
+ruby_test!(test_integer_lcm_zero, "puts 12.lcm(0)", "0");
+ruby_test!(test_integer_lcm_negative, "puts (-12).lcm(8)", "24");
+ruby_test!(test_integer_gcdlcm_basic, "puts 12.gcdlcm(8).join('-')", "4-24");
+ruby_test!(test_integer_gcdlcm_negative, "puts (-12).gcdlcm(8).join('-')", "4-24");
+ruby_test!(test_integer_gcdlcm_zero, "puts 12.gcdlcm(0).join('-')", "12-0");

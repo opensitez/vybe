@@ -1,4 +1,3 @@
-use super::helpers::run_ruby_one;
 
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
@@ -18,4 +17,4 @@ ruby_test!(test_kernel_warn, "warn 'warning'; puts 'ok'", "ok"); // warn prints 
 ruby_test!(test_kernel_raise, "begin; raise 'err'; rescue => e; puts e.message; end", "err");
 ruby_test!(test_kernel_loop, "i = 0; loop do i += 1; break if i == 3; end; puts i", "3");
 ruby_test!(test_kernel_block_given, "def foo; block_given?; end; puts foo {}", "true");
-ruby_test!(test_kernel___dir__, "puts __dir__.is_a?(String) || __dir__.nil?", "true"); // __dir__ is nil in eval/string without path
+ruby_test!(test_kernel_dir, "puts __dir__.is_a?(String) || __dir__.nil?", "true"); // __dir__ is nil in eval/string without path
