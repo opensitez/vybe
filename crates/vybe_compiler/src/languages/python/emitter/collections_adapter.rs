@@ -242,8 +242,9 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
 
     // object → user `__contains__(self, item)` if present, else own-key test
-    let contains_key = chunk
-        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__contains__")));
+    let contains_key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        "__contains__",
+    )));
     let contains_method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::STRUCT_GET, contains_key, line);
@@ -546,8 +547,9 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // User-defined `__len__` → call it with the receiver. (Cross-language:
     // bound alongside `__get_length`/`__get_count`.)
-    let len_key = chunks[current]
-        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__len__")));
+    let len_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        "__len__",
+    )));
     let len_method = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, len_key, line);

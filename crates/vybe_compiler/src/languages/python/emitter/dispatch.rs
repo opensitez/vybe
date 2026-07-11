@@ -86,6 +86,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.pymul" => {
             crate::emitter::python::runtime_adapter::emit_pymul(chunks, current, line)
         }
+        "python.pysub" => {
+            crate::emitter::python::runtime_adapter::emit_pysub(chunks, current, line)
+        }
+        "python.pytruediv" => {
+            crate::emitter::python::runtime_adapter::emit_pytruediv(chunks, current, line)
+        }
+        "python.pyfloordiv" => {
+            crate::emitter::python::runtime_adapter::emit_pyfloordiv(chunks, current, line)
+        }
+        "python.pymod" => {
+            crate::emitter::python::runtime_adapter::emit_pymod(chunks, current, line)
+        }
+        "python.pypow" => {
+            crate::emitter::python::runtime_adapter::emit_pypow(chunks, current, line)
+        }
         "python.range" => {
             crate::emitter::python::runtime_adapter::emit_range(chunks, current, argc, line)
         }

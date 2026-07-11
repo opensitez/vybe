@@ -142,6 +142,8 @@ fn preprocess_indentation(source: &str) -> String {
 
 pub fn parse(source: &str) -> Result<Module, String> {
     PY_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
+    PY_SYS_MODULES_BOUND.with(|b| b.set(false));
+    PY_DEFINED_CLASSES.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -272,11 +274,213 @@ fn walk_stmt_into(
     imports: &mut Vec<Import>,
 ) -> Result<(), String> {
     match pair.as_rule() {
-        Rule::import_stmt => imports.push(walk_import(pair)?),
-        Rule::import_from_stmt => imports.push(walk_import_from(pair)?),
+        Rule::import_stmt => {
+            let import = walk_import(pair)?;
+            if let ImportKind::Simple { path, alias } = &import.kind {
+                let root = path.split('.').next().unwrap_or(path).to_string();
+                if !py_known_module(&root) {
+                    body.push(py_import_error_stmt(&format!(
+                        "No module named '{root}'"
+                    )));
+                    return Ok(());
+                }
+                body.extend(py_module_rename_stmts(&root));
+                let bound = alias.clone().unwrap_or_else(|| root.clone());
+                if root == "sys" && !PY_SYS_MODULES_BOUND.with(|b| b.get()) {
+                    PY_SYS_MODULES_BOUND.with(|b| b.set(true));
+                    let props: Vec<ObjectProperty> = PY_IMPORTED_MODULES.with(|m| {
+                        m.borrow()
+                            .iter()
+                            .map(|name| ObjectProperty::KeyValue {
+                                key: Expression::new(ExprKind::Lit(Literal::Str(
+                                    name.clone().into(),
+                                ))),
+                                value: Expression::new(ExprKind::Ident(name.clone())),
+                            })
+                            .collect()
+                    });
+                    body.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::new(ExprKind::Ident(
+                            "__py_sys_modules".into(),
+                        ))],
+                        value: Expression::new(ExprKind::Object(props)),
+                    }));
+                } else if PY_SYS_MODULES_BOUND.with(|b| b.get()) {
+                    body.push(Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::new(ExprKind::Index {
+                            object: Box::new(Expression::new(ExprKind::Ident(
+                                "__py_sys_modules".into(),
+                            ))),
+                            index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                                bound.clone().into(),
+                            )))),
+                            null_safe: false,
+                        })],
+                        value: Expression::new(ExprKind::Ident(bound)),
+                    }));
+                }
+            }
+            imports.push(import);
+        }
+        Rule::import_from_stmt => {
+            let import = walk_import_from(pair)?;
+            // `from operator import add, mul` — the operator module IS the
+            // operators; bind each name to the equivalent lambda instead of
+            // an ESM binding (there is no host module to bind against).
+            // `from __future__ import …` — compiler directives for features
+            // this implementation already has; bind nothing, error nothing.
+            if let ImportKind::Named { path, names, level } = &import.kind {
+                if path == "__future__" {
+                    return Ok(());
+                }
+                let root = path.split('.').next().unwrap_or(path).to_string();
+                if *level == 0 && !path.is_empty() && !py_known_module(&root) {
+                    body.push(py_import_error_stmt(&format!(
+                        "No module named '{root}'"
+                    )));
+                    return Ok(());
+                }
+                // A module whose export surface the walker knows rejects
+                // unknown names with ImportError (CPython behavior). The
+                // surface = the static table + the rename aliases.
+                if let Some(surface) = py_module_surface(path) {
+                    let renames = py_module_renames(path).unwrap_or(&[]);
+                    for n in names {
+                        if !surface.contains(&n.name.as_str())
+                            && !renames.iter().any(|(py, canon)| {
+                                *py == n.name.as_str() || *canon == n.name.as_str()
+                            })
+                        {
+                            body.push(py_import_error_stmt(&format!(
+                                "cannot import name '{}' from '{}'",
+                                n.name, path
+                            )));
+                            return Ok(());
+                        }
+                    }
+                }
+                if path == "collections" {
+                    // `deque` IS a JS array under the hood (same as list) —
+                    // bind the ctor to a list copy; append/pop are already
+                    // array emits, appendleft/popleft map to unshift/shift.
+                    for n in names {
+                        if n.name == "deque" {
+                            let local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                            body.push(Statement::new(StmtKind::Assign {
+                                targets: vec![Expression::new(ExprKind::Ident(local))],
+                                value: Expression::new(ExprKind::Lambda {
+                                    params: vec![lambda_param("__it")],
+                                    body: LambdaBody::Expr(Box::new(Expression::new(
+                                        ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Ident(
+                                                "list".into(),
+                                            ))),
+                                            args: vec![Argument::positional(Expression::new(
+                                                ExprKind::Ident("__it".into()),
+                                            ))],
+                                            optional: false,
+                                        },
+                                    ))),
+                                    is_async: false,
+                                    captures: vec![],
+                                }),
+                            }));
+                        }
+                    }
+                    imports.push(import);
+                    return Ok(());
+                }
+                if path == "operator" {
+                    for n in names {
+                        let local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                        if let Some(lambda) = operator_fn_lambda(&n.name) {
+                            body.push(Statement::new(StmtKind::Assign {
+                                targets: vec![Expression::new(ExprKind::Ident(local))],
+                                value: lambda,
+                            }));
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+            imports.push(import);
+        }
         _ => body.push(walk_statement(pair)?),
     }
     Ok(())
+}
+
+/// `operator.<name>` as a lambda over the equivalent operator — the module's
+/// documented semantics (`add(a, b)` is `a + b`, …). `None` for names this
+/// table doesn't cover (they stay unbound, same as before).
+fn operator_fn_lambda(name: &str) -> Option<Expression> {
+    let binop = |op: BinOp| -> Expression {
+        Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__a"), lambda_param("__b")],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
+                op,
+                left: Box::new(Expression::new(ExprKind::Ident("__a".into()))),
+                right: Box::new(Expression::new(ExprKind::Ident("__b".into()))),
+            }))),
+            is_async: false,
+            captures: vec![],
+        })
+    };
+    // `add`/`mul` route through the same dynamic helpers `+`/`*` lower to
+    // (list concat / str repeat / dunder dispatch), not raw numeric ops.
+    let helper2 = |helper: &str| -> Expression {
+        Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__a"), lambda_param("__b")],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
+                args: vec![
+                    Argument::positional(Expression::new(ExprKind::Ident("__a".into()))),
+                    Argument::positional(Expression::new(ExprKind::Ident("__b".into()))),
+                ],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        })
+    };
+    Some(match name {
+        "add" | "concat" => helper2("__pyadd__"),
+        "mul" => helper2("__pymul__"),
+        "sub" => binop(BinOp::Sub),
+        "truediv" => binop(BinOp::Div),
+        "floordiv" => binop(BinOp::FloorDiv),
+        "mod" => binop(BinOp::Mod),
+        "pow" => binop(BinOp::Pow),
+        "eq" => binop(BinOp::Eq),
+        "ne" => binop(BinOp::NotEq),
+        "lt" => binop(BinOp::Lt),
+        "le" => binop(BinOp::LtEq),
+        "gt" => binop(BinOp::Gt),
+        "ge" => binop(BinOp::GtEq),
+        "neg" => Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__a")],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(Expression::new(ExprKind::Ident("__a".into()))),
+            }))),
+            is_async: false,
+            captures: vec![],
+        }),
+        _ => return None,
+    })
+}
+
+fn lambda_param(name: &str) -> Param {
+    Param {
+        name: name.into(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -309,8 +513,52 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::global_stmt => walk_scope_decl(pair, ScopeDeclKind::Global)?,
         Rule::nonlocal_stmt => walk_scope_decl(pair, ScopeDeclKind::Nonlocal)?,
 
-        Rule::import_stmt => return Ok(Statement::new(StmtKind::Empty)), // handled in walk_stmt_into
-        Rule::import_from_stmt => return Ok(Statement::new(StmtKind::Empty)),
+        Rule::import_stmt => {
+            // Nested imports (inside try/if bodies) still mount the module
+            // for compile-time resolution; the statement itself is a no-op —
+            // unless the module is outside the known universe, which raises
+            // ImportError right here (CPython §import semantics), catchable
+            // by the enclosing try.
+            let import = walk_import(pair)?;
+            if let ImportKind::Simple { path, .. } = &import.kind {
+                let root = path.split('.').next().unwrap_or(path);
+                if !py_known_module(root) {
+                    return Ok(py_import_error_stmt(&format!(
+                        "No module named '{root}'"
+                    )));
+                }
+            }
+            return Ok(Statement::new(StmtKind::Empty));
+        }
+        Rule::import_from_stmt => {
+            let import = walk_import_from(pair)?;
+            if let ImportKind::Named { path, names, level } = &import.kind {
+                let root = path.split('.').next().unwrap_or(path);
+                if *level == 0 && !path.is_empty() && path != "__future__" {
+                    if !py_known_module(root) {
+                        return Ok(py_import_error_stmt(&format!(
+                            "No module named '{root}'"
+                        )));
+                    }
+                    if let Some(surface) = py_module_surface(path) {
+                        let renames = py_module_renames(path).unwrap_or(&[]);
+                        for n in names {
+                            if !surface.contains(&n.name.as_str())
+                                && !renames.iter().any(|(py, canon)| {
+                                    *py == n.name.as_str() || *canon == n.name.as_str()
+                                })
+                            {
+                                return Ok(py_import_error_stmt(&format!(
+                                    "cannot import name '{}' from '{}'",
+                                    n.name, path
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(Statement::new(StmtKind::Empty));
+        }
 
         Rule::expr_or_assign_stmt | Rule::expr_or_assign_inline => walk_expr_or_assign(pair)?,
 
@@ -727,7 +975,12 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier => {
+                name = p.as_str().to_string();
+                // Register the class name before its body is walked so
+                // constructions inside its own methods normalise too.
+                note_defined_class(&name);
+            }
             Rule::class_arg_list => {
                 for arg in p.into_inner() {
                     if arg.as_rule() == Rule::class_arg {
@@ -1013,8 +1266,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 /// Per-parse counter that keeps desugared `while…else` break-flags unique so
 /// nested loops don't share (and clobber) one flag.
-static WHILE_ELSE_COUNTER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static WHILE_ELSE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Rewrite loop-level `break` statements in `stmts` to set `flag = True` before
 /// breaking, so a desugared `while…else` can distinguish a break-exit from a
@@ -1617,7 +1869,11 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         // ops), so lower to `target = __pyadd__(target, value)` — the numeric
         // CompoundAssign path coerces operands to f64 and traps on lists.
         if op_str == "+=" || op_str == "*=" {
-            let helper = if op_str == "+=" { "__pyadd__" } else { "__pymul__" };
+            let helper = if op_str == "+=" {
+                "__pyadd__"
+            } else {
+                "__pymul__"
+            };
             let combined = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
                 args: vec![
@@ -1696,6 +1952,32 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     if all_exprs.len() >= 2 {
         let value = all_exprs.pop().unwrap();
+        // `m = json` / `m = importlib.import_module('json')` (the walker
+        // already lowered the latter to the module Ident): record the
+        // local as a module alias so member access substitutes the root.
+        if all_exprs.len() == 1 {
+            if let ExprKind::Ident(target_name) = &all_exprs[0].kind {
+                match &value.kind {
+                    ExprKind::Ident(value_name)
+                        if is_imported_module(value_name) && !is_imported_module(target_name) =>
+                    {
+                        note_module_alias(target_name, value_name);
+                    }
+                    _ => {
+                        // Reassignment to a non-module value invalidates a
+                        // previous module alias (`m = json; m = 5`).
+                        if resolve_module_alias(target_name).is_some() {
+                            PY_MODULE_ALIASES.with(|m| {
+                                m.borrow_mut().remove(target_name.as_str());
+                            });
+                            PY_IMPORTED_MODULES.with(|m| {
+                                m.borrow_mut().remove(target_name.as_str());
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
         let targets = all_exprs
             .into_iter()
@@ -1744,6 +2026,9 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
         note_imported_module(path);
         if let Some(a) = alias {
             note_imported_module(a);
+            // `import importlib.metadata as md` — the alias reads AS the
+            // dotted module (surface lookups, member routing).
+            note_module_alias(a, path);
         }
     }
 
@@ -2101,7 +2386,12 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         };
                     } else if matches!(
                         op,
-                        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
+                        BinOp::Eq
+                            | BinOp::NotEq
+                            | BinOp::Lt
+                            | BinOp::Gt
+                            | BinOp::LtEq
+                            | BinOp::GtEq
                     ) && expr_is_python_bytes(&left)
                         && expr_is_python_bytes(&right)
                     {
@@ -2173,10 +2463,12 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .filter(|p| is_expression_rule(p.as_rule()));
             if let Some(exp_pair) = rest.next() {
                 let exp = walk_expression(exp_pair)?;
-                Ok(ExprKind::Binary {
-                    op: BinOp::Pow,
-                    left: Box::new(base),
-                    right: Box::new(exp),
+                // Route through __pypow__ so a user `__pow__` on an object base
+                // is dispatched; falls back to the numeric pow for plain numbers.
+                Ok(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Ident("__pypow__".into()))),
+                    args: vec![Argument::positional(base), Argument::positional(exp)],
+                    optional: false,
                 })
             } else {
                 Ok(base.kind)
@@ -2230,9 +2522,16 @@ fn walk_python_additive(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> 
             if i < items.len() {
                 let right = walk_expression(items[i].clone())?;
                 i += 1;
-                if op_str == "+" {
+                if op_str == "+" || op_str == "-" {
+                    // `+`/`-` route through __pyadd__/__pysub__ so a user
+                    // `__add__`/`__sub__` on an object operand is dispatched.
+                    let helper = if op_str == "+" {
+                        "__pyadd__"
+                    } else {
+                        "__pysub__"
+                    };
                     left = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Ident("__pyadd__".into()))),
+                        callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
                         args: vec![Argument::positional(left), Argument::positional(right)],
                         optional: false,
                     });
@@ -2264,19 +2563,23 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
             if i < items.len() {
                 let right = walk_expression(items[i].clone())?;
                 i += 1;
-                if op_str == "*" {
-                    // Route through __pymul__ which handles array repeat + string repeat + numeric
-                    let callee = Expression::new(ExprKind::Ident("__pymul__".into()));
+                // `*`/`/`/`//`/`%` route through __py* helpers so a user dunder
+                // (`__mul__`/`__truediv__`/`__floordiv__`/`__mod__`) on an object
+                // operand is dispatched; each helper falls back to the same
+                // numeric op the shared compiler emits for plain numbers.
+                let helper = match op_str {
+                    "*" => Some("__pymul__"),
+                    "/" => Some("__pytruediv__"),
+                    "//" => Some("__pyfloordiv__"),
+                    "%" => Some("__pymod__"),
+                    _ => None,
+                };
+                if let Some(helper) = helper {
+                    let callee = Expression::new(ExprKind::Ident(helper.into()));
                     left = Expression::new(ExprKind::Call {
                         callee: Box::new(callee),
                         args: vec![Argument::positional(left), Argument::positional(right)],
                         optional: false,
-                    });
-                } else if op_str == "//" {
-                    left = Expression::new(ExprKind::Binary {
-                        op: BinOp::FloorDiv,
-                        left: Box::new(left),
-                        right: Box::new(right),
                     });
                 } else {
                     let op = parse_binop(op_str);
@@ -2340,6 +2643,11 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
 // the Member path.
 
 thread_local! {
+    /// Set once `import sys` binds the persistent `__py_sys_modules`
+    /// registry dict — later imports append to it and `sys.modules`
+    /// reads resolve to the SAME binding, so runtime mutations
+    /// (`sys.modules['x'] = m`) persist.
+    static PY_SYS_MODULES_BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PY_IMPORTED_MODULES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
@@ -2356,6 +2664,211 @@ fn note_imported_module(name: &str) {
 
 fn is_imported_module(name: &str) -> bool {
     PY_IMPORTED_MODULES.with(|m| m.borrow().contains(name))
+}
+
+thread_local! {
+    /// `m = importlib.import_module('json')` / `m = json` — locals aliased
+    /// to a mounted module. Member access substitutes the module root so
+    /// `m.dumps(...)` compiles exactly like `json.dumps(...)`.
+    static PY_MODULE_ALIASES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn note_module_alias(alias: &str, module: &str) {
+    PY_MODULE_ALIASES.with(|m| {
+        m.borrow_mut().insert(alias.to_string(), module.to_string());
+    });
+    note_imported_module(alias);
+}
+
+fn resolve_module_alias(name: &str) -> Option<String> {
+    PY_MODULE_ALIASES.with(|m| m.borrow().get(name).cloned())
+}
+
+/// The stdlib universe this implementation can mount. `import X` for an
+/// X outside it raises ImportError at the import site (CPython behavior)
+/// instead of silently binding nothing.
+fn py_known_module(root: &str) -> bool {
+    py_module_surface(root).is_some()
+        || matches!(
+            root,
+            "math" | "cmath" | "os" | "sys" | "json" | "re" | "random" | "time" | "datetime"
+                | "calendar" | "collections" | "itertools" | "functools" | "operator"
+                | "string" | "textwrap" | "unicodedata" | "struct" | "codecs" | "io"
+                | "abc" | "numbers" | "decimal" | "fractions" | "statistics" | "array"
+                | "bisect" | "heapq" | "copy" | "pprint" | "enum" | "typing"
+                | "dataclasses" | "contextlib" | "traceback" | "warnings" | "gc"
+                | "inspect" | "builtins" | "pickle" | "hashlib" | "hmac" | "secrets"
+                | "uuid" | "base64" | "binascii" | "shutil" | "tempfile" | "pathlib"
+                | "stat" | "subprocess" | "threading" | "queue" | "socket" | "select"
+                | "signal" | "errno" | "platform" | "getpass" | "logging" | "argparse"
+                | "unittest" | "doctest" | "timeit" | "csv" | "configparser" | "sqlite3"
+                | "zlib" | "gzip" | "zipfile" | "tarfile" | "asyncio" | "weakref"
+                | "atexit" | "keyword" | "token" | "ast" | "dis" | "sysconfig"
+                | "__future__" | "urllib" | "http" | "email" | "xml" | "html"
+        )
+}
+
+/// `raise ImportError('<msg>')` at the import site.
+fn py_import_error_stmt(msg: &str) -> Statement {
+    Statement::new(StmtKind::Throw {
+        expr: Some(Expression::new(ExprKind::New {
+            class: Box::new(Expression::new(ExprKind::Ident("ImportError".into()))),
+            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                Literal::Str(msg.into()),
+            )))],
+        })),
+        cause: None,
+    })
+}
+
+/// Python-facing names of mounted host modules that differ from the
+/// canonical host export names — normalized as plain AST assignments at
+/// import (`json['dumps'] = json['stringify']`), so the surface exists on
+/// the runtime namespace object for reflection (dir/getattr/values) with
+/// ZERO compiler/runtime machinery. JS never needs this: its names ARE
+/// the canonical names.
+fn py_module_renames(module: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    Some(match module {
+        "json" => &[
+            ("dumps", "stringify"),
+            ("loads", "parse"),
+            ("dump", "stringify"),
+            ("load", "parse"),
+        ],
+        _ => return None,
+    })
+}
+
+/// Statements normalizing a module's Python-facing surface onto its
+/// runtime namespace object, guarded so installer-less harnesses skip.
+fn py_module_rename_stmts(module: &str) -> Vec<Statement> {
+    let Some(renames) = py_module_renames(module) else {
+        return Vec::new();
+    };
+    let mut assigns = Vec::new();
+    for (py_name, canonical) in renames {
+        assigns.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Index {
+                object: Box::new(Expression::new(ExprKind::Ident(module.to_string()))),
+                index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                    (*py_name).into(),
+                )))),
+                null_safe: false,
+            })],
+            value: Expression::new(ExprKind::Index {
+                object: Box::new(Expression::new(ExprKind::Ident(module.to_string()))),
+                index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                    (*canonical).into(),
+                )))),
+                null_safe: false,
+            }),
+        }));
+    }
+    // if typeof(module) != "undefined": <assigns>
+    vec![Statement::new(StmtKind::If {
+        cond: Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(
+                Expression::new(ExprKind::Ident(module.to_string())),
+            )))),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                "undefined".into(),
+            )))),
+        }),
+        then_body: assigns,
+        elifs: Vec::new(),
+        else_body: None,
+    })]
+}
+
+/// Static surfaces of stdlib modules the walker mounts — `hasattr(mod,
+/// 'lit')` resolves at compile time against this table (same category as
+/// `find_spec`/`sys.modules`: the mounts are static, so is the answer).
+fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
+    Some(match module {
+        "importlib" => &[
+            "import_module",
+            "reload",
+            "invalidate_caches",
+            "util",
+            "machinery",
+            "resources",
+            "metadata",
+            "abc",
+        ],
+        "importlib.util" => &["find_spec", "module_from_spec", "spec_from_loader"],
+        "importlib.machinery" => &["SourceFileLoader", "ExtensionFileLoader", "ModuleSpec"],
+        "importlib.resources" => &["files", "read_text", "read_binary"],
+        "importlib.metadata" => &["version", "distributions", "metadata"],
+        "importlib.abc" => &["MetaPathFinder", "Loader", "PathEntryFinder"],
+        "runpy" => &["run_module", "run_path"],
+        "encodings" => &["utf_8", "ascii", "latin_1"],
+        "pkgutil" => &["iter_modules", "walk_packages", "get_data"],
+        "zipimport" => &["zipimporter", "ZipImportError"],
+        "types" => &[
+            "ModuleType",
+            "SimpleNamespace",
+            "FunctionType",
+            "LambdaType",
+        ],
+        "collections.abc" => &[
+            "Mapping",
+            "Sequence",
+            "Iterable",
+            "Iterator",
+            "Callable",
+            "Set",
+            "MutableMapping",
+        ],
+        "json" => &["dumps", "loads", "dump", "load"],
+        "glob" => &["glob", "iglob", "escape", "has_magic"],
+        "fnmatch" => &["fnmatch", "fnmatchcase", "filter", "translate"],
+        _ => return None,
+    })
+}
+
+thread_local! {
+    // Names of classes declared in the module. Populated as each `class` is
+    // walked (see `walk_class_def`), used to normalise a bare construction call
+    // `ClassName(...)` to `ExprKind::New` — the SAME shape JS (`new F()`) and
+    // PHP (`new F()`) produce. Python's grammar writes construction without a
+    // `new` keyword, so it otherwise parses as a plain `Call`; normalising it
+    // here lets a constructed instance used as a receiver (`F().m(...)`)
+    // dispatch through the identical instance path as every other language.
+    static PY_DEFINED_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn note_defined_class(name: &str) {
+    if !name.is_empty() {
+        PY_DEFINED_CLASSES.with(|m| {
+            m.borrow_mut().insert(name.to_string());
+        });
+    }
+}
+
+fn is_defined_class(name: &str) -> bool {
+    PY_DEFINED_CLASSES.with(|m| m.borrow().contains(name))
+}
+
+/// Build a call expression, normalising `ClassName(args)` (a call whose callee
+/// is a declared class) to `ExprKind::New` so construction has one canonical
+/// shape across languages. Any other callee stays a plain `Call`.
+fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
+    if let ExprKind::Ident(name) = &callee.kind {
+        if is_defined_class(name) {
+            return ExprKind::New {
+                class: Box::new(callee),
+                args,
+            };
+        }
+    }
+    ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    }
 }
 
 /// Root identifier at the base of a member/index/call chain.
@@ -2377,8 +2890,138 @@ fn desugar_member_reads(e: Expression) -> Expression {
             field,
             null_safe,
         } => {
-            let object = desugar_member_reads(*object);
+            let mut object = desugar_member_reads(*object);
+            // Module-alias substitution: `m.dumps` where `m = json` compiles
+            // exactly like `json.dumps` (profile builtins + ns resolution).
+            if let ExprKind::Ident(n) = &object.kind {
+                if let Some(module) = resolve_module_alias(n) {
+                    object = Expression::new(ExprKind::Ident(module));
+                }
+            }
+            // `types.ModuleType.__name__` — static metadata of the mounted
+            // types surface.
+            if field == "__name__" {
+                if let ExprKind::Member {
+                    object: inner_obj,
+                    field: inner_field,
+                    ..
+                } = &object.kind
+                {
+                    if matches!(&inner_obj.kind, ExprKind::Ident(n) if n == "types")
+                        && inner_field == "ModuleType"
+                    {
+                        return Expression::new(ExprKind::Lit(Literal::Str("type".into())));
+                    }
+                }
+            }
             let root = expr_root_ident(&object);
+            // `sys.modules` — the runtime mount registry. The walker knows
+            // exactly which modules this unit mounts (PY_IMPORTED_MODULES),
+            // so materialize the registry as a dict of alias → namespace
+            // object (`'json' in sys.modules`, `sys.modules['json']`).
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "sys") && field == "modules" {
+                if PY_SYS_MODULES_BOUND.with(|b| b.get()) {
+                    return Expression::new(ExprKind::Ident("__py_sys_modules".into()));
+                }
+                let props: Vec<ObjectProperty> = PY_IMPORTED_MODULES.with(|m| {
+                    m.borrow()
+                        .iter()
+                        .map(|name| ObjectProperty::KeyValue {
+                            key: Expression::new(ExprKind::Lit(Literal::Str(name.clone().into()))),
+                            value: Expression::new(ExprKind::Ident(name.clone())),
+                        })
+                        .collect()
+                });
+                return Expression::new(ExprKind::Object(props));
+            }
+            // `importlib.reload` read as a value (`callable(importlib.reload)`)
+            // — identity function over the module mount.
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "importlib") && field == "reload" {
+                return Expression::new(ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "__mod".into(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ident(
+                        "__mod".into(),
+                    )))),
+                    is_async: false,
+                    captures: vec![],
+                });
+            }
+            // Module metadata resolves at COMPILE time — the walker knows
+            // the mounts (§16.2 namespace bindings are compile-time):
+            // `json.__name__` IS the import name; `__file__` is None for
+            // host-backed component modules.
+            if let ExprKind::Ident(module_name) = &object.kind {
+                if is_imported_module(module_name) {
+                    if field == "__name__" {
+                        return Expression::new(ExprKind::Lit(Literal::Str(
+                            module_name.clone().into(),
+                        )));
+                    }
+                    if field == "__file__" || field == "__doc__" {
+                        return Expression::new(ExprKind::Lit(Literal::Null));
+                    }
+                    // `mod.__dict__` — a REAL Python dict built from the
+                    // namespace object's entries, via the same dict-
+                    // comprehension lowering `{p[0]: p[1] for p in
+                    // Object.entries(mod)}` takes — so it carries the exact
+                    // shape (`__keys`) every other dict has and
+                    // `isinstance(x, dict)` / len / iteration behave
+                    // identically.
+                    if field == "__dict__" {
+                        let entries = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Ident(
+                                "__py_obj_entries__".into(),
+                            ))),
+                            args: vec![Argument::positional(object)],
+                            optional: false,
+                        });
+                        let pair_index = |i: i64| {
+                            Expression::new(ExprKind::Index {
+                                object: Box::new(Expression::new(ExprKind::Ident(
+                                    "__py_dict_pair".into(),
+                                ))),
+                                index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i)))),
+                                null_safe: false,
+                            })
+                        };
+                        let element = Expression::new(ExprKind::Array(vec![
+                            ArrayElement {
+                                key: None,
+                                spread: false,
+                                by_ref: false,
+                                value: pair_index(0),
+                            },
+                            ArrayElement {
+                                key: None,
+                                spread: false,
+                                by_ref: false,
+                                value: pair_index(1),
+                            },
+                        ]));
+                        return Expression::new(ExprKind::Comprehension {
+                            kind: ComprehensionKind::Dict,
+                            element: Box::new(element),
+                            generators: vec![ComprehensionGen {
+                                target: Expression::new(ExprKind::Ident(
+                                    "__py_dict_pair".into(),
+                                )),
+                                iter: entries,
+                                conditions: Vec::new(),
+                                is_async: false,
+                            }],
+                        });
+                    }
+                }
+            }
             // Keep `self.x` and `module.CONST` on the Member path.
             let keep = matches!(root.as_deref(), Some("self"))
                 || root.as_deref().map(is_imported_module).unwrap_or(false);
@@ -2401,6 +3044,149 @@ fn desugar_member_reads(e: Expression) -> Expression {
             args,
             optional,
         } => {
+            // `__import__('json')` — same static mount binding as
+            // importlib.import_module.
+            if let ExprKind::Ident(n) = &callee.kind {
+                if n == "__import__" && args.len() == 1 {
+                    if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
+                        note_imported_module(module_name);
+                        return Expression::new(ExprKind::Ident(module_name.clone()));
+                    }
+                }
+                // `getattr(module, 'lit')` — a static member read of the
+                // mounted (and stamped) namespace object.
+                if n == "getattr" && args.len() == 2 {
+                    if let (ExprKind::Ident(m), ExprKind::Lit(Literal::Str(attr))) =
+                        (&args[0].value.kind, &args[1].value.kind)
+                    {
+                        if is_imported_module(m) {
+                            let module = resolve_module_alias(m).unwrap_or_else(|| m.clone());
+                            // Subscript (data) read — the stamped surface
+                            // is plain properties on the namespace object.
+                            return Expression::new(ExprKind::Index {
+                                object: Box::new(Expression::new(ExprKind::Ident(module))),
+                                index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
+                                    attr.to_string().into(),
+                                )))),
+                                null_safe: false,
+                            });
+                        }
+                    }
+                }
+                // `hasattr(module, 'lit')` — the mounts are static, so the
+                // answer is too (same category as find_spec/sys.modules).
+                if n == "hasattr" && args.len() == 2 {
+                    let module_path = match &args[0].value.kind {
+                        // The alias pass may already have substituted the
+                        // bound name with its dotted module path
+                        // (`md` → `importlib.metadata`), so accept a known
+                        // dotted surface directly too.
+                        ExprKind::Ident(m)
+                            if is_imported_module(m)
+                                || resolve_module_alias(m).is_some()
+                                || py_module_surface(m).is_some() =>
+                        {
+                            Some(resolve_module_alias(m).unwrap_or_else(|| m.clone()))
+                        }
+                        ExprKind::Member {
+                            object: o,
+                            field: f,
+                            ..
+                        } => match &o.kind {
+                            ExprKind::Ident(m) if is_imported_module(m) => Some(format!("{m}.{f}")),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let (Some(path), ExprKind::Lit(Literal::Str(attr))) =
+                        (module_path, &args[1].value.kind)
+                    {
+                        // Module metadata dunders always exist on a module.
+                        if matches!(
+                            attr.as_ref(),
+                            "__name__" | "__package__" | "__doc__" | "__loader__" | "__spec__"
+                        ) {
+                            return Expression::new(ExprKind::Lit(Literal::Bool(true)));
+                        }
+                        if let Some(surface) = py_module_surface(&path) {
+                            let attr_str: &str = attr.as_ref();
+                            let has = surface.iter().any(|a| *a == attr_str);
+                            return Expression::new(ExprKind::Lit(Literal::Bool(has)));
+                        }
+                    }
+                }
+            }
+            // `pkgutil.iter_modules()` — no filesystem package walk in a
+            // component world; the static answer is the empty list.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "pkgutil")
+                    && field == "iter_modules"
+                {
+                    return Expression::new(ExprKind::Array(vec![]));
+                }
+                // `types.ModuleType('name')` — a module object with its
+                // `__name__` metadata.
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "types")
+                    && field == "ModuleType"
+                    && args.len() == 1
+                {
+                    return Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                        key: Expression::new(ExprKind::Lit(Literal::Str("__name__".into()))),
+                        value: args.into_iter().next().unwrap().value,
+                    }]));
+                }
+            }
+            // `importlib.import_module('json')` with a literal module name →
+            // the mounted namespace-object global (same binding `import json`
+            // reads). Registers the name so later `json.X` reads stay
+            // namespace access.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "importlib")
+                    && field == "import_module"
+                    && args.len() == 1
+                {
+                    if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
+                        note_imported_module(module_name);
+                        return Expression::new(ExprKind::Ident(module_name.clone()));
+                    }
+                }
+                // `importlib.reload(m)` — modules are immutable mounts here;
+                // reload is the identity per its contract (returns the module).
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "importlib")
+                    && field == "reload"
+                    && args.len() == 1
+                {
+                    return desugar_member_reads(args.into_iter().next().unwrap().value);
+                }
+                // `importlib.util.find_spec('json')` with a literal name →
+                // compile-time spec object `{name: 'json'}` (mounts are
+                // static; a found spec is truthy with a `.name`).
+                if field == "find_spec" && args.len() == 1 {
+                    if let ExprKind::Member {
+                        object: inner_obj,
+                        field: inner_field,
+                        ..
+                    } = &object.kind
+                    {
+                        if matches!(&inner_obj.kind, ExprKind::Ident(n) if n == "importlib")
+                            && inner_field == "util"
+                        {
+                            if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
+                                return Expression::new(ExprKind::Object(vec![
+                                    ObjectProperty::KeyValue {
+                                        key: Expression::new(ExprKind::Lit(Literal::Str(
+                                            "name".into(),
+                                        ))),
+                                        value: Expression::new(ExprKind::Lit(Literal::Str(
+                                            module_name.clone(),
+                                        ))),
+                                    },
+                                ]));
+                            }
+                        }
+                    }
+                }
+            }
             // Method call: keep the Member callee (method dispatch), but
             // desugar the receiver's own chain.
             let callee = match callee.kind {
@@ -2430,6 +3216,24 @@ fn desugar_member_reads(e: Expression) -> Expression {
             index,
             null_safe,
         }),
+        // A module-aliased local reads AS the module (`m = json; m.dumps`),
+        // and bare `__import__` is a callable value.
+        ExprKind::Ident(name) => {
+            if let Some(module) = resolve_module_alias(&name) {
+                return Expression::new(ExprKind::Ident(module));
+            }
+            if name == "__import__" {
+                return Expression::new(ExprKind::Lambda {
+                    params: vec![lambda_param("__mod")],
+                    body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ident(
+                        "__mod".into(),
+                    )))),
+                    is_async: false,
+                    captures: vec![],
+                });
+            }
+            Expression::new(ExprKind::Ident(name))
+        }
         _ => e,
     }
 }
@@ -2464,8 +3268,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         optional: false,
                     });
                 } else if let ExprKind::Member { object, field, .. } = &expr.kind {
-                    // bytes string-like method with no args, e.g. `b'AB'.lower()`
-                    if let Some(rewritten) = try_rewrite_bytes_method(object, field, &[]) {
+                    // `super().__init__()` (no args) → bare `super()` parent-ctor
+                    // call (see the args-carrying case below for the rationale).
+                    if matches!(&object.kind, ExprKind::Super) && field == "__init__" {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Super)),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                    } else if let Some(rewritten) = try_rewrite_bytes_method(object, field, &[]) {
+                        // bytes string-like method with no args, e.g. `b'AB'.lower()`
                         expr = rewritten;
                     } else {
                         expr = Expression::new(ExprKind::Call {
@@ -2475,11 +3287,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         });
                     }
                 } else {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(expr),
-                        args: Vec::new(),
-                        optional: false,
-                    });
+                    // `Foo()` — construction if `Foo` is a declared class.
+                    expr = Expression::new(call_or_new(expr, Vec::new()));
                 }
             } else {
                 let first_child = &children[0];
@@ -2590,16 +3399,31 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             }
                         }
 
+                        // `super().__init__(args)` is the parent CONSTRUCTOR, not
+                        // a parent method — normalise to the bare `super(args)`
+                        // call shape (same as PHP `parent::__construct`), so the
+                        // shared super-ctor dispatch in compile_call runs it on
+                        // the current instance instead of looking up an undefined
+                        // `__init__` member on the parent constructor object.
+                        if let ExprKind::Member { object, field, .. } = &expr.kind {
+                            if matches!(&object.kind, ExprKind::Super) && field == "__init__" {
+                                expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Super)),
+                                    args,
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                        }
+
                         // `bytes.fromhex(s)` static constructor → Uint8Array.
                         if let ExprKind::Member { object, field, .. } = &expr.kind {
                             if field == "fromhex"
                                 && matches!(&object.kind, ExprKind::Ident(n) if n == "bytes")
                                 && args.len() == 1
                             {
-                                expr = call_ident(
-                                    "__py_bytes_fromhex__",
-                                    vec![args[0].value.clone()],
-                                );
+                                expr =
+                                    call_ident("__py_bytes_fromhex__", vec![args[0].value.clone()]);
                                 continue;
                             }
                         }
@@ -2736,6 +3560,108 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             });
                                             continue;
                                         }
+                                        // Builtin-type checks desugar to the
+                                        // JS-compiler shapes (typeof /
+                                        // ref.test) — same machinery `x
+                                        // instanceof Map` rides in JS; no
+                                        // host or VM involvement.
+                                        let typeof_check = |name: &str| {
+                                            Expression::new(ExprKind::Binary {
+                                                op: BinOp::StrictEq,
+                                                left: Box::new(Expression::new(ExprKind::TypeOf(
+                                                    Box::new(args[0].value.clone()),
+                                                ))),
+                                                right: Box::new(Expression::string(name)),
+                                            })
+                                        };
+                                        let ref_test = |name: &str| {
+                                            Expression::new(ExprKind::Binary {
+                                                op: BinOp::InstanceOf,
+                                                left: Box::new(args[0].value.clone()),
+                                                right: Box::new(Expression::new(ExprKind::Ident(
+                                                    name.into(),
+                                                ))),
+                                            })
+                                        };
+                                        // ref.test pushes a raw wasm i32;
+                                        // materialize a real Python bool.
+                                        let as_bool = |e: Expression| {
+                                            Expression::new(ExprKind::Ternary {
+                                                cond: Box::new(e),
+                                                then: Box::new(Expression::bool(true)),
+                                                else_: Box::new(Expression::bool(false)),
+                                            })
+                                        };
+                                        // Python dicts are structs carrying a
+                                        // `__keys` array; Map-backed dicts
+                                        // (`mod.__dict__`) answer Undefined
+                                        // (not None) for a missing key while
+                                        // plain structs/class instances answer
+                                        // None — so `x['__keys'] is not None`
+                                        // covers BOTH dict shapes and rejects
+                                        // instances. Guards: strings index
+                                        // weirdly, sets trap on index — both
+                                        // short-circuit out first.
+                                        let dict_check = || {
+                                            let keys_probe =
+                                                Expression::new(ExprKind::Binary {
+                                                    op: BinOp::StrictNotEq,
+                                                    left: Box::new(Expression::new(
+                                                        ExprKind::Index {
+                                                            object: Box::new(
+                                                                args[0].value.clone(),
+                                                            ),
+                                                            index: Box::new(Expression::string(
+                                                                "__keys",
+                                                            )),
+                                                            null_safe: false,
+                                                        },
+                                                    )),
+                                                    right: Box::new(Expression::new(
+                                                        ExprKind::Lit(Literal::Null),
+                                                    )),
+                                                });
+                                            let not_set = Expression::new(ExprKind::Unary {
+                                                op: UnaryOp::Not,
+                                                expr: Box::new(ref_test("Set")),
+                                            });
+                                            Expression::new(ExprKind::Binary {
+                                                op: BinOp::And,
+                                                left: Box::new(Expression::new(
+                                                    ExprKind::Binary {
+                                                        op: BinOp::And,
+                                                        left: Box::new(typeof_check("object")),
+                                                        right: Box::new(not_set),
+                                                    },
+                                                )),
+                                                right: Box::new(keys_probe),
+                                            })
+                                        };
+                                        let rewritten = match type_name.as_str() {
+                                            "str" => Some(typeof_check("string")),
+                                            "bool" => Some(typeof_check("boolean")),
+                                            "float" => Some(typeof_check("number")),
+                                            // list/tuple are ObjectKind::Array —
+                                            // the abstract WASM GC heap type.
+                                            "list" | "tuple" => Some(as_bool(ref_test("array"))),
+                                            "dict" => Some(as_bool(dict_check())),
+                                            "set" => Some(as_bool(ref_test("Set"))),
+                                            // Everything is an object (only for
+                                            // side-effect-free receivers).
+                                            "object"
+                                                if matches!(
+                                                    &args[0].value.kind,
+                                                    ExprKind::Ident(_) | ExprKind::Lit(_)
+                                                ) =>
+                                            {
+                                                Some(Expression::bool(true))
+                                            }
+                                            _ => None,
+                                        };
+                                        if let Some(r) = rewritten {
+                                            expr = r;
+                                            continue;
+                                        }
                                     }
                                 }
                                 "bool" if args.len() == 1 => {
@@ -2795,16 +3721,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = wrap_bytes(Expression::new(ExprKind::Array(vec![])));
                                     continue;
                                 }
-                                "bytes"
-                                    if args.len() == 1 && args[0].name.is_none() =>
-                                {
+                                "bytes" if args.len() == 1 && args[0].name.is_none() => {
                                     // bytes(iterable_of_ints) → those octets.
                                     expr = wrap_bytes(args[0].value.clone());
                                     continue;
                                 }
-                                "bytes"
-                                    if args.len() == 2 && args[0].name.is_none() =>
-                                {
+                                "bytes" if args.len() == 2 && args[0].name.is_none() => {
                                     // bytes(str, encoding) → UTF-8 code units.
                                     expr = wrap_bytes(call_ident(
                                         "__vybe_str_encode",
@@ -3010,25 +3932,27 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         // bytes string-like method with args, e.g.
                         // `b'ab'.replace(b'a', b'x')`, `b'ab'.find(b'b')`.
                         if let ExprKind::Member { object, field, .. } = &expr.kind {
-                            if let Some(rewritten) =
-                                try_rewrite_bytes_method(object, field, &args)
+                            if let Some(rewritten) = try_rewrite_bytes_method(object, field, &args)
                             {
                                 expr = rewritten;
                                 continue;
                             }
                         }
-                        expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(expr),
-                            args,
-                            optional: false,
-                        });
+                        // `Foo(args)` — construction if `Foo` is a declared class.
+                        expr = Expression::new(call_or_new(expr, args));
                     }
                     Rule::identifier => {
                         let field = first_child.as_str().to_string();
-                        if field == "__dict__" {
+                        if field == "__dict__"
+                            && !matches!(&expr.kind,
+                                ExprKind::Ident(n) if is_imported_module(n))
+                        {
                             // Python `obj.__dict__` → the object itself.
                             // Vybe stores instance/class properties in Object.properties,
                             // so ARRAY_GET on the object finds the same keys.
+                            // Imported modules keep the Member node — the
+                            // desugar pass rebuilds `mod.__dict__` as a real
+                            // dict from the namespace object's entries.
                         } else {
                             expr = Expression::new(ExprKind::Member {
                                 object: Box::new(expr),
@@ -3084,11 +4008,59 @@ fn spread_iterable_expr(value: Expression) -> Expression {
 /// Positional items (including `*spread`) keep their original `Argument`.
 /// Math functions that return a Python `float` (used by `expr_is_python_float`).
 const FLOAT_MATH_FNS: &[&str] = &[
-    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
-    "atanh", "sqrt", "pow", "exp", "log", "log2", "log10", "log1p", "expm1", "cbrt", "degrees",
-    "radians", "hypot", "fabs", "fmod", "copysign", "remainder", "dist", "fsum", "gamma", "lgamma",
-    "erf", "erfc", "ldexp",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "sqrt",
+    "pow",
+    "exp",
+    "log",
+    "log2",
+    "log10",
+    "log1p",
+    "expm1",
+    "cbrt",
+    "degrees",
+    "radians",
+    "hypot",
+    "fabs",
+    "fmod",
+    "copysign",
+    "remainder",
+    "dist",
+    "fsum",
+    "gamma",
+    "lgamma",
+    "erf",
+    "erfc",
+    "ldexp",
 ];
+
+/// The internal builtins the walker lowers Python binary arithmetic to
+/// (`+ - * / // % **`). Recognized by the float/bytes-inference passes so their
+/// operands are still inspected after lowering.
+fn is_py_arith_helper(n: &str) -> bool {
+    matches!(
+        n,
+        "__pyadd__"
+            | "__pysub__"
+            | "__pymul__"
+            | "__pytruediv__"
+            | "__pyfloordiv__"
+            | "__pymod__"
+            | "__pypow__"
+    )
+}
 
 /// True when an expression is *statically* a Python `float` — a float literal,
 /// true division (`/`), `float()`, a float-returning `math.*` call, unary minus
@@ -3100,13 +4072,7 @@ fn expr_is_python_float(e: &Expression) -> bool {
         ExprKind::Lit(Literal::Float(_)) => true,
         ExprKind::Binary { op: BinOp::Div, .. } => true,
         ExprKind::Binary {
-            op:
-                BinOp::Add
-                | BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Mod
-                | BinOp::Pow
-                | BinOp::FloorDiv,
+            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow | BinOp::FloorDiv,
             left,
             right,
         } => expr_is_python_float(left) || expr_is_python_float(right),
@@ -3116,8 +4082,10 @@ fn expr_is_python_float(e: &Expression) -> bool {
         } => expr_is_python_float(expr),
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Ident(n) if n == "float" => true,
-            // Python `+`/`*` lower to __pyadd__/__pymul__ — float if an operand is.
-            ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__" => {
+            // `/` lowers to __pytruediv__ and is always float in Python.
+            ExprKind::Ident(n) if n == "__pytruediv__" => true,
+            // Python arithmetic lowers to __py* helpers — float if an operand is.
+            ExprKind::Ident(n) if is_py_arith_helper(n) => {
                 args.iter().any(|a| expr_is_python_float(&a.value))
             }
             ExprKind::Member { object, field, .. } => {
@@ -3154,9 +4122,10 @@ fn expr_is_float_ctx(e: &Expression, floats: &HashMap<String, bool>) -> bool {
             op: UnaryOp::Neg | UnaryOp::Pos,
             expr,
         } => expr_is_float_ctx(expr, floats),
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__") =>
-        {
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") => {
+            true
+        }
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if is_py_arith_helper(n)) => {
             args.iter().any(|a| expr_is_float_ctx(&a.value, floats))
         }
         _ => expr_is_python_float(e),
@@ -4012,12 +4981,31 @@ fn wrap_bytes(array: Expression) -> Expression {
 
 /// bytes methods that return `bytes` (re-encoded after the string op).
 const BYTES_METHODS_RETURN_BYTES: &[&str] = &[
-    "upper", "lower", "capitalize", "title", "swapcase", "replace", "strip", "lstrip", "rstrip",
-    "center", "ljust", "rjust", "zfill",
+    "upper",
+    "lower",
+    "capitalize",
+    "title",
+    "swapcase",
+    "replace",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "center",
+    "ljust",
+    "rjust",
+    "zfill",
 ];
 /// bytes methods that return a scalar (int/bool) — no re-encode.
 const BYTES_METHODS_RETURN_SCALAR: &[&str] = &[
-    "find", "rfind", "count", "startswith", "endswith", "isalpha", "isdigit", "isalnum", "isspace",
+    "find",
+    "rfind",
+    "count",
+    "startswith",
+    "endswith",
+    "isalpha",
+    "isdigit",
+    "isalnum",
+    "isspace",
 ];
 
 /// True when `e` is statically known to evaluate to `bytes`.

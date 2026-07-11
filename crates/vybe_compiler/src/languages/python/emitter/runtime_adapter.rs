@@ -137,7 +137,14 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunk.emit_call(concat, 2, line);
     chunk.emit_else(line);
-    emit_object_binop_or(chunk, a_slot, b_slot, "__add__", crate::emitter::ops::emit_dyn_add, line);
+    emit_object_binop_or(
+        chunk,
+        a_slot,
+        b_slot,
+        "__add__",
+        crate::emitter::ops::emit_dyn_add,
+        line,
+    );
     chunk.emit_end(line);
 }
 
@@ -441,6 +448,75 @@ fn emit_f64_mul(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
 }
 
+// ── Remaining binary-operator dunders ───────────────────────────────────────
+//
+// `-`, `/`, `//`, `%`, `**` route through these (via `__pysub__` … builtins the
+// walker emits). Each dispatches to the user dunder when the left operand is a
+// real object carrying it, otherwise runs the same numeric fallback the shared
+// compiler emits for that operator on the Python profile (so plain-number code
+// is byte-for-byte identical — it takes the primitive branch).
+
+/// Numeric `-` fallback, matching the Python-profile `F64_SUB`.
+fn emit_f64_sub(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_SUB, line);
+}
+
+/// Numeric `/` fallback, matching the Python-profile `F64_DIV`.
+fn emit_f64_div(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
+/// Numeric `//` fallback: `F64_DIV` then floor (Python-profile `BinOp::FloorDiv`).
+fn emit_py_floordiv(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::emitter::math::emit_floor(chunk, line);
+}
+
+/// Numeric `%` fallback: Python floored modulo (Python-profile `BinOp::Mod`).
+fn emit_py_mod(chunk: &mut Chunk, line: u32) {
+    crate::emitter::math::emit_python_floor_mod(chunk, line);
+}
+
+/// Numeric `**` fallback (Python-profile `BinOp::Pow`).
+fn emit_py_pow(chunk: &mut Chunk, line: u32) {
+    crate::emitter::math::emit_pow(chunk, line);
+}
+
+/// `a - b` with `__sub__` dispatch on object operands.
+pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_arith_dunder(&mut chunks[current], "__sub__", emit_f64_sub, line);
+}
+
+/// `a / b` with `__truediv__` dispatch on object operands.
+pub fn emit_pytruediv(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_arith_dunder(&mut chunks[current], "__truediv__", emit_f64_div, line);
+}
+
+/// `a // b` with `__floordiv__` dispatch on object operands.
+pub fn emit_pyfloordiv(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_arith_dunder(&mut chunks[current], "__floordiv__", emit_py_floordiv, line);
+}
+
+/// `a % b` with `__mod__` dispatch on object operands.
+pub fn emit_pymod(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_arith_dunder(&mut chunks[current], "__mod__", emit_py_mod, line);
+}
+
+/// `a ** b` with `__pow__` dispatch on object operands.
+pub fn emit_pypow(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_arith_dunder(&mut chunks[current], "__pow__", emit_py_pow, line);
+}
+
+/// Shared body for the pure-arithmetic dunders: stash `[a, b]`, then dispatch to
+/// `dunder` on an object left operand or run `fallback`.
+fn emit_arith_dunder(chunk: &mut Chunk, dunder: &str, fallback: fn(&mut Chunk, u32), line: u32) {
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, dunder, fallback, line);
+}
+
 /// Python `.count(x)` — for arrays, count element occurrences.
 /// Stack: [receiver, needle] → [count]
 /// Uses ecma:array.filter + length to count matching elements.
@@ -516,5 +592,11 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         _ => return false,
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
+    // `callable(x)` prints `True`/`False` — the helper returns a raw
+    // i32/number; coerce to a real Bool at the boundary.
+    if name == "python.callable" {
+        crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    }
     true
 }
