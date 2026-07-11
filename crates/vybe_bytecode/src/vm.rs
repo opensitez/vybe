@@ -1591,10 +1591,35 @@ impl VM {
 
     /// Run linked chunks with a pre-resolved import table from the Linker.
     /// Used for bootstrap: Linker resolves imports at link time, VM just loads them.
+    /// Runs to completion (drains the frame stack) — for top-level entry.
     pub fn run_linked(
         &mut self,
         chunks: Vec<Chunk>,
         resolved_imports: Vec<ImportTarget>,
+    ) -> Result<Value, VMError> {
+        self.run_linked_impl(chunks, resolved_imports, false)
+    }
+
+    /// Re-entrant variant of [`run_linked`] for running dynamically-compiled
+    /// chunks (e.g. `eval`) from INSIDE a host function while the VM is mid-
+    /// execution. Runs only the newly-pushed script frame to its return via
+    /// `execute_until`, leaving the caller's frames intact, then restores the
+    /// value stack — the same discipline as `invoke_callback`. Returns the
+    /// script's top-level `return` value (else null). Definitions and global
+    /// writes persist in this VM, so they escape to the caller's scope.
+    pub fn run_linked_nested(
+        &mut self,
+        chunks: Vec<Chunk>,
+        resolved_imports: Vec<ImportTarget>,
+    ) -> Result<Value, VMError> {
+        self.run_linked_impl(chunks, resolved_imports, true)
+    }
+
+    fn run_linked_impl(
+        &mut self,
+        chunks: Vec<Chunk>,
+        resolved_imports: Vec<ImportTarget>,
+        nested: bool,
     ) -> Result<Value, VMError> {
         if chunks.is_empty() {
             return Ok(Value::Null);
@@ -1699,6 +1724,8 @@ impl VM {
         }
 
         // Execute
+        let saved_frame_depth = self.frames.len();
+        let saved_stack_len = self.stack.len();
         self.frames.push(CallFrame {
             chunk_index: script_idx,
             ip: 0,
@@ -1710,7 +1737,16 @@ impl VM {
             self.stack.len() + self.chunks[script_idx].local_count as usize,
             Value::Null,
         );
-        self.execute()
+        if nested {
+            // Run only the script frame we just pushed; leave the caller's
+            // frames untouched, then restore its value stack (WASM call-frame
+            // semantics — see `invoke_callback`).
+            let result = self.execute_until(saved_frame_depth + 1);
+            self.stack.truncate(saved_stack_len);
+            result
+        } else {
+            self.execute()
+        }
     }
 
     pub fn run(&mut self, chunks: Vec<Chunk>) -> Result<Value, VMError> {
