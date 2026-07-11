@@ -4,16 +4,10 @@
 //! standard WASM opcodes. No host fns, no custom opcodes. Generic IEEE float
 //! ops (copysign/signbit/…) live in the shared `emitter::math` module.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
-pub fn emit_helper(
-    name: &str,
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    line: u32,
-) -> bool {
+pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) -> bool {
     let chunk = &mut chunks[current];
     match name {
         // math/bits.OnesCount(x) — population count over the 64-bit value.

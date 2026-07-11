@@ -113,7 +113,10 @@ fn go_prelude_body(source: &str) -> Result<Vec<Statement>, String> {
         .into_iter()
         .filter(|stmt| !matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "main"))
         .collect();
-    cache.lock().unwrap().insert(source.to_string(), stmts.clone());
+    cache
+        .lock()
+        .unwrap()
+        .insert(source.to_string(), stmts.clone());
     Ok(stmts)
 }
 
@@ -4821,7 +4824,11 @@ fn go_rewrite_errors_call(call_name: &str, args: &[Argument]) -> Option<Expressi
     match call_name {
         "errors.New" => Some(go_builtin_call(
             "__go_new_error",
-            vec![go_arg_value(args, 0), Expression::null(), Expression::null()],
+            vec![
+                go_arg_value(args, 0),
+                Expression::null(),
+                Expression::null(),
+            ],
         )),
         "errors.Unwrap" => Some(go_builtin_call(
             "__go_errors_unwrap",
@@ -4835,10 +4842,16 @@ fn go_rewrite_errors_call(call_name: &str, args: &[Argument]) -> Option<Expressi
             // `errors.Join(a, b, ...)` collects its variadic args into a slice.
             // `errors.Join(errs...)` already passes a slice — forward it.
             if args.len() == 1 && args[0].spread {
-                Some(go_builtin_call("__go_errors_join", vec![args[0].value.clone()]))
+                Some(go_builtin_call(
+                    "__go_errors_join",
+                    vec![args[0].value.clone()],
+                ))
             } else {
                 let elems: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
-                Some(go_builtin_call("__go_errors_join", vec![go_array_of(elems)]))
+                Some(go_builtin_call(
+                    "__go_errors_join",
+                    vec![go_array_of(elems)],
+                ))
             }
         }
         "fmt.Errorf" => go_rewrite_errorf(args),
@@ -4890,7 +4903,10 @@ fn go_rewrite_errorf(args: &[Argument]) -> Option<Expression> {
 
     let (wrap, errs) = match non_nil_wraps.len() {
         0 => (Expression::null(), Expression::null()),
-        1 => (non_nil_wraps.into_iter().next().unwrap(), Expression::null()),
+        1 => (
+            non_nil_wraps.into_iter().next().unwrap(),
+            Expression::null(),
+        ),
         _ => (Expression::null(), go_array_of(non_nil_wraps)),
     };
 
@@ -4944,12 +4960,12 @@ fn go_rewrite_errors_as(
     let x = "__go_as_x";
     let match_closure = Expression::new(ExprKind::Lambda {
         params: vec![go_error_param(x)],
-        body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(Expression::new(
-            ExprKind::IsType {
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(
+            Expression::new(ExprKind::IsType {
                 expr: Box::new(Expression::ident(x)),
                 type_name: target_type.clone(),
-            },
-        ))))]),
+            }),
+        )))]),
         is_async: false,
         captures: Vec::new(),
     });
@@ -5007,9 +5023,8 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
 /// tuple; the string-based helpers route to the strconv prelude.
 fn go_rewrite_strconv_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
     let arg = |i: usize| go_arg_value(args, i);
-    let tuple_with_nil = |value: Expression| {
-        Expression::new(ExprKind::Tuple(vec![value, Expression::null()]))
-    };
+    let tuple_with_nil =
+        |value: Expression| Expression::new(ExprKind::Tuple(vec![value, Expression::null()]));
     match call_name {
         "strconv.ParseBool" => Some(go_builtin_call("__go_strconv_ParseBool", vec![arg(0)])),
         "strconv.CanBackquote" => Some(go_builtin_call("__go_strconv_CanBackquote", vec![arg(0)])),
@@ -5023,7 +5038,11 @@ fn go_rewrite_strconv_call(call_name: &str, args: &[Argument]) -> Option<Express
         "strconv.Atoi" => Some(tuple_with_nil(go_builtin_call("__go_to_int", vec![arg(0)]))),
         // strconv.ParseInt/ParseUint(s, base, bits) → (parseInt(s, base), nil)
         "strconv.ParseInt" | "strconv.ParseUint" => {
-            let base = if args.len() >= 2 { arg(1) } else { Expression::int(10) };
+            let base = if args.len() >= 2 {
+                arg(1)
+            } else {
+                Expression::int(10)
+            };
             Some(tuple_with_nil(go_builtin_call(
                 "__go_parse_int",
                 vec![arg(0), base],
@@ -5092,7 +5111,10 @@ fn go_rewrite_slog_call(call_name: &str, args: &[Argument]) -> Option<Expression
         "slog.Group" => {
             let key = go_arg_value(args, 0);
             let attrs: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
-            Some(go_builtin_call("__go_slog_Group", vec![key, go_array_of(attrs)]))
+            Some(go_builtin_call(
+                "__go_slog_Group",
+                vec![key, go_array_of(attrs)],
+            ))
         }
         _ => None,
     }
@@ -5180,7 +5202,10 @@ fn go_rewrite_atomic_call(call_name: &str, args: &[Argument]) -> Option<Expressi
 /// Rewrite `net/url` package functions to the injected url-prelude helpers.
 fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
     match call_name {
-        "url.Parse" => Some(go_builtin_call("__go_url_Parse", vec![go_arg_value(args, 0)])),
+        "url.Parse" => Some(go_builtin_call(
+            "__go_url_Parse",
+            vec![go_arg_value(args, 0)],
+        )),
         "url.ParseRequestURI" => Some(go_builtin_call(
             "__go_url_ParseRequestURI",
             vec![go_arg_value(args, 0)],
@@ -5193,9 +5218,18 @@ fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression>
             "__go_url_PathUnescape",
             vec![go_arg_value(args, 0)],
         )),
-        "url.QueryEscape" => Some(go_builtin_call("__go_url_qesc", vec![go_arg_value(args, 0)])),
-        "url.QueryUnescape" => Some(go_builtin_call("__go_url_unesc", vec![go_arg_value(args, 0)])),
-        "url.User" => Some(go_builtin_call("__go_url_User", vec![go_arg_value(args, 0)])),
+        "url.QueryEscape" => Some(go_builtin_call(
+            "__go_url_qesc",
+            vec![go_arg_value(args, 0)],
+        )),
+        "url.QueryUnescape" => Some(go_builtin_call(
+            "__go_url_unesc",
+            vec![go_arg_value(args, 0)],
+        )),
+        "url.User" => Some(go_builtin_call(
+            "__go_url_User",
+            vec![go_arg_value(args, 0)],
+        )),
         "url.UserPassword" => Some(go_builtin_call(
             "__go_url_UserPassword",
             vec![go_arg_value(args, 0), go_arg_value(args, 1)],
@@ -7289,9 +7323,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 None => StmtKind::Continue(ContinueTarget::Implicit),
             }
         }
-        Rule::fallthrough_statement => {
-            StmtKind::Expr(Expression::ident(GO_FALLTHROUGH_MARKER))
-        }
+        Rule::fallthrough_statement => StmtKind::Expr(Expression::ident(GO_FALLTHROUGH_MARKER)),
         Rule::goto_statement => StmtKind::GoTo(walk_goto(pair)?),
         Rule::labeled_statement => walk_labeled(pair)?,
         Rule::defer_statement => walk_defer_stmt(pair)?,
@@ -9364,8 +9396,7 @@ fn go_build_is_type(expr: Expression, type_name: &str) -> Expression {
     // Map Go composite types to the canonical IsType categories the shared
     // compiler recognizes (array→isArray, function, map→object-kind).
     let trimmed = type_name.trim();
-    let canon = if trimmed.starts_with("[]")
-        || (trimmed.starts_with('[') && trimmed.contains(']'))
+    let canon = if trimmed.starts_with("[]") || (trimmed.starts_with('[') && trimmed.contains(']'))
     {
         "array"
     } else if trimmed.starts_with("func") {
