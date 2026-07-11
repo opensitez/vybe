@@ -89,8 +89,11 @@ typeuse = {
   | param* ~ result*
 }
 
-param  = { "(" ~ "param"  ~ id? ~ val_type+ ~ ")" }
-result = { "(" ~ "result" ~ val_type+ ~ ")" }
+// Extends val_type with GC reference types: (ref null? heaptype)
+any_val_type = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | val_type }
+
+param  = { "(" ~ "param"  ~ id? ~ any_val_type+ ~ ")" }
+result = { "(" ~ "result" ~ any_val_type+ ~ ")" }
 
 // ── Instructions ──────────────────────────────────────────────────────────────
 
@@ -204,6 +207,10 @@ instr_name = @{
   | "ref.null" | "ref.is_null" | "ref.func"
     // ── wasm:js-string builtins (merged proposal) ─────────────────────────
   | "string.const"
+    // ── GC / WasmGC struct ops ────────────────────────────────────────────
+  | "struct.new_default" | "struct.new"
+  | "struct.get_s" | "struct.get_u" | "struct.get"
+  | "struct.set"
     // ── SIMD v128 (abbreviated) ───────────────────────────────────────────
   | "v128.const"
   | "v128.not" | "v128.and" | "v128.andnot" | "v128.or" | "v128.xor"
@@ -275,7 +282,7 @@ func_field = {
     "(" ~ "func" ~ id? ~ export_inline* ~ import_inline? ~ typeuse ~ local* ~ instr* ~ ")"
 }
 
-local = { "(" ~ "local" ~ id? ~ val_type+ ~ ")" }
+local = { "(" ~ "local" ~ id? ~ any_val_type+ ~ ")" }
 
 export_inline = { "(" ~ "export" ~ string ~ ")" }
 import_inline = { "(" ~ "import" ~ string ~ string ~ ")" }
@@ -362,8 +369,16 @@ data_mode = {
 
 // ── Type definition ───────────────────────────────────────────────────────────
 
-type_field = { "(" ~ "type" ~ id? ~ func_type ~ ")" }
-func_type  = { "(" ~ "func" ~ param* ~ result* ~ ")" }
+type_field     = { "(" ~ "type" ~ id? ~ composite_type ~ ")" }
+composite_type = { struct_type | array_type | func_type }
+struct_type    = { "(" ~ "struct" ~ field_def* ~ ")" }
+array_type     = { "(" ~ "array" ~ field_def ~ ")" }
+field_def      = { "(" ~ "field" ~ id? ~ storage_type ~ ")" }
+storage_type   = { "(" ~ "mut" ~ val_type ~ ")" | val_type | packed_type | ref_val_type }
+packed_type    = @{ "i8" | "i16" }
+ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
+heap_type      = @{ "func" | "extern" | "any" | "eq" | "i31" | "data" | "array" | "none" | "noextern" | "nofunc" | id }
+func_type      = { "(" ~ "func" ~ param* ~ result* ~ ")" }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 

@@ -425,9 +425,12 @@ fn gcl_accessor_call(
     args: Vec<Argument>,
 ) -> Expression {
     let key = format!("{}_{}", prefix, field.to_ascii_lowercase());
-    let mut explicit_args = Vec::with_capacity(args.len() + 1);
-    explicit_args.push(Argument::positional(object.clone()));
-    explicit_args.extend(args);
+    // `this` is NOT passed explicitly: plib's bind_ref stamps
+    // `__vybe_method_receiver` on every accessor ref, and the call path
+    // prepends that receiver. An explicit object arg here doubled the
+    // receiver — setters got (this, this, value) and the value fell off
+    // the arity-2 chunk.
+    let explicit_args = args;
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Index {
             object: Box::new(object),

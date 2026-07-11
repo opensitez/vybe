@@ -161,12 +161,12 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 
 # ── Random module ────────────────────────────────────────────────────────────
 
-"random.random"    = { emit = "host:ecma:math:random",      min_args = 0, max_args = 0 }
-"random.randint"   = { emit = "host:ecma:math:randint",     min_args = 2, max_args = 2 }
+"random.random"    = { emit = "common:python.random",       min_args = 0, max_args = 0 }
+"random.randint"   = { emit = "common:python.randint",      min_args = 2, max_args = 2 }
 "random.choice"    = { emit = "common:python.random_choice",          min_args = 1, max_args = 1 }
 "random.shuffle"   = { emit = "common:python.random_shuffle",         min_args = 1, max_args = 1 }
 "random.uniform"   = { emit = "host:ecma:math:randUniform", min_args = 2, max_args = 2 }
-"random.seed"      = { emit = "noop",                       min_args = 0, max_args = 1 }
+"random.seed"      = { emit = "common:python.seed",         min_args = 0, max_args = 1 }
 "random.randrange" = { emit = "host:ecma:math:randint",     min_args = 1, max_args = 3 }
 "random.sample"    = { emit = "common:python.random_sample",          min_args = 2, max_args = 2 }
 

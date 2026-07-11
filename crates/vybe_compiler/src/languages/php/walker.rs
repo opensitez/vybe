@@ -1580,13 +1580,40 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // available here. Copy const + method members into using classes.
     let mut trait_members: std::collections::HashMap<String, Vec<ClassMember>> =
         std::collections::HashMap::new();
-    for stmt in &body {
-        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
-            if trait_names.contains(name) {
-                trait_members.insert(name.clone(), members.clone());
+    // Traits/classes may sit inside `namespace X { … }` blocks
+    // (StmtKind::NamespaceDecl) — collect and fold through them too.
+    fn collect_trait_decls(
+        stmts: &[Statement],
+        trait_names: &std::collections::HashSet<String>,
+        out: &mut std::collections::HashMap<String, Vec<ClassMember>>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::ClassDecl { name, members, .. } => {
+                    let short = name.rsplit('.').next().unwrap_or(name);
+                    if trait_names.contains(name) || trait_names.contains(short) {
+                        out.insert(name.clone(), members.clone());
+                    }
+                }
+                StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                    collect_trait_decls(body, trait_names, out);
+                }
+                _ => {}
             }
         }
     }
+    collect_trait_decls(&body, &trait_names, &mut trait_members);
+    // Traits declared inside `namespace X { … }` blocks never reach the
+    // segment-level `was_trait` registration — TRAIT_BODIES (published by
+    // walk_trait_decl itself) is the authoritative set; merge it.
+    TRAIT_BODIES.with(|t| {
+        for (name, members) in t.borrow().iter() {
+            trait_members
+                .entry(name.clone())
+                .or_insert_with(|| members.clone());
+            trait_names.insert(name.clone());
+        }
+    });
 
     // Snapshot trait usage map, then fold trait members into using
     // classes. Skip member names already declared on the class (PHP
@@ -1602,6 +1629,24 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // a trait that `use`s another trait must expose the inner trait's
     // members to any class that uses the outer one. Iterate to a fixpoint
     // so chains (A uses B uses C) fully resolve before class folding.
+    // Trait references inside class bodies use the SOURCE spelling
+    // (`use Timestamped;`) while declarations carry the FQ dotted identity
+    // (`App.Traits.Timestamped`). Resolve exact first, then an unambiguous
+    // `.suffix` match — covers same-namespace use and `use App\Traits\X;`
+    // imports without a separate alias table.
+    let resolve_trait_key = |registry: &std::collections::HashMap<String, Vec<ClassMember>>,
+                             tname: &str|
+     -> Option<String> {
+        if registry.contains_key(tname) {
+            return Some(tname.to_string());
+        }
+        let dotted = format!(".{tname}");
+        let mut matches = registry.keys().filter(|k| k.ends_with(&dotted));
+        match (matches.next(), matches.next()) {
+            (Some(k), None) => Some(k.clone()),
+            _ => None,
+        }
+    };
     if !trait_members.is_empty() {
         let member_name = |m: &ClassMember| -> Option<String> {
             match m {
@@ -1634,8 +1679,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     if ut == &tname {
                         continue;
                     }
-                    if let Some(um) = trait_members.get(ut) {
-                        for m in um {
+                    let ut_key = resolve_trait_key(&trait_members, ut);
+                    if ut_key.as_deref() == Some(tname.as_str()) {
+                        continue;
+                    }
+                    if let Some(um) = ut_key.and_then(|k| trait_members.get(&k).cloned()) {
+                        for m in &um {
                             if let Some(mn) = member_name(m) {
                                 if present.insert(mn) {
                                     to_add.push(m.clone());
@@ -1653,12 +1702,25 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     if !trait_members.is_empty() && !usages.is_empty() {
-        for stmt in &mut body {
-            if let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind {
+        let mut stack: Vec<&mut Statement> = body.iter_mut().collect();
+        while let Some(stmt) = stack.pop() {
+            let (name, members) = match &mut stmt.kind {
+                StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                    stack.extend(body.iter_mut());
+                    continue;
+                }
+                StmtKind::ClassDecl { name, members, .. } => (name, members),
+                _ => continue,
+            };
+            {
                 if trait_names.contains(name) {
                     continue;
                 }
-                let Some(used) = usages.get(name) else {
+                // TRAIT_USAGES is recorded at class-body walk time under
+                // the SOURCE class name; FQ-renamed classes look up their
+                // short segment too.
+                let short = name.rsplit('.').next().unwrap_or(name);
+                let Some(used) = usages.get(name).or_else(|| usages.get(short)) else {
                     continue;
                 };
                 let mut declared: std::collections::HashSet<String> = members
@@ -1676,10 +1738,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
                         _ => None,
                     })
                     .collect();
-                let class_aliases: &[(String, String, String)] =
-                    aliases.get(name).map(Vec::as_slice).unwrap_or(&[]);
+                let class_aliases: &[(String, String, String)] = aliases
+                    .get(name)
+                    .or_else(|| aliases.get(short))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 for tname in used {
-                    if let Some(tmembers) = trait_members.get(tname) {
+                    let t_key = resolve_trait_key(&trait_members, tname);
+                    if let Some(tmembers) = t_key.and_then(|k| trait_members.get(&k)) {
                         for m in tmembers {
                             let mname = match m {
                                 ClassMember::Const { name, .. } => Some(name.clone()),
@@ -2862,6 +2928,26 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
     false
 }
 
+/// Wrap a class-name expression in `str_replace('.', '\\', …)` so the
+/// runtime value shows PHP's backslash-qualified spelling instead of the
+/// internal dotted identity. No-ops for un-namespaced names.
+fn php_backslash_display(expr: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("str_replace".into()))),
+            args: vec![
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(".".into())))),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(
+                    "\\".into(),
+                )))),
+                Argument::positional(expr),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    )
+}
+
 fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params: Vec<Param> = Vec::new();
@@ -2891,10 +2977,44 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     body = lower_php_runtime_arg_helpers_in_block(&mut params, body);
 
+    // Un-flattened namespaces (namespaceplan.md PHP phase): a function
+    // declared inside `namespace Util;` gets its fully-qualified dotted
+    // identity (`Util.wrap`) — same-named functions in distinct namespaces
+    // no longer collide. An implicit `use function Util\wrap;` binds the
+    // bare name for in-file references through the same alias mechanism
+    // (`source_type_aliases`) an explicit `use function` takes.
+    let mut name = name;
+    if let Some(ns) = current_namespace().filter(|n| !n.is_empty()) {
+        if !name.contains('.') {
+            let fq = format!("{}.{}", ns.replace('\\', "."), name);
+            note_php_use_import(Import {
+                kind: ImportKind::Simple {
+                    path: fq.clone(),
+                    alias: Some(name.clone()),
+                },
+                span: Span::default(),
+            });
+            name = fq;
+        }
+    }
+
     let is_generator = body_contains_yield(&body);
     let required = params.iter().filter(|p| p.default.is_none()).count();
     FUNC_REGISTRY.with(|r| {
-        r.borrow_mut().insert(
+        let mut reg = r.borrow_mut();
+        // Call sites spell the SOURCE name — register the short segment
+        // too so arity metadata stays reachable for bare calls.
+        if let Some(short) = name.rsplit('.').next().filter(|s| *s != name) {
+            reg.insert(
+                short.to_string(),
+                FuncMeta {
+                    name: name.clone(),
+                    param_count: params.len(),
+                    required_params: required,
+                },
+            );
+        }
+        reg.insert(
             name.clone(),
             FuncMeta {
                 name: name.clone(),
@@ -12161,7 +12281,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // `get_class()` with no argument → the enclosing class name (like
         // `__CLASS__`); PHP resolves it against the calling scope's class.
         "get_class" if args.is_empty() => {
-            ExprKind::Lit(Literal::Str(current_class_name().unwrap_or_default()))
+            // Display form is backslash-qualified (`App\Models\Post`);
+            // the dotted spelling is the internal identity only.
+            ExprKind::Lit(Literal::Str(
+                current_class_name().unwrap_or_default().replace('.', "\\"),
+            ))
         }
         "get_class" if args.len() == 1 => {
             // $obj.__type ?? $obj.constructor.name
@@ -12190,13 +12314,21 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 },
                 span.clone(),
             );
-            ExprKind::Binary {
-                op: BinOp::NullCoalesce,
-                left: Box::new(type_prop),
-                right: Box::new(ctor_name),
-            }
+            let internal = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::NullCoalesce,
+                    left: Box::new(type_prop),
+                    right: Box::new(ctor_name),
+                },
+                span.clone(),
+            );
+            // Internal identity is dotted (`App.Models.Post`); PHP's
+            // reflection surface spells it with backslashes.
+            php_backslash_display(internal, &span).kind
         }
-        "get_called_class" if args.is_empty() => php_called_class_expr(&span).kind,
+        "get_called_class" if args.is_empty() => {
+            php_backslash_display(php_called_class_expr(&span), &span).kind
+        }
         // PHP `is_countable($x)` ≡ `is_array($x) || $x instanceof Countable`;
         // `is_iterable($x)` ≡ `is_array($x) || $x instanceof Traversable`.
         // For arrays the `is_array` disjunct short-circuits (the common case).
@@ -14578,7 +14710,10 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         // ── Magic class constant — resolved to the enclosing class/trait name
         // at walk time (CLASS_STACK). Empty string outside a class, per PHP.
         "__CLASS__" | "__TRAIT__" => {
-            ExprKind::Lit(Literal::Str(current_class_name().unwrap_or_default()))
+            // Backslash-qualified display; dotted is internal identity.
+            ExprKind::Lit(Literal::Str(
+                current_class_name().unwrap_or_default().replace('.', "\\"),
+            ))
         }
         "__LINE__" => ExprKind::Lit(Literal::Int(span.start_line as i64)),
         // `__NAMESPACE__` — the current namespace name ("" in global scope).

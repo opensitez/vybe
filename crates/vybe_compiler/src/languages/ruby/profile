@@ -16,6 +16,14 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+# Ruby is over wasm/js — `h[key]` must dispatch polymorphically (Map/Object
+# property get for string/hash keys, array index for ints). Without this,
+# `h["a"]` numeric-coerces the string key → `toF64` crash on every Hash read.
+dynamic_member_access = true
+# Route `==` through `ecma:value:abstractEq` (host → real boxed Boolean), the
+# same mechanism JS uses (JS is over wasm/js too). Without it Ruby `==` returns
+# a raw i32 that prints "1"/"0" instead of "true"/"false".
+abstract_equality = true
 # Ruby `arr[-1]` returns the last element (same idiom as Python).
 # Also applies to strings: `"hello"[-1]` → "o".
 negative_index_wraps = true
@@ -54,8 +62,8 @@ warn            = { emit = "print",                         min_args = 1, max_ar
 # ── Math (WASM opcodes) ─────────────────────────────────────────────────────
 
 abs             = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
-rand            = { emit = "host:ecma:math:random",         min_args = 0, max_args = 1 }
-srand           = { emit = "noop",                          min_args = 0, max_args = 1 }
+rand            = { emit = "common:ruby.rand",              min_args = 0, max_args = 1 }
+srand           = { emit = "common:ruby.srand",             min_args = 0, max_args = 1 }
 "Math.sqrt"     = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
 "Math.sin"      = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
 "Math.cos"      = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
@@ -88,8 +96,12 @@ caller          = { emit = "noop",                           min_args = 0, max_a
 
 # ── String instance methods (common:strings.* / common:str_*) ────────────────
 
-length          = { emit = "str_length",                    min_args = 0, max_args = 0 }
-size            = { emit = "str_length",                    min_args = 0, max_args = 0 }
+# Polymorphic length — string / array / hash (Map) / object. `str_length`
+# was string-only, so `arr.length`/`hash.length` hit `wasm:js-string:length`
+# on a non-string → `toF64` error. `collections.length` (emit_len) dispatches
+# on the runtime type.
+length          = { emit = "common:collections.length",     min_args = 0, max_args = 0 }
+size            = { emit = "common:collections.length",     min_args = 0, max_args = 0 }
 upcase          = { emit = "common:strings.to_upper",       min_args = 0, max_args = 0 }
 downcase        = { emit = "common:strings.to_lower",       min_args = 0, max_args = 0 }
 strip           = { emit = "common:strings.trim",           min_args = 0, max_args = 0 }
@@ -104,7 +116,8 @@ gsub            = { emit = "common:strings.replace",        min_args = 2, max_ar
 sub             = { emit = "host:ecma:string:replace", min_args = 2, max_args = 2 }
 index           = { emit = "common:strings.index_of",       min_args = 1, max_args = 2 }
 rindex          = { emit = "common:str_last_index_of",      min_args = 1, max_args = 2 }
-"include?"      = { emit = "common:str_includes",           min_args = 1, max_args = 1 }
+"include?"      = { emit = "common:ruby.includes",          min_args = 1, max_args = 1 }
+"member?"       = { emit = "common:ruby.includes",          min_args = 1, max_args = 1 }
 "start_with?"   = { emit = "common:str_starts_with",        min_args = 1, max_args = 1 }
 "end_with?"     = { emit = "common:str_ends_with",          min_args = 1, max_args = 1 }
 capitalize      = { emit = "intrinsic:capitalize",   min_args = 0, max_args = 0 }

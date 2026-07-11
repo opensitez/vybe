@@ -297,9 +297,17 @@ postfix_chain = {
     | "." ~ method_name_id ~ ("(" ~ call_args? ~ ")")? ~ block_literal?  // method call
     | "::" ~ constant                                                     // scope resolution
     | "[" ~ expression_list? ~ "]"                                        // subscript
-    | "(" ~ call_args? ~ ")"                                              // bare call
     | block_literal                                                       // trailing block
 }
+
+// `foo(args)` — TIGHT call: the `(` must immediately follow the name (no space).
+// `foo (args)` WITH a space is NOT a call — it's a command call whose first
+// argument is the parenthesised expression `(args)`. Mirrors Ruby's
+// whitespace-significant call-vs-command distinction. `$` = no implicit
+// whitespace between the name and `(`; `tight_call` is non-atomic (`!`) so the
+// argument list still allows inner spaces (`foo(1, 2)`).
+ident_call = ${ (constant | identifier) ~ tight_call }
+tight_call = !{ "(" ~ call_args? ~ ")" }
 
 call_args = { call_arg ~ ("," ~ call_arg)* ~ ","? }
 
@@ -353,6 +361,7 @@ primary = {
     | global_var
     | class_var
     | instance_var
+    | ident_call
     | constant
     | identifier
 }

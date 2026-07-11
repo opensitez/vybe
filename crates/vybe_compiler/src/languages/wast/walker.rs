@@ -36,6 +36,8 @@ use std::collections::HashMap;
 thread_local! {
     static FUNC_INDEX_ARITIES: RefCell<Vec<usize>> = RefCell::new(Vec::new());
     static FUNC_NAME_ARITIES: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // type name → number of fields (for struct.new arity)
+    static STRUCT_FIELD_COUNTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
 }
 
 // ── Label context ─────────────────────────────────────────────────────────────
@@ -238,6 +240,43 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     FUNC_INDEX_ARITIES.with(|f| *f.borrow_mut() = index_arities);
     FUNC_NAME_ARITIES.with(|f| *f.borrow_mut() = name_arities);
+
+    // 3. Pre-scan struct type definitions to know field counts for struct.new arity
+    let mut struct_counts: HashMap<String, usize> = HashMap::new();
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::type_field {
+                    let mut type_name: Option<String> = None;
+                    let mut field_count = 0usize;
+                    let mut is_struct = false;
+                    for sub in inner.into_inner() {
+                        match sub.as_rule() {
+                            Rule::id => type_name = Some(sub.as_str()[1..].to_string()),
+                            Rule::composite_type => {
+                                if let Some(inner2) = sub.into_inner().next() {
+                                    if inner2.as_rule() == Rule::struct_type {
+                                        is_struct = true;
+                                        field_count = inner2
+                                            .into_inner()
+                                            .filter(|p| p.as_rule() == Rule::field_def)
+                                            .count();
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_struct {
+                        if let Some(name) = type_name {
+                            struct_counts.insert(name, field_count);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    STRUCT_FIELD_COUNTS.with(|f| *f.borrow_mut() = struct_counts);
 
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -994,6 +1033,81 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             ))
         }
 
+        // ── GC / WasmGC struct ops ────────────────────────────────────────
+        // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ...}
+        // args: [typeidx, field_val_0, field_val_1, ...]
+        "struct.new" => {
+            let vals: Vec<Expression> = if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                vec![]
+            };
+            let props: Vec<ObjectProperty> = vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| ObjectProperty::KeyValue {
+                    key: Expression::string(&i.to_string()),
+                    value: v,
+                })
+                .collect();
+            Ok(Expression::with_span(ExprKind::Object(props), span))
+        }
+        // struct.new_default $T → {}
+        "struct.new_default" => Ok(Expression::with_span(ExprKind::Object(vec![]), span)),
+        // struct.get $T N ref  → ref["N"]
+        // args: [typeidx, fieldidx, ref_expr]
+        "struct.get" | "struct.get_s" | "struct.get_u" => {
+            let field_idx = args
+                .get(1)
+                .and_then(|a| {
+                    if let ExprKind::Lit(Literal::Int(i)) = &a.kind {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            let obj = args.into_iter().nth(2).unwrap_or(Expression::null());
+            Ok(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(obj),
+                    field: field_idx.to_string(),
+                    null_safe: false,
+                },
+                span,
+            ))
+        }
+        // struct.set $T N ref val → ref["N"] = val  (produces null, used as stmt)
+        // args: [typeidx, fieldidx, ref_expr, val_expr]
+        "struct.set" => {
+            let field_idx = args
+                .get(1)
+                .and_then(|a| {
+                    if let ExprKind::Lit(Literal::Int(i)) = &a.kind {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            let obj = args.get(2).cloned().unwrap_or(Expression::null());
+            let val = args.into_iter().nth(3).unwrap_or(Expression::null());
+            Ok(Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(obj),
+                            field: field_idx.to_string(),
+                            null_safe: false,
+                        },
+                        span,
+                    )),
+                    value: Box::new(val),
+                },
+                span,
+            ))
+        }
+
         // ── everything else → call with dots replaced by underscores ──────
         _ => Ok(make_call(&name.replace('.', "_"), args, span)),
     }
@@ -1427,7 +1541,10 @@ fn fold_instructions(
                     }
                     "unreachable" => {
                         statements.push(Statement::with_span(
-                            StmtKind::Throw { expr: None, cause: None },
+                            StmtKind::Throw {
+                                expr: None,
+                                cause: None,
+                            },
                             span,
                         ));
                     }
@@ -1492,32 +1609,82 @@ fn fold_instructions(
 fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
     match name {
         // Binary ops
-        "i32.add" | "i32.sub" | "i32.mul" | "i32.div_s" | "i32.div_u" | "i32.rem_s" | "i32.rem_u" |
-        "i32.and" | "i32.or" | "i32.xor" | "i32.shl" | "i32.shr_s" | "i32.shr_u" | "i32.rotl" | "i32.rotr" |
-        "i64.add" | "i64.sub" | "i64.mul" | "i64.div_s" | "i64.div_u" | "i64.rem_s" | "i64.rem_u" |
-        "i64.and" | "i64.or" | "i64.xor" | "i64.shl" | "i64.shr_s" | "i64.shr_u" | "i64.rotl" | "i64.rotr" |
-        "f32.add" | "f32.sub" | "f32.mul" | "f32.div" | "f32.min" | "f32.max" | "f32.copysign" |
-        "f64.add" | "f64.sub" | "f64.mul" | "f64.div" | "f64.min" | "f64.max" | "f64.copysign" |
-        "i32.eq" | "i32.ne" | "i32.lt_s" | "i32.lt_u" | "i32.le_s" | "i32.le_u" | "i32.gt_s" | "i32.gt_u" | "i32.ge_s" | "i32.ge_u" |
-        "i64.eq" | "i64.ne" | "i64.lt_s" | "i64.lt_u" | "i64.le_s" | "i64.le_u" | "i64.gt_s" | "i64.gt_u" | "i64.ge_s" | "i64.ge_u" |
-        "f32.eq" | "f32.ne" | "f32.lt" | "f32.le" | "f32.gt" | "f32.ge" |
-        "f64.eq" | "f64.ne" | "f64.lt" | "f64.le" | "f64.gt" | "f64.ge" => 2,
+        "i32.add" | "i32.sub" | "i32.mul" | "i32.div_s" | "i32.div_u" | "i32.rem_s"
+        | "i32.rem_u" | "i32.and" | "i32.or" | "i32.xor" | "i32.shl" | "i32.shr_s"
+        | "i32.shr_u" | "i32.rotl" | "i32.rotr" | "i64.add" | "i64.sub" | "i64.mul"
+        | "i64.div_s" | "i64.div_u" | "i64.rem_s" | "i64.rem_u" | "i64.and" | "i64.or"
+        | "i64.xor" | "i64.shl" | "i64.shr_s" | "i64.shr_u" | "i64.rotl" | "i64.rotr"
+        | "f32.add" | "f32.sub" | "f32.mul" | "f32.div" | "f32.min" | "f32.max"
+        | "f32.copysign" | "f64.add" | "f64.sub" | "f64.mul" | "f64.div" | "f64.min"
+        | "f64.max" | "f64.copysign" | "i32.eq" | "i32.ne" | "i32.lt_s" | "i32.lt_u"
+        | "i32.le_s" | "i32.le_u" | "i32.gt_s" | "i32.gt_u" | "i32.ge_s" | "i32.ge_u"
+        | "i64.eq" | "i64.ne" | "i64.lt_s" | "i64.lt_u" | "i64.le_s" | "i64.le_u" | "i64.gt_s"
+        | "i64.gt_u" | "i64.ge_s" | "i64.ge_u" | "f32.eq" | "f32.ne" | "f32.lt" | "f32.le"
+        | "f32.gt" | "f32.ge" | "f64.eq" | "f64.ne" | "f64.lt" | "f64.le" | "f64.gt" | "f64.ge" => {
+            2
+        }
 
         // Unary / Conversion ops
-        "i32.clz" | "i32.ctz" | "i32.popcnt" | "i32.eqz" |
-        "i64.clz" | "i64.ctz" | "i64.popcnt" | "i64.eqz" |
-        "f32.abs" | "f32.neg" | "f32.ceil" | "f32.floor" | "f32.trunc" | "f32.nearest" | "f32.sqrt" |
-        "f64.abs" | "f64.neg" | "f64.ceil" | "f64.floor" | "f64.trunc" | "f64.nearest" | "f64.sqrt" |
-        "i32.wrap_i64" | "i64.extend_i32_s" | "i64.extend_i32_u" |
-        "i32.trunc_f32_s" | "i32.trunc_f32_u" | "i32.trunc_f64_s" | "i32.trunc_f64_u" |
-        "i64.trunc_f32_s" | "i64.trunc_f32_u" | "i64.trunc_f64_s" | "i64.trunc_f64_u" |
-        "f32.convert_i32_s" | "f32.convert_i32_u" | "f32.convert_i64_s" | "f32.convert_i64_u" |
-        "f64.convert_i32_s" | "f64.convert_i32_u" | "f64.convert_i64_s" | "f64.convert_i64_u" |
-        "f32.demote_f64" | "f64.promote_f32" |
-        "i32.reinterpret_f32" | "i64.reinterpret_f64" | "f32.reinterpret_i32" | "f64.reinterpret_i64" |
-        "i32.extend8_s" | "i32.extend16_s" | "i64.extend8_s" | "i64.extend16_s" | "i64.extend32_s" |
-        "i32.trunc_sat_f32_s" | "i32.trunc_sat_f32_u" | "i32.trunc_sat_f64_s" | "i32.trunc_sat_f64_u" |
-        "i64.trunc_sat_f32_s" | "i64.trunc_sat_f32_u" | "i64.trunc_sat_f64_s" | "i64.trunc_sat_f64_u" => 1,
+        "i32.clz"
+        | "i32.ctz"
+        | "i32.popcnt"
+        | "i32.eqz"
+        | "i64.clz"
+        | "i64.ctz"
+        | "i64.popcnt"
+        | "i64.eqz"
+        | "f32.abs"
+        | "f32.neg"
+        | "f32.ceil"
+        | "f32.floor"
+        | "f32.trunc"
+        | "f32.nearest"
+        | "f32.sqrt"
+        | "f64.abs"
+        | "f64.neg"
+        | "f64.ceil"
+        | "f64.floor"
+        | "f64.trunc"
+        | "f64.nearest"
+        | "f64.sqrt"
+        | "i32.wrap_i64"
+        | "i64.extend_i32_s"
+        | "i64.extend_i32_u"
+        | "i32.trunc_f32_s"
+        | "i32.trunc_f32_u"
+        | "i32.trunc_f64_s"
+        | "i32.trunc_f64_u"
+        | "i64.trunc_f32_s"
+        | "i64.trunc_f32_u"
+        | "i64.trunc_f64_s"
+        | "i64.trunc_f64_u"
+        | "f32.convert_i32_s"
+        | "f32.convert_i32_u"
+        | "f32.convert_i64_s"
+        | "f32.convert_i64_u"
+        | "f64.convert_i32_s"
+        | "f64.convert_i32_u"
+        | "f64.convert_i64_s"
+        | "f64.convert_i64_u"
+        | "f32.demote_f64"
+        | "f64.promote_f32"
+        | "i32.reinterpret_f32"
+        | "i64.reinterpret_f64"
+        | "f32.reinterpret_i32"
+        | "f64.reinterpret_i64"
+        | "i32.extend8_s"
+        | "i32.extend16_s"
+        | "i64.extend8_s"
+        | "i64.extend16_s"
+        | "i64.extend32_s"
+        | "i32.trunc_sat_f32_s"
+        | "i32.trunc_sat_f32_u"
+        | "i32.trunc_sat_f64_s"
+        | "i32.trunc_sat_f64_u"
+        | "i64.trunc_sat_f32_s"
+        | "i64.trunc_sat_f32_u"
+        | "i64.trunc_sat_f64_s"
+        | "i64.trunc_sat_f64_u" => 1,
 
         // Variable set / tee
         "local.set" | "global.set" | "local.tee" => 1,
@@ -1529,12 +1696,12 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "drop" => 1,
 
         // Memory load/store
-        "i32.load" | "i64.load" | "f32.load" | "f64.load" |
-        "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u" |
-        "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s" | "i64.load32_u" => 1, // address
+        "i32.load" | "i64.load" | "f32.load" | "f64.load" | "i32.load8_s" | "i32.load8_u"
+        | "i32.load16_s" | "i32.load16_u" | "i64.load8_s" | "i64.load8_u" | "i64.load16_s"
+        | "i64.load16_u" | "i64.load32_s" | "i64.load32_u" => 1, // address
 
-        "i32.store" | "i64.store" | "f32.store" | "f64.store" |
-        "i32.store8" | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 2, // address, value
+        "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8" | "i32.store16"
+        | "i64.store8" | "i64.store16" | "i64.store32" => 2, // address, value
 
         // Memory size / grow
         "memory.size" => 0,
@@ -1559,8 +1726,29 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
                 1
             }
         }
-        
+
         "call_indirect" => 2,
+
+        // GC struct ops
+        // struct.new $T: typeidx is an immediate; field values come from stack.
+        // We stored field counts by type name in STRUCT_FIELD_COUNTS.
+        "struct.new" => {
+            // args[0] is typeidx immediate (ident or int) — not a stack value.
+            // Remaining stack operands = field count for that type.
+            if let Some(first) = args.first() {
+                let type_name = match &first.kind {
+                    ExprKind::Ident(n) => n.clone(),
+                    ExprKind::Lit(Literal::Int(i)) => i.to_string(),
+                    _ => String::new(),
+                };
+                STRUCT_FIELD_COUNTS.with(|f| *f.borrow().get(&type_name).unwrap_or(&0))
+            } else {
+                0
+            }
+        }
+        "struct.new_default" => 0, // no stack operands; typeidx is immediate
+        "struct.get" | "struct.get_s" | "struct.get_u" => 1, // pops 1 ref
+        "struct.set" => 2,         // pops ref + val
 
         _ => 0,
     }
@@ -1568,9 +1756,9 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
 
 fn get_instruction_push_count(name: &str) -> usize {
     match name {
-        "local.set" | "global.set" | "drop" | "br_if" | "br" | "unreachable" | "nop" |
-        "i32.store" | "i64.store" | "f32.store" | "f64.store" |
-        "i32.store8" | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 0,
+        "local.set" | "global.set" | "drop" | "br_if" | "br" | "unreachable" | "nop"
+        | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8" | "i32.store16"
+        | "i64.store8" | "i64.store16" | "i64.store32" | "struct.set" => 0,
         _ => 1,
     }
 }

@@ -1287,6 +1287,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         Rule::postfix => walk_postfix(pair),
         Rule::primary => walk_primary(pair),
+        Rule::ident_call => walk_ident_call(pair),
         Rule::expression_list => walk_expr_list_kind(pair),
 
         // ── Special expressions ─────────────────────────────────────────
@@ -1526,31 +1527,41 @@ fn walk_range(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
     }
     if end_idx < items.len() {
         let end = walk_expression(items.remove(end_idx))?;
-        if inclusive {
-            // Compiler ignores inclusive flag — normalize to exclusive: end + 1
-            let end_plus_one = Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(end),
-                right: Box::new(Expression::int(1)),
-            });
-            Ok(ExprKind::Range {
-                start: Box::new(start),
-                end: Box::new(end_plus_one),
-                inclusive: false,
-            })
-        } else {
-            Ok(ExprKind::Range {
-                start: Box::new(start),
-                end: Box::new(end),
-                inclusive: false,
-            })
-        }
+        // `..` is inclusive, `...` exclusive — pass the flag through. The shared
+        // range/slice emitters honour it for both numeric and char bounds
+        // (no lossy compile-time `end + 1`, which corrupted `'a'..'z'`).
+        Ok(ExprKind::Range {
+            start: Box::new(start),
+            end: Box::new(end),
+            inclusive,
+        })
     } else {
         Ok(start.kind)
     }
 }
 
 // ── Postfix (call, member, subscript, block) ────────────────────────────────
+
+/// `ident_call = ${ (constant | identifier) ~ tight_call }` — a whitespace-tight
+/// `foo(args)` call. The `(` immediately follows the name; `foo (args)` (space)
+/// never reaches here (it stays a command call).
+fn walk_ident_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let callee = Expression::new(walk_expr_kind(inner.remove(0))?);
+    // tight_call = !{ "(" ~ call_args? ~ ")" }
+    let args = inner
+        .into_iter()
+        .find(|c| c.as_rule() == Rule::tight_call)
+        .and_then(|tc| tc.into_inner().find(|c| c.as_rule() == Rule::call_args))
+        .map(walk_call_args)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    })
+}
 
 fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut inner = pair.into_inner();

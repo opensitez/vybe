@@ -562,13 +562,73 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
+    // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
+    // semantics). Shared `vybe_emitter` op; `argc` = number of iterables.
+    if name == "python.zip" {
+        collections::emit_zip(chunks, current, argc, collections::ZipLen::Shortest, line);
+        return true;
+    }
+    // `random.choice(seq)` → one uniformly-random element. Shared op.
+    if name == "python.random_choice" {
+        crate::emitter::random::emit_sample(chunks, current, argc, line);
+        return true;
+    }
+    // `random.shuffle(seq)` → in-place Fisher-Yates. Shared op.
+    if name == "python.random_shuffle" {
+        crate::emitter::random::emit_shuffle(chunks, current, argc, line);
+        return true;
+    }
+    // `random.random()` → seedable uniform float in [0, 1).
+    if name == "python.random" {
+        crate::emitter::random::emit_next_unit(chunks, current, line);
+        return true;
+    }
+    // `random.randint(a, b)` → seedable int in [a, b] (inclusive).
+    if name == "python.randint" {
+        crate::emitter::random::emit_rand_int_inclusive(chunks, current, line);
+        return true;
+    }
+    // `random.sample(population, k)` → k unique elements (seedable partial
+    // Fisher-Yates on a copy).
+    if name == "python.random_sample" {
+        crate::emitter::random::emit_sample_k(chunks, current, line);
+        return true;
+    }
+    // `random.seed(n)` — seed the global PRNG; `seed()` seeds from entropy.
+    // Returns None.
+    if name == "python.seed" {
+        if argc == 0 {
+            let r = chunks[current].add_import("ecma:math", "random");
+            chunks[current].emit_call(r, 0, line);
+            crate::emitter::instructions::core_wasm::f64_const(&mut chunks[current], line, 1073741824.0);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::I32_FROM_F64, line);
+        }
+        crate::emitter::random::emit_seed(chunks, current, line);
+        chunks[current].emit_op(Op::NULL, line);
+        return true;
+    }
+    // `isinstance(obj, "Class")` → shared `classes::emit_instanceof`.
+    if name == "python.instanceof" {
+        crate::emitter::classes::emit_instanceof(chunks, current, line);
+        return true;
+    }
+    // `callable(x)` → `typeof(x) == "function"` as a real Bool.
+    if name == "python.callable" {
+        let tof = chunks[current].add_import("ecma:value", "typeof");
+        chunks[current].emit_call(tof, 1, line);
+        chunks[current].emit_string_const("function", line);
+        crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+        crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        return true;
+    }
     let global = match name {
         "python.hex" => "__vybe_pyhex",
         "python.oct" => "__vybe_pyoct",
         "python.bin" => "__vybe_pybin",
         "python.bytes" | "python.encode" => "__vybe_to_bytes",
         "python.enumerate" => "__vybe_enumerate",
-        "python.zip" => "__vybe_zip",
         "python.map" => "__vybe_pymap",
         "python.filter" => "__vybe_pyfilter",
         "python.any" => "__vybe_pyany",
@@ -576,11 +636,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "python.iter" => "__vybe_pyiter",
         "python.next" => "__vybe_pynext",
         "python.isinf" => "__vybe_isinf",
-        "python.random_choice" => "__vybe_rand_choice",
-        "python.random_shuffle" => "__vybe_rand_shuffle",
-        "python.random_sample" => "__vybe_rand_sample",
-        "python.instanceof" => "__vybe_instanceof",
-        "python.callable" => "__vybe_callable",
         "python.id" => "__vybe_id",
         "python.hash" => "__vybe_hash",
         "python.regex_findall" => "__ecma_regexp_match_all_pat_first",
@@ -592,11 +647,5 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         _ => return false,
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
-    // `callable(x)` prints `True`/`False` — the helper returns a raw
-    // i32/number; coerce to a real Bool at the boundary.
-    if name == "python.callable" {
-        crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
-    }
     true
 }
