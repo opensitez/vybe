@@ -1,11 +1,10 @@
-
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
         #[test]
         fn $name() {
             assert_eq!(super::helpers::run_ruby_one($src), $expected);
         }
-    }
+    };
 }
 
 ruby_test!(test_string_hex_basic, "puts '1a'.hex", "26");

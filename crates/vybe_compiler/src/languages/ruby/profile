@@ -11,6 +11,9 @@ extensions = ["rb"]
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "initialize"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver — same flip as JS/PHP/dotnet/dart/java/python.
+uses_common_resolver = true
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
@@ -139,7 +142,9 @@ freeze          = { emit = "noop_receiver",                 min_args = 0, max_ar
 dup             = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 clone           = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 "nil?"          = { emit = "opcode:ref_is_null",            min_args = 0, max_args = 0 }
-"is_a?"         = { emit = "common:ruby.instanceof",             min_args = 1, max_args = 1 }
+# `is_a?`/`kind_of?` are normalized to `InstanceOf` in the walker (shared JS
+# instanceof path — reads the constructor name, checks the __types ancestry),
+# so they need no value-method entry here.
 class           = { emit = "common:ref_typeof",             min_args = 0, max_args = 0 }
 "respond_to?"   = { emit = "host:ecma:object:hasOwn",       min_args = 1, max_args = 1 }
 send            = { emit = "host:ecma:value:invokeMethod", min_args = 1, max_args = 255 }
@@ -264,6 +269,24 @@ map_size = "dict_keys, array_length"
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Ruby module constants → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
+
+# Component-Model package roots (namespaceplan.md Phase 1): literal host
+# prefix chains resolve through the common resolver's package-root step.
+
+[[esm_default]]
+kind = "package-root"
+prefix = "vybe"
+module_root = "vybe:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasi"
+module_root = "wasi:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasm"
+module_root = "wasm:"
 
 [[esm_default]]
 kind = "namespace"

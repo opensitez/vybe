@@ -1,11 +1,10 @@
-
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
         #[test]
         fn $name() {
             assert_eq!(super::helpers::run_ruby_one($src), $expected);
         }
-    }
+    };
 }
 
 ruby_test!(test_integer_bitwise_and, "puts 12 & 10", "8");
@@ -24,4 +23,8 @@ ruby_test!(test_integer_nobits_false, "puts 12.nobits?(4)", "false");
 ruby_test!(test_integer_size, "puts 1.size.class.name", "Integer");
 ruby_test!(test_integer_bit_length, "puts 12.bit_length", "4");
 ruby_test!(test_integer_digits, "puts 123.digits.join('-')", "3-2-1");
-ruby_test!(test_integer_digits_base, "puts 123.digits(2).join('-')", "1-1-0-1-1-1-1");
+ruby_test!(
+    test_integer_digits_base,
+    "puts 123.digits(2).join('-')",
+    "1-1-0-1-1-1-1"
+);

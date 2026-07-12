@@ -1,14 +1,17 @@
-
 macro_rules! ruby_test {
     ($name:ident, $src:expr, $expected:expr) => {
         #[test]
         fn $name() {
             assert_eq!(super::helpers::run_ruby_one($src), $expected);
         }
-    }
+    };
 }
 
-ruby_test!(test_math_pi, "puts Math::PI > 3.14 && Math::PI < 3.15", "true");
+ruby_test!(
+    test_math_pi,
+    "puts Math::PI > 3.14 && Math::PI < 3.15",
+    "true"
+);
 ruby_test!(test_math_e, "puts Math::E > 2.71 && Math::E < 2.72", "true");
 ruby_test!(test_math_sqrt, "puts Math.sqrt(9)", "3.0");
 ruby_test!(test_math_sin, "puts Math.sin(Math::PI / 2).round(2)", "1.0");

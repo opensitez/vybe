@@ -1633,6 +1633,24 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 }));
             }
 
+            // Normalize .is_a?/.kind_of?(Klass) → `expr instanceof Klass`
+            // (the shared JS instanceof path: reads the constructor's name and
+            // checks the `__types` ancestry, so inheritance works). Wrapped in a
+            // ternary so it materializes to a real `true`/`false`.
+            if matches!(method_name.as_str(), "is_a?" | "kind_of?") && final_args.len() == 1 {
+                let class_arg = final_args.into_iter().next().unwrap().value;
+                let inst = Expression::new(ExprKind::Binary {
+                    op: BinOp::InstanceOf,
+                    left: Box::new(expr),
+                    right: Box::new(class_arg),
+                });
+                return Ok(Expression::new(ExprKind::Ternary {
+                    cond: Box::new(inst),
+                    then: Box::new(Expression::bool(true)),
+                    else_: Box::new(Expression::bool(false)),
+                }));
+            }
+
             // Normalize .first → Index(expr, 0) — pure bytecode, no host call
             if method_name == "first" && final_args.is_empty() {
                 return Ok(Expression::new(ExprKind::Index {

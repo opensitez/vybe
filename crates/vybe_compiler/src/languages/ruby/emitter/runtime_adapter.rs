@@ -1,8 +1,8 @@
 //! Ruby runtime-surface emitters routed via `common:ruby.*`.
 //!
 //! Ruby is over wasm/js — these compose `ecma:*` host calls directly rather
-//! than pulling `__vybe_*` stdlib bundle chunks. Ops still on `__vybe_*` are
-//! migrated incrementally (the `_ => global` fallback below).
+//! than pulling `__vybe_*` stdlib bundle chunks. All value-method ops are now
+//! chunk-free (no `__vybe_*` fallback remains).
 
 use crate::emitter::collections;
 use crate::emitter::instructions::core_wasm;
@@ -11,7 +11,14 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     chunks[current].emit_call(idx, argc, line);
 }
@@ -106,11 +113,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
             chunks[current].emit_end(line);
             chunks[current].emit_end(line);
-        }
-        // `obj.is_a?(Klass)` — shared `classes::emit_instanceof` (obj["__type"]
-        // == klass), same op every stamped language uses.
-        "ruby.instanceof" => {
-            crate::emitter::classes::emit_instanceof(chunks, current, line);
         }
         // `arr.compact` — new array with nil (null) elements removed. Inline
         // loop over `ecma:array` primitives (no `__vybe_compact` chunk).
@@ -265,20 +267,151 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.shuffle" => {
             crate::emitter::random::emit_shuffle(chunks, current, argc, line);
         }
-        _ => {
-            // Loop-composition ops still to migrate to ecma adapters.
-            // (`has_value` stays on the dict chunk: Ruby hashes are struct-dicts,
-            // not `ecma:Map`, so `ecma:map:containsValue` doesn't apply yet —
-            // gated on the hash→Map foundational unification.)
-            let global = match name {
-                "ruby.has_value" => "__vybe_has_value",
-                "ruby.transform_values" => "__vybe_transform_values",
-                "ruby.transform_keys" => "__vybe_transform_keys",
-                "ruby.invert" => "__vybe_invert",
-                _ => return false,
-            };
-            collections::emit_runtime_helper_call(chunks, current, global, argc, line);
+        // `h.value?(v)` / `h.has_value?(v)` — `Object.values(h).includes(v)`,
+        // direct `ecma:object` (no chunk). Stack: [hash, v] → [bool].
+        "ruby.has_value" => {
+            let v_s = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, v_s, line); // stash v → [hash]
+            let values = chunks[current].add_import("ecma:object", "values");
+            chunks[current].emit_call(values, 1, line); // [values]
+            chunks[current].emit_op_u16(Op::LOCAL_GET, v_s, line); // [values, v]
+            collections::emit_contains(chunks, current, line); // [bool]
         }
+        // `h.invert` — swap keys/values: `Object.fromEntries(entries.map([k,v]→[v,k]))`.
+        // Direct `ecma:object` entries/fromEntries (no chunk). Stack: [hash] → [hash].
+        "ruby.invert" => {
+            let base = chunks[current].local_count;
+            chunks[current].alloc_scratch(5);
+            let (entries_s, swapped_s, i_s, len_s, pair_s) =
+                (base, base + 1, base + 2, base + 3, base + 4);
+            let entries = chunks[current].add_import("ecma:object", "entries");
+            chunks[current].emit_call(entries, 1, line); // [entries]
+            chunks[current].emit_op_u16(Op::LOCAL_SET, entries_s, line);
+            collections::emit_array_new(chunks, current, 0, line); // swapped = []
+            chunks[current].emit_op_u16(Op::LOCAL_SET, swapped_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, entries_s, line);
+            collections::emit_len(chunks, current, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+
+            let block_p = chunks[current].emit_block(line);
+            let (loop_p, _) = chunks[current].emit_loop_s(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
+            ops::emit_dyn_lt(&mut chunks[current], line);
+            ops::emit_dyn_not(&mut chunks[current], line);
+            chunks[current].emit_br_if(1, line);
+            // pair = entries[i]
+            chunks[current].emit_op_u16(Op::LOCAL_GET, entries_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            collections::emit_get(chunks, current, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, pair_s, line);
+            // swapped.push([pair[1], pair[0]])
+            chunks[current].emit_op_u16(Op::LOCAL_GET, swapped_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            collections::emit_get(chunks, current, line); // pair[1] (new key)
+            chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            collections::emit_get(chunks, current, line); // pair[0] (new value)
+            collections::emit_array_pair(chunks, current, line); // [v, k]
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            // i += 1
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+            chunks[current].emit_br(0, line);
+            chunks[current].emit_end(line);
+            chunks[current].patch_loop(loop_p);
+            chunks[current].emit_end(line);
+            chunks[current].patch_block(block_p);
+            // result = Object.fromEntries(swapped)
+            chunks[current].emit_op_u16(Op::LOCAL_GET, swapped_s, line);
+            let from_entries = chunks[current].add_import("ecma:object", "fromEntries");
+            chunks[current].emit_call(from_entries, 1, line);
+        }
+        // `h.transform_values { |v| … }` / `h.transform_keys { |k| … }` →
+        // `Object.fromEntries(entries.map([k,v] → [k, blk(v)] | [blk(k), v]))`.
+        // Direct `ecma:object` + `CALL_REF` on the block (no chunk).
+        // Stack: [hash, block] → [hash].
+        "ruby.transform_values" | "ruby.transform_keys" => {
+            let on_keys = name == "ruby.transform_keys";
+            let base = chunks[current].local_count;
+            chunks[current].alloc_scratch(6);
+            let (fn_s, entries_s, out_s, i_s, len_s, pair_s) =
+                (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, fn_s, line); // stash block → [hash]
+            let entries = chunks[current].add_import("ecma:object", "entries");
+            chunks[current].emit_call(entries, 1, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, entries_s, line);
+            collections::emit_array_new(chunks, current, 0, line); // out = []
+            chunks[current].emit_op_u16(Op::LOCAL_SET, out_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, entries_s, line);
+            collections::emit_len(chunks, current, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, len_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+
+            let block_p = chunks[current].emit_block(line);
+            let (loop_p, _) = chunks[current].emit_loop_s(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
+            ops::emit_dyn_lt(&mut chunks[current], line);
+            ops::emit_dyn_not(&mut chunks[current], line);
+            chunks[current].emit_br_if(1, line);
+            // pair = entries[i]
+            chunks[current].emit_op_u16(Op::LOCAL_GET, entries_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            collections::emit_get(chunks, current, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, pair_s, line);
+            // out.push( transform_keys ? [blk(k), v] : [k, blk(v)] )
+            chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
+            // slot indices: transform the key (0) or the value (1)
+            let (transform_idx, keep_idx) = if on_keys { (0, 1) } else { (1, 0) };
+            // first element of the new pair
+            if on_keys {
+                // blk(k)
+                chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+                core_wasm::i32_const(&mut chunks[current], line, transform_idx);
+                collections::emit_get(chunks, current, line);
+                chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+                // v (kept)
+                chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+                core_wasm::i32_const(&mut chunks[current], line, keep_idx);
+                collections::emit_get(chunks, current, line);
+            } else {
+                // k (kept)
+                chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+                core_wasm::i32_const(&mut chunks[current], line, keep_idx);
+                collections::emit_get(chunks, current, line);
+                // blk(v)
+                chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
+                core_wasm::i32_const(&mut chunks[current], line, transform_idx);
+                collections::emit_get(chunks, current, line);
+                chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            }
+            collections::emit_array_pair(chunks, current, line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);
+            chunks[current].emit_br(0, line);
+            chunks[current].emit_end(line);
+            chunks[current].patch_loop(loop_p);
+            chunks[current].emit_end(line);
+            chunks[current].patch_block(block_p);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
+            let from_entries = chunks[current].add_import("ecma:object", "fromEntries");
+            chunks[current].emit_call(from_entries, 1, line);
+        }
+        _ => return false,
     }
     true
 }
