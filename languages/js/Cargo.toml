@@ -1,0 +1,30 @@
+[package]
+name = "vybe_language_js"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vybe_language_js"
+
+[dependencies]
+vybe_ast = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
+vybe_emitter = { workspace = true }
+vybe_plugin = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+vybe_platform_dotnet = { workspace = true }
+
+[dev-dependencies]
+vybe_compiler = { workspace = true }
+vybe_host = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_ast = { workspace = true }
+vybe_emitter = { workspace = true }
+
+[[test]]
+name = "js"
+path = "tests/js/main.rs"

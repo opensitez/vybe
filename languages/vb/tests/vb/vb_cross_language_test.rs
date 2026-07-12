@@ -1,0 +1,188 @@
+/// Cross-language tests: JS class used from VB, VB class used from JS.
+///
+/// These tests require compiling two languages into the same VM with different
+/// profiles, which is not yet supported in the vybex unified pipeline.
+use std::sync::{Arc, Mutex};
+use vybe_bytecode::{VM, Value};
+
+fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
+    let mut vm = VM::new();
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = output.clone();
+    vybe_host::register_all(&mut vm);
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+                out.lock().unwrap().push(parts.join(" "));
+                Value::Null
+            },
+        ),
+    );
+    vybe_host::setup_namespaces(&mut vm);
+    (vm, output)
+}
+
+#[test]
+fn js_class_used_from_vb_is_not_supported_yet() {
+    let (mut vm, output) = setup_vm();
+
+    // Step 1: Compile and run JS that defines a class
+    let js_code = r#"
+        class counter {
+            constructor(start) {
+                this.count = start;
+            }
+            inc() {
+                this.count = this.count + 1;
+            }
+            get() {
+                return this.count;
+            }
+        }
+    "#;
+    let js_module = vybe_language_js::parse(js_code).expect("JS parse failed");
+    let js_profile = load_js_profile();
+    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+        .compile(&js_module)
+        .expect("JS compile failed");
+    vm.run(js_chunks).expect("JS runtime error");
+
+    // Verify JS class is in globals
+    assert!(
+        vm.globals.contains_key("Counter") || vm.globals.contains_key("counter"),
+        "JS Counter class should be in globals"
+    );
+
+    // Step 2: Compile and run VB that uses the JS class
+    let vb_code = r#"
+Dim c As New Counter(10)
+c.inc()
+c.inc()
+c.inc()
+Console.WriteLine(c.get())
+"#;
+    let vb_module = vybe_language_vb::parse(vb_code).expect("VB parse failed");
+    let vb_profile = super::helpers::load_vb_profile();
+    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+        .compile(&vb_module)
+        .expect("VB compile failed");
+    let err = vm.run(vb_chunks).expect_err(
+        "JS class instances are not yet consumable from VB in the unified multi-profile pipeline",
+    );
+    assert!(
+        !err.message.is_empty(),
+        "expected a concrete runtime error for unsupported JS-class-from-VB interop"
+    );
+    assert!(output.lock().unwrap().is_empty());
+}
+
+#[test]
+fn vb_class_used_from_js_is_not_supported_yet() {
+    let (mut vm, output) = setup_vm();
+
+    // Step 1: Compile and run VB that defines a class
+    let vb_code = r#"
+Public Class Greeter
+    Dim prefix As String
+    Public Sub New(p As String)
+        prefix = p
+    End Sub
+    Public Function Greet(name As String) As String
+        Return prefix & " " & name & "!"
+    End Function
+End Class
+"#;
+    let vb_module = vybe_language_vb::parse(vb_code).expect("VB parse failed");
+    let vb_profile = super::helpers::load_vb_profile();
+    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+        .compile(&vb_module)
+        .expect("VB compile failed");
+    vm.run(vb_chunks).expect("VB runtime error");
+
+    // Verify VB class is in globals
+    assert!(
+        vm.globals.contains_key("greeter"),
+        "VB Greeter class should be in globals"
+    );
+
+    // Step 2: Compile and run JS that uses the VB class
+    let js_code = r#"
+        var g = new greeter("Hello");
+        console.log(g.greet("World"));
+    "#;
+    let js_module = vybe_language_js::parse(js_code).expect("JS parse failed");
+    let js_profile = load_js_profile();
+    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+        .compile(&js_module)
+        .expect("JS compile failed");
+    let err = vm.run(js_chunks).expect_err(
+        "VB class imports are not yet consumable from JS in the unified multi-profile pipeline",
+    );
+    assert!(
+        !err.message.is_empty(),
+        "expected a concrete runtime error for unsupported VB-class-from-JS interop"
+    );
+    assert!(output.lock().unwrap().is_empty());
+}
+
+#[test]
+
+fn shared_global_between_languages() {
+    let (mut vm, output) = setup_vm();
+
+    // JS sets a global (function — JS stores lowercase)
+    let js_code = "function getvalue() { return 42; }";
+    let js_module = vybe_language_js::parse(js_code).expect("parse");
+    let js_profile = load_js_profile();
+    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+        .compile(&js_module)
+        .expect("compile");
+    vm.run(js_chunks).expect("run");
+
+    // VB calls the JS function (VB lowercases names — matches JS)
+    let vb_code = "Console.WriteLine(getvalue())";
+    let vb_module = vybe_language_vb::parse(vb_code).expect("parse");
+    let vb_profile = super::helpers::load_vb_profile();
+    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+        .compile(&vb_module)
+        .expect("compile");
+    vm.run(vb_chunks).expect("run");
+
+    assert_eq!(output.lock().unwrap().as_slice(), &["42"]);
+}
+
+#[test]
+
+fn js_function_called_from_vb() {
+    let (mut vm, output) = setup_vm();
+
+    // JS defines a function
+    let js_code = "function double(x) { return x * 2; }";
+    let js_module = vybe_language_js::parse(js_code).expect("parse");
+    let js_profile = load_js_profile();
+    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+        .compile(&js_module)
+        .expect("compile");
+    vm.run(js_chunks).expect("run");
+
+    // VB calls it
+    let vb_code = "Console.WriteLine(double(21))";
+    let vb_module = vybe_language_vb::parse(vb_code).expect("parse");
+    let vb_profile = super::helpers::load_vb_profile();
+    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+        .compile(&vb_module)
+        .expect("compile");
+    vm.run(vb_chunks).expect("run");
+
+    assert_eq!(output.lock().unwrap().as_slice(), &["42"]);
+}
+
+/// The real JS profile, loaded from source (mirrors `load_vb_profile`) so it
+/// never drifts from the `LanguageProfile` struct.
+fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
+    vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
+        .expect("Failed to parse JS profile")
+}

@@ -32,10 +32,10 @@ use vybe_bytecode::Op;
 fn register_platform_trees() {
     crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
     crate::platforms::plib::emitter::tree_register::register_namespace_tree();
-    crate::languages::c::tree_register::register_namespace_tree();
-    crate::languages::php::tree_register::register_namespace_tree();
-    crate::languages::dart::tree_register::register_namespace_tree();
-    crate::languages::java::tree_register::register_namespace_tree();
+    // Language namespace trees dispatch through the registry (c/php/dart/java),
+    // so no `crate::languages::<lang>` paths are hardcoded here.
+    crate::ensure_languages_registered();
+    vybe_plugin::registry::register_all_trees();
 }
 
 /// What a name (or dotted chain) resolves to, in resolution order.

@@ -1,0 +1,30 @@
+[package]
+name = "vybe_language_pascal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vybe_language_pascal"
+
+[dependencies]
+vybe_ast = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_host = { workspace = true }
+vybe_emitter = { workspace = true }
+vybe_plugin = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+vybe_platform_plib = { workspace = true }
+
+[dev-dependencies]
+vybe_compiler = { workspace = true }
+vybe_host = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_ast = { workspace = true }
+vybe_emitter = { workspace = true }
+
+[[test]]
+name = "pascal"
+path = "tests/pascal/main.rs"

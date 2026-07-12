@@ -674,7 +674,7 @@ impl Compiler {
             for arg in args {
                 self.compile_expr(arg)?;
             }
-            crate::languages::php::emitter::string_adapter::emit_str_getcsv(
+            vybe_plugin::registry::hooks(&self.profile.name).str_getcsv.unwrap()(
                 &mut self.chunks,
                 self.current,
                 args.len() as u8,
@@ -714,7 +714,7 @@ impl Compiler {
                         // other member read (the dotted form normalizes to
                         // __len__ and would otherwise bypass §10.5.8).
                         self.emit_const(Value::String(Arc::from("length")));
-                        crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                        vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
                             &mut self.chunks,
                             self.current,
                             line,
@@ -1761,7 +1761,7 @@ impl Compiler {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                crate::languages::php::emitter::string_adapter::emit_str_getcsv(
+                vybe_plugin::registry::hooks(&self.profile.name).str_getcsv.unwrap()(
                     &mut self.chunks,
                     self.current,
                     args.len() as u8,

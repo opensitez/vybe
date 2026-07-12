@@ -1,0 +1,33 @@
+[package]
+name = "vybe_language_php"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vybe_language_php"
+
+[dependencies]
+vybe_ast = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
+vybe_emitter = { workspace = true }
+uuid = { workspace = true }
+vybe_plugin = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+vybe_platform_dotnet = { workspace = true }
+vybe_language_c = { workspace = true }
+
+[dev-dependencies]
+vybe_compiler = { workspace = true }
+vybe_host = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_ast = { workspace = true }
+vybe_emitter = { workspace = true }
+uuid = { workspace = true }
+
+[[test]]
+name = "php"
+path = "tests/php/main.rs"

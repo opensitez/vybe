@@ -1,18 +1,5 @@
-pub mod c;
-pub mod cobol;
-pub mod csharp;
-pub mod dart;
-pub mod fortran;
-pub mod go;
-pub mod java;
-pub mod js;
-pub mod lua;
-pub mod pascal;
-pub mod php;
-pub mod python;
-pub mod ruby;
-pub mod vb;
-pub mod wast;
+// `java` now lives in the `languages/java` crate (`vybe_lang_java`); it
+// registers itself through `vybe_plugin::registry` via the aggregator.
 
 use crate::ast::Module;
 use vybe_bytecode::Chunk;
@@ -26,118 +13,16 @@ use vybe_bytecode::Chunk;
 /// touches the central `emitter::dispatch`.
 pub type EmitDispatch = fn(&str, &mut Vec<Chunk>, usize, u8, u32) -> bool;
 
-/// A registered language in vybex.
-pub struct Language {
-    /// Canonical language name — matches the profile's `[info].name` and
-    /// the per-language sub-module name. Use [`find_by_name`] to look
-    /// up; this field exists so dispatch by name doesn't require parsing
-    /// the TOML profile each time.
-    pub name: &'static str,
-    /// Parse function: source → common AST
-    pub parse: fn(&str) -> Result<Module, String>,
-    /// Embedded profile TOML source
-    pub profile_source: fn() -> &'static str,
-    /// Emit dispatcher for this language's `common:<name>.*` ops, or
-    /// `None` if the language only uses shared common ops (collections,
-    /// strings, ...) and a platform (e.g. `dotnet`). See [`EmitDispatch`].
-    pub emit_dispatch: Option<EmitDispatch>,
-}
+/// A registered language — the shared plugin descriptor from `vybe_plugin`.
+/// Built-in languages register through [`crate::ensure_languages_registered`];
+/// extracted language crates (e.g. `vybe_lang_java`) register themselves.
+pub type Language = vybe_plugin::registry::LanguagePlugin;
 
 /// All registered languages. This is the ONLY place you add a new language.
 /// The profile's [info] section defines the name, extensions, and other metadata.
 pub fn all() -> Vec<Language> {
-    vec![
-        Language {
-            name: "c",
-            parse: c::parse,
-            profile_source: c::profile_source,
-            emit_dispatch: Some(c::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "vb",
-            parse: vb::parse,
-            profile_source: vb::profile_source,
-            emit_dispatch: Some(vb::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "js",
-            parse: js::parse,
-            profile_source: js::profile_source,
-            emit_dispatch: Some(js::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "lua",
-            parse: lua::parse,
-            profile_source: lua::profile_source,
-            emit_dispatch: Some(lua::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "pascal",
-            parse: pascal::parse,
-            profile_source: pascal::profile_source,
-            emit_dispatch: Some(pascal::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "csharp",
-            parse: csharp::parse,
-            profile_source: csharp::profile_source,
-            emit_dispatch: None,
-        },
-        Language {
-            name: "python",
-            parse: python::parse,
-            profile_source: python::profile_source,
-            emit_dispatch: Some(python::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "php",
-            parse: php::parse,
-            profile_source: php::profile_source,
-            emit_dispatch: Some(php::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "ruby",
-            parse: ruby::parse,
-            profile_source: ruby::profile_source,
-            emit_dispatch: Some(ruby::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "dart",
-            parse: dart::parse,
-            profile_source: dart::profile_source,
-            emit_dispatch: Some(dart::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "cobol",
-            parse: cobol::parse,
-            profile_source: cobol::profile_source,
-            emit_dispatch: Some(cobol::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "fortran",
-            parse: fortran::parse,
-            profile_source: fortran::profile_source,
-            emit_dispatch: Some(fortran::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "go",
-            parse: go::parse,
-            profile_source: go::profile_source,
-            emit_dispatch: Some(go::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "java",
-            parse: java::parse,
-            profile_source: java::profile_source,
-            emit_dispatch: Some(java::emitter::dispatch::dispatch),
-        },
-        Language {
-            name: "wast",
-            parse: wast::parse,
-            profile_source: wast::profile_source,
-            emit_dispatch: None,
-        },
-    ]
+    crate::ensure_languages_registered();
+    vybe_plugin::registry::all()
 }
 
 /// Resolve the emit dispatcher that owns `prefix` in a `common:<prefix>.*`
@@ -147,14 +32,9 @@ pub fn all() -> Vec<Language> {
 /// genuinely-shared prefixes (collections, dict, strings, ...) which the
 /// central dispatcher owns directly.
 pub fn emit_dispatch_for(prefix: &str) -> Option<EmitDispatch> {
-    if let Some(d) = all()
-        .into_iter()
-        .find(|l| l.name == prefix)
-        .and_then(|l| l.emit_dispatch)
-    {
-        return Some(d);
-    }
-    crate::emitter::platform_emit_dispatch(prefix)
+    crate::ensure_languages_registered();
+    vybe_plugin::registry::emit_dispatch_for(prefix)
+        .or_else(|| crate::emitter::platform_emit_dispatch(prefix))
 }
 
 /// Find a language by canonical name (e.g. `"js"`, `"php"`, `"python"`).

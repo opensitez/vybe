@@ -14,7 +14,7 @@ impl Compiler {
     fn emit_constructor_global_ref(&mut self, ctor_global: &str, autoload_name: &str) {
         if self.profile.supports_autoload {
             let line = self.line;
-            crate::emitter::php::autoload_adapter::emit_constructor_ref_with_autoload(
+            vybe_plugin::registry::hooks(&self.profile.name).constructor_ref_autoload.unwrap()(
                 self.chunk(),
                 ctor_global,
                 autoload_name,
@@ -36,7 +36,7 @@ impl Compiler {
     ) {
         if self.profile.supports_autoload {
             let line = self.line;
-            crate::emitter::php::autoload_adapter::emit_dynamic_constructor_ref_with_autoload(
+            vybe_plugin::registry::hooks(&self.profile.name).dynamic_constructor_ref_autoload.unwrap()(
                 self.chunk(),
                 primary_ctor_global,
                 fallback_ctor_global,
@@ -1840,7 +1840,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
-                    crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                    vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
                         &mut self.chunks,
                         self.current,
                         line,
@@ -2805,7 +2805,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let line = self.line;
-                    crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                    vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
                         &mut self.chunks,
                         self.current,
                         line,
@@ -3273,7 +3273,7 @@ impl Compiler {
                             self.compile_expr(&args[0].value)?;
                             self.compile_expr(&args[1].value)?;
                             let line = self.line;
-                            crate::emitter::js::proxy_adapter::emit_proxy_create(
+                            vybe_plugin::registry::hooks(&self.profile.name).proxy_create.unwrap()(
                                 &mut self.chunks,
                                 self.current,
                                 line,

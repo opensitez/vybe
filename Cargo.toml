@@ -7,6 +7,29 @@ members = [
     "crates/vybe_widgets",
     "crates/vybe_compiler",
     "crates/vybex",
+    "crates/vybe_ast",
+    "crates/vybe_plugin",
+    "languages/java",
+    "languages/cobol",
+    "languages/csharp",
+    "languages/php",
+    "languages/js",
+    "languages/vb",
+    "languages/c",
+    "languages/pascal",
+    "languages/fortran",
+    "languages/dart",
+    "languages/ruby",
+    "languages/python",
+    "languages/wast",
+    "languages/lua",
+    "languages/go",
+    "crates/vybe_emitter",
+    "platforms/dotnet",
+    "platforms/libc",
+    "platforms/plib",
+    "platforms/wasm",
+    "ecma/testecma",
 ]
 
 [workspace.package]
@@ -75,6 +98,28 @@ brotli = "7"
 
 # Internal crates
 vybe_bytecode = { path = "crates/vybe_bytecode" }
+vybe_ast = { path = "crates/vybe_ast" }
+vybe_plugin = { path = "crates/vybe_plugin" }
+vybe_language_java = { path = "languages/java" }
+vybe_language_cobol = { path = "languages/cobol" }
+vybe_language_csharp = { path = "languages/csharp" }
+vybe_language_php = { path = "languages/php" }
+vybe_language_js = { path = "languages/js" }
+vybe_language_vb = { path = "languages/vb" }
+vybe_language_c = { path = "languages/c" }
+vybe_language_pascal = { path = "languages/pascal" }
+vybe_language_fortran = { path = "languages/fortran" }
+vybe_language_dart = { path = "languages/dart" }
+vybe_language_ruby = { path = "languages/ruby" }
+vybe_language_python = { path = "languages/python" }
+vybe_language_wast = { path = "languages/wast" }
+vybe_language_lua = { path = "languages/lua" }
+vybe_language_go = { path = "languages/go" }
+vybe_emitter = { path = "crates/vybe_emitter" }
+vybe_platform_wasm = { path = "platforms/wasm" }
+vybe_platform_libc = { path = "platforms/libc" }
+vybe_platform_dotnet = { path = "platforms/dotnet" }
+vybe_platform_plib = { path = "platforms/plib" }
 vybe_host = { path = "crates/vybe_host" }
 vybe_widgets = { path = "crates/vybe_widgets" }
 vybe_compiler = { path = "crates/vybe_compiler" }

@@ -1,0 +1,34 @@
+[package]
+name = "vybe_language_csharp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vybe_language_csharp"
+
+[dependencies]
+vybe_ast = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
+vybe_emitter = { workspace = true }
+vybe_plugin = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+vybe_widgets = { workspace = true }
+vybe_platform_dotnet = { workspace = true }
+vybe_language_c = { workspace = true }
+vybe_language_vb = { workspace = true }
+
+[dev-dependencies]
+vybe_compiler = { workspace = true }
+vybe_host = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_ast = { workspace = true }
+vybe_emitter = { workspace = true }
+vybe_platform_wasm = { workspace = true }
+
+[[test]]
+name = "csharp"
+path = "tests/csharp/main.rs"

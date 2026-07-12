@@ -157,7 +157,29 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
     }
 }
 
+/// Register every bundled language into the shared plugin registry. Each is its
+/// own crate (`languages/<lang>`); this is where the aggregator wires them in.
+/// When languages become dylibs, this becomes `dlopen` + call their entry point.
+pub fn register_languages() {
+    vybe_language_c::register();
+    vybe_language_cobol::register();
+    vybe_language_csharp::register();
+    vybe_language_dart::register();
+    vybe_language_fortran::register();
+    vybe_language_go::register();
+    vybe_language_java::register();
+    vybe_language_js::register();
+    vybe_language_lua::register();
+    vybe_language_pascal::register();
+    vybe_language_php::register();
+    vybe_language_python::register();
+    vybe_language_ruby::register();
+    vybe_language_vb::register();
+    vybe_language_wast::register();
+}
+
 pub fn run() {
+    register_languages();
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
     let mut dump_ast = false;

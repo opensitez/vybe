@@ -4,6 +4,7 @@
 //! live in their own platform crates (e.g. Lazarus/VCL under `platforms/plib`).
 
 pub mod control;
+pub mod form_modules;
 pub mod errors;
 pub mod events;
 pub mod form;

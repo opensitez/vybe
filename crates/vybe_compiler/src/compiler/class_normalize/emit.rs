@@ -19,12 +19,10 @@
 //! by porting each pass of `compile_class` to read `NormalClass`
 //! fields directly.
 
-use super::types::*;
+use vybe_plugin::class_normalize::types::*;
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use crate::compiler::class_normalize::{access_from_visibility, from_method_stmt};
 use crate::compiler::Compiler;
-use crate::languages::cobol;
-use crate::languages::js;
 
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
@@ -164,45 +162,19 @@ fn normalize_for_profile(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> Result<NormalClass, String> {
-    match lang {
-        "js" => Ok(js::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "python" => Ok(crate::languages::python::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "ruby" => Ok(crate::languages::ruby::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "php" => Ok(crate::languages::php::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "dart" => Ok(crate::languages::dart::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "pascal" => Ok(crate::languages::pascal::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "vb" => Ok(crate::languages::vb::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "csharp" => Ok(crate::languages::csharp::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "cobol" => Ok(cobol::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "fortran" => Ok(crate::languages::fortran::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        "java" => Ok(crate::languages::java::normalize_class::normalize_class(
-            span, name, parents, interfaces, members, modifiers,
-        )),
-        other => Err(format!(
+    // Dispatch through the language registry — no `crate::languages::<lang>`
+    // paths, so a language can live in its own (eventually dylib) crate and
+    // still be reached here.
+    crate::ensure_languages_registered();
+    vybe_plugin::registry::normalize_class(
+        lang, span, name, parents, interfaces, members, modifiers,
+    )
+    .ok_or_else(|| {
+        format!(
             "normalize_class not yet implemented for language {:?} — set \
              `uses_normalize_class = false` in the profile until Phase 3 \
              covers it",
-            other
-        )),
-    }
+            lang
+        )
+    })
 }

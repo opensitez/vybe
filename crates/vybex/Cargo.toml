@@ -10,6 +10,21 @@ default = []
 gui_forms = []
 
 [dependencies]
+vybe_language_c = { workspace = true }
+vybe_language_cobol = { workspace = true }
+vybe_language_csharp = { workspace = true }
+vybe_language_dart = { workspace = true }
+vybe_language_fortran = { workspace = true }
+vybe_language_go = { workspace = true }
+vybe_language_java = { workspace = true }
+vybe_language_js = { workspace = true }
+vybe_language_lua = { workspace = true }
+vybe_language_pascal = { workspace = true }
+vybe_language_php = { workspace = true }
+vybe_language_python = { workspace = true }
+vybe_language_ruby = { workspace = true }
+vybe_language_vb = { workspace = true }
+vybe_language_wast = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_platform_wasm = { workspace = true }

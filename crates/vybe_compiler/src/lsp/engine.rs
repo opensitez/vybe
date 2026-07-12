@@ -111,16 +111,17 @@ pub fn analyze(uri: &str, content: &str) -> AnalysisResult {
 }
 
 fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>) {
+    crate::ensure_languages_registered();
     let parse_fn: Option<fn(&str) -> Result<crate::ast::Module, String>> = match lang {
-        Lang::VB => Some(languages::vb::parse),
-        Lang::JavaScript => Some(languages::js::parse),
-        Lang::CSharp => Some(languages::csharp::parse),
-        Lang::Python => Some(languages::python::parse),
-        Lang::Ruby => Some(languages::ruby::parse),
-        Lang::PHP => Some(languages::php::parse),
-        Lang::Dart => Some(languages::dart::parse),
-        Lang::Pascal => Some(languages::pascal::parse),
-        Lang::Cobol => Some(languages::cobol::parse),
+        Lang::VB => vybe_plugin::registry::find("vb").map(|p| p.parse),
+        Lang::JavaScript => vybe_plugin::registry::find("js").map(|p| p.parse),
+        Lang::CSharp => vybe_plugin::registry::find("csharp").map(|p| p.parse),
+        Lang::Python => vybe_plugin::registry::find("python").map(|p| p.parse),
+        Lang::Ruby => vybe_plugin::registry::find("ruby").map(|p| p.parse),
+        Lang::PHP => vybe_plugin::registry::find("php").map(|p| p.parse),
+        Lang::Dart => vybe_plugin::registry::find("dart").map(|p| p.parse),
+        Lang::Pascal => vybe_plugin::registry::find("pascal").map(|p| p.parse),
+        Lang::Cobol => vybe_plugin::registry::find("cobol").map(|p| p.parse),
         _ => None,
     };
 

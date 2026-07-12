@@ -4187,14 +4187,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch_bool(
+                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set_bool.unwrap()(
                             &mut self.chunks,
                             self.current,
                             line,
                         );
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set.unwrap()(
                             &mut self.chunks,
                             self.current,
                             line,
@@ -4719,14 +4719,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch_bool(
+                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set_bool.unwrap()(
                             &mut self.chunks,
                             self.current,
                             line,
                         );
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set.unwrap()(
                             &mut self.chunks,
                             self.current,
                             line,

@@ -243,6 +243,20 @@ impl Bundle {
         // compiler Linker can bind `import { X } from "node:http"` in
         // one lookup. Walks the `Indirect` chain from Adapter modules
         // through to a Synthetic `Function` export.
+        // Seed the platform-specific namespace constants into the language SDK
+        // once, so the generic profile parser (in `vybe_plugin`) stays free of any
+        // platform reference. When platforms become loadable modules they will
+        // register these themselves at load time.
+        {
+            static SEED: std::sync::Once = std::sync::Once::new();
+            SEED.call_once(|| {
+                let m = crate::platforms::dotnet::emitter::namespace_constant_mappings()
+                    .iter()
+                    .map(|(n, v)| (n.to_string(), *v))
+                    .collect();
+                crate::profile::register_dotnet_namespace_constants(m);
+            });
+        }
         let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
 
         // Add shared GUI namespace automatically to all languages
@@ -2058,7 +2072,10 @@ fn normalize_php_source_for_parser(source: &str) -> String {
         normalized.push('\n');
     }
 
-    let mixed_normalized = crate::languages::php::normalize_source_for_parser(&normalized);
+    let mixed_normalized = match vybe_plugin::registry::hooks("php").normalize_source {
+        Some(f) => f(&normalized),
+        None => normalized,
+    };
     let mut normalized = mixed_normalized
         .lines()
         .map(normalize_php_alternative_control_syntax)

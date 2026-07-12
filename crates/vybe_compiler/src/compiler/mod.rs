@@ -33,6 +33,7 @@ macro_rules! fn_call {
 }
 
 mod calls;
+mod php_lang;
 mod scope;
 mod dotnet_calls;
 mod lambdas;

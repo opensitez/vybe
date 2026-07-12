@@ -9,7 +9,7 @@ license.workspace = true
 vybe_ast = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_emitter = { workspace = true }
-vybe_host = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
 serde = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }

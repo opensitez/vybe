@@ -431,7 +431,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     let eq_fallback = if self.is_python_profile() {
-                        crate::emitter::python::runtime_adapter::emit_py_value_eq
+                        vybe_plugin::registry::hooks(&self.profile.name).value_eq.unwrap()
                     } else {
                         crate::emitter::ops::emit_dyn_eq
                     };
@@ -468,7 +468,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     let eq_fallback = if self.is_python_profile() {
-                        crate::emitter::python::runtime_adapter::emit_py_value_eq
+                        vybe_plugin::registry::hooks(&self.profile.name).value_eq.unwrap()
                     } else {
                         crate::emitter::ops::emit_dyn_eq
                     };
@@ -529,7 +529,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_lt,
                         line,
@@ -570,7 +570,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_gt,
                         line,
@@ -611,7 +611,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_le,
                         line,
@@ -652,7 +652,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_ge,
                         line,
@@ -700,7 +700,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_lt,
                         line,
@@ -725,7 +725,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    crate::emitter::php::relational_adapter::emit_relational_compare(
+                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
                         self.chunk(),
                         crate::emitter::ops::emit_dyn_gt,
                         line,
@@ -865,7 +865,7 @@ impl Compiler {
                 if self.uses_proxy {
                     self.emit_u16(Op::LOCAL_GET, t_y);
                     self.emit_u16(Op::LOCAL_GET, t_x);
-                    crate::emitter::js::proxy_adapter::emit_proxy_has_dispatch(
+                    vybe_plugin::registry::hooks(&self.profile.name).proxy_has.unwrap()(
                         &mut self.chunks,
                         self.current,
                         l,
