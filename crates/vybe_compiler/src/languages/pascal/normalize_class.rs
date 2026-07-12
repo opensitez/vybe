@@ -17,7 +17,7 @@ use crate::ast::{
     Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
     PropertySetter, Span, Statement, StmtKind,
 };
-use crate::common::classes::{
+use crate::compiler::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,

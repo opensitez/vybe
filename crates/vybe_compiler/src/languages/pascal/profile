@@ -11,6 +11,10 @@ extensions = ["pas", "pp", "dpr", "lpr"]
 function_return = "result_slot"        # Pascal uses Result := value
 self_keyword = "self"
 base_keyword = "inherited"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver; the plib.* GCL surface is registered in the global
+# tree (platforms/plib/emitter/tree_register.rs).
+uses_common_resolver = true
 constructor_name = "Create"            # constructor Create;
 enum_as_ordinals = true                # enums are ordinal values in Pascal
 case_sensitive = false                 # Pascal is case-insensitive
