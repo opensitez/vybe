@@ -89,4 +89,36 @@ lua_print! {
         "local t = {flag = false}\nif t then print(\"table\") end\n",
         "table"
     },
+    and_returns_first_falsy_value_not_boolean => {
+        "print(nil and 'x')\n",
+        "nil"
+    },
+    and_returns_last_value_when_all_truthy => {
+        "print(1 and 2 and 3)\n",
+        "3"
+    },
+    or_returns_first_truthy_value => {
+        "print(false or nil or 0 or 'found')\n",
+        "0"
+    },
+    ternary_emulation_with_and_or_pattern => {
+        "local x = true\nlocal result = x and 'yes' or 'no'\nprint(result)\n",
+        "yes"
+    },
+    type_of_function_is_function => {
+        "local f = function() end\nprint(type(f))\n",
+        "function"
+    },
+    type_of_coroutine_is_thread => {
+        "local co = coroutine.create(function() end)\nprint(type(co))\n",
+        "thread"
+    },
+    math_type_distinguishes_integer_from_float => {
+        "print(math.type(1) .. ',' .. math.type(1.0))\n",
+        "integer,float"
+    },
+    nil_not_equal_to_false_in_equality_check => {
+        "print(nil == false)\n",
+        "false"
+    },
 }

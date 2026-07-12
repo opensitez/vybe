@@ -121,4 +121,36 @@ lua_print! {
         "local last = 0\nfor i = 1.0, 3.0 do last = i end\nprint(last)\n",
         "3"
     },
+    pairs_over_empty_table_runs_zero_iterations => {
+        "local count = 0\nfor _ in pairs({}) do count = count + 1 end\nprint(count)\n",
+        "0"
+    },
+    ipairs_ignores_hash_part_of_mixed_table => {
+        "local t = {10, 20, x = 99}\nlocal sum = 0\nfor _, v in ipairs(t) do sum = sum + v end\nprint(sum)\n",
+        "30"
+    },
+    numeric_for_single_iteration_range => {
+        "local count = 0\nfor i = 5, 5 do count = count + 1 end\nprint(count)\n",
+        "1"
+    },
+    next_called_manually_returns_pairs_in_sequence => {
+        "local t = {a = 1}\nlocal k, v = next(t)\nprint(k .. tostring(v))\n",
+        "a1"
+    },
+    ipairs_with_early_break_counts_correctly => {
+        "local count = 0\nfor i, v in ipairs({10, 20, 30, 40, 50}) do\n  count = count + 1\n  if i == 3 then break end\nend\nprint(count)\n",
+        "3"
+    },
+    next_on_empty_table_returns_nil => {
+        "local k = next({})\nprint(tostring(k))\n",
+        "nil"
+    },
+    numeric_for_large_range_with_accumulation => {
+        "local sum = 0\nfor i = 1, 100 do sum = sum + i end\nprint(sum)\n",
+        "5050"
+    },
+    iterator_state_encapsulated_in_closure => {
+        "local function range(from, to)\n  local i = from - 1\n  return function()\n    i = i + 1\n    if i <= to then return i end\n  end\nend\nlocal t = {}\nfor v in range(3, 6) do t[#t+1] = v end\nprint(table.concat(t, ','))\n",
+        "3,4,5,6"
+    },
 }

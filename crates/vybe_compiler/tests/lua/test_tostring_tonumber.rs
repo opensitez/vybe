@@ -25,4 +25,36 @@ lua_print! {
     },
     tonumber_scientific => { "print(tonumber(\"1e3\"))\n", "1000.0" },
     tonumber_negative => { "print(tonumber(\"-99\"))\n", "-99" },
+    tonumber_base_36 => {
+        "print(tonumber(\"LUA\", 36))\n",
+        "28018"
+    },
+    tonumber_base_out_of_bounds_raises_error => {
+        "local ok, err = pcall(function() tonumber(\"10\", 37) end)\nprint(ok)\n",
+        "false"
+    },
+    tonumber_base_under_bounds_raises_error => {
+        "local ok, err = pcall(function() tonumber(\"10\", 1) end)\nprint(ok)\n",
+        "false"
+    },
+    tonumber_whitespace_with_base => {
+        "print(tonumber(\"  10  \", 16))\n",
+        "16"
+    },
+    tonumber_hex_uppercase => {
+        "print(tonumber(\"0XFF\"))\n",
+        "255"
+    },
+    tostring_on_table_returns_string_default => {
+        "print(type(tostring({})) == \"string\")\n",
+        "true"
+    },
+    tonumber_on_non_coercible_table_returns_nil => {
+        "print(tostring(tonumber({})))\n",
+        "nil"
+    },
+    tonumber_with_invalid_chars_in_base => {
+        "print(tostring(tonumber(\"12\", 2)))\n",
+        "nil"
+    },
 }

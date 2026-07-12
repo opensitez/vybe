@@ -57,4 +57,36 @@ lua_print! {
         "local function apply(f) return f() end\nprint(apply(function() return \"ok\" end))\n",
         "ok"
     },
+    two_closures_share_same_upvalue_cell => {
+        "local x = 0\nlocal inc = function() x = x + 1 end\nlocal get = function() return x end\ninc(); inc(); inc()\nprint(get())\n",
+        "3"
+    },
+    closure_based_memoization => {
+        "local function memoize(f)\n  local cache = {}\n  return function(n)\n    if cache[n] == nil then cache[n] = f(n) end\n    return cache[n]\n  end\nend\nlocal calls = 0\nlocal expensive = memoize(function(n) calls = calls + 1; return n * n end)\nexpensive(4); expensive(4); expensive(5)\nprint(calls)\n",
+        "2"
+    },
+    recursive_closure_via_upvalue_self_reference => {
+        "local fact\nfact = function(n)\n  if n <= 1 then return 1 end\n  return n * fact(n - 1)\nend\nprint(fact(5))\n",
+        "120"
+    },
+    closure_mutates_upvalue_readable_by_sibling => {
+        "local val = 'initial'\nlocal writer = function() val = 'written' end\nlocal reader = function() return val end\nwriter()\nprint(reader())\n",
+        "written"
+    },
+    upvalue_survives_after_outer_function_returns => {
+        "local function outer()\n  local secret = 42\n  return function() return secret end\nend\nlocal f = outer()\nprint(f())\n",
+        "42"
+    },
+    closure_in_table_as_method_with_captured_state => {
+        "local function make_obj(init)\n  local val = init\n  return {\n    get = function() return val end,\n    set = function(v) val = v end,\n  }\nend\nlocal obj = make_obj(10)\nobj.set(99)\nprint(obj.get())\n",
+        "99"
+    },
+    partial_application_via_closure => {
+        "local function partial(f, a)\n  return function(b) return f(a, b) end\nend\nlocal add = function(a, b) return a + b end\nlocal add5 = partial(add, 5)\nprint(add5(3) .. ',' .. add5(10))\n",
+        "8,15"
+    },
+    closure_chain_three_levels_deep => {
+        "local function a(x)\n  return function(y)\n    return function(z) return x + y + z end\n  end\nend\nprint(a(1)(2)(3))\n",
+        "6"
+    },
 }

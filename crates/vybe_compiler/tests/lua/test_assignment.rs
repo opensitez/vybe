@@ -53,4 +53,36 @@ lua_print! {
         "local function minmax(a, b)\n  if a < b then return a, b else return b, a end\nend\nlocal lo, hi = minmax(3, 1)\nprint(lo .. \",\" .. hi)\n",
         "1,3"
     },
+    assignment_rhs_multival_truncated_in_middle => {
+        "local function f() return 10, 20 end\nlocal a, b = f(), 30\nprint(a .. \",\" .. b)\n",
+        "10,30"
+    },
+    assignment_rhs_multival_expanded_at_end => {
+        "local function f() return 10, 20 end\nlocal a, b, c = 5, f()\nprint(a .. \",\" .. b .. \",\" .. c)\n",
+        "5,10,20"
+    },
+    assignment_lhs_evaluated_only_once => {
+        "local order = \"\"\nlocal t = {}\nlocal function get_t() order = order .. \"T\"; return t end\nlocal function get_k() order = order .. \"K\"; return \"key\" end\nget_t()[get_k()] = 42\nprint(order .. \"=\" .. t.key)\n",
+        "TK=42"
+    },
+    assignment_to_nil_table_index_raises_error => {
+        "local ok, err = pcall(function() local t; t.x = 1 end)\nprint(ok)\n",
+        "false"
+    },
+    multiple_assignment_order_lhs_resolved_before_rhs_written => {
+        "local t = {x = 1}\nlocal a = t\nt, a.x = {}, 99\nprint(a.x)\n",
+        "99"
+    },
+    assignment_vararg_truncated_in_middle => {
+        "local function f(...)\n  local a, b = ..., 99\n  print(a .. \",\" .. b)\nend\nf(10, 20)\n",
+        "10,99"
+    },
+    assignment_vararg_expanded_at_end => {
+        "local function f(...)\n  local a, b, c = 5, ...\n  print(a .. \",\" .. b .. \",\" .. c)\nend\nf(10, 20)\n",
+        "5,10,20"
+    },
+    multiple_assignment_with_empty_vararg => {
+        "local function f(...)\n  local a, b = 1, ...\n  print(tostring(a) .. \",\" .. tostring(b))\nend\nf()\n",
+        "1,nil"
+    },
 }

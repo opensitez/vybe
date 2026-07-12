@@ -41,4 +41,36 @@ lua_print! {
         "print(utf8.len(\"\"))\n",
         "0"
     },
+    utf8_char_max_valid_codepoint => {
+        "print(utf8.codepoint(utf8.char(0x10FFFF)))\n",
+        "1114111"
+    },
+    utf8_len_with_byte_range => {
+        "print(utf8.len(\"aλb\", 2, 4))\n",
+        "1"
+    },
+    utf8_offset_with_negative_n => {
+        "print(utf8.offset(\"aλb\", -1))\n",
+        "2"
+    },
+    utf8_offset_with_zero_n_returns_start_of_character => {
+        "print(utf8.offset(\"aλb\", 0, 3))\n",
+        "2"
+    },
+    utf8_offset_out_of_bounds_returns_nil => {
+        "print(tostring(utf8.offset(\"abc\", 5)))\n",
+        "nil"
+    },
+    utf8_charpattern_matches_single_codepoints => {
+        "local count = 0\nfor _ in string.gmatch(\"aλb\", utf8.charpattern) do count = count + 1 end\nprint(count)\n",
+        "3"
+    },
+    utf8_codepoint_multiple_characters => {
+        "local c1, c2 = utf8.codepoint(\"ab\", 1, 2)\nprint(c1 .. \",\" .. c2)\n",
+        "97,98"
+    },
+    utf8_codepoint_invalid_range_raises_error => {
+        "local ok, err = pcall(function() utf8.codepoint(\"abc\", 5) end)\nprint(ok)\n",
+        "false"
+    },
 }

@@ -41,4 +41,36 @@ lua_print! {
         "local function zip(a, b)\n  local r = {}\n  for i = 1, math.min(#a, #b) do r[i] = {a[i], b[i]} end\n  return r\nend\nlocal z = zip({1,2,3}, {\"a\",\"b\",\"c\"})\nprint(z[2][1] .. z[2][2])\n",
         "2b"
     },
+    flip_swaps_function_arguments => {
+        "local function flip(f) return function(a, b) return f(b, a) end end\nlocal sub = function(a, b) return a - b end\nlocal rsub = flip(sub)\nprint(rsub(3, 10))\n",
+        "7"
+    },
+    group_by_partitions_into_table_of_lists => {
+        "local function group_by(t, key_fn)\n  local groups = {}\n  for _, v in ipairs(t) do\n    local k = key_fn(v)\n    if not groups[k] then groups[k] = {} end\n    groups[k][#groups[k]+1] = v\n  end\n  return groups\nend\nlocal g = group_by({1,2,3,4,5,6}, function(x) return x % 2 == 0 and 'even' or 'odd' end)\nprint(#g.even .. ',' .. #g.odd)\n",
+        "3,3"
+    },
+    take_while_collects_prefix_matching_predicate => {
+        "local function take_while(t, pred)\n  local r = {}\n  for _, v in ipairs(t) do\n    if not pred(v) then break end\n    r[#r+1] = v\n  end\n  return r\nend\nlocal t = take_while({1,2,3,4,5}, function(x) return x < 4 end)\nprint(table.concat(t, ','))\n",
+        "1,2,3"
+    },
+    any_returns_true_if_predicate_matches_at_least_once => {
+        "local function any(t, pred)\n  for _, v in ipairs(t) do if pred(v) then return true end end\n  return false\nend\nprint(tostring(any({1,3,5,4}, function(x) return x % 2 == 0 end)))\n",
+        "true"
+    },
+    all_returns_false_if_one_value_fails_predicate => {
+        "local function all(t, pred)\n  for _, v in ipairs(t) do if not pred(v) then return false end end\n  return true\nend\nprint(tostring(all({2,4,6,7}, function(x) return x % 2 == 0 end)))\n",
+        "false"
+    },
+    scan_produces_running_accumulation => {
+        "local function scan(t, f, init)\n  local r = {init}\n  for _, v in ipairs(t) do\n    r[#r+1] = f(r[#r], v)\n  end\n  return r\nend\nlocal s = scan({1,2,3,4}, function(a, b) return a + b end, 0)\nprint(table.concat(s, ','))\n",
+        "0,1,3,6,10"
+    },
+    drop_while_removes_prefix_matching_predicate => {
+        "local function drop_while(t, pred)\n  local i = 1\n  while i <= #t and pred(t[i]) do i = i + 1 end\n  local r = {}\n  for j = i, #t do r[#r+1] = t[j] end\n  return r\nend\nlocal t = drop_while({1,2,3,4,5}, function(x) return x < 3 end)\nprint(table.concat(t, ','))\n",
+        "3,4,5"
+    },
+    function_identity_returns_its_argument => {
+        "local function identity(x) return x end\nlocal val = {key = 'ok'}\nprint(identity(val).key)\n",
+        "ok"
+    },
 }

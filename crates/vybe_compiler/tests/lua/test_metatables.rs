@@ -105,4 +105,36 @@ lua_print! {
         "local mt = {__metatable = \"locked\"}\nlocal ok = pcall(function() setmetatable({}, mt) end)\nprint(ok)\n",
         "false"
     },
+    metatable_len_metamethod => {
+        "local t = setmetatable({}, {__len = function() return 42 end})\nprint(#t)\n",
+        "42"
+    },
+    metatable_concat_metamethod => {
+        "local mt = {__concat = function(a, b) return a.v .. b.v end}\nlocal a = setmetatable({v='hello'}, mt)\nlocal b = setmetatable({v=' world'}, mt)\nprint(a .. b)\n",
+        "hello world"
+    },
+    metatable_index_chain_three_levels => {
+        "local base = {method = function() return 'base' end}\nlocal mid = setmetatable({}, {__index = base})\nlocal top = setmetatable({}, {__index = mid})\nprint(top.method())\n",
+        "base"
+    },
+    metatable_newindex_intercepts_write => {
+        "local log = {}\nlocal t = setmetatable({}, {\n  __newindex = function(tbl, key, val)\n    log[#log+1] = key .. '=' .. tostring(val)\n    rawset(tbl, key, val)\n  end\n})\nt.x = 10\nt.y = 20\nprint(table.concat(log, ','))\n",
+        "x=10,y=20"
+    },
+    rawset_does_not_invoke_newindex_when_writing => {
+        "local blocked = false\nlocal t = setmetatable({}, {\n  __newindex = function() blocked = true end\n})\nrawset(t, 'key', 'val')\nprint(tostring(blocked) .. ',' .. t.key)\n",
+        "false,val"
+    },
+    rawget_reads_own_field_skipping_index_metamethod => {
+        "local fallback_used = false\nlocal t = setmetatable({}, {\n  __index = function() fallback_used = true; return 99 end\n})\nrawset(t, 'x', 42)\nlocal v = rawget(t, 'x')\nprint(tostring(fallback_used) .. ',' .. v)\n",
+        "false,42"
+    },
+    metatable_call_metamethod_on_table => {
+        "local callable = setmetatable({}, {\n  __call = function(self, a, b) return a + b end\n})\nprint(callable(3, 4))\n",
+        "7"
+    },
+    getmetatable_returns_nil_on_plain_table => {
+        "local t = {}\nprint(tostring(getmetatable(t)))\n",
+        "nil"
+    },
 }

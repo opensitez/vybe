@@ -232,4 +232,32 @@ lua_print! {
         "local function f(x)\n  if x == nil then return \"nil\" end\n  return \"ok\"\nend\nprint(f(nil))\n",
         "nil"
     },
+    elseif_chain_falls_to_else_when_all_fail => {
+        "local x = 5\nif x == 1 then print('a')\nelseif x == 2 then print('b')\nelseif x == 3 then print('c')\nelse print('none')\nend\n",
+        "none"
+    },
+    if_condition_calls_function_for_truthiness => {
+        "local calls = 0\nlocal function check() calls = calls + 1; return calls > 2 end\nwhile not check() do end\nprint(calls)\n",
+        "3"
+    },
+    nested_if_inside_else_branch => {
+        "local x = 5\nlocal result\nif x < 3 then\n  result = 'low'\nelse\n  if x < 7 then\n    result = 'mid'\n  else\n    result = 'high'\n  end\nend\nprint(result)\n",
+        "mid"
+    },
+    break_from_for_loop_preserves_outer_var => {
+        "local outer = 'preserved'\nfor i = 1, 5 do\n  if i == 3 then break end\nend\nprint(outer)\n",
+        "preserved"
+    },
+    break_only_exits_innermost_loop => {
+        "local sum = 0\nfor i = 1, 3 do\n  for j = 1, 3 do\n    if j == 2 then break end\n    sum = sum + j\n  end\nend\nprint(sum)\n",
+        "3"
+    },
+    while_with_or_condition_evaluates_second_part => {
+        "local a, b = false, true\nlocal ran = false\nwhile a or b do\n  ran = true\n  b = false\nend\nprint(ran)\n",
+        "true"
+    },
+    return_value_from_inside_if_branch => {
+        "local function classify(n)\n  if n < 0 then return 'negative'\n  elseif n == 0 then return 'zero'\n  else return 'positive'\n  end\nend\nprint(classify(-5) .. ',' .. classify(0) .. ',' .. classify(3))\n",
+        "negative,zero,positive"
+    },
 }

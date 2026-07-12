@@ -29,4 +29,36 @@ lua_print! {
         "print(type(print))\n",
         "function"
     },
+    env_shared_as_upvalue_across_two_functions => {
+        "local env = {print = print, n = 0}\nlocal function inc() env.n = env.n + 1 end\nlocal function get() return env.n end\ninc(); inc(); inc()\nprint(get())\n",
+        "3"
+    },
+    load_chunk_sees_env_table_not_outer_locals => {
+        "local secret = 999\nlocal env = {print = print, secret = 42}\nlocal f = load('print(secret)', 'test', 't', env)\nf()\n",
+        "42"
+    },
+    g_table_contains_math_library => {
+        "print(type(_G.math))\n",
+        "table"
+    },
+    rawget_on_g_for_global_lookup => {
+        "answer = 42\nprint(rawget(_G, 'answer'))\n",
+        "42"
+    },
+    load_sets_env_upvalue_in_chunk => {
+        "local env = {x = 10, print = print}\nlocal chunk = load('x = x + 5; print(x)', 'c', 't', env)\nchunk()\nprint(env.x)\n",
+        "15\n15"
+    },
+    pcall_in_env_table_without_error_function => {
+        "local env = {print = print, pcall = pcall, error = error}\nlocal f = load('local ok = pcall(function() error(\"e\") end); print(ok)', 'c', 't', env)\nf()\n",
+        "false"
+    },
+    g_contains_string_library => {
+        "print(type(_G.string))\n",
+        "table"
+    },
+    env_metatable_newindex_intercepts_global_writes => {
+        "local written = {}\nlocal env = setmetatable({print = print}, {\n  __newindex = function(t, k, v) written[#written+1] = k; rawset(t, k, v) end\n})\nlocal _ENV = env\nnewvar = 1\nprint(written[1])\n",
+        "newvar"
+    },
 }

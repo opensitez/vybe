@@ -77,4 +77,36 @@ lua_print! {
         "local Acc = {}\nfunction Acc.new() return setmetatable({n = 0}, {__index = Acc}) end\nfunction Acc:add(x) self.n = self.n + x end\nlocal a = Acc.new()\na:add(4)\nprint(a.n)\n",
         "4"
     },
+    tostring_metamethod_on_instance => {
+        "local Vec = {}\nfunction Vec.new(x, y) return setmetatable({x=x, y=y}, {__tostring = function(v) return '(' .. v.x .. ',' .. v.y .. ')' end}) end\nlocal v = Vec.new(3, 4)\nprint(tostring(v))\n",
+        "(3,4)"
+    },
+    super_call_via_explicit_prototype_reference => {
+        "local Animal = {}\nfunction Animal:sound() return 'generic' end\nlocal Dog = setmetatable({}, {__index = Animal})\nfunction Dog:sound() return Animal.sound(self) .. '+woof' end\nlocal d = setmetatable({}, {__index = Dog})\nprint(d:sound())\n",
+        "generic+woof"
+    },
+    private_state_via_closure_in_constructor => {
+        "local function make_counter(init)\n  local n = init\n  return {\n    get = function() return n end,\n    inc = function() n = n + 1 end,\n  }\nend\nlocal c = make_counter(10)\nc.inc(); c.inc()\nprint(c.get())\n",
+        "12"
+    },
+    mixin_copies_methods_into_target_class => {
+        "local function mixin(target, source)\n  for k, v in pairs(source) do target[k] = v end\nend\nlocal Fly = {fly = function(self) return self.name .. ' flies' end}\nlocal Bird = {name = 'eagle'}\nmixin(Bird, Fly)\nprint(Bird:fly())\n",
+        "eagle flies"
+    },
+    instanceof_check_via_metatable_comparison => {
+        "local MyClass = {}\nMyClass.__index = MyClass\nfunction MyClass.new() return setmetatable({}, MyClass) end\nlocal obj = MyClass.new()\nprint(getmetatable(obj) == MyClass)\n",
+        "true"
+    },
+    index_as_function_for_computed_lookup => {
+        "local t = setmetatable({}, {\n  __index = function(tbl, key)\n    return key:upper()\n  end\n})\nprint(t.hello .. t.world)\n",
+        "HELLOWORLD"
+    },
+    method_override_in_subclass_shadows_parent => {
+        "local Base = {}\nBase.__index = Base\nfunction Base:describe() return 'base' end\nlocal Child = setmetatable({}, {__index = Base})\nChild.__index = Child\nfunction Child:describe() return 'child' end\nlocal obj = setmetatable({}, Child)\nprint(obj:describe())\n",
+        "child"
+    },
+    constructor_collecting_varargs_into_field => {
+        "local function make_list(...)\n  return {items = {...}}\nend\nlocal l = make_list(10, 20, 30)\nprint(#l.items .. ',' .. l.items[2])\n",
+        "3,20"
+    },
 }

@@ -13,5 +13,13 @@ lua_print! {
     test_coercion_nil_concat_error => { "local ok, err = pcall(function() return nil .. 'abc' end); print(tostring(ok))", "false" },
     test_coercion_hex_string_to_number => { "print('0x10' + 0)", "16.0" },
     test_coercion_float_string_to_number => { "print('10.5' + 0)", "10.5" },
-    test_coercion_scientific_string_to_number => { "print('1e2' + 0)", "100.0" }
+    test_coercion_scientific_string_to_number => { "print('1e2' + 0)", "100.0" },
+    test_coercion_string_to_number_idiv => { "print('10' // '3')", "3.0" },
+    test_coercion_hex_scientific_string_to_number => { "print('0x1.8p1' + 0)", "3.0" },
+    test_coercion_whitespace_surrounded_string_to_number => { "print('  42  ' + 0)", "42.0" },
+    test_coercion_bitwise_operands_do_not_coerce => { "local ok, err = pcall(function() return '1' & 1 end); print(ok)", "false" },
+    test_coercion_relational_operators_do_not_coerce_different_types => { "print(1 == '1')", "false" },
+    test_coercion_relational_order_raises_error_on_mismatched_types => { "local ok, err = pcall(function() return 1 < '1' end); print(ok)", "false" },
+    test_coercion_string_concat_with_float_trailing_zero => { "print(3.0 .. 'abc')", "3.0abc" },
+    test_coercion_string_math_with_trailing_chars_fails => { "local ok, err = pcall(function() return '10abc' + 5 end); print(ok)", "false" },
 }

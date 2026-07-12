@@ -81,4 +81,36 @@ lua_print! {
         "local ok = pcall(function() error(\"msg\", 1) end)\nprint(ok)\n",
         "false"
     },
+    xpcall_passes_extra_args_to_target => {
+        "local function f(x, y) if x == y then error(\"equal\") end end\nlocal ok, msg = xpcall(f, function(e) return \"handled:\"..e end, 5, 5)\nprint(msg)\n",
+        "handled:equal"
+    },
+    xpcall_handler_errors_themselves => {
+        "local ok, msg = xpcall(function() error(\"first\") end, function(e) error(\"second\") end)\nprint(ok .. \",\" .. tostring(msg:match(\"second\") ~= nil))\n",
+        "false,true"
+    },
+    assert_returns_all_passed_arguments_on_success => {
+        "local a, b, c = assert(10, \"err\", 30)\nprint(a .. \",\" .. tostring(b) .. \",\" .. tostring(c))\n",
+        "10,err,30"
+    },
+    error_with_table_object => {
+        "local err_obj = {code = 404}\nlocal ok, caught = pcall(function() error(err_obj) end)\nprint(ok == false and caught == err_obj and caught.code == 404)\n",
+        "true"
+    },
+    xpcall_non_function_handler_raises_error => {
+        "local ok, err = pcall(function() xpcall(function() error(\"fail\") end, \"not_a_function\") end)\nprint(ok)\n",
+        "false"
+    },
+    pcall_nil_function_raises_error => {
+        "local ok, err = pcall(pcall, nil)\nprint(ok)\n",
+        "false"
+    },
+    xpcall_yield_inside_function => {
+        "local co = coroutine.create(function()\n  local ok, res = xpcall(function() return coroutine.yield(\"yielding\") end, function(e) return e end)\n  print(ok .. \",\" .. res)\nend)\nlocal _, val = coroutine.resume(co)\nlocal _, val2 = coroutine.resume(co)\nprint(val .. \" \" .. tostring(val2))\n",
+        "yielding true"
+    },
+    error_with_level_two_removes_current_frame => {
+        "local function f() error(\"my_err\", 2) end\nlocal ok, msg = pcall(f)\nprint(type(msg) == \"string\")\n",
+        "true"
+    },
 }

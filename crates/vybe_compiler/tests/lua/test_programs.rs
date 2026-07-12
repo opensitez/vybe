@@ -385,4 +385,36 @@ lua_print! {
         "local s = \"one two\"\nlocal n = 0\nfor _ in string.gmatch(s, \"%a+\") do n = n + 1 end\nprint(n)\n",
         "2"
     },
+    matrix_multiply_two_by_two => {
+        "local function mmul(a, b)\n  return {\n    {a[1][1]*b[1][1]+a[1][2]*b[2][1], a[1][1]*b[1][2]+a[1][2]*b[2][2]},\n    {a[2][1]*b[1][1]+a[2][2]*b[2][1], a[2][1]*b[1][2]+a[2][2]*b[2][2]},\n  }\nend\nlocal A = {{1,2},{3,4}}\nlocal B = {{5,6},{7,8}}\nlocal C = mmul(A, B)\nprint(C[1][1] .. ',' .. C[1][2] .. ',' .. C[2][1] .. ',' .. C[2][2])\n",
+        "19,22,43,50"
+    },
+    memoized_fibonacci_returns_correct_values => {
+        "local cache = {}\nlocal function fib(n)\n  if cache[n] then return cache[n] end\n  if n <= 1 then return n end\n  cache[n] = fib(n-1) + fib(n-2)\n  return cache[n]\nend\nprint(fib(10))\n",
+        "55"
+    },
+    stack_implemented_with_table_push_pop => {
+        "local stack = {}\nlocal function push(v) stack[#stack+1] = v end\nlocal function pop() local v = stack[#stack]; stack[#stack] = nil; return v end\npush(1); push(2); push(3)\nprint(pop() .. ',' .. pop() .. ',' .. pop())\n",
+        "3,2,1"
+    },
+    queue_with_head_tail_indices => {
+        "local q = {head=1, tail=0}\nlocal function enqueue(v) q.tail=q.tail+1; q[q.tail]=v end\nlocal function dequeue() local v=q[q.head]; q[q.head]=nil; q.head=q.head+1; return v end\nenqueue('a'); enqueue('b'); enqueue('c')\nprint(dequeue() .. dequeue() .. dequeue())\n",
+        "abc"
+    },
+    word_frequency_counter => {
+        "local text = 'the cat sat on the mat the cat'\nlocal freq = {}\nfor word in text:gmatch('%a+') do\n  freq[word] = (freq[word] or 0) + 1\nend\nprint(freq['the'] .. ',' .. freq['cat'] .. ',' .. freq['sat'])\n",
+        "3,2,1"
+    },
+    roman_numeral_conversion_for_small_number => {
+        "local function to_roman(n)\n  local vals = {1000,900,500,400,100,90,50,40,10,9,5,4,1}\n  local syms = {'M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I'}\n  local result = ''\n  for i, v in ipairs(vals) do\n    while n >= v do result = result .. syms[i]; n = n - v end\n  end\n  return result\nend\nprint(to_roman(2024))\n",
+        "MMXXIV"
+    },
+    base10_digit_sum => {
+        "local function digit_sum(n)\n  local s = 0\n  while n > 0 do s = s + (n % 10); n = n // 10 end\n  return s\nend\nprint(digit_sum(12345))\n",
+        "15"
+    },
+    linked_list_traversal => {
+        "local function make_node(val, next_node) return {val=val, next=next_node} end\nlocal list = make_node(1, make_node(2, make_node(3, nil)))\nlocal s = ''\nlocal node = list\nwhile node do s = s .. node.val; node = node.next end\nprint(s)\n",
+        "123"
+    },
 }

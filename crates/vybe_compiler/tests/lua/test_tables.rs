@@ -209,4 +209,52 @@ lua_print! {
         "local t = {name = \"lua\"}\nprint(t[\"name\"])\n",
         "lua"
     },
+    table_move_overlapping_backward => {
+        "local t = {10, 20, 30}\ntable.move(t, 1, 2, 2)\nprint(table.concat(t, \",\"))\n",
+        "10,10,20"
+    },
+    table_move_overlapping_forward => {
+        "local t = {10, 20, 30}\ntable.move(t, 2, 3, 1)\nprint(table.concat(t, \",\"))\n",
+        "20,30,30"
+    },
+    table_move_to_different_table => {
+        "local t1 = {10, 20}\nlocal t2 = {100, 200}\ntable.move(t1, 1, 2, 2, t2)\nprint(table.concat(t2, \",\"))\n",
+        "100,10,20"
+    },
+    table_sort_custom_records => {
+        "local t = {{val=3}, {val=1}, {val=2}}\ntable.sort(t, function(a,b) return a.val < b.val end)\nprint(t[1].val .. \",\" .. t[2].val .. \",\" .. t[3].val)\n",
+        "1,2,3"
+    },
+    table_remove_out_of_bounds_returns_nil => {
+        "local t = {10, 20}\nprint(tostring(table.remove(t, 5)))\n",
+        "nil"
+    },
+    table_remove_empty_returns_nil => {
+        "local t = {}\nprint(tostring(table.remove(t)))\n",
+        "nil"
+    },
+    table_concat_invalid_range_returns_empty => {
+        "local t = {10, 20, 30}\nprint(table.concat(t, \",\", 3, 2))\n",
+        ""
+    },
+    table_unpack_empty_range_returns_nothing => {
+        "local a, b = table.unpack({10, 20}, 3, 2)\nprint(tostring(a) .. \",\" .. tostring(b))\n",
+        "nil,nil"
+    },
+    table_unpack_with_nil_holes => {
+        "local a, b, c = table.unpack({10, nil, 30}, 1, 3)\nprint(tostring(a) .. \",\" .. tostring(b) .. \",\" .. tostring(c))\n",
+        "10,nil,30"
+    },
+    table_reference_keys => {
+        "local t = {}\nlocal k1 = {}\nlocal k2 = {}\nt[k1] = \"one\"\nt[k2] = \"two\"\nprint(t[k1] .. \",\" .. t[k2])\n",
+        "one,two"
+    },
+    table_function_keys => {
+        "local t = {}\nlocal f1 = function() end\nlocal f2 = function() end\nt[f1] = 100\nt[f2] = 200\nprint(t[f1] + t[f2])\n",
+        "300"
+    },
+    table_boolean_keys => {
+        "local t = {}\nt[true] = \"yes\"\nt[false] = \"no\"\nprint(t[true] .. \",\" .. t[false])\n",
+        "yes,no"
+    },
 }

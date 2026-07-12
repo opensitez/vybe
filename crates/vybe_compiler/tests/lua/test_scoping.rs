@@ -61,4 +61,72 @@ lua_print! {
         "function h() return 1 end\nprint(h())\n",
         "1"
     },
+    scoping_upvalues_independent_in_separate_closure_instances => {
+        "local function make_counter()\n  local count = 0\n  return function() count = count + 1; return count end\nend\nlocal c1 = make_counter()\nlocal c2 = make_counter()\nc1(); c1()\nprint(c1() .. \" \" .. c2())\n",
+        "3 1"
+    },
+    scoping_upvalue_mutated_after_closure_creation_is_visible => {
+        "local x = 10\nlocal function get_x() return x end\nx = 20\nprint(get_x())\n",
+        "20"
+    },
+    scoping_multiple_locals_declared_with_same_name_in_single_line => {
+        "local x, x = 100, 200\nprint(x)\n",
+        "200"
+    },
+    scoping_repeat_until_condition_can_access_locals_in_loop_body => {
+        "local count = 0\nrepeat\n  local x = 10\n  count = count + x\nuntil x == 10\nprint(count)\n",
+        "10"
+    },
+    scoping_generic_for_loop_variables_are_local_to_body => {
+        "local k = \"outer\"\nlocal t = {key = \"val\"}\nfor k, v in pairs(t) do end\nprint(k)\n",
+        "outer"
+    },
+    scoping_numeric_for_loop_control_variable_is_read_only => {
+        "local sum = 0\nfor i = 1, 3 do\n  sum = sum + i\n  i = 100\nend\nprint(sum)\n",
+        "6"
+    },
+    scoping_nested_functions_share_upvalue_chain => {
+        "local val = 5\nlocal function f1()\n  local function f2()\n    local function f3()\n      val = val + 10\n    end\n    f3()\n  end\n  f2()\nend\nf1()\nprint(val)\n",
+        "15"
+    },
+    scoping_custom_env_redirects_global_writes => {
+        "local env = {}\nlocal function run_in_env()\n  local _ENV = env\n  global_var = 42\nend\nrun_in_env()\nprint(env.global_var)\n",
+        "42"
+    },
+    scoping_closure_created_inside_loop_captures_correct_variable_instance => {
+        "local funcs = {}\nfor i = 1, 2 do\n  local val = i\n  funcs[i] = function() return val end\nend\nprint(funcs[1]() .. \" \" .. funcs[2]())\n",
+        "1 2"
+    },
+    local_in_then_block_not_visible_after_end => {
+        "if true then\n  local secret = 'yes'\nend\nprint(tostring(secret))\n",
+        "nil"
+    },
+    three_levels_of_shadowing_innermost_wins => {
+        "local x = 'outer'\ndo\n  local x = 'middle'\n  do\n    local x = 'inner'\n    print(x)\n  end\n  print(x)\nend\nprint(x)\n",
+        "inner\nmiddle\nouter"
+    },
+    upvalue_from_function_param_survives_return => {
+        "local function make(n)\n  return function() return n end\nend\nlocal f = make(55)\nprint(f())\n",
+        "55"
+    },
+    for_generic_control_vars_are_local_to_body => {
+        "local i = 'outer'\nfor i, v in ipairs({'a', 'b'}) do end\nprint(i)\n",
+        "outer"
+    },
+    local_declaration_hides_same_name_global => {
+        "g_conflict = 'global'\ndo\n  local g_conflict = 'local'\n  print(g_conflict)\nend\nprint(g_conflict)\n",
+        "local\nglobal"
+    },
+    local_not_initialized_starts_as_nil => {
+        "local uninit\nprint(tostring(uninit))\n",
+        "nil"
+    },
+    upvalue_written_before_closure_created_is_seen => {
+        "local x\nx = 10\nlocal f = function() return x end\nprint(f())\n",
+        "10"
+    },
+    multiple_upvalues_from_same_scope_in_single_closure => {
+        "local a, b, c = 1, 2, 3\nlocal f = function() return a + b + c end\nprint(f())\n",
+        "6"
+    },
 }

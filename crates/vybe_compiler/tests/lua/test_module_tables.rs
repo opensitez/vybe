@@ -33,4 +33,32 @@ lua_print! {
         "local App = {db = {}, ui = {}}\nfunction App.db.query(q) return \"result:\" .. q end\nprint(App.db.query(\"users\"))\n",
         "result:users"
     },
+    module_with_init_function_sets_state => {
+        "local M = {ready = false}\nfunction M.init() M.ready = true; M.value = 42 end\nM.init()\nprint(tostring(M.ready) .. ',' .. M.value)\n",
+        "true,42"
+    },
+    module_lazy_singleton_initialized_on_first_call => {
+        "local instance = nil\nlocal M = {}\nfunction M.get()\n  if not instance then instance = {count = 0} end\n  instance.count = instance.count + 1\n  return instance\nend\nM.get(); M.get()\nprint(M.get().count)\n",
+        "3"
+    },
+    module_extends_another_by_copying_methods => {
+        "local Base = {greet = function() return 'hi' end}\nlocal Child = {}\nfor k, v in pairs(Base) do Child[k] = v end\nfunction Child.farewell() return 'bye' end\nprint(Child.greet() .. ',' .. Child.farewell())\n",
+        "hi,bye"
+    },
+    module_method_chain_returns_self => {
+        "local Builder = {parts = {}}\nfunction Builder:add(s) self.parts[#self.parts+1] = s; return self end\nfunction Builder:build() return table.concat(self.parts, '-') end\nprint(Builder:add('a'):add('b'):add('c'):build())\n",
+        "a-b-c"
+    },
+    module_version_field_accessible => {
+        "local M = {_VERSION = '1.0.0', name = 'mymod'}\nprint(M.name .. '@' .. M._VERSION)\n",
+        "mymod@1.0.0"
+    },
+    module_public_api_via_explicit_table => {
+        "local function create_module()\n  local private = 'secret'\n  return {\n    public = function() return 'pub:' .. private end\n  }\nend\nlocal mod = create_module()\nprint(mod.public())\n",
+        "pub:secret"
+    },
+    module_local_alias_for_nested_function => {
+        "local M = {}\nlocal math_floor = math.floor\nfunction M.truncate(x) return math_floor(x) end\nprint(M.truncate(3.9))\n",
+        "3"
+    },
 }

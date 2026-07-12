@@ -245,4 +245,36 @@ lua_print! {
         "local function id(x) return x end\nprint(id(id(id(9))))\n",
         "9"
     },
+    colon_method_syntax_passes_self_as_first_arg => {
+        "local obj = {value = 10}\nfunction obj:get() return self.value end\nprint(obj:get())\n",
+        "10"
+    },
+    colon_method_stores_self_and_mutates => {
+        "local obj = {n = 0}\nfunction obj:inc() self.n = self.n + 1 end\nobj:inc(); obj:inc()\nprint(obj.n)\n",
+        "2"
+    },
+    function_in_nested_table_field => {
+        "local api = { utils = { double = function(x) return x * 2 end } }\nprint(api.utils.double(21))\n",
+        "42"
+    },
+    function_receives_table_and_mutates_it => {
+        "local function fill(t, val)\n  for i = 1, 3 do t[i] = val end\nend\nlocal data = {}\nfill(data, 7)\nprint(data[1] .. ',' .. data[2] .. ',' .. data[3])\n",
+        "7,7,7"
+    },
+    anonymous_recursive_function_via_table_key => {
+        "local fib = {}\nfib.calc = function(n)\n  if n <= 1 then return n end\n  return fib.calc(n - 1) + fib.calc(n - 2)\nend\nprint(fib.calc(7))\n",
+        "13"
+    },
+    function_as_first_class_value_through_multiple_calls => {
+        "local function compose(f, g) return function(x) return f(g(x)) end end\nlocal double = function(x) return x * 2 end\nlocal inc = function(x) return x + 1 end\nlocal double_then_inc = compose(inc, double)\nprint(double_then_inc(5))\n",
+        "11"
+    },
+    vararg_forwarding_preserves_count_and_nils => {
+        "local function wrapper(...)\n  return ...\nend\nlocal a, b, c = wrapper(10, nil, 30)\nprint(tostring(a) .. ',' .. tostring(b) .. ',' .. tostring(c))\n",
+        "10,nil,30"
+    },
+    pcall_with_function_returning_multiple_values => {
+        "local ok, a, b, c = pcall(function() return 10, 20, 30 end)\nprint(ok .. ',' .. a .. ',' .. b .. ',' .. c)\n",
+        "true,10,20,30"
+    },
 }

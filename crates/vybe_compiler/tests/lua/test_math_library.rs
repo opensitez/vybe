@@ -99,4 +99,84 @@ lua_print! {
         "print(math.log(8, 2))\n",
         "3"
     },
+    math_abs_on_nan => {
+        "print(tostring(math.abs(0/0)))\n",
+        "nan"
+    },
+    math_abs_on_huge => {
+        "print(math.abs(-math.huge) == math.huge)\n",
+        "true"
+    },
+    math_ceil_on_nan => {
+        "print(tostring(math.ceil(0/0)))\n",
+        "nan"
+    },
+    math_floor_on_nan => {
+        "print(tostring(math.floor(0/0)))\n",
+        "nan"
+    },
+    math_fmod_by_inf => {
+        "print(math.fmod(10, math.huge))\n",
+        "10.0"
+    },
+    math_max_with_inf => {
+        "print(math.max(10, math.huge) == math.huge)\n",
+        "true"
+    },
+    math_min_with_neg_inf => {
+        "print(math.min(10, -math.huge) == -math.huge)\n",
+        "true"
+    },
+    math_modf_on_integer => {
+        "local i, f = math.modf(10)\nprint(i .. \",\" .. f)\n",
+        "10,0.0"
+    },
+    math_tointeger_on_float_boundary => {
+        "print(tostring(math.tointeger(1.0)))\n",
+        "1"
+    },
+    math_tointeger_on_non_integer_float => {
+        "print(tostring(math.tointeger(1.5)))\n",
+        "nil"
+    },
+    math_tointeger_on_invalid_string => {
+        "print(tostring(math.tointeger(\"abc\")))\n",
+        "nil"
+    },
+    math_type_on_nan => {
+        "print(math.type(0/0))\n",
+        "float"
+    },
+    math_type_on_huge => {
+        "print(math.type(math.huge))\n",
+        "float"
+    },
+    math_ult_on_mininteger_and_zero => {
+        "print(math.ult(math.mininteger, 0))\n",
+        "false"
+    },
+    math_ult_on_negative_one_and_positive_one => {
+        "print(math.ult(-1, 1))\n",
+        "false"
+    },
+    math_ult_on_maxinteger_and_mininteger => {
+        "print(math.ult(math.maxinteger, math.mininteger))\n",
+        "true"
+    },
+    math_sin_pi => {
+        "print(math.abs(math.sin(math.pi)) < 1e-15)\n",
+        "true"
+    },
+    math_cos_pi => {
+        "print(math.cos(math.pi))\n",
+        "-1.0"
+    },
+    math_tan_pi => {
+        "print(math.abs(math.tan(math.pi)) < 1e-15)\n",
+        "true"
+    },
+    math_log_base_ten => {
+        "print(math.log(100, 10))\n",
+        "2.0"
+    },
 }

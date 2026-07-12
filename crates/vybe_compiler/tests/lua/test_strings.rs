@@ -227,4 +227,68 @@ lua_print! {
         "print(\"a\" ~= \"b\")\n",
         "true"
     },
+    string_format_left_align => {
+        "print(string.format(\"%-6s\", \"abc\") .. \"*\")\n",
+        "abc   *"
+    },
+    string_format_scientific_notation => {
+        "print(string.format(\"%.1e\", 123.45))\n",
+        "1.2e+02"
+    },
+    string_format_sign_forces_plus => {
+        "print(string.format(\"%+d\", 42) .. \" \" .. string.format(\"%+d\", -42))\n",
+        "+42 -42"
+    },
+    string_format_space_prefix => {
+        "print(string.format(\"% d\", 42) .. \"|\" .. string.format(\"% d\", -42))\n",
+        " 42|-42"
+    },
+    string_format_hex_alternative_form => {
+        "print(string.format(\"%#x\", 255))\n",
+        "0xff"
+    },
+    string_format_zero_padded_integer => {
+        "print(string.format(\"%04d\", 7))\n",
+        "0007"
+    },
+    string_format_string_precision_truncation => {
+        "print(string.format(\"%.3s\", \"hello\"))\n",
+        "hel"
+    },
+    string_pack_float_roundtrip => {
+        "local s = string.pack(\"f\", 1.25)\nprint(string.unpack(\"f\", s))\n",
+        "1.25"
+    },
+    string_pack_double_roundtrip => {
+        "local s = string.pack(\"d\", 1.125)\nprint(string.unpack(\"d\", s))\n",
+        "1.125"
+    },
+    string_pack_little_endian_i2 => {
+        "local s = string.pack(\"<i2\", -1000)\nprint(string.unpack(\"<i2\", s))\n",
+        "-1000"
+    },
+    string_pack_big_endian_I2 => {
+        "local s = string.pack(\">I2\", 1000)\nprint(string.unpack(\">I2\", s))\n",
+        "1000"
+    },
+    string_pack_zero_terminated_string => {
+        "local s = string.pack(\"z\", \"abc\")\nprint(#s .. \" \" .. string.unpack(\"z\", s))\n",
+        "4 abc"
+    },
+    string_packsize_complex_format => {
+        "print(string.packsize(\"i4 b h\"))\n",
+        "7"
+    },
+    string_gsub_function_retains_nil_results => {
+        "local res = string.gsub(\"a b c\", \"%a\", function(x) if x == \"b\" then return \"B\" end end)\nprint(res)\n",
+        "a B c"
+    },
+    string_gsub_table_ignores_missing_keys => {
+        "local res = string.gsub(\"a b c\", \"%a\", {a=\"A\"})\nprint(res)\n",
+        "A b c"
+    },
+    string_gsub_with_capture_references => {
+        "print(string.gsub(\"10-20\", \"(%d+)-(%d+)\", \"%2/%1\"))\n",
+        "20/10"
+    },
 }

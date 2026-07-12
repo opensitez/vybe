@@ -182,4 +182,36 @@ lua_print! {
         "local flag = false\nif flag then print(0) else print(1) end\n",
         "1"
     },
+    tostring_on_uninitialized_local => {
+        "local x\nprint(tostring(x))\n",
+        "nil"
+    },
+    multi_line_comment_ignored => {
+        "--[[\nthis is a multi-line comment\n]]\nprint(\"comment_ignored\")\n",
+        "comment_ignored"
+    },
+    multiple_assignment_with_fewer_values => {
+        "local a, b, c = 1, 2\nprint(tostring(a) .. \",\" .. tostring(b) .. \",\" .. tostring(c))\n",
+        "1,2,nil"
+    },
+    multiple_assignment_with_more_values => {
+        "local a, b = 1, 2, 3\nprint(tostring(a) .. \",\" .. tostring(b))\n",
+        "1,2"
+    },
+    global_variable_initial_nil => {
+        "print(tostring(non_existent_global_var_xyz))\n",
+        "nil"
+    },
+    lexical_scoping_shadowing_same_name => {
+        "local a = 1\ndo\n  local a = 2\n  print(a)\nend\n",
+        "2"
+    },
+    nested_do_blocks_scoping => {
+        "local a = 1\ndo\n  do\n    local a = 3\n    print(a)\n  end\n  print(a)\nend\n",
+        "3\n1"
+    },
+    boolean_operator_and_returns_first_falsy => {
+        "print(false and 10)\n",
+        "false"
+    },
 }

@@ -37,4 +37,36 @@ lua_print! {
         "name = \"lua\"\nprint(name .. 5)\n",
         "lua5"
     },
+    setting_global_via_g_table_is_readable_by_name => {
+        "_G.my_global_val = 77\nprint(my_global_val)\n",
+        "77"
+    },
+    deleting_global_by_assigning_nil => {
+        "some_global = 'hello'\nsome_global = nil\nprint(tostring(some_global))\n",
+        "nil"
+    },
+    global_set_inside_pcall_persists_after_success => {
+        "pcall(function() side_effect_global = 'set' end)\nprint(side_effect_global)\n",
+        "set"
+    },
+    version_global_is_a_string => {
+        "print(type(_VERSION))\n",
+        "string"
+    },
+    g_is_same_reference_as_global_env => {
+        "print(_G == _G)\n",
+        "true"
+    },
+    rawset_on_g_creates_accessible_global => {
+        "rawset(_G, 'injected', 123)\nprint(injected)\n",
+        "123"
+    },
+    global_read_from_deeply_nested_function => {
+        "deeply_nested = 'found'\nlocal function a()\n  local function b()\n    local function c() return deeply_nested end\n    return c()\n  end\n  return b()\nend\nprint(a())\n",
+        "found"
+    },
+    global_update_visible_to_subsequent_function_call => {
+        "shared = 0\nlocal function inc() shared = shared + 1 end\nlocal function get() return shared end\ninc(); inc(); inc()\nprint(get())\n",
+        "3"
+    },
 }

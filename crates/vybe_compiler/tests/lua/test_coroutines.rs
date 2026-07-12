@@ -77,4 +77,32 @@ lua_print! {
         "local ok = pcall(coroutine.create, 1)\nprint(ok)\n",
         "false"
     },
+    coroutine_cannot_resume_running_self => {
+        "local co\nco = coroutine.create(function()\n  local ok, err = coroutine.resume(co)\n  print(ok .. \",\" .. tostring(err))\nend)\ncoroutine.resume(co)\n",
+        "false,cannot resume running coroutine"
+    },
+    coroutine_cannot_resume_dead => {
+        "local co = coroutine.create(function() end)\ncoroutine.resume(co)\nlocal ok, err = coroutine.resume(co)\nprint(ok .. \",\" .. tostring(err))\n",
+        "false,cannot resume dead coroutine"
+    },
+    coroutine_running_main_thread_flag => {
+        "local co, is_main = coroutine.running()\nprint(type(co) .. \",\" .. tostring(is_main))\n",
+        "thread,true"
+    },
+    coroutine_wrap_propagates_errors => {
+        "local f = coroutine.wrap(function() error(\"wrap_fail\") end)\nlocal ok, err = pcall(f)\nprint(ok .. \",\" .. tostring(err:match(\"wrap_fail\")))\n",
+        "false,wrap_fail"
+    },
+    coroutine_yield_and_resume_multiple_values => {
+        "local co = coroutine.create(function(x, y)\n  local a, b = coroutine.yield(x + 1, y + 1)\n  return a + 10, b + 10\nend)\nlocal _, r1, r2 = coroutine.resume(co, 1, 2)\nlocal _, r3, r4 = coroutine.resume(co, 10, 20)\nprint(r1 .. \",\" .. r2 .. \" \" .. r3 .. \",\" .. r4)\n",
+        "2,3 20,30"
+    },
+    coroutine_nested_multithread_yield_chain => {
+        "local coB\nlocal coA = coroutine.create(function()\n  coroutine.resume(coB)\n  print(\"coA resume B end\")\nend)\ncoB = coroutine.create(function()\n  coroutine.yield()\n  print(\"coB yield end\")\nend)\ncoroutine.resume(coA)\nprint(\"main resume A end\")\ncoroutine.resume(coB)\n",
+        "main resume A end\ncoB yield end\ncoA resume B end"
+    },
+    coroutine_status_normal_during_resume_nested => {
+        "local co1, co2\nco1 = coroutine.create(function()\n  coroutine.resume(co2)\nend)\nco2 = coroutine.create(function()\n  print(coroutine.status(co1))\nend)\ncoroutine.resume(co1)\n",
+        "normal"
+    },
 }

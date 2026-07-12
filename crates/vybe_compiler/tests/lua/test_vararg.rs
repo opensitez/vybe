@@ -45,4 +45,36 @@ lua_print! {
         "print(select(0, 10, 20, 30))\n",
         "3"
     },
+    vararg_in_middle_of_expression_list_adjusted_to_one => {
+        "local function f(...) return ..., 99 end\nlocal a, b, c = f(1, 2, 3)\nprint(a, b, c)\n",
+        "1\t99\tnil"
+    },
+    table_pack_preserves_nil_count => {
+        "local t = table.pack(10, nil, 30)\nprint(t.n .. ',' .. tostring(t[2]))\n",
+        "3,nil"
+    },
+    vararg_passed_through_two_function_calls => {
+        "local function inner(...) return ... end\nlocal function outer(...) return inner(...) end\nprint(outer(5, 6, 7))\n",
+        "5\t6\t7"
+    },
+    vararg_with_select_hash_counts_nils => {
+        "local function count(...) return select('#', ...) end\nprint(count(1, nil, 3))\n",
+        "3"
+    },
+    table_unpack_of_packed_varargs_round_trips => {
+        "local function pack_and_unpack(...)\n  local t = table.pack(...)\n  return table.unpack(t, 1, t.n)\nend\nlocal a, b, c = pack_and_unpack(7, 8, 9)\nprint(a .. ',' .. b .. ',' .. c)\n",
+        "7,8,9"
+    },
+    vararg_not_visible_in_nested_regular_function => {
+        "local function outer(...)\n  local function inner() return select('#', ...) end\n  return inner()\nend\nprint(outer(1, 2, 3))\n",
+        "0"
+    },
+    vararg_used_in_string_format => {
+        "local function fmt(pattern, ...)\n  return string.format(pattern, ...)\nend\nprint(fmt('%d + %d = %d', 1, 2, 3))\n",
+        "1 + 2 = 3"
+    },
+    vararg_with_extra_args_past_select_index => {
+        "local function from_second(...)\n  return select(2, ...)\nend\nlocal a, b = from_second(10, 20, 30)\nprint(a .. ',' .. b)\n",
+        "20,30"
+    },
 }

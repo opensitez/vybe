@@ -160,4 +160,36 @@ lua_print! {
     },
     equality_between_same_string_literals => { "print(\"lua\" == \"lua\")\n", "true" },
     inequality_between_number_and_string => { "print(1 ~= \"1\")\n", "true" },
+    integer_division_floors_toward_negative_infinity => {
+        "print((-7) // 2)\n",
+        "-4"
+    },
+    modulo_sign_follows_divisor_not_dividend => {
+        "print((-7) % 3)\n",
+        "2"
+    },
+    exponentiation_is_right_associative => {
+        "print(2 ^ 3 ^ 2)\n",
+        "512.0"
+    },
+    length_operator_on_string_gives_byte_count => {
+        "local s = 'hello'\nprint(#s)\n",
+        "5"
+    },
+    idiv_on_floats_gives_float_result => {
+        "print(7.0 // 2.0)\n",
+        "3.0"
+    },
+    concat_coerces_integer_to_string => {
+        "print(10 .. 20)\n",
+        "1020"
+    },
+    not_on_table_value_is_false => {
+        "local t = {}\nprint(not t)\n",
+        "false"
+    },
+    comparison_between_booleans_not_allowed_for_lt => {
+        "local ok = pcall(function() return true < false end)\nprint(ok)\n",
+        "false"
+    },
 }

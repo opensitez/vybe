@@ -45,4 +45,36 @@ lua_print! {
         "local a={}\nprint(rawequal(a,a))\n",
         "true"
     },
+    type_on_non_existent_global => {
+        "print(type(non_existent_global_var_xyz_123))\n",
+        "nil"
+    },
+    tostring_on_nil => {
+        "print(tostring(nil))\n",
+        "nil"
+    },
+    tostring_on_boolean_true => {
+        "print(tostring(true))\n",
+        "true"
+    },
+    tostring_on_boolean_false => {
+        "print(tostring(false))\n",
+        "false"
+    },
+    rawequal_compares_numbers_of_different_types => {
+        "print(rawequal(1, 1.0))\n",
+        "true"
+    },
+    rawequal_compares_mismatched_types => {
+        "print(rawequal(1, \"1\"))\n",
+        "false"
+    },
+    next_on_empty_table_returns_nil => {
+        "print(tostring(next({})))\n",
+        "nil"
+    },
+    next_invalid_key_raises_error => {
+        "local ok, err = pcall(function() next({a=1}, \"invalid_key\") end)\nprint(ok)\n",
+        "false"
+    },
 }

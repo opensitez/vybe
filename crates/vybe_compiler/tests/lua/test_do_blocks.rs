@@ -41,4 +41,36 @@ lua_print! {
         "local closures = {}\nfor i = 1, 3 do\n  do\n    local x = i\n    closures[i] = function() return x end\n  end\nend\nprint(closures[1]() .. \",\" .. closures[3]())\n",
         "1,3"
     },
+    do_block_with_empty_statements => {
+        "do ; ; end\nprint(\"ok\")\n",
+        "ok"
+    },
+    do_block_redefines_global_as_local => {
+        "global_var_xyz = 10\ndo\n  local global_var_xyz = 20\n  print(global_var_xyz)\nend\nprint(global_var_xyz)\n",
+        "20\n10"
+    },
+    do_block_closures_capture_different_instance_of_shadowed_local => {
+        "local f1, f2\nlocal x = 10\nf1 = function() return x end\ndo\n  local x = 20\n  f2 = function() return x end\nend\nprint(f1() .. \",\" .. f2())\n",
+        "10,20"
+    },
+    do_block_nested_local_function_shadows => {
+        "local function f() return \"outer\" end\ndo\n  local function f() return \"inner\" end\n  print(f())\nend\nprint(f())\n",
+        "inner\nouter"
+    },
+    do_block_inside_repeat_until_condition_visibility => {
+        "local x = 0\nrepeat\n  do\n    local y = 1\n    x = x + y\n  end\nuntil x == 2\nprint(x)\n",
+        "2"
+    },
+    do_block_local_inside_if_branches => {
+        "local x = 10\nif true then\n  local x = 20\n  print(x)\nend\nprint(x)\n",
+        "20\n10"
+    },
+    do_block_lexical_scoping_with_large_nesting => {
+        "local x = 1\ndo do do do do do local x = 99; print(x) end end end end end end\nprint(x)\n",
+        "99\n1"
+    },
+    do_block_with_return_statement_terminates_block => {
+        "local function f()\n  do\n    return \"early\"\n  end\n  return \"late\"\nend\nprint(f())\n",
+        "early"
+    },
 }

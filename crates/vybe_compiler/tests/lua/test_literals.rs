@@ -38,4 +38,36 @@ lua_print! {
     true_and_false_in_expression => { "print(true and false or true)\n", "true" },
     string_with_utf8_multibyte_char => { "print(#\"λ\")\n", "2" },
     number_division_literal => { "print(10 / 4)\n", "2.5" },
+    hex_float_literal => {
+        "print(0x1p4)\n",
+        "16.0"
+    },
+    negative_hex_literal => {
+        "print(-0xFF)\n",
+        "-255"
+    },
+    octal_escape_sequence_in_string => {
+        "print(\"\\065\")\n",
+        "A"
+    },
+    long_string_ignores_leading_newline => {
+        "local s = [[\nhello]]\nprint(s)\n",
+        "hello"
+    },
+    scientific_notation_negative_exponent => {
+        "print(1e-2)\n",
+        "0.01"
+    },
+    empty_string_has_length_zero => {
+        "print(#'')\n",
+        "0"
+    },
+    boolean_true_converts_to_string_via_tostring => {
+        "print(tostring(true) .. ',' .. tostring(false))\n",
+        "true,false"
+    },
+    hex_float_with_fractional_part => {
+        "print(0x1.8p1)\n",
+        "3.0"
+    },
 }
