@@ -21,7 +21,7 @@
 
 use super::types::*;
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use crate::common::classes::{access_from_visibility, from_method_stmt};
+use crate::compiler::class_normalize::{access_from_visibility, from_method_stmt};
 use crate::compiler::Compiler;
 use crate::languages::cobol;
 use crate::languages::js;

@@ -24,6 +24,7 @@ pub mod convert;
 pub mod delegates;
 pub mod dict;
 pub mod errors;
+pub mod events;
 pub mod expressions;
 pub mod functions;
 pub mod generators;
@@ -44,6 +45,7 @@ pub mod sprintf;
 pub mod strings;
 pub mod target;
 pub mod threading;
+pub mod tuples;
 pub mod type_registry;
 
 pub use target::Target;

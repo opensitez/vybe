@@ -24,6 +24,20 @@ use super::Compiler;
 use crate::emitter::namespaces::{self, ResolutionTarget};
 use vybe_bytecode::Op;
 
+/// Lazy platform-tree registration: every platform/language package
+/// contributes its descriptor DATA to the shared tree before a walk
+/// (namespaceplan.md roots: `dotnet.*`, `plib.*`, `libc.*`, `php.*`,
+/// `dart.*`; `ecma.*`/`wasi.*` mount from the host FunctionRegistry
+/// inside `resolve_path` itself). Each registrar is Once-guarded.
+fn register_platform_trees() {
+    crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
+    crate::platforms::plib::emitter::tree_register::register_namespace_tree();
+    crate::languages::c::tree_register::register_namespace_tree();
+    crate::languages::php::tree_register::register_namespace_tree();
+    crate::languages::dart::tree_register::register_namespace_tree();
+    crate::languages::java::tree_register::register_namespace_tree();
+}
+
 /// What a name (or dotted chain) resolves to, in resolution order.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // consumed from Phase 1 (JS migration) onward
@@ -89,7 +103,7 @@ impl Compiler {
 
         // 3. Global namespace tree (platform surfaces register their
         //    descriptor data on first query; resolution logic stays here).
-        crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
+        register_platform_trees();
         namespaces::resolve_path(&[key.as_str()]).map(Resolution::Tree)
     }
 
@@ -152,7 +166,7 @@ impl Compiler {
         //    `dotnet.system.math.sin`); rebased segments lowercase because
         //    tree keys are lowercase-canonical and the mounted surfaces
         //    (.NET CLS) resolve case-insensitively.
-        crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
+        register_platform_trees();
         if let Some(base) = self.tree_mounts.get(&head_key) {
             let mut rebased: Vec<String> = base.split('.').map(str::to_string).collect();
             rebased.extend(rest.iter().map(|s| s.to_lowercase()));
@@ -402,7 +416,7 @@ impl Compiler {
         if lower.len() < 2 {
             return None;
         }
-        crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
+        register_platform_trees();
         let mut segs: Vec<&str> = Vec::with_capacity(lower.len() + 1);
         segs.push("dotnet");
         segs.extend(lower.iter().map(|s| s.as_str()));

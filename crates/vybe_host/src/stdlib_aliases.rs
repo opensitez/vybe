@@ -2,7 +2,7 @@
 //!
 //! When the emitter bundles a stdlib chunk into the user's WASM, it
 //! stores the chunk's function reference in a global named `__vybe_<op>`
-//! (e.g. `__vybe_pow`, `__vybe_range`). At runtime, if the embedder
+//! (e.g. `__vybe_pow`, `__vybe_sorted`). At runtime, if the embedder
 //! provides a native host function for the SAME operation (e.g.
 //! `ecma:math::pow`), the host wants to overwrite the bundled stdlib
 //! chunk with a direct reference to that native fn — so the VM picks
@@ -20,21 +20,9 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("ecma:string", "String", "__vybe_tostring"),
     // `__vybe_count` (count substring occurrences) has no ECMA equivalent;
     // the bundled stdlib polyfill keeps running, no host override.
-    ("ecma:math", "sin", "__vybe_sin"),
-    ("ecma:math", "cos", "__vybe_cos"),
-    ("ecma:math", "tan", "__vybe_tan"),
-    ("ecma:math", "asin", "__vybe_asin"),
-    ("ecma:math", "acos", "__vybe_acos"),
-    ("ecma:math", "atan", "__vybe_atan"),
-    ("ecma:math", "atan2", "__vybe_atan2"),
-    ("ecma:math", "log", "__vybe_log"),
-    ("ecma:math", "log10", "__vybe_log10"),
-    ("ecma:math", "exp", "__vybe_exp"),
-    ("ecma:math", "sinh", "__vybe_sinh"),
-    ("ecma:math", "cosh", "__vybe_cosh"),
-    ("ecma:math", "tanh", "__vybe_tanh"),
-    ("ecma:math", "sign", "__vybe_sign"),
-    ("ecma:math", "clamp", "__vybe_clamp"),
+    // Math transcendentals removed — the `__vybe_*` polyfill chunks were dead
+    // (every language routes `Math.*` → `ecma:math:*` directly), so there is
+    // no stdlib global left to override.
     ("ecma:array", "toReversed", "__vybe_reversed"),
     // `__vybe_isnumeric` has no ECMA single-call equivalent
     // (`Number.isFinite(Number(s))` composes it). Polyfill keeps running.

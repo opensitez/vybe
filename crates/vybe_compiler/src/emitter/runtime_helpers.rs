@@ -433,10 +433,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_encoding");
     chunks.push(build_dict_values_from_entries(imports));
     exports.push("__stdlib_dict_values_from_entries");
-    chunks.push(build_has_value(imports));
-    exports.push("__stdlib_has_value");
-    chunks.push(build_invert(imports));
-    exports.push("__stdlib_invert");
     chunks.push(build_setdefault(imports));
     exports.push("__stdlib_setdefault");
     chunks.push(build_to_bytes(imports));
@@ -449,10 +445,6 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_vb_format");
     chunks.push(build_dotnet_numeric_format(imports));
     exports.push("__stdlib_dotnet_numeric_format");
-    chunks.push(build_transform_values(imports));
-    exports.push("__stdlib_transform_values");
-    chunks.push(build_transform_keys(imports));
-    exports.push("__stdlib_transform_keys");
     // PHP `$x++` / `$x--` stay in the PHP emitter path (`common:php.{inc,dec}`)
     // rather than going through bundled stdlib/polyfill helpers.
     chunks.push(build_format_map(imports));
@@ -616,16 +608,12 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_newline" => build_newline(imports),
         "__stdlib_encoding" => build_encoding(imports),
         "__stdlib_dict_values_from_entries" => build_dict_values_from_entries(imports),
-        "__stdlib_has_value" => build_has_value(imports),
-        "__stdlib_invert" => build_invert(imports),
         "__stdlib_setdefault" => build_setdefault(imports),
         "__stdlib_to_bytes" => build_to_bytes(imports),
         "__stdlib_id" => build_id(imports),
         "__stdlib_hash" => build_hash(imports),
         "__stdlib_vb_format" => build_vb_format(imports),
         "__stdlib_dotnet_numeric_format" => build_dotnet_numeric_format(imports),
-        "__stdlib_transform_values" => build_transform_values(imports),
-        "__stdlib_transform_keys" => build_transform_keys(imports),
         "__stdlib_format_map" => build_format_map(imports),
         "__stdlib_pyhex" => build_pyradix(imports, "__stdlib_pyhex", "0x", 16),
         "__stdlib_pyoct" => build_pyradix(imports, "__stdlib_pyoct", "0o", 8),
@@ -2056,7 +2044,6 @@ fn build_pynext(imports: &mut Chunk) -> Chunk {
     c
 }
 
-
 // ── rotate(arr, n) — Ruby `Array#rotate(n)` ──
 // Returns new array rotated n positions left. n defaults to 1; negative
 // rotates right. Implemented as `arr.slice(n).concat(arr.slice(0, n))`
@@ -3197,157 +3184,6 @@ fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── has_value(map, v) → bool — Ruby `Hash#has_value?` / `value?` ──
-//
-// Walks `Object.entries(map)` and returns `true` iff any entry's value
-// `===` `v`. Polymorphic across Map / plain Object since `entries`
-// itself dispatches per backing.
-fn build_has_value(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_has_value");
-    c.arity = 2;
-    c.local_count = 6; // map(0), v(1), entries(2), i(3), len(4), result(5)
-    let map = 0u16;
-    let v = 1u16;
-    let entries = 2u16;
-    let i = 3u16;
-    let len = 4u16;
-    let result = 5u16;
-
-    let entries_idx = c.add_import("ecma:object", "entries");
-
-    // entries = ecma:object.entries(map)
-    c.emit_op_u16(Op::LOCAL_GET, map, 0);
-    c.emit_call(entries_idx, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-
-    // len = entries.length
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // i = 0; result = false
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_bool_const(false, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-
-    // if i >= len: break
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    // if entries[i][1] == v: result=true; break
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    crate::emitter::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    let _hit = c.emit_block(0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(0, 0);
-    c.emit_bool_const(true, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_br(2, 0); // break out to outer block
-    c.emit_end(0);
-    c.patch_block(_hit);
-
-    // i += 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── invert(map) → new map with k/v swapped — Ruby `Hash#invert` ──
-//
-// Walks `Object.entries(map)` and builds a new Map with each
-// `[k, v]` reversed to `v → k`. Result is an `ecma:map` instance.
-fn build_invert(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_invert");
-    c.arity = 1;
-    c.local_count = 5; // map(0), entries(1), i(2), len(3), result(4)
-    let map = 0u16;
-    let entries = 1u16;
-    let i = 2u16;
-    let len = 3u16;
-    let result = 4u16;
-
-    let entries_idx = c.add_import("ecma:object", "entries");
-    let map_new_idx = c.add_import("ecma:map", "new");
-
-    // entries = ecma:object.entries(map); result = ecma:map.new()
-    c.emit_op_u16(Op::LOCAL_GET, map, 0);
-    c.emit_call(entries_idx, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-
-    c.emit_call(map_new_idx, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    // len = entries.length
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    // result[entries[i][1]] = entries[i][0]
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    // value (becomes key in inverted)
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::ARRAY_GET, 0);
-    // key (becomes value in inverted)
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
 // ── setdefault(dict, key, default) — Python `dict.setdefault` ─────
 //
 // If `key` is present in `dict`, return its value. Otherwise set
@@ -4153,156 +3989,6 @@ fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── transform_values(map, fn) → new map — Ruby `Hash#transform_values` ─
-// Apply `fn(v)` to each value, return a new ECMA Map keyed identically.
-fn build_transform_values(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_transform_values");
-    c.arity = 2;
-    c.local_count = 7; // map(0), fn(1), entries(2), i(3), len(4), result(5), pair(6)
-    let map = 0u16;
-    let fn_arg = 1u16;
-    let entries = 2u16;
-    let i = 3u16;
-    let len = 4u16;
-    let result = 5u16;
-    let pair = 6u16;
-
-    let entries_idx = c.add_import("ecma:object", "entries");
-    let map_new_idx = c.add_import("ecma:map", "new");
-
-    // entries = ecma:object.entries(map); result = ecma:map.new()
-    c.emit_op_u16(Op::LOCAL_GET, map, 0);
-    c.emit_call(entries_idx, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-
-    c.emit_call(map_new_idx, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    // pair = entries[i]
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::LOCAL_SET, pair, 0);
-
-    // result[pair[0]] = fn(pair[1])
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    // call fn with pair[1]
-    c.emit_op_u16(Op::LOCAL_GET, fn_arg, 0);
-    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
-// ── transform_keys(map, fn) → new map — Ruby `Hash#transform_keys` ─
-fn build_transform_keys(imports: &mut Chunk) -> Chunk {
-    let mut c = Chunk::new("__stdlib_transform_keys");
-    c.arity = 2;
-    c.local_count = 7;
-    let map = 0u16;
-    let fn_arg = 1u16;
-    let entries = 2u16;
-    let i = 3u16;
-    let len = 4u16;
-    let result = 5u16;
-    let pair = 6u16;
-
-    let entries_idx = c.add_import("ecma:object", "entries");
-    let map_new_idx = c.add_import("ecma:map", "new");
-
-    c.emit_op_u16(Op::LOCAL_GET, map, 0);
-    c.emit_call(entries_idx, 1, 0);
-    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
-
-    c.emit_call(map_new_idx, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::emitter::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::LOCAL_SET, pair, 0);
-
-    // result[fn(pair[0])] = pair[1]
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    // new key = fn(pair[0])
-    c.emit_op_u16(Op::LOCAL_GET, fn_arg, 0);
-    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
-    core_wasm::i32_const(&mut c, 0, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
-    // value = pair[1]
-    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-    c.emit_br(0, 0);
-    c.emit_end(0);
-    c.patch_loop(loop_p);
-    c.emit_end(0);
-    c.patch_block(block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::RETURN, 0);
-    c
-}
-
 // ── format_map(s, d) → string — Python `str.format_map` ────────
 //
 // Substitute `{key}` placeholders in `s` with `String(d[key])`.
@@ -4569,7 +4255,6 @@ fn build_assign(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
-
 
 // ── jsGetMethod(obj, key) → callable | undefined ──────────────────
 fn build_js_get_method(imports: &mut Chunk) -> Chunk {
@@ -5591,4 +5276,3 @@ fn build_regex_match_all_pat_first(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
-

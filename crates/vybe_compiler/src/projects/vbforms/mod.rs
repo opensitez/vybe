@@ -1,19 +1,14 @@
-pub mod control;
-pub mod errors;
-pub mod events;
-pub mod form;
 pub mod project;
-pub mod properties;
 pub mod resources;
 pub mod serialization;
 pub mod winforms;
 
-pub use control::*;
-pub use errors::*;
-pub use events::*;
-pub use form::*;
+// Data model moved to `crate::platforms::dotnet::winforms`; re-exported here so existing
+// `…::projects::vbforms::{Form, Control, …}` paths keep resolving.
+pub use crate::platforms::dotnet::winforms::{control, errors, events, form, properties};
+pub use crate::platforms::dotnet::winforms::*;
+
 pub use project::*;
-pub use properties::*;
 pub use resources::*;
 pub use serialization::*;
 pub use winforms::*;

@@ -6,9 +6,9 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
-use crate::common::classes::{BaseCall, NormalConstructor, NormalMethod};
+use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
 use crate::compiler::ArrayBindingMetadata;
-use crate::scope::UpvalueDesc;
+use crate::compiler::scope::UpvalueDesc;
 
 impl Compiler {
     fn fixed_array_zero_expr(type_hint: &str) -> Option<Expression> {
@@ -1183,7 +1183,7 @@ impl Compiler {
 
     pub(crate) fn compile_class(
         &mut self,
-        class: &crate::common::classes::NormalClass,
+        class: &crate::compiler::class_normalize::NormalClass,
     ) -> Result<(), String> {
         // Extract the canonicalised names the orchestration below needs.
         // Canonicalisation happens once here rather than at every caller.

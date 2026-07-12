@@ -1,4 +1,4 @@
-use crate::projects::vbforms::form::Form;
+use crate::platforms::dotnet::winforms::form::Form;
 use vybe_host::GuiState;
 
 /// Language-registered form module surface.

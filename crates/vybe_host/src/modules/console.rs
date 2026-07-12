@@ -30,22 +30,26 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // wasi:cli/exit — WASI 0.2.12+ spec interface
+    // wasi:cli/exit — WASI 0.2.12+ spec interface. Per the component model,
+    // `exit` terminates the GUEST instance and returns control to the embedder;
+    // it must NOT tear down the host process. Signalling the VM to end the run
+    // (request_exit) is the conformant behaviour — `std::process::exit` here
+    // would kill the whole embedder (e.g. the test binary) on the first call.
     vm.register_host_fn(
         "wasi:cli/exit",
         "exit",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let code = args.first().map(|v| v.as_f64() as i32).unwrap_or(0);
-            std::process::exit(code);
+        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
+            ctx.request_exit();
+            Value::Null
         }),
     );
 
     vm.register_host_fn(
         "wasi:cli/exit",
         "exit-with-code",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let code = args.first().map(|v| v.as_f64() as i32).unwrap_or(0);
-            std::process::exit(code);
+        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
+            ctx.request_exit();
+            Value::Null
         }),
     );
 

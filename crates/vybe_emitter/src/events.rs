@@ -1,4 +1,13 @@
-use crate::ast::{BinOp, ExprKind, Expression, StmtKind};
+//! Event-handler AST lowering — language-agnostic helpers that normalise
+//! event-subscription syntax (`AddHandler`, `control.Click += handler`, …) onto
+//! the canonical `StmtKind::AddHandler`/`RemoveHandler` nodes. Kept separate
+//! from `gui.rs` because events are not necessarily a GUI concern.
+//!
+//! The emit side lives in the compiler (`compiler/events.rs`) and the shared
+//! `vybe:gui` binding in `gui.rs`; these are the *walker-facing* builders any
+//! front-end can reuse.
+
+use vybe_ast::{BinOp, ExprKind, Expression, StmtKind};
 
 pub fn add_handler_stmt(
     control: Expression,

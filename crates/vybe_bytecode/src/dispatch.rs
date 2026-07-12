@@ -1998,6 +1998,16 @@ impl VM {
                                 continue;
                             }
 
+                            // A host fn (wasi:cli/exit) requested clean run
+                            // termination: unwind every frame and hand control
+                            // back to the embedder — like Op::HALT's top-frame
+                            // case, but without a process exit.
+                            if self.pending_exit {
+                                self.pending_exit = false;
+                                self.close_upvalues(0);
+                                return Ok(Value::Null);
+                            }
+
                             // A host fn returning a pending promise is just a
                             // VALUE (`new Promise(...)`, `fetch()`, a deferred
                             // promise). Per ECMA-262 / JSPI, suspension happens

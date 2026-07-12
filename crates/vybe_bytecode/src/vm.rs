@@ -50,6 +50,9 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.last_exception — set by THROW when no handler matches.
     /// Null when no VM is attached (HostContext::empty()).
     last_exception_slot: *mut Option<Value>,
+    /// Raw pointer to VM.pending_exit — set by `wasi:cli/exit` to end the run.
+    /// Null when no VM is attached (HostContext::empty()).
+    exit_slot: *mut bool,
     /// Raw pointer to VM globals for host-managed JS receiver binding.
     /// Null when no VM is attached (HostContext::empty()).
     globals_slot: *mut HashMap<String, Value>,
@@ -106,6 +109,17 @@ impl<'a> HostContext<'a> {
         unsafe {
             if !self.last_exception_slot.is_null() {
                 *self.last_exception_slot = Some(value);
+            }
+        }
+    }
+
+    /// Request clean termination of the current run (WASI `cli/exit`). The VM
+    /// ends `run()` at the next host-call return, unwinding all frames and
+    /// handing control back to the embedder — not `std::process::exit`.
+    pub fn request_exit(&mut self) {
+        unsafe {
+            if !self.exit_slot.is_null() {
+                *self.exit_slot = true;
             }
         }
     }
@@ -381,6 +395,7 @@ impl<'a> HostContext<'a> {
             memory: None,
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
+            exit_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null(),
@@ -632,6 +647,11 @@ pub struct VM {
     /// Populated by the THROW opcode when no ExceptionHandler matches.
     /// Consumed by HostContext::try_invoke to report the thrown value.
     pub last_exception: Option<Value>,
+    /// Set by a host function (`wasi:cli/exit`) to request clean termination of
+    /// the current run. Checked after each host call in CALL_IMPORT: it ends
+    /// `run()` by returning control to the embedder from any frame depth — NOT a
+    /// `std::process::exit`, so it never tears down the host process.
+    pub pending_exit: bool,
     /// When true, enforce strict WASM isolation:
     /// - Module-scoped globals (prefixed by module name)
     /// - Per-module memory (separate linear memory per component)
@@ -796,6 +816,7 @@ impl VM {
             block_tables: HashMap::new(),
             callback_invoker: None,
             last_exception: None,
+            pending_exit: false,
             strict_isolation: false,
             module_prefix: None,
             case_aliases: HashMap::new(),
@@ -1314,6 +1335,7 @@ impl VM {
         let el = self.event_loop.clone();
         // Raw pointer to last_exception — safe: valid for host call duration.
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
+        let exit_ptr = &mut self.pending_exit as *mut bool;
         let globals_ptr = &mut self.globals as *mut HashMap<String, Value>;
         HostContext {
             invoker: Some(unsafe {
@@ -1324,6 +1346,7 @@ impl VM {
             memory: None,
             event_loop: Some(el),
             last_exception_slot: exc_ptr,
+            exit_slot: exit_ptr,
             globals_slot: globals_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
             handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,

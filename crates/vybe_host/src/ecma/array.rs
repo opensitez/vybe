@@ -335,6 +335,67 @@ pub fn register(vm: &mut VM) {
     register_non_mutators(vm);
     register_iteration(vm);
     register_adapters(vm);
+    // All `ecma:array/*` host fns are registered above; now bind them onto
+    // the shared `Array.prototype` so `arr.method()` resolves through the
+    // prototype chain (ECMA-262 §23.1.3) like real JS — no per-method
+    // compiler adapter needed. The object owns its methods.
+    populate_array_prototype(vm);
+}
+
+/// Build an unbound `Array.prototype` method value: a `HostFunction`
+/// wrapping `ecma:array/<name>`, flagged `__vybe_method_receiver` so
+/// `getMethodForCall`/`bind_method_receiver` prepend the array as the
+/// receiver (arg 0) at lookup — exactly the shape every `ecma:array/*`
+/// fn expects (`reverse(arr)`, `map(arr, fn)`, …).
+fn array_proto_method(vm: &VM, name: &str) -> Option<Value> {
+    let idx = *vm
+        .host_registry
+        .get(&("ecma:array".to_string(), name.to_string()))?;
+    let mut fn_obj = Object::new();
+    fn_obj.kind = ObjectKind::HostFunction(idx);
+    fn_obj
+        .properties
+        .insert("__host_module".into(), Value::String(Arc::from("ecma:array")));
+    fn_obj
+        .properties
+        .insert("__host_name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__host_idx".into(), Value::F64(idx as f64));
+    fn_obj.properties.insert(
+        "__proto__".into(),
+        crate::ecma::function::shared_function_prototype(),
+    );
+    fn_obj
+        .properties
+        .insert("name".into(), Value::String(Arc::from(name)));
+    fn_obj
+        .properties
+        .insert("__vybe_method_receiver".into(), Value::Bool(true));
+    Some(Value::Object(Arc::new(Mutex::new(fn_obj))))
+}
+
+/// Populate the shared `Array.prototype` with the ECMA-262 §23.1.3
+/// method surface, each bound to its `ecma:array/*` host fn. JS method
+/// names match the host fn names 1-to-1 here.
+fn populate_array_prototype(vm: &VM) {
+    const METHODS: &[&str] = &[
+        "at", "concat", "copyWithin", "entries", "every", "fill", "filter",
+        "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap",
+        "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf",
+        "map", "pop", "push", "reduce", "reduceRight", "reverse", "shift",
+        "slice", "some", "sort", "splice", "toLocaleString", "toReversed",
+        "toSorted", "toSpliced", "toString", "unshift", "values", "with",
+    ];
+    let Value::Object(proto) = shared_array_prototype() else {
+        return;
+    };
+    let mut p = proto.lock().unwrap();
+    for name in METHODS {
+        if let Some(method) = array_proto_method(vm, name) {
+            p.properties.insert((*name).to_string(), method);
+        }
+    }
 }
 
 // ── Adapter convenience methods ──────────────────────────────────

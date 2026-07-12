@@ -14,9 +14,8 @@
 
 pub use vybe_ast as ast;
 pub mod bundle;
-pub mod common; // cross-language compile-time helpers (class normalisation, etc.)
 pub mod compiler;
-pub mod dotnet_register;
+pub use compiler::Compiler; // avoid the `vybe_compiler::compiler::Compiler` stutter
 pub mod emitter;
 pub mod languages;
 pub mod lsp;
@@ -27,7 +26,6 @@ pub mod platforms {
     pub use vybe_platform_libc as libc;
     pub use vybe_platform_plib as plib;
 }
-pub mod plib_register;
 pub mod profile;
 pub mod projects;
-pub mod scope;
+pub mod registry; // platform class-library registration (dotnet BCL, pascal plib)

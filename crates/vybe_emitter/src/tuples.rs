@@ -18,7 +18,7 @@
 //! reads the named key. Both work through LINQ / comprehension lambdas without
 //! any element-type inference, because the names live on the value itself.
 
-use crate::ast::{ExprKind, Expression, Literal, ObjectProperty};
+use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
 
 /// Build the canonical named-tuple object from ordered `(name, value)` fields.
 /// `name` is `None` for a positional-only element. The result always carries

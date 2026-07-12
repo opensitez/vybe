@@ -234,8 +234,8 @@ fn helper_has_all_functions() {
     let mut script = Chunk::new("<script>");
     let helpers = build_runtime_helpers(&mut script);
     assert!(
-        helpers.chunks.len() >= 17,
-        "helper should export >= 17 chunks, got {}",
+        helpers.chunks.len() >= 13,
+        "helper should export >= 13 chunks, got {}",
         helpers.chunks.len()
     );
     assert!(helpers.get("__stdlib_sorted").is_some());

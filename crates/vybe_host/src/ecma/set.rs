@@ -391,17 +391,15 @@ pub fn register(vm: &mut VM) {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Value::Object(outobj) = &out {
-                    let alock = a.lock().unwrap();
-                    let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
-                        (&alock.kind, &block.kind, &mut o.kind)
-                    {
-                        for v in avs.iter() {
-                            if bvs.contains(v) {
-                                out_s.insert(v.clone());
+                    if let ObjectKind::Set(out_s) = &mut o.kind {
+                        with_two_sets(&a, &b, |avs, bvs| {
+                            for v in avs.iter() {
+                                if bvs.contains(v) {
+                                    out_s.insert(v.clone());
+                                }
                             }
-                        }
+                        });
                     }
                     sync_set_size(&mut o);
                 }
@@ -417,17 +415,15 @@ pub fn register(vm: &mut VM) {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Value::Object(outobj) = &out {
-                    let alock = a.lock().unwrap();
-                    let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
-                        (&alock.kind, &block.kind, &mut o.kind)
-                    {
-                        for v in avs.iter() {
-                            if !bvs.contains(v) {
-                                out_s.insert(v.clone());
+                    if let ObjectKind::Set(out_s) = &mut o.kind {
+                        with_two_sets(&a, &b, |avs, bvs| {
+                            for v in avs.iter() {
+                                if !bvs.contains(v) {
+                                    out_s.insert(v.clone());
+                                }
                             }
-                        }
+                        });
                     }
                     sync_set_size(&mut o);
                 }
@@ -443,22 +439,20 @@ pub fn register(vm: &mut VM) {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 if let Value::Object(outobj) = &out {
-                    let alock = a.lock().unwrap();
-                    let block = b.lock().unwrap();
                     let mut o = outobj.lock().unwrap();
-                    if let (ObjectKind::Set(avs), ObjectKind::Set(bvs), ObjectKind::Set(out_s)) =
-                        (&alock.kind, &block.kind, &mut o.kind)
-                    {
-                        for v in avs.iter() {
-                            if !bvs.contains(v) {
-                                out_s.insert(v.clone());
+                    if let ObjectKind::Set(out_s) = &mut o.kind {
+                        with_two_sets(&a, &b, |avs, bvs| {
+                            for v in avs.iter() {
+                                if !bvs.contains(v) {
+                                    out_s.insert(v.clone());
+                                }
                             }
-                        }
-                        for v in bvs.iter() {
-                            if !avs.contains(v) {
-                                out_s.insert(v.clone());
+                            for v in bvs.iter() {
+                                if !avs.contains(v) {
+                                    out_s.insert(v.clone());
+                                }
                             }
-                        }
+                        });
                     }
                     sync_set_size(&mut o);
                 }

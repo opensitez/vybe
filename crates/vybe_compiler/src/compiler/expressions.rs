@@ -5755,7 +5755,7 @@ impl Compiler {
                 // constructs null. Class names are language-agnostic here.
                 self.defined_classes.insert(class_name.clone());
                 let parents: Vec<String> = parent_name.into_iter().collect();
-                crate::common::classes::emit::emit_class_from_ast(
+                crate::compiler::class_normalize::emit::emit_class_from_ast(
                     self,
                     expr.span.clone(),
                     &class_name,

@@ -2048,6 +2048,13 @@ fn dispatch_set(
                 _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
             let mut out = indexmap::IndexSet::new();
+            if Arc::ptr_eq(&obj, &rhs) {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(lhs) = &so.kind {
+                    out.extend(lhs.iter().cloned());
+                }
+                return crate::ecma::set::make_set(out);
+            }
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
@@ -2064,6 +2071,10 @@ fn dispatch_set(
                 Some(Value::Object(rhs)) => rhs.clone(),
                 _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
+            // §24.2.4.5: every element of `this` is in `other` — empty set.
+            if Arc::ptr_eq(&obj, &rhs) {
+                return crate::ecma::set::make_set(indexmap::IndexSet::new());
+            }
             let mut out = indexmap::IndexSet::new();
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
@@ -2081,6 +2092,10 @@ fn dispatch_set(
                 Some(Value::Object(rhs)) => rhs.clone(),
                 _ => return crate::ecma::set::make_set(indexmap::IndexSet::new()),
             };
+            // §24.2.4.12: no element is in exactly one operand — empty set.
+            if Arc::ptr_eq(&obj, &rhs) {
+                return crate::ecma::set::make_set(indexmap::IndexSet::new());
+            }
             let mut out = indexmap::IndexSet::new();
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();

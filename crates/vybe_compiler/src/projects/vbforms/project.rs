@@ -64,7 +64,7 @@ pub struct FormModule {
 impl FormModule {
     pub fn new(form: Form) -> Self {
         let name = form.name.clone();
-        let module = crate::languages::form_modules::find_by_name("vb")
+        let module = crate::projects::form_modules::find_by_name("vb")
             .expect("VB form module not registered");
         let designer_code = (module.generate_designer_code)(&form);
         let user_code = (module.generate_user_code_stub)(&name);
@@ -130,7 +130,7 @@ impl FormModule {
     /// Regenerates designer_code from the Form object (VbNet only).
     pub fn sync_designer_code(&mut self) {
         if let FormFormat::VbNet { designer_code, .. } = &mut self.format {
-            let module = crate::languages::form_modules::find_by_name("vb")
+            let module = crate::projects::form_modules::find_by_name("vb")
                 .expect("VB form module not registered");
             *designer_code = (module.generate_designer_code)(&self.form);
         }
