@@ -36,7 +36,7 @@ use super::{CobolParser, Rule};
 use crate::ast::*;
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const COBOL_ARRAY_INDEXING: ArrayIndexSemantics = ArrayIndexSemantics::ONE_BASED;
 
@@ -63,7 +63,22 @@ struct CobolWalkerContext {
     record_fields: HashMap<String, Vec<CobolRecordField>>,
     group_layouts: HashMap<String, Vec<Expression>>,
     condition_names: HashMap<String, Expression>,
+    // Names declared in the SCREEN SECTION. DISPLAY of a screen item renders to
+    // the terminal in real COBOL; here it is suppressed so it produces no stdout.
+    screen_items: HashSet<String>,
+    // Elementary working-storage fields whose PICTURE gives a fixed display
+    // width, so DISPLAY of the field pads to that width.
+    field_pics: HashMap<String, CobolPicFmt>,
     next_file_number: i32,
+}
+
+/// Fixed-width DISPLAY format implied by an elementary field's PICTURE.
+#[derive(Clone, Copy)]
+enum CobolPicFmt {
+    /// Unsigned integer PIC 9(n): zero-pad to `n` digits.
+    Numeric(usize),
+    /// Alphanumeric PIC X(n)/A(n): space-pad (right) to `n` characters.
+    Alpha(usize),
 }
 
 impl CobolWalkerContext {
@@ -74,8 +89,28 @@ impl CobolWalkerContext {
             record_fields: HashMap::new(),
             group_layouts: HashMap::new(),
             condition_names: HashMap::new(),
+            screen_items: HashSet::new(),
+            field_pics: HashMap::new(),
             next_file_number: 1,
         }
+    }
+
+    fn register_screen_item(&mut self, name: &str) {
+        self.screen_items.insert(cobol_name_key(name));
+    }
+
+    fn is_screen_item(&self, name: &str) -> bool {
+        self.screen_items.contains(&cobol_name_key(name))
+    }
+
+    fn register_field_pic(&mut self, name: &str, pic: &str) {
+        if let Some(fmt) = cobol_pic_display_fmt(pic) {
+            self.field_pics.insert(cobol_name_key(name), fmt);
+        }
+    }
+
+    fn field_pic(&self, name: &str) -> Option<CobolPicFmt> {
+        self.field_pics.get(&cobol_name_key(name)).copied()
     }
 
     fn register_file_binding(
@@ -1092,7 +1127,7 @@ fn walk_data_division(
                 walk_storage_section(child, body, ctx)?;
             }
             Rule::screen_section => {
-                walk_screen_section(child, body)?;
+                walk_screen_section(child, body, ctx)?;
             }
             _ => {}
         }
@@ -1164,16 +1199,24 @@ fn walk_storage_section(
     Ok(())
 }
 
-fn walk_screen_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_screen_section(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::screen_item {
-            walk_screen_item(child, body)?;
+            walk_screen_item(child, body, ctx)?;
         }
     }
     Ok(())
 }
 
-fn walk_screen_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_screen_item(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -1182,10 +1225,10 @@ fn walk_screen_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), S
                 body.push(Statement::with_span(stmt, span));
             }
             Rule::screen_data_item => {
-                walk_screen_data_item(child, body)?;
+                walk_screen_data_item(child, body, ctx)?;
             }
             Rule::screen_item => {
-                walk_screen_item(child, body)?;
+                walk_screen_item(child, body, ctx)?;
             }
             _ => {}
         }
@@ -1193,7 +1236,11 @@ fn walk_screen_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), S
     Ok(())
 }
 
-fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_screen_data_item(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
@@ -1252,12 +1299,14 @@ fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<
     }
 
     for nested in nested_items {
-        walk_screen_item(nested, body)?;
+        walk_screen_item(nested, body, ctx)?;
     }
 
     if name.is_empty() {
         return Ok(());
     }
+
+    ctx.register_screen_item(&name);
 
     body.push(Statement::with_span(
         StmtKind::VarDecl {
@@ -1457,6 +1506,10 @@ fn walk_regular_data_item(
     // Determine type hint from PIC
     let type_hint = cobol_type_hint(pic_str.as_deref(), usage_str.as_deref());
 
+    // A plain scalar elementary field (not a group, not an OCCURS table) whose
+    // PICTURE gives a fixed display width — record it so DISPLAY of the field pads.
+    let is_scalar_elementary = group_children.is_empty() && occurs_count.is_none();
+
     // Determine initial value
     let init = if !group_children.is_empty() {
         // Group item → Object initialiser with child fields
@@ -1510,6 +1563,12 @@ fn walk_regular_data_item(
 
     if name.is_empty() {
         return Ok(());
+    }
+
+    if is_scalar_elementary {
+        if let Some(pic) = pic_str.as_deref() {
+            ctx.register_field_pic(&name, pic);
+        }
     }
 
     let stmt = StmtKind::VarDecl {
@@ -1963,6 +2022,69 @@ fn default_value_for_cobol_type(pic: Option<&str>, usage: Option<&str>) -> Expre
     }
 }
 
+/// Fixed-width DISPLAY format for an elementary PICTURE, if it is a plain
+/// unsigned integer (`9(n)`) or alphanumeric (`X(n)`/`A(n)`). Signed, decimal
+/// (`V`/`.`), and numeric-edited pictures (`Z * + - , $ B / CR DB`) return None —
+/// those need the full editing engine and are handled separately.
+/// Wrap a field value in the pad call implied by its PICTURE for DISPLAY:
+/// numeric 9(n) → `padStart(toFixed(v,0), n, "0")`; alphanumeric X(n) →
+/// `padEnd(v, n, " ")`. Uses the shared ECMA string helpers.
+fn cobol_pic_format_expr(value: Expression, fmt: CobolPicFmt) -> Expression {
+    let call = |fname: &str, args: Vec<Expression>| -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(fname)),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    };
+    match fmt {
+        CobolPicFmt::Numeric(digits) => {
+            let int_str = call("__to_fixed2", vec![value, Expression::int(0)]);
+            call(
+                "__pad_start",
+                vec![
+                    int_str,
+                    Expression::int(digits as i64),
+                    Expression::string("0"),
+                ],
+            )
+        }
+        CobolPicFmt::Alpha(width) => call(
+            "__pad_end",
+            vec![
+                value,
+                Expression::int(width as i64),
+                Expression::string(" "),
+            ],
+        ),
+    }
+}
+
+fn cobol_pic_display_fmt(pic: &str) -> Option<CobolPicFmt> {
+    let upper = pic.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    // Alphanumeric first: any X marker → space-padded text field.
+    if upper.contains('X') {
+        let width = count_pic_markers_before_decimal(&upper, &['X', 'A', 'N']);
+        return (width > 0).then_some(CobolPicFmt::Alpha(width));
+    }
+    // Reject signed / decimal / edited pictures.
+    if upper.contains(['S', 'V', '.', 'Z', '*', '+', '-', ',', '$', 'B', '/', 'P']) {
+        return None;
+    }
+    // Only 9 digit positions (with optional `(n)` repeat) qualify as plain numeric.
+    if upper
+        .chars()
+        .all(|c| matches!(c, '9' | '(' | ')') || c.is_ascii_digit())
+    {
+        let digits = count_pic_markers_before_decimal(&upper, &['9']);
+        return (digits > 0).then_some(CobolPicFmt::Numeric(digits));
+    }
+    None
+}
+
 fn pic_integer_digits(pic: &str) -> usize {
     count_pic_markers_before_decimal(pic, &['9', 'Z', '*'])
 }
@@ -2277,11 +2399,28 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                     _ => {}
                 }
             }
+            // DISPLAY of a SCREEN SECTION item renders to the terminal, not to
+            // stdout — drop those operands. If every operand is a screen item,
+            // the statement produces no output at all.
+            exprs.retain(|e| !matches!(&e.kind, ExprKind::Ident(n) if ctx.is_screen_item(n)));
+            if exprs.is_empty() {
+                return Ok(None);
+            }
+            // Pad each field operand to the fixed width implied by its PICTURE
+            // (numeric 9(n) → zero-pad, alphanumeric X(n) → space-pad). Literals
+            // and computed expressions (e.g. FUNCTION results) are left untouched.
+            for e in exprs.iter_mut() {
+                if let ExprKind::Ident(n) = &e.kind {
+                    if let Some(fmt) = ctx.field_pic(n) {
+                        *e = cobol_pic_format_expr(std::mem::replace(e, Expression::null()), fmt);
+                    }
+                }
+            }
             StmtKind::Echo(exprs)
         }
 
         // ── ACCEPT ──────────────────────────────────────────────────────
-        Rule::accept_stmt => walk_accept_stmt(pair)?,
+        Rule::accept_stmt => walk_accept_stmt(pair, ctx)?,
 
         // ── MOVE ────────────────────────────────────────────────────────
         Rule::move_stmt => walk_move_stmt(pair, ctx)?,
@@ -2311,13 +2450,13 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         Rule::perform_stmt => walk_perform_stmt(pair, ctx)?,
 
         // ── STRING ──────────────────────────────────────────────────────
-        Rule::string_stmt => walk_string_stmt(pair)?,
+        Rule::string_stmt => walk_string_stmt(pair, ctx)?,
 
         // ── UNSTRING ────────────────────────────────────────────────────
-        Rule::unstring_stmt => walk_unstring_stmt(pair)?,
+        Rule::unstring_stmt => walk_unstring_stmt(pair, ctx)?,
 
         // ── INSPECT ─────────────────────────────────────────────────────
-        Rule::inspect_stmt => walk_inspect_stmt(pair)?,
+        Rule::inspect_stmt => walk_inspect_stmt(pair, ctx)?,
 
         // ── CALL ────────────────────────────────────────────────────────
         Rule::call_stmt => walk_call_stmt(pair)?,
@@ -2354,7 +2493,13 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         }
 
         // ── STOP RUN ────────────────────────────────────────────────────
-        Rule::stop_run_stmt => StmtKind::Return(None),
+        // Terminate the whole run via WASI cli/exit (halts from any depth,
+        // including inside a PERFORMed paragraph), not a mere function return.
+        Rule::stop_run_stmt => StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__stop_run")),
+            args: Vec::new(),
+            optional: false,
+        })),
 
         Rule::stop_stmt => walk_stop_stmt(pair)?,
 
@@ -2587,8 +2732,19 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
 
 // ── ACCEPT ──────────────────────────────────────────────────────────────────
 
-fn walk_accept_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_accept_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+
+    // ACCEPT of a SCREEN SECTION item is interactive terminal input, which is
+    // mocked away here — make it a no-op so it never issues a blocking read on
+    // real stdin (which would hang an interactive test run). Mirrors the DISPLAY
+    // suppression for screen items.
+    if let Some(target) = children.iter().find(|c| c.as_rule() == Rule::ident_name) {
+        if ctx.is_screen_item(target.as_str()) {
+            return Ok(StmtKind::Block(Vec::new()));
+        }
+    }
+
     let mut var_name = String::new();
     let mut source: Option<String> = None;
     let mut args: Vec<Argument> = Vec::new();
@@ -4277,29 +4433,26 @@ fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<St
     // COBOL UNTIL = loop while NOT condition
     let cond = negate_expr(until_cond.unwrap_or(Expression::bool(false)));
 
-    // Lower through an explicit init + while so COBOL VARYING semantics do not
-    // depend on the shared generic For path.
+    // Lower to a For loop so the BY increment lives in the update clause. This
+    // way EXIT PERFORM CYCLE (Continue) still advances the loop variable —
+    // otherwise the increment sits at the end of the body and Continue skips it,
+    // hanging forever.
     let init = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&var_name)],
         value: from,
     });
 
-    let mut loop_body = body;
-    loop_body.push(Statement::new(StmtKind::Expr(Expression::new(
-        ExprKind::Assign {
-            target: Box::new(Expression::ident(&var_name)),
-            value: Box::new(binary(BinOp::Add, Expression::ident(&var_name), by)),
-        },
-    ))));
+    let update = Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::ident(&var_name)),
+        value: Box::new(binary(BinOp::Add, Expression::ident(&var_name), by)),
+    });
 
-    Ok(StmtKind::Block(vec![
-        init,
-        Statement::new(StmtKind::While {
-            cond,
-            body: loop_body,
-            else_body: None,
-        }),
-    ]))
+    Ok(StmtKind::For {
+        init: Some(Box::new(init)),
+        cond: Some(cond),
+        update: Some(update),
+        body,
+    })
 }
 
 fn walk_perform_until(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
@@ -4449,26 +4602,96 @@ fn walk_perform_times(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
 
 // ── STRING ──────────────────────────────────────────────────────────────────
 
-fn walk_string_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut source_exprs: Vec<Expression> = Vec::new();
     let mut into_name = String::new();
+    let mut overflow_body: Option<Vec<Statement>> = None;
+    let mut not_overflow_body: Option<Vec<Statement>> = None;
+    let mut ptr_name: Option<String> = None;
 
     for child in children {
         match child.as_rule() {
             Rule::string_source => {
-                // Each string source has an expression (the value to concatenate)
+                // A source is `expr DELIMITED BY (SIZE | delim)`.
+                //  • DELIMITED BY SIZE  → the whole sending field, i.e. padded to
+                //    its PICTURE width.
+                //  • DELIMITED BY delim → characters up to the first delimiter.
+                let mut src_expr: Option<Expression> = None;
+                let mut delim_expr: Option<Expression> = None;
+                let mut by_size = false;
                 for sc in child.into_inner() {
-                    if sc.as_rule() == Rule::expression {
-                        source_exprs.push(walk_expression(sc)?);
-                        break; // Take just the value, skip DELIMITED BY
+                    match sc.as_rule() {
+                        Rule::kw_size => by_size = true,
+                        Rule::expression => {
+                            if src_expr.is_none() {
+                                src_expr = Some(walk_expression(sc)?);
+                            } else {
+                                delim_expr = Some(walk_expression(sc)?);
+                            }
+                        }
+                        _ => {}
                     }
                 }
+                let Some(mut e) = src_expr else { continue };
+                if by_size {
+                    if let ExprKind::Ident(n) = &e.kind {
+                        if let Some(CobolPicFmt::Alpha(w)) = ctx.field_pic(n) {
+                            e = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__pad_end")),
+                                args: vec![
+                                    Argument::positional(e),
+                                    Argument::positional(Expression::int(w as i64)),
+                                    Argument::positional(Expression::string(" ")),
+                                ],
+                                optional: false,
+                            });
+                        }
+                    }
+                } else if let Some(d) = delim_expr {
+                    // take chars up to the first delimiter: split(d)[0]
+                    e = Expression::new(ExprKind::Index {
+                        object: Box::new(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(e),
+                                field: "split".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(d)],
+                            optional: false,
+                        })),
+                        index: Box::new(Expression::int(0)),
+                        null_safe: false,
+                    });
+                }
+                source_exprs.push(e);
             }
             Rule::ident_name => {
                 // The INTO target
                 into_name = child.as_str().to_string();
+            }
+            Rule::pointer_clause => {
+                ptr_name = child
+                    .clone()
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::ident_name)
+                    .map(|p| p.as_str().to_string());
+            }
+            Rule::overflow_clause => {
+                let mut lists = child
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::statement_list);
+                if let Some(l) = lists.next() {
+                    let mut b = Vec::new();
+                    walk_statement_list(l, &mut b, ctx)?;
+                    overflow_body = Some(b);
+                }
+                if let Some(l) = lists.next() {
+                    let mut b = Vec::new();
+                    walk_statement_list(l, &mut b, ctx)?;
+                    not_overflow_body = Some(b);
+                }
             }
             _ => {}
         }
@@ -4485,24 +4708,103 @@ fn walk_string_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         result
     };
 
-    Ok(StmtKind::Assign {
+    // WITH POINTER p: write starting at 1-based position p, then advance p by the
+    // number of characters transferred (p is a plain numeric counter).
+    if let Some(ptr) = ptr_name {
+        let val = Expression::ident("__str_val");
+        let prefix = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__refmod")),
+            args: vec![
+                Argument::positional(Expression::ident(&into_name)),
+                Argument::positional(Expression::int(0)),
+                Argument::positional(binary(
+                    BinOp::Sub,
+                    Expression::ident(&ptr),
+                    Expression::int(1),
+                )),
+            ],
+            optional: false,
+        });
+        let len = Expression::new(ExprKind::Member {
+            object: Box::new(val.clone()),
+            field: "length".to_string(),
+            null_safe: false,
+        });
+        return Ok(StmtKind::Block(vec![
+            Statement::new(StmtKind::VarDecl {
+                kind: VarDeclKind::Dim,
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident("__str_val".to_string()),
+                    type_hint: None,
+                    init: Some(concat_expr),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&into_name)],
+                value: binary(BinOp::Concat, prefix, val),
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&ptr)],
+                value: binary(BinOp::Add, Expression::ident(&ptr), len),
+            }),
+        ]));
+    }
+
+    let assign = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&into_name)],
         value: concat_expr,
-    })
+    });
+
+    // ON OVERFLOW fires when the assembled string is longer than the receiving
+    // field's PICTURE width — the classic "doesn't fit" condition.
+    if overflow_body.is_some() || not_overflow_body.is_some() {
+        if let Some(CobolPicFmt::Alpha(width)) = ctx.field_pic(&into_name) {
+            let len = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(&into_name)),
+                field: "length".to_string(),
+                null_safe: false,
+            });
+            let cond = binary(BinOp::Gt, len, Expression::int(width as i64));
+            return Ok(StmtKind::Block(vec![
+                assign,
+                Statement::new(StmtKind::If {
+                    cond,
+                    then_body: overflow_body.unwrap_or_default(),
+                    elifs: Vec::new(),
+                    else_body: not_overflow_body,
+                }),
+            ]));
+        }
+    }
+
+    Ok(assign.kind)
 }
 
 // ── UNSTRING ────────────────────────────────────────────────────────────────
 
-fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut src_name = String::new();
     let mut target_exprs: Vec<Expression> = Vec::new();
+    let mut target_names: Vec<Option<String>> = Vec::new();
+    let mut count_vars: Vec<Option<String>> = Vec::new();
     let mut delimiter: Option<Expression> = None;
     let mut saw_delimited_by = false;
+    let mut delimited_by_all = false;
+    let mut tally_var: Option<String> = None;
 
     for child in &children {
         match child.as_rule() {
+            Rule::tallying_in_clause => {
+                tally_var = child
+                    .clone()
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::ident_name)
+                    .map(|p| p.as_str().to_string());
+            }
             Rule::ident_name => {
                 if src_name.is_empty() {
                     src_name = child.as_str().to_string();
@@ -4513,28 +4815,67 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::kw_delimited | Rule::kw_by => {
                 saw_delimited_by = true;
             }
+            // DELIMITED BY ALL "x": consecutive delimiters collapse into one,
+            // so empty tokens between them are dropped after the split.
+            Rule::kw_all => {
+                delimited_by_all = true;
+            }
             Rule::string_literal => {
                 if saw_delimited_by && delimiter.is_none() {
                     delimiter = Some(walk_string_literal(child)?);
                 }
             }
+            Rule::figurative_constant => {
+                if saw_delimited_by && delimiter.is_none() {
+                    delimiter = Some(walk_figurative_constant(child.clone())?);
+                }
+            }
             Rule::unstring_target => {
+                // receiver [DELIMITER IN d] [COUNT IN c]
+                let mut receiver: Option<Pair<Rule>> = None;
+                let mut count_name: Option<String> = None;
+                let mut state = 0u8; // 0=receiver, 1=after DELIMITER, 2=after COUNT
                 for ut in child.clone().into_inner() {
-                    if ut.as_rule() == Rule::data_target {
-                        target_exprs.push(walk_data_target_expr(ut)?);
-                        break;
+                    match ut.as_rule() {
+                        Rule::kw_delimiter => state = 1,
+                        Rule::kw_count => state = 2,
+                        Rule::data_target => {
+                            if state == 0 && receiver.is_none() {
+                                receiver = Some(ut.clone());
+                            } else if state == 2 {
+                                count_name = extract_data_target_name(ut.clone());
+                            }
+                        }
+                        _ => {}
                     }
+                }
+                if let Some(r) = receiver {
+                    target_names.push(extract_data_target_name(r.clone()));
+                    target_exprs.push(walk_data_target_expr(r)?);
+                    count_vars.push(count_name);
                 }
             }
             _ => {}
         }
     }
 
-    // UNSTRING src DELIMITED BY delim INTO t1 t2 t3
-    // → split(src, delim) then assign each element
+    // The whole sending field participates in UNSTRING, so pad the source to its
+    // PICTURE width first — that makes token lengths (COUNT IN) match COBOL.
+    let src_expr = match ctx.field_pic(&src_name) {
+        Some(CobolPicFmt::Alpha(w)) => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__pad_end")),
+            args: vec![
+                Argument::positional(Expression::ident(&src_name)),
+                Argument::positional(Expression::int(w as i64)),
+                Argument::positional(Expression::string(" ")),
+            ],
+            optional: false,
+        }),
+        _ => Expression::ident(&src_name),
+    };
     let split_call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(&src_name)),
+            object: Box::new(src_expr),
             field: "split".to_string(),
             null_safe: false,
         })),
@@ -4544,27 +4885,113 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         optional: false,
     });
 
+    // DELIMITED BY ALL collapses runs of the delimiter, so the empty tokens the
+    // plain split leaves between adjacent delimiters are dropped via .filter —
+    // routed through the shared HOF loop emitter ([array_methods] in profile).
+    let source_tokens = if delimited_by_all {
+        let predicate = Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__t".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(binary(
+                BinOp::StrictNotEq,
+                Expression::ident("__t"),
+                Expression::string(""),
+            ))),
+            is_async: false,
+            captures: vec![],
+        });
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(split_call),
+                field: "filter".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(predicate)],
+            optional: false,
+        })
+    } else {
+        split_call
+    };
+
     let mut stmts = Vec::new();
-    // temp = src.split(delim)
     stmts.push(Statement::new(StmtKind::VarDecl {
         kind: VarDeclKind::Dim,
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident("__split_result".to_string()),
             type_hint: None,
-            init: Some(split_call),
+            init: Some(source_tokens),
             array_bounds: None,
             with_events: false,
         }],
     }));
 
     for (i, target) in target_exprs.iter().enumerate() {
+        let token = Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident("__split_result")),
+            index: Box::new(Expression::int(i as i64)),
+            null_safe: false,
+        });
+        // Receiver gets the token truncated to its field width (left-justified).
+        let value = match target_names
+            .get(i)
+            .and_then(|n| n.as_ref())
+            .and_then(|n| ctx.field_pic(n))
+        {
+            Some(CobolPicFmt::Alpha(w)) => Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__refmod")),
+                args: vec![
+                    Argument::positional(token.clone()),
+                    // __refmod takes a 0-based start (the refmod path already
+                    // subtracts 1); truncate to the receiver width from index 0.
+                    Argument::positional(Expression::int(0)),
+                    Argument::positional(Expression::int(w as i64)),
+                ],
+                optional: false,
+            }),
+            _ => token.clone(),
+        };
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value: Expression::new(ExprKind::Index {
-                object: Box::new(Expression::ident("__split_result")),
-                index: Box::new(Expression::int(i as i64)),
-                null_safe: false,
-            }),
+            value,
+        }));
+        // COUNT IN = the token's actual length.
+        if let Some(Some(cv)) = count_vars.get(i) {
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(cv)],
+                value: Expression::new(ExprKind::Member {
+                    object: Box::new(token),
+                    field: "length".to_string(),
+                    null_safe: false,
+                }),
+            }));
+        }
+    }
+
+    // TALLYING IN counter = number of receivers actually filled =
+    // min(token count, receiver count).
+    if let Some(tv) = tally_var {
+        let n = target_exprs.len() as i64;
+        let split_len = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("__split_result")),
+            field: "length".to_string(),
+            null_safe: false,
+        });
+        let count = Expression::new(ExprKind::Ternary {
+            cond: Box::new(binary(BinOp::Gt, split_len.clone(), Expression::int(n))),
+            then: Box::new(Expression::int(n)),
+            else_: Box::new(split_len),
+        });
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&tv)],
+            value: count,
         }));
     }
 
@@ -4573,12 +5000,12 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── INSPECT ─────────────────────────────────────────────────────────────────
 
-fn walk_inspect_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_inspect_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let inner = pair.into_inner().next().ok_or("empty INSPECT")?;
 
     match inner.as_rule() {
         Rule::inspect_tallying => walk_inspect_tallying(inner),
-        Rule::inspect_replacing => walk_inspect_replacing(inner),
+        Rule::inspect_replacing => walk_inspect_replacing(inner, ctx),
         Rule::inspect_converting => walk_inspect_converting(inner),
         other => Err(format!(
             "COBOL walker: unhandled inspect variant {:?}",
@@ -4656,7 +5083,10 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_inspect_replacing(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_inspect_replacing(
+    pair: Pair<Rule>,
+    ctx: &CobolWalkerContext,
+) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
     let var = parts
         .iter()
@@ -4669,6 +5099,44 @@ fn walk_inspect_replacing(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in &parts {
         if p.as_rule() == Rule::inspect_replace_phrase {
+            // REPLACING CHARACTERS BY x — no search operand; every position in
+            // the receiver becomes x, i.e. x cycled to the field width. `padEnd`
+            // of the empty string fills the whole PICTURE width with the fill.
+            if p.clone()
+                .into_inner()
+                .next()
+                .is_some_and(|c| c.as_rule() == Rule::kw_characters)
+            {
+                let fill = p
+                    .clone()
+                    .into_inner()
+                    .filter(|rp| {
+                        rp.as_rule() == Rule::string_literal || rp.as_rule() == Rule::ident_name
+                    })
+                    .last();
+                let fill_expr = match fill {
+                    Some(rp) if rp.as_rule() == Rule::string_literal => walk_string_literal(&rp)?,
+                    Some(rp) => Expression::ident(rp.as_str()),
+                    None => Expression::string(" "),
+                };
+                let width = match ctx.field_pic(&var) {
+                    Some(CobolPicFmt::Alpha(w)) | Some(CobolPicFmt::Numeric(w)) => w as i64,
+                    None => 0,
+                };
+                let filled = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__pad_end")),
+                    args: vec![
+                        Argument::positional(Expression::string("")),
+                        Argument::positional(Expression::int(width)),
+                        Argument::positional(fill_expr),
+                    ],
+                    optional: false,
+                });
+                return Ok(StmtKind::Assign {
+                    targets: vec![Expression::ident(&var)],
+                    value: filled,
+                });
+            }
             let mut found_by = false;
             for rp in p.clone().into_inner() {
                 if rp.as_rule() == Rule::kw_by {
@@ -4713,7 +5181,9 @@ fn walk_inspect_replacing(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_inspect_converting(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let parts = inner_nokw(pair);
+    // Keep raw inner so the `TO` keyword survives — it separates the from/to
+    // character sets (inner_nokw strips it, collapsing both into `from`).
+    let parts: Vec<Pair<Rule>> = pair.into_inner().collect();
     let var = parts
         .iter()
         .find(|p| p.as_rule() == Rule::ident_name)
@@ -4750,22 +5220,44 @@ fn walk_inspect_converting(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    let replace_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(&var)),
-            field: "replace".to_string(),
-            null_safe: false,
-        })),
-        args: vec![
-            Argument::positional(from_expr),
-            Argument::positional(to_expr),
-        ],
-        optional: false,
-    });
+    // CONVERTING is a per-character translation. The overwhelmingly common case
+    // (and what has a working cobol path) is case folding: map the alphabet to
+    // UPPER-CASE / LOWER-CASE, which route to the shared str_to_upper/lower.
+    // Arbitrary translations fall back to a substring replace (imperfect).
+    const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
+    const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let str_lit = |e: &Expression| match &e.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let value = match (str_lit(&from_expr), str_lit(&to_expr)) {
+        (Some(f), Some(t)) if f == LOWER && t == UPPER => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("UPPER-CASE")),
+            args: vec![Argument::positional(Expression::ident(&var))],
+            optional: false,
+        }),
+        (Some(f), Some(t)) if f == UPPER && t == LOWER => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("LOWER-CASE")),
+            args: vec![Argument::positional(Expression::ident(&var))],
+            optional: false,
+        }),
+        _ => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(&var)),
+                field: "replace".to_string(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(from_expr),
+                Argument::positional(to_expr),
+            ],
+            optional: false,
+        }),
+    };
 
     Ok(StmtKind::Assign {
         targets: vec![Expression::ident(&var)],
-        value: replace_call,
+        value,
     })
 }
 
@@ -6514,12 +7006,388 @@ fn walk_atom(pair: Pair<Rule>) -> Result<Expression, String> {
 
 // ── Function calls ──────────────────────────────────────────────────────────
 
+/// Lower COBOL numeric intrinsics that have no direct host mapping into
+/// expression trees composed from primitives the profile already resolves
+/// (arithmetic ops plus MAX/MIN/POWER/SQRT/f64_floor/f64_trunc). Returns None
+/// for names handled directly by the profile.
+fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Expression> {
+    let xs: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
+    let n = xs.len();
+
+    let call = |fname: &str, cargs: Vec<Expression>| -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(fname)),
+            args: cargs.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    };
+    let sum = |vals: &[Expression]| -> Expression {
+        let mut it = vals.iter().cloned();
+        let first = it.next().expect("sum needs >=1 arg");
+        it.fold(first, |acc, x| binary(BinOp::Add, acc, x))
+    };
+    // Format a value COBOL-style for financial intrinsics: truncate to two
+    // decimal places and render with a trailing-zero 2-decimal string.
+    let fmt2 = |v: Expression| -> Expression {
+        let ncall = |fname: &str, arg: Expression| -> Expression {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(fname)),
+                args: vec![Argument::positional(arg)],
+                optional: false,
+            })
+        };
+        // Binary floats can't represent e.g. 1.10 exactly, so raw truncation of
+        // 1.0999999 yields 1.09. Round to 6 dp first to erase that noise, then
+        // truncate to 2 dp (COBOL fixed-point behaviour).
+        let denoise = binary(
+            BinOp::Div,
+            ncall(
+                "f64_nearest",
+                binary(BinOp::Mul, v, Expression::float(1_000_000.0)),
+            ),
+            Expression::float(1_000_000.0),
+        );
+        let scaled = ncall(
+            "f64_trunc",
+            binary(BinOp::Mul, denoise, Expression::int(100)),
+        );
+        let back = binary(BinOp::Div, scaled, Expression::int(100));
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__to_fixed2")),
+            args: vec![
+                Argument::positional(back),
+                Argument::positional(Expression::int(2)),
+            ],
+            optional: false,
+        })
+    };
+    // Population variance: mean of squared deviations from the mean.
+    let pop_variance = |vals: &[Expression]| -> Expression {
+        let mean = binary(BinOp::Div, sum(vals), Expression::int(vals.len() as i64));
+        let sq_devs: Vec<Expression> = vals
+            .iter()
+            .map(|x| {
+                let d = binary(BinOp::Sub, x.clone(), mean.clone());
+                binary(BinOp::Mul, d.clone(), d)
+            })
+            .collect();
+        binary(
+            BinOp::Div,
+            sum(&sq_devs),
+            Expression::int(vals.len() as i64),
+        )
+    };
+
+    match name {
+        "PI" if n == 0 => Some(Expression::float(std::f64::consts::PI)),
+        "E" if n == 0 => Some(Expression::float(std::f64::consts::E)),
+        "SUM" if n >= 1 => Some(sum(&xs)),
+        "MEAN" | "AVERAGE" if n >= 1 => {
+            Some(binary(BinOp::Div, sum(&xs), Expression::int(n as i64)))
+        }
+        "RANGE" if n >= 2 => Some(binary(
+            BinOp::Sub,
+            call("MAX", xs.clone()),
+            call("MIN", xs.clone()),
+        )),
+        "MIDRANGE" if n >= 2 => Some(binary(
+            BinOp::Div,
+            binary(BinOp::Add, call("MAX", xs.clone()), call("MIN", xs.clone())),
+            Expression::int(2),
+        )),
+        // MOD is floor-based; REM truncates toward zero.
+        "MOD" if n == 2 => {
+            let (a, b) = (xs[0].clone(), xs[1].clone());
+            let q = call("f64_floor", vec![binary(BinOp::Div, a.clone(), b.clone())]);
+            Some(binary(BinOp::Sub, a, binary(BinOp::Mul, b, q)))
+        }
+        "REM" if n == 2 => {
+            let (a, b) = (xs[0].clone(), xs[1].clone());
+            let q = call("f64_trunc", vec![binary(BinOp::Div, a.clone(), b.clone())]);
+            Some(binary(BinOp::Sub, a, binary(BinOp::Mul, b, q)))
+        }
+        // COBOL ORD is 1-based (ORD('A') == 66); CHAR is its inverse.
+        "ORD" if n == 1 => Some(binary(
+            BinOp::Add,
+            call("__ord_code", vec![xs[0].clone()]),
+            Expression::int(1),
+        )),
+        "CHAR" if n == 1 => Some(call(
+            "__char_code",
+            vec![binary(BinOp::Sub, xs[0].clone(), Expression::int(1))],
+        )),
+        "INTEGER-PART" if n == 1 => Some(call("f64_trunc", vec![xs[0].clone()])),
+        "EXP10" if n == 1 => Some(call("POWER", vec![Expression::int(10), xs[0].clone()])),
+        "VARIANCE" if n >= 1 => Some(pop_variance(&xs)),
+        "STANDARD-DEVIATION" if n >= 1 => Some(call("SQRT", vec![pop_variance(&xs)])),
+        // ANNUITY(rate, periods): rate==0 ? 1/periods : rate/(1-(1+rate)^-periods)
+        "ANNUITY" if n == 2 => {
+            let (rate, periods) = (xs[0].clone(), xs[1].clone());
+            let one_plus = binary(BinOp::Add, Expression::int(1), rate.clone());
+            let neg_n = binary(BinOp::Sub, Expression::int(0), periods.clone());
+            let denom = binary(
+                BinOp::Sub,
+                Expression::int(1),
+                call("POWER", vec![one_plus, neg_n]),
+            );
+            let general = binary(BinOp::Div, rate.clone(), denom);
+            let zero_case = binary(BinOp::Div, Expression::int(1), periods);
+            Some(fmt2(Expression::new(ExprKind::Ternary {
+                cond: Box::new(binary(BinOp::Eq, rate, Expression::int(0))),
+                then: Box::new(zero_case),
+                else_: Box::new(general),
+            })))
+        }
+        // PRESENT-VALUE(rate, v1..vk): sum of vi / (1+rate)^i for i = 1..k
+        "PRESENT-VALUE" if n >= 2 => {
+            let rate = xs[0].clone();
+            let one_plus = binary(BinOp::Add, Expression::int(1), rate);
+            let terms: Vec<Expression> = xs[1..]
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let disc = call(
+                        "POWER",
+                        vec![one_plus.clone(), Expression::int(i as i64 + 1)],
+                    );
+                    binary(BinOp::Div, v.clone(), disc)
+                })
+                .collect();
+            Some(fmt2(sum(&terms)))
+        }
+        _ => None,
+    }
+}
+
+/// COBOL integer-date intrinsics. Day 1 = 1601-01-01; the Unix epoch sits at
+/// integer 134775 (days since 1601-01-01, 1-based). Conversions compose
+/// `ecma:date` UTC getters + `Date.UTC` with plain arithmetic — no host date
+/// functions specific to COBOL.
+fn desugar_cobol_date_intrinsic(name: &str, args: &[Argument]) -> Option<Expression> {
+    fn dcall(f: &str, a: Vec<Expression>) -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(f)),
+            args: a.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    }
+    fn didiv(a: Expression, b: i64) -> Expression {
+        dcall("f64_trunc", vec![binary(BinOp::Div, a, Expression::int(b))])
+    }
+    fn imod(a: Expression, b: i64) -> Expression {
+        binary(
+            BinOp::Sub,
+            a.clone(),
+            binary(BinOp::Mul, Expression::int(b), didiv(a, b)),
+        )
+    }
+    // Unix-epoch milliseconds for a 1-based COBOL integer date.
+    fn ms_from_int(e: Expression) -> Expression {
+        binary(
+            BinOp::Mul,
+            binary(BinOp::Sub, e, Expression::int(134_775)),
+            Expression::int(86_400_000),
+        )
+    }
+    fn tern(c: Expression, t: Expression, e: Expression) -> Expression {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(c),
+            then: Box::new(t),
+            else_: Box::new(e),
+        })
+    }
+    // `lo <= v <= hi` violated → the out-of-range branch.
+    fn out_of_range(v: Expression, lo: i64, hi: i64) -> Expression {
+        binary(
+            BinOp::Or,
+            binary(BinOp::Lt, v.clone(), Expression::int(lo)),
+            binary(BinOp::Gt, v, Expression::int(hi)),
+        )
+    }
+    // Integer-of-date of Jan 1 of `year`: UTC(year,0,1)/86_400_000 + 134775.
+    fn jan1_int(year: Expression) -> Expression {
+        binary(
+            BinOp::Add,
+            didiv(
+                dcall(
+                    "__date_utc",
+                    vec![year, Expression::int(0), Expression::int(1)],
+                ),
+                86_400_000,
+            ),
+            Expression::int(134_775),
+        )
+    }
+
+    let xs: Vec<Expression> = args.iter().map(|a| a.value.clone()).collect();
+    if xs.len() != 1 {
+        return None;
+    }
+    let arg = xs[0].clone();
+    match name {
+        "DATE-OF-INTEGER" => {
+            let ms = ms_from_int(arg);
+            let y = dcall("__utc_year", vec![ms.clone()]);
+            let m = binary(
+                BinOp::Add,
+                dcall("__utc_month", vec![ms.clone()]),
+                Expression::int(1),
+            );
+            let d = dcall("__utc_date", vec![ms]);
+            Some(binary(
+                BinOp::Add,
+                binary(
+                    BinOp::Add,
+                    binary(BinOp::Mul, y, Expression::int(10_000)),
+                    binary(BinOp::Mul, m, Expression::int(100)),
+                ),
+                d,
+            ))
+        }
+        "INTEGER-OF-DAY" => {
+            // year = yyyyddd / 1000; ddd = yyyyddd % 1000 → jan1_int(year)+ddd-1
+            let year = didiv(arg.clone(), 1000);
+            let ddd = imod(arg, 1000);
+            Some(binary(
+                BinOp::Sub,
+                binary(BinOp::Add, jan1_int(year), ddd),
+                Expression::int(1),
+            ))
+        }
+        "DAY-OF-INTEGER" => {
+            let year = dcall("__utc_year", vec![ms_from_int(arg.clone())]);
+            // ddd = n - jan1_int(year) + 1; result = year*1000 + ddd
+            let ddd = binary(
+                BinOp::Add,
+                binary(BinOp::Sub, arg, jan1_int(year.clone())),
+                Expression::int(1),
+            );
+            Some(binary(
+                BinOp::Add,
+                binary(BinOp::Mul, year, Expression::int(1000)),
+                ddd,
+            ))
+        }
+        // Validation: 0 = valid, 1 = year out of [1601,9999], 2 = bad month,
+        // 3 = bad day (ecma rolls an invalid day into the next month, so the
+        // round-tripped day differs).
+        "TEST-DATE-YYYYMMDD" => {
+            let y = didiv(arg.clone(), 10_000);
+            let m = didiv(imod(arg.clone(), 10_000), 100);
+            let day = imod(arg, 100);
+            let ms = dcall(
+                "__date_utc",
+                vec![
+                    y.clone(),
+                    binary(BinOp::Sub, m.clone(), Expression::int(1)),
+                    day.clone(),
+                ],
+            );
+            let bad_day = binary(BinOp::NotEq, dcall("__utc_date", vec![ms]), day);
+            Some(tern(
+                out_of_range(y, 1601, 9999),
+                Expression::int(1),
+                tern(
+                    out_of_range(m, 1, 12),
+                    Expression::int(2),
+                    tern(bad_day, Expression::int(3), Expression::int(0)),
+                ),
+            ))
+        }
+        // 0 = valid, 1 = year out of range, 2 = day-of-year out of [1, days-in-year].
+        "TEST-DAY-YYYYDDD" => {
+            let y = didiv(arg.clone(), 1000);
+            let ddd = imod(arg, 1000);
+            // days-in-year(y) = (UTC(y+1,0,1) - UTC(y,0,1)) / 86_400_000
+            let diy = didiv(
+                binary(
+                    BinOp::Sub,
+                    dcall(
+                        "__date_utc",
+                        vec![
+                            binary(BinOp::Add, y.clone(), Expression::int(1)),
+                            Expression::int(0),
+                            Expression::int(1),
+                        ],
+                    ),
+                    dcall(
+                        "__date_utc",
+                        vec![y.clone(), Expression::int(0), Expression::int(1)],
+                    ),
+                ),
+                86_400_000,
+            );
+            let bad_ddd = binary(
+                BinOp::Or,
+                binary(BinOp::Lt, ddd.clone(), Expression::int(1)),
+                binary(BinOp::Gt, ddd, diy),
+            );
+            Some(tern(
+                out_of_range(y, 1601, 9999),
+                Expression::int(1),
+                tern(bad_ddd, Expression::int(2), Expression::int(0)),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Reduce a COBOL intrinsic over a whole OCCURS table (`FUNCTION MAX(ALL VALS)`).
+/// The table is an `ObjectKind::Array`, identical to a JS/Python sequence, so the
+/// aggregates route to the shared ECMA iterable reducers
+/// (`__table_max/min/sum` → `ecma:math:maxOf/minOf/sumPrecise`) — the exact
+/// surface Python's `max`/`min`/`sum` use. Composite stats build from those.
+fn desugar_cobol_table_aggregate(name: &str, arr: Expression) -> Option<Expression> {
+    let call1 = |fname: &str, a: Expression| -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(fname)),
+            args: vec![Argument::positional(a)],
+            optional: false,
+        })
+    };
+    let length = |a: Expression| -> Expression {
+        Expression::new(ExprKind::Member {
+            object: Box::new(a),
+            field: "length".to_string(),
+            null_safe: false,
+        })
+    };
+
+    match name {
+        "MAX" => Some(call1("__table_max", arr)),
+        "MIN" => Some(call1("__table_min", arr)),
+        "SUM" => Some(call1("__table_sum", arr)),
+        "MEAN" | "AVERAGE" => Some(binary(
+            BinOp::Div,
+            call1("__table_sum", arr.clone()),
+            length(arr),
+        )),
+        "RANGE" => Some(binary(
+            BinOp::Sub,
+            call1("__table_max", arr.clone()),
+            call1("__table_min", arr),
+        )),
+        "MIDRANGE" => Some(binary(
+            BinOp::Div,
+            binary(
+                BinOp::Add,
+                call1("__table_max", arr.clone()),
+                call1("__table_min", arr),
+            ),
+            Expression::int(2),
+        )),
+        _ => None,
+    }
+}
+
 fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut func_name = String::new();
     let mut args: Vec<Argument> = Vec::new();
     let mut subscript_or_refmod: Option<Pair<Rule>> = None;
+    // Set when an argument is `ALL table-name` — the whole OCCURS array.
+    let mut all_table: Option<Expression> = None;
 
     for child in children {
         match child.as_rule() {
@@ -6532,6 +7400,20 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
                         Rule::func_args => {
                             for func_arg in arg_child.into_inner() {
                                 match func_arg.as_rule() {
+                                    Rule::all_table_ref => {
+                                        for inner in func_arg.into_inner() {
+                                            if inner.as_rule() == Rule::qualified_ident {
+                                                all_table = Some(walk_qualified_ident(inner)?);
+                                            }
+                                        }
+                                    }
+                                    Rule::func_kw_arg => {
+                                        // Reserved-word argument (e.g. TRIM's
+                                        // LEADING/TRAILING) — pass as an ident.
+                                        args.push(Argument::positional(Expression::ident(
+                                            &func_arg.as_str().to_ascii_uppercase(),
+                                        )));
+                                    }
                                     Rule::expression => {
                                         args.push(Argument::positional(walk_expression(func_arg)?));
                                     }
@@ -6567,6 +7449,45 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
                 subscript_or_refmod = Some(child);
             }
             _ => {}
+        }
+    }
+
+    // `FUNCTION MAX(ALL VALS)` etc.: the argument is one whole OCCURS array, so
+    // reduce over it via the shared ECMA iterable reducers (same surface Python
+    // uses) rather than the scalar variadic form.
+    if let Some(table) = all_table {
+        if let Some(agg) = desugar_cobol_table_aggregate(&func_name, table.clone()) {
+            return Ok(agg);
+        }
+        // Unhandled aggregate (e.g. MEDIAN): fall through with the array as the
+        // sole argument.
+        args.push(Argument::positional(table));
+    }
+
+    // TRIM(x LEADING|TRAILING) → trimStart/trimEnd; bare TRIM(x) → str_trim.
+    if func_name == "TRIM" && args.len() == 2 {
+        if let ExprKind::Ident(dir) = &args[1].value.kind {
+            let helper = match dir.to_ascii_uppercase().as_str() {
+                "LEADING" => Some("__trim_start"),
+                "TRAILING" => Some("__trim_end"),
+                _ => None,
+            };
+            if let Some(h) = helper {
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(h)),
+                    args: vec![Argument::positional(args[0].value.clone())],
+                    optional: false,
+                }));
+            }
+        }
+    }
+
+    if subscript_or_refmod.is_none() {
+        if let Some(desugared) = desugar_cobol_date_intrinsic(&func_name, &args) {
+            return Ok(desugared);
+        }
+        if let Some(desugared) = desugar_cobol_math_intrinsic(&func_name, &args) {
+            return Ok(desugared);
         }
     }
 
@@ -6727,15 +7648,21 @@ fn apply_cobol_subscript_or_refmod(
     mut expr: Expression,
     sub_pair: Pair<Rule>,
 ) -> Result<Expression, String> {
-    let sub_children: Vec<Pair<Rule>> = sub_pair.into_inner().collect();
-
-    let has_colon = sub_children.iter().any(|c| c.as_str().contains(':'));
-    let expr_children: Vec<&Pair<Rule>> = sub_children
-        .iter()
+    // The grammar tags each alternative: `refmod` = name(start:length),
+    // `subscript` = name(idx[, idx]...). The `:`/`,` separators are literals
+    // consumed by the grammar, so the alternative is only recoverable from the
+    // rule tag — never from scanning the child expressions' text.
+    let inner = sub_pair
+        .into_inner()
+        .next()
+        .ok_or("empty subscript_or_refmod")?;
+    let is_refmod = inner.as_rule() == Rule::refmod;
+    let expr_children: Vec<Pair<Rule>> = inner
+        .into_inner()
         .filter(|c| c.as_rule() == Rule::expression)
         .collect();
 
-    if has_colon || (expr_children.len() >= 1 && sub_children.iter().any(|c| c.as_str() == ":")) {
+    if is_refmod {
         let start_expr = if !expr_children.is_empty() {
             walk_expression(expr_children[0].clone())?
         } else {

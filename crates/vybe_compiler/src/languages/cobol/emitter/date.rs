@@ -32,6 +32,10 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_f64_const(chunks, current, 86_400_000.0, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op(Op::F64_TRUNC, line);
+    // COBOL integer dates are 1-based from 1601-01-01, but the above yields days
+    // since the Unix epoch (1601-01-01 = -134774). Shift so 1601-01-01 → 1.
+    emit_f64_const(chunks, current, 134_775.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
 }
 
 fn emit_yyyymmdd_slice(

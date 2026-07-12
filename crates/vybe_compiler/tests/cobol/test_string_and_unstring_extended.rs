@@ -24,7 +24,7 @@ fn string_with_multiple_sources_and_delimiters() {
     DISPLAY WS-R.
 "#,
     ));
-    assert_eq!(output, vec!["ABC"]);
+    assert_eq!(output, vec!["A  B  C     "]);
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn string_with_literal_and_variable_sources() {
     DISPLAY WS-R.
 "#,
     ));
-    assert_eq!(output, vec!["HELLO COBOL"]);
+    assert_eq!(output, vec!["HELLO COBOL "]);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn unstring_with_multiple_targets_and_delimiters() {
     DISPLAY WS-F3.
 "#,
     ));
-    assert_eq!(output, vec!["A", "B", "C"]);
+    assert_eq!(output, vec!["A  ", "B  ", "C  "]);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn unstring_with_space_delimiter() {
     DISPLAY WS-F2.
 "#,
     ));
-    assert_eq!(output, vec!["ONE", "TWO"]);
+    assert_eq!(output, vec!["ONE  ", "TWO  "]);
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn inspect_tallying_with_multiple_patterns() {
     DISPLAY WS-CNT.
 "#,
     ));
-    assert_eq!(output, vec!["4"]);
+    assert_eq!(output, vec!["004"]);
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn inspect_replacing_with_characters() {
     DISPLAY WS-TXT.
 "#,
     ));
-    assert_eq!(output, vec!["XXXXXXX"]);
+    assert_eq!(output, vec!["XXXXXXXX"]);
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn inspect_converting_letters_to_upper_case() {
     DISPLAY WS-TXT.
 "#,
     ));
-    assert_eq!(output, vec!["ABC123"]);
+    assert_eq!(output, vec!["ABC123  "]);
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn string_with_space_delimiter_concatenates_fields() {
     DISPLAY WS-R.
 "#,
     ));
-    assert_eq!(output, vec!["ONETWO"]);
+    assert_eq!(output, vec!["ONETWO              "]);
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn unstring_with_all_delimiter_splits_repeated_separators() {
     DISPLAY WS-F2.
 "#,
     ));
-    assert_eq!(output, vec!["A", "B"]);
+    assert_eq!(output, vec!["A  ", "B  "]);
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn inspect_tallying_for_leading_zeroes_counts_prefix() {
     DISPLAY WS-CNT.
 "#,
     ));
-    assert_eq!(output, vec!["3"]);
+    assert_eq!(output, vec!["003"]);
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn string_with_pointer_updates_destination_and_pointer() {
     DISPLAY WS-PTR.
 "#,
     ));
-    assert_eq!(output, vec!["ABCD", "5"]);
+    assert_eq!(output, vec!["ABCD    ", "05"]);
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn unstring_with_count_in_reports_token_lengths() {
     DISPLAY WS-C2.
 "#,
     ));
-    assert_eq!(output, vec!["AA", "BBB", "2", "3"]);
+    assert_eq!(output, vec!["AA   ", "BBB  ", "02", "09"]);
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn unstring_tallying_in_counts_receivers_used() {
     DISPLAY WS-T.
 "#,
     ));
-    assert_eq!(output, vec!["A", "B", "C", "3"]);
+    assert_eq!(output, vec!["A ", "B ", "C ", "3"]);
 }
 
 #[test]

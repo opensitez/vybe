@@ -1,7 +1,24 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
+
+/// Replace real-TTY stdin with an EOF stub so COBOL `ACCEPT` never blocks a test
+/// run on the terminal. The default `get-stdin` returns a `{ fd: 0 }` handle,
+/// which routes wasi:io/streams blocking-read to `std::io::stdin().read()`
+/// (blocking). Returning an fd-less handle makes blocking-read fall through to
+/// EOF instead — `ACCEPT` reads an empty line. Only `get-stdin` is overridden,
+/// so file/socket reads (which use their own resource handles) are unaffected.
+fn stub_stdin(vm: &mut VM) {
+    vm.register_host_fn(
+        "wasi:cli/stdin",
+        "get-stdin",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            Value::Object(Arc::new(Mutex::new(Object::new())))
+        }),
+    );
+}
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::cobol::parse(src)?;
@@ -31,6 +48,7 @@ pub fn run(src: &str) -> Value {
     let chunks = compile(src);
     let mut vm = VM::new();
     vybe_host::register_all(&mut vm);
+    stub_stdin(&mut vm);
     vm.run(chunks).expect("run failed")
 }
 
@@ -40,6 +58,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
+    stub_stdin(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",

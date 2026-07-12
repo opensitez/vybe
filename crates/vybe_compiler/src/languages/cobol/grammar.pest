@@ -200,7 +200,7 @@ configuration_entry = {
   | repository_paragraph
 }
 
-source_computer_paragraph = { kw_source_computer ~ period ~ ident_or_keyword ~ period }
+source_computer_paragraph = { kw_source_computer ~ period ~ ident_or_keyword ~ (kw_with? ~ kw_debugging ~ kw_mode)? ~ period }
 object_computer_paragraph = { kw_object_computer ~ period ~ ident_or_keyword ~ period }
 
 special_names_paragraph = {
@@ -362,33 +362,55 @@ screen_item_name = @{
 
 screen_clause = {
         blank_screen_clause
+    | blank_line_clause
+    | blank_when_zero_clause
     | line_clause
     | column_clause
     | pic_clause
     | value_clause
     | screen_source_clause
+    | screen_to_clause
+    | screen_sign_clause
+    | screen_justified_clause
     | highlight_clause
+    | lowlight_clause
     | reverse_video_clause
+    | underline_clause
     | blink_clause
+    | bell_clause
+    | erase_clause
     | auto_clause
+    | full_clause
     | required_clause
     | protected_clause
     | secure_clause
+    | prompt_clause
     | foreground_color_clause
     | background_color_clause
 }
 
 blank_screen_clause     = { kw_blank ~ kw_screen }
-line_clause             = { kw_line ~ expression }
-column_clause           = { kw_column ~ expression }
-screen_source_clause    = { (kw_using | kw_from) ~ ident_name }
+blank_line_clause       = { kw_blank ~ kw_line }
+blank_when_zero_clause  = { kw_blank ~ kw_when ~ kw_zero }
+line_clause             = { kw_line ~ kw_plus? ~ expression }
+column_clause           = { kw_column ~ kw_plus? ~ expression }
+screen_source_clause    = { (kw_using | kw_from) ~ ident_name ~ (kw_to ~ ident_name)? }
+screen_to_clause        = { kw_to ~ ident_name }
+screen_sign_clause      = { kw_sign ~ kw_is? ~ (kw_leading | kw_trailing) ~ (kw_separate ~ kw_character?)? }
+screen_justified_clause = { kw_justified ~ kw_right? }
 highlight_clause        = { kw_highlight }
+lowlight_clause         = { kw_lowlight }
 reverse_video_clause    = { kw_reverse_video }
+underline_clause        = { kw_underline }
 blink_clause            = { kw_blink }
+bell_clause             = { kw_bell }
+erase_clause            = { kw_erase ~ (kw_eol | kw_eos)? }
 auto_clause             = { kw_auto }
+full_clause             = { kw_full }
 required_clause         = { kw_required }
 protected_clause        = { kw_protected }
 secure_clause           = { kw_secure }
+prompt_clause           = { kw_prompt ~ (kw_character ~ kw_is? ~ literal)? }
 foreground_color_clause = { kw_foreground_color ~ expression }
 background_color_clause = { kw_background_color ~ expression }
 
@@ -508,6 +530,7 @@ declarative_section = {
     paragraph_name ~ kw_section ~ period
     ~ use_stmt ~ period
     ~ statement_list
+    ~ paragraph*
 }
 
 use_stmt = {
@@ -516,13 +539,26 @@ use_stmt = {
 }
 
 after_use_clause = {
-    kw_after ~ kw_standard ~ (kw_error | kw_exception) ~ kw_procedure
-    ~ (kw_on ~ (ident_name | kw_input | kw_output | kw_all))?
+    kw_global? ~ kw_after ~ use_condition
 }
 
-debugging_use_clause = {
-    kw_for ~ kw_debugging ~ kw_on ~ ((kw_all ~ kw_procedures) | ident_name)
+// Ordered so EXCEPTION CONDITION / EXCEPTION OBJECT / INVALID KEY match before
+// the general STANDARD ERROR/EXCEPTION PROCEDURE form (which would otherwise
+// consume the EXCEPTION token and leave CONDITION/OBJECT dangling).
+use_condition = {
+    kw_exception ~ kw_condition
+  | kw_exception ~ kw_object ~ ident_name
+  | kw_invalid ~ kw_key
+  | kw_standard? ~ (kw_error | kw_exception) ~ kw_procedure? ~ (kw_on ~ use_target+)?
 }
+
+use_target = { kw_input | kw_output | kw_i_o | kw_extend | kw_all | ident_name }
+
+debugging_use_clause = {
+    kw_for ~ kw_debugging ~ kw_on ~ ((kw_all ~ kw_procedures) | (ident_name ~ kw_section?))
+}
+
+resume_stmt = { kw_resume ~ (kw_next ~ kw_statement | paragraph_name) }
 
 procedure_block = {
     section
@@ -574,6 +610,7 @@ statement = _{
     | stop_stmt
   | goback_stmt
   | continue_stmt
+  | resume_stmt
   | raise_stmt
     | xml_stmt
   | json_stmt
@@ -839,8 +876,8 @@ overflow_clause = {
 
 unstring_stmt = {
     kw_unstring ~ ident_name
-    ~ (kw_delimited ~ kw_by ~ kw_all? ~ (string_literal | ident_name)
-       ~ (kw_or ~ kw_all? ~ (string_literal | ident_name))*
+    ~ (kw_delimited ~ kw_by ~ kw_all? ~ (string_literal | figurative_constant | ident_name)
+       ~ (kw_or ~ kw_all? ~ (string_literal | figurative_constant | ident_name))*
       )?
     ~ kw_into ~ unstring_target+
     ~ pointer_clause?
@@ -881,7 +918,10 @@ inspect_replacing = {
 }
 
 inspect_replace_phrase = {
-    inspect_mode ~ (string_literal | ident_name) ~ kw_by ~ (string_literal | ident_name)
+    // REPLACING CHARACTERS BY x — replace every character (no search operand)
+    kw_characters ~ kw_by ~ (string_literal | ident_name)
+    ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
+  | inspect_mode ~ (string_literal | ident_name) ~ kw_by ~ (string_literal | ident_name)
     ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
 }
 
@@ -1305,10 +1345,9 @@ qualified_ident = {
   | kw_self
 }
 
-subscript_or_refmod = {
-    "(" ~ expression ~ ":" ~ expression? ~ ")"   // reference modification name(start:length)
-  | "(" ~ expression ~ ("," ~ expression)* ~ ")"  // subscript name(idx) or name(idx1, idx2)
-}
+subscript_or_refmod = { refmod | subscript }
+refmod    = { "(" ~ expression ~ ":" ~ expression? ~ ")" }   // reference modification name(start:length)
+subscript = { "(" ~ expression ~ ("," ~ expression)* ~ ")" }  // subscript name(idx) or name(idx1, idx2)
 
 qualification = { (kw_of | kw_in) ~ ident_name }
 
@@ -1319,7 +1358,21 @@ function_call = {
 }
 
 // COBOL function args are space-separated (not comma-separated)
-func_args = { expression+ }
+// Function arguments are space-separated primaries (COBOL semantics): `-4` is a
+// negative literal, not a subtraction from the previous arg. Using `atom+`
+// (rather than `expression+`) stops `MEAN(-2 -4 -6)` collapsing into one
+// subtraction expression. Real binary expressions can still be passed
+// parenthesized (paren_expr is an atom).
+func_args = { (all_table_ref | func_kw_arg | atom)+ }
+
+// Reserved words that appear as intrinsic arguments (e.g. FUNCTION TRIM(x
+// LEADING)). `ident_name` excludes strict keywords, so accept them here.
+func_kw_arg = { kw_leading | kw_trailing }
+
+// `ALL table-name` — every element of an OCCURS table as an intrinsic argument
+// (e.g. FUNCTION MAX(ALL VALS)). Distinct from the `ALL literal` figurative
+// constant, so it is tried before atom.
+all_table_ref = { kw_all ~ qualified_ident }
 
 function_call_args = { "(" ~ func_args? ~ ")" | atom+ }
 
@@ -1329,7 +1382,7 @@ function_name = {
     kw_length | kw_upper_case | kw_lower_case | kw_trim | kw_reverse
   | kw_current_date | kw_max | kw_min | kw_mod | kw_rem
     | kw_numval_c | kw_numval | kw_substitute
-    | kw_sqrt | kw_sum | kw_integer_of_date | kw_date_of_integer | kw_day_of_integer | kw_integer | kw_abs
+    | kw_sqrt | kw_sum | kw_integer_of_date | kw_integer_of_day | kw_date_of_integer | kw_day_of_integer | kw_integer_part | kw_integer | kw_abs
   | kw_ord | kw_char | kw_floor | kw_ceiling | kw_sign | kw_power
   | kw_log | kw_log10 | kw_exp
   | kw_sin | kw_cos | kw_tan | kw_asin | kw_acos | kw_atan
@@ -1521,6 +1574,8 @@ kw_characters      = @{ ^"characters"      ~ !ident_cont }
 kw_character       = @{ ^"character"       ~ !ident_cont }
 kw_label           = @{ ^"label"           ~ !ident_cont }
 kw_standard        = @{ ^"standard"        ~ !ident_cont }
+kw_condition       = @{ ^"condition"       ~ !ident_cont }
+kw_resume          = @{ ^"resume"          ~ !ident_cont }
 kw_omitted         = @{ ^"omitted"         ~ !ident_cont }
 
 // Figurative constants
@@ -1672,13 +1727,23 @@ kw_descending      = @{ ^"descending"      ~ !ident_cont }
 kw_key             = @{ ^"key"             ~ !ident_cont }
 kw_at              = @{ ^"at"              ~ !ident_cont }
 kw_end             = @{ ^"end"             ~ !ident_cont }
+kw_statement       = @{ ^"statement"       ~ !ident_cont }
+kw_plus            = @{ ^"plus"            ~ !ident_cont }
+kw_bell            = @{ ^"bell"            ~ !ident_cont }
+kw_erase           = @{ ^"erase"           ~ !ident_cont }
+kw_eol             = @{ ^"eol"             ~ !ident_cont }
+kw_eos             = @{ ^"eos"             ~ !ident_cont }
+kw_lowlight        = @{ ^"lowlight"        ~ !ident_cont }
+kw_underline       = @{ ^"underline"       ~ !ident_cont }
+kw_full            = @{ ^"full"            ~ !ident_cont }
+kw_prompt          = @{ ^"prompt"          ~ !ident_cont }
 kw_invalid         = @{ ^"invalid"         ~ !ident_cont }
 kw_next            = @{ ^"next"            ~ !ident_cont }
 kw_page            = @{ ^"page"            ~ !ident_cont }
 kw_advancing       = @{ ^"advancing"       ~ !ident_cont }
 kw_lines           = @{ ^"lines"           ~ !ident_cont }
 kw_line            = @{ ^"line"            ~ !ident_cont }
-kw_column          = @{ ^"column"          ~ !ident_cont }
+kw_column          = @{ (^"column" | ^"col") ~ !ident_cont }
 kw_upon            = @{ ^"upon"            ~ !ident_cont }
 kw_no              = @{ ^"no"              ~ !ident_cont }
 kw_auto            = @{ ^"auto"            ~ !ident_cont }
@@ -1856,6 +1921,7 @@ kw_numval_c        = @{ ^"numval-c"        ~ !ident_cont }
 kw_substitute      = @{ ^"substitute"      ~ !ident_cont }
 kw_sqrt            = @{ ^"sqrt"            ~ !ident_cont }
 kw_sum             = @{ ^"sum"             ~ !ident_cont }
+kw_integer_part    = @{ ^"integer-part"    ~ !ident_cont }
 kw_integer         = @{ ^"integer"         ~ !ident_cont }
 kw_abs             = @{ ^"abs"             ~ !ident_cont }
 kw_ord             = @{ ^"ord"             ~ !ident_cont }
@@ -1880,6 +1946,7 @@ kw_when_compiled   = @{ ^"when-compiled"   ~ !ident_cont }
 kw_test_numval     = @{ ^"test-numval"     ~ !ident_cont }
 kw_date_of_integer = @{ ^"date-of-integer" ~ !ident_cont }
 kw_integer_of_date = @{ ^"integer-of-date" ~ !ident_cont }
+kw_integer_of_day  = @{ ^"integer-of-day"  ~ !ident_cont }
 kw_day_of_integer  = @{ ^"day-of-integer"  ~ !ident_cont }
 kw_annuity         = @{ ^"annuity"         ~ !ident_cont }
 kw_present_value   = @{ ^"present-value"   ~ !ident_cont }

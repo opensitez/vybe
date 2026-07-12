@@ -5,7 +5,7 @@
 //! consume OO COBOL without needing a dedicated semantic lowering pass yet.
 
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use crate::common::classes::{
+use crate::compiler::class_normalize::{
     Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
 };
 

@@ -10,6 +10,9 @@ extensions = ["cob", "cbl", "cobol"]
 function_return = "explicit"
 self_keyword = "SELF"
 constructor_name = "NEW"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver — same flip as the other languages.
+uses_common_resolver = true
 case_sensitive = false
 string_indexing = "one_based"
 dynamic_add = true
@@ -25,8 +28,11 @@ dynamic_add = true
 LENGTH              = { emit = "common:str_length",          min_args = 1, max_args = 1 }
 UPPER-CASE          = { emit = "common:str_to_upper",        min_args = 1, max_args = 1 }
 LOWER-CASE          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
-TRIM                = { emit = "common:str_trim",            min_args = 1, max_args = 1 }
-REVERSE             = { emit = "common:collections.reverse",       min_args = 1, max_args = 1 }
+TRIM                = { emit = "common:str_trim",            min_args = 1, max_args = 2 }
+# TRIM ... LEADING/TRAILING direction (walker routes the 2-arg form here).
+__trim_start        = { emit = "common:str_trim_start",      min_args = 1, max_args = 1 }
+__trim_end          = { emit = "common:str_trim_end",        min_args = 1, max_args = 1 }
+REVERSE             = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
 CONCATENATE         = { emit = "common:str_concat",          min_args = 2, max_args = 255 }
 SUBSTITUTE          = { emit = "common:str_replace",         min_args = 3, max_args = 3 }
 ORD                 = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
@@ -63,10 +69,10 @@ TEST-NUMVAL         = { emit = "host:ecma:number:isNaN",    min_args = 1, max_ar
 
 MAX                 = { emit = "host:ecma:math:max",         min_args = 2, max_args = 255 }
 MIN                 = { emit = "host:ecma:math:min",         min_args = 2, max_args = 255 }
-SUM                 = { emit = "host:ecma:math:sum",         min_args = 1, max_args = 255 }
-MEAN                = { emit = "host:ecma:math:mean",        min_args = 1, max_args = 255 }
-MEDIAN              = { emit = "host:ecma:math:median",      min_args = 1, max_args = 255 }
-VARIANCE            = { emit = "host:ecma:math:variance",    min_args = 1, max_args = 255 }
+SIGN                = { emit = "host:ecma:math:sign",        min_args = 1, max_args = 1 }
+# SUM/MEAN/MIDRANGE/RANGE/VARIANCE/STANDARD-DEVIATION/MOD/REM/INTEGER-PART/
+# EXP10/PI/E are lowered in the walker (desugar_cobol_math_intrinsic) into
+# arithmetic over primitives — no host aggregate fns exist for them.
 
 # ── Date ─────────────────────────────────────────────────────────────────────
 
@@ -80,11 +86,30 @@ FORMATTED-TIME      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max
 
 # ── Financial ────────────────────────────────────────────────────────────────
 
-ANNUITY             = { emit = "host:ecma:math:annuity",     min_args = 2, max_args = 2 }
-PRESENT-VALUE       = { emit = "host:ecma:math:presentValue", min_args = 2, max_args = 255 }
+# ANNUITY / PRESENT-VALUE are lowered in the walker (no host fns exist for them).
+__to_fixed2         = { emit = "host:ecma:number:toFixed",   min_args = 2, max_args = 2 }
 
 # ── Type checks (walker emits as calls, profile routes them) ────────────────
 
+# Integer-date helpers: COBOL day 1 = 1601-01-01; ms → UTC parts via ecma:date.
+__utc_year          = { emit = "host:ecma:date:getUTCFullYear", min_args = 1, max_args = 1 }
+__utc_month         = { emit = "host:ecma:date:getUTCMonth",  min_args = 1, max_args = 1 }
+__utc_date          = { emit = "host:ecma:date:getUTCDate",   min_args = 1, max_args = 1 }
+__date_utc          = { emit = "host:ecma:date:UTC",          min_args = 3, max_args = 3 }
+# OCCURS-table aggregates (FUNCTION MAX/MIN/SUM(ALL table)) reduce over the array
+# via the shared ECMA iterable reducers — same surface Python's max/min/sum use.
+__table_max         = { emit = "host:ecma:math:maxOf",       min_args = 1, max_args = 1 }
+__table_min         = { emit = "host:ecma:math:minOf",       min_args = 1, max_args = 1 }
+__table_sum         = { emit = "host:ecma:math:sumPrecise",  min_args = 1, max_args = 1 }
+# COBOL ORD/CHAR are 1-based; the walker wraps these raw helpers with ±1.
+__ord_code          = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
+__char_code         = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
+# PICTURE fixed-width DISPLAY padding (walker wraps field operands).
+__pad_start         = { emit = "common:str_pad_start",       min_args = 3, max_args = 3 }
+__pad_end           = { emit = "common:str_pad_end",         min_args = 3, max_args = 3 }
+# STOP RUN terminates the whole run from any depth (inside PERFORMed paragraphs
+# too) via WASI cli/exit — ends the VM run, not the host process.
+__stop_run          = { emit = "host:wasi:cli/exit:exit",    min_args = 0, max_args = 0 }
 __is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
 __refmod            = { emit = "common:str_substring",       min_args = 3, max_args = 3 }
@@ -112,6 +137,29 @@ __exec_dli          = { emit = "noop",                        min_args = 1, max_
 
 [value_methods]
 # COBOL does not have instance methods in the conventional sense.
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY METHODS — higher-order collection dispatch.
+#
+# COBOL has no source-level HOFs, but the walker desugars table/string
+# operations (e.g. UNSTRING DELIMITED BY ALL drops empty tokens via .filter)
+# into ECMA-shaped array method calls. This table gates the shared compiler's
+# inline HOF loop emitter (common::loops::emit_map/emit_filter/…) — the same
+# path PHP and Python use — so the receiver array is walked in-VM with no host
+# prototype dependency. Names mirror the shared emit_* opcodes.
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+map       = "__array_map"
+filter    = "__array_filter"
+forEach   = "__array_forEach"
+find      = "__array_find"
+findIndex = "__array_findIndex"
+includes  = "__array_includes"
+reduce    = "__array_reduce"
+sort      = "__array_sort"
+some      = "__array_some"
+every     = "__array_every"
 
 [namespaces]
 use_dotnet = false
