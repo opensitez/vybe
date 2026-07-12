@@ -146,6 +146,53 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.parse_int" => {
             host::emit(&mut chunks[current], "ecma:number", "parseInt", argc, line);
         }
+
+        // ── Integer bit operations (JLS java.lang.Integer) — raw WASM ops ──
+        "java.int_bit_count" => {
+            chunks[current].emit_op(Op::I32_POPCNT, line);
+        }
+        "java.int_leading_zeros" => {
+            chunks[current].emit_op(Op::I32_CLZ, line);
+        }
+        "java.int_trailing_zeros" => {
+            chunks[current].emit_op(Op::I32_CTZ, line);
+        }
+        "java.int_rotate_left" => {
+            chunks[current].emit_op(Op::I32_ROTL, line);
+        }
+        "java.int_rotate_right" => {
+            chunks[current].emit_op(Op::I32_ROTR, line);
+        }
+        "java.int_lowest_one_bit" => {
+            // x & (0 - x)
+            let s = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+            chunks[current].emit_op(Op::I32_SUB, line);
+            chunks[current].emit_op(Op::I32_AND, line);
+        }
+        "java.int_highest_one_bit" => {
+            // Smear the top bit right, then isolate it: s |= s>>>1 … s>>>16;
+            // s - (s >>> 1). Branch-free, matches Integer.highestOneBit for
+            // 0 and negatives (sign bit) alike.
+            let s = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+            for shift in [1, 2, 4, 8, 16] {
+                chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+                core_wasm::i32_const(&mut chunks[current], line, shift);
+                chunks[current].emit_op(Op::I32_SHR_U, line);
+                chunks[current].emit_op(Op::I32_OR, line);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+            }
+            chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+            core_wasm::i32_const(&mut chunks[current], line, 1);
+            chunks[current].emit_op(Op::I32_SHR_U, line);
+            chunks[current].emit_op(Op::I32_SUB, line);
+        }
         "java.bigint_to_string" => {
             super::biginteger_adapter::emit_to_string(chunks, current, line);
         }
@@ -629,22 +676,58 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::instant_adapter::emit_time_plus_unit(chunks, current, -1.0, 60.0, line);
         }
         "java.time_with_year" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCFullYear", false, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCFullYear",
+                false,
+                line,
+            );
         }
         "java.time_with_month" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCMonth", true, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCMonth",
+                true,
+                line,
+            );
         }
         "java.time_with_day" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCDate", false, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCDate",
+                false,
+                line,
+            );
         }
         "java.time_with_hour" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCHours", false, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCHours",
+                false,
+                line,
+            );
         }
         "java.time_with_minute" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCMinutes", false, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCMinutes",
+                false,
+                line,
+            );
         }
         "java.time_with_second" => {
-            super::instant_adapter::emit_time_with_field(chunks, current, "setUTCSeconds", false, line);
+            super::instant_adapter::emit_time_with_field(
+                chunks,
+                current,
+                "setUTCSeconds",
+                false,
+                line,
+            );
         }
         "java.time_length_of_month" => {
             super::instant_adapter::emit_time_length_of_month(chunks, current, line);
@@ -972,6 +1055,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.hash_map_new" => {
             super::list_adapter::emit_hash_map_new(chunks, current, argc, line);
         }
+        "java.identity_hash_map_new" => {
+            super::list_adapter::emit_identity_hash_map_new(chunks, current, argc, line);
+        }
+        "java.linked_hash_map_new" => {
+            super::list_adapter::emit_linked_hash_map_new(chunks, current, argc, line);
+        }
         "java.get" => {
             if argc <= 1 {
                 super::stream_adapter::emit_get_optional_value(chunks, current, line);
@@ -1057,7 +1146,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::list_adapter::emit_map_get_or_default(chunks, current, line);
         }
         "java.map_contains_key" => {
-            host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
+            super::list_adapter::emit_map_contains_key(chunks, current, line);
         }
         "java.map_contains_value" => {
             host::emit(&mut chunks[current], "ecma:map", "containsValue", 2, line);
@@ -1101,6 +1190,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.map_clear" => {
             host::emit(&mut chunks[current], "ecma:map", "clear", 1, line);
         }
+        "java.map_clone" => {
+            super::list_adapter::emit_map_clone(chunks, current, line);
+        }
         "java.map_size" => {
             host::emit(&mut chunks[current], "ecma:map", "size", 1, line);
         }
@@ -1114,7 +1206,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::list_adapter::emit_map_equals(chunks, current, line);
         }
         "java.map_key_set_remove" => {
-            host::emit(&mut chunks[current], "ecma:map", "delete", 2, line);
+            super::list_adapter::emit_map_key_set_remove(chunks, current, line);
         }
         "java.sorted_map_key_set" => {
             super::list_adapter::emit_sorted_map_key_set(chunks, current, line);

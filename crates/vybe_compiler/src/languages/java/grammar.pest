@@ -293,7 +293,11 @@ switch_case = {
     | ("case" ~ switch_label ~ ("," ~ switch_label)* | "default") ~ "->" ~ switch_rule_body
 }
 
-switch_label = { unary_op? ~ literal | qualified_name }
+switch_label = { switch_pattern_label | unary_op? ~ literal | qualified_name }
+
+switch_pattern_label = {
+    type_ref ~ ident_name ~ ("when" ~ expression)?
+}
 
 switch_rule_body = {
     block_statement

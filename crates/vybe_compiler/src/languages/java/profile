@@ -16,6 +16,10 @@ constructor_name   = "__init__"    # walker rewrites Java ctor to __init__
 case_sensitive     = true
 string_indexing    = "zero_based"
 uses_normalize_class = true
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver (compiler::resolver) instead of legacy hardcoded arms —
+# same flip as JS/VB/C#/PHP/C/dart, driven by the esm_default data below.
+uses_common_resolver = true
 # entry_point not needed — walker injects Main.main() call directly
 # Java + on strings concatenates (auto-coercion via toString())
 dynamic_add        = true
@@ -195,6 +199,7 @@ __java_map_replace = { emit = "common:java.map_replace", min_args = 3, max_args 
 __java_map_replace_all = { emit = "common:java.map_replace_all", min_args = 2, max_args = 2 }
 __java_map_for_each = { emit = "common:java.map_for_each", min_args = 2, max_args = 2 }
 __java_map_clear = { emit = "common:java.map_clear", min_args = 1, max_args = 1 }
+__java_map_clone = { emit = "common:java.map_clone", min_args = 1, max_args = 1 }
 __java_map_size = { emit = "common:java.map_size", min_args = 1, max_args = 1 }
 __java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_args = 1 }
 __java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
@@ -248,6 +253,23 @@ __java_uuid_hash_code = { emit = "common:java.uuid_hash_code", min_args = 1, max
 "Integer.toString"       = { emit = "intrinsic:tostring",        min_args = 1, max_args = 2 }
 "Integer.toBinaryString" = { emit = "common:java.to_binary_string",  min_args = 1, max_args = 1 }
 "Integer.toHexString"    = { emit = "common:java.to_hex_string",     min_args = 1, max_args = 1 }
+# java.net.URL/URI constructor → WHATWG parse (web:url); the __j_url_*
+# prelude getters read the parsed object's fields.
+__j_url_parse      = { emit = "host:web:url:new",           min_args = 1, max_args = 2 }
+
+# Regex host surface for the __j_pat_*/__j_m_* prelude runtime
+# (java.util.regex over ecma:regexp; patterns are plain strings).
+__j_re_exec        = { emit = "host:ecma:regexp:exec",       min_args = 2, max_args = 2 }
+__j_re_split       = { emit = "host:ecma:regexp:split",      min_args = 2, max_args = 3 }
+__j_re_replace_all = { emit = "host:ecma:regexp:replaceAll", min_args = 3, max_args = 3 }
+
+"Integer.bitCount"               = { emit = "common:java.int_bit_count",       min_args = 1, max_args = 1 }
+"Integer.numberOfLeadingZeros"   = { emit = "common:java.int_leading_zeros",   min_args = 1, max_args = 1 }
+"Integer.numberOfTrailingZeros"  = { emit = "common:java.int_trailing_zeros",  min_args = 1, max_args = 1 }
+"Integer.rotateLeft"             = { emit = "common:java.int_rotate_left",     min_args = 2, max_args = 2 }
+"Integer.rotateRight"            = { emit = "common:java.int_rotate_right",    min_args = 2, max_args = 2 }
+"Integer.lowestOneBit"           = { emit = "common:java.int_lowest_one_bit",  min_args = 1, max_args = 1 }
+"Integer.highestOneBit"          = { emit = "common:java.int_highest_one_bit", min_args = 1, max_args = 1 }
 "Integer.toOctalString"  = { emit = "common:java.to_octal_string",   min_args = 1, max_args = 1 }
 "Integer.MAX_VALUE"      = { emit = "intrinsic:int_max",         min_args = 0, max_args = 0 }
 "Integer.MIN_VALUE"      = { emit = "intrinsic:int_min",         min_args = 0, max_args = 0 }
@@ -433,7 +455,8 @@ split         = { emit = "common:strings.split",         min_args = 1, max_args 
 substring     = { emit = "common:strings.substring",     min_args = 1, max_args = 2 }
 charAt        = { emit = "common:str_char_at",           min_args = 1, max_args = 1 }
 charCodeAt    = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
-codePointAt   = { emit = "common:str_char_code_at",      min_args = 1, max_args = 1 }
+# JLS codePointAt decodes surrogate pairs — charCodeAt does not.
+codePointAt   = { emit = "host:ecma:string:codePointAt", min_args = 1, max_args = 1 }
 compareTo     = { emit = "common:java.compare_to",       min_args = 1, max_args = 1 }
 compareToIgnoreCase = { emit = "common:java.compare_ignore_case", min_args = 1, max_args = 1 }
 equalsIgnoreCase    = { emit = "common:java.equals_ignore_case",  min_args = 1, max_args = 1 }
@@ -728,7 +751,9 @@ tostring  = [["to_string"]]
 StringBuilder = ["common", "dotnet.stringbuilder_new"]
 StringBuffer  = ["common", "dotnet.stringbuilder_new"]
 Object        = ["common", "java.hash_map_new"]
+String        = ["ecma:string", "new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
+Integer       = ["ecma:number", "new"]
 BigInteger    = ["ecma:bigint", "BigInt"]
 ArrayList     = ["common", "java.list_of"]
 LinkedList    = ["common", "java.list_of"]
@@ -738,19 +763,39 @@ TreeSet       = ["common", "java.sorted_set_new"]
 PriorityQueue = ["common", "java.sorted_set_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
-IdentityHashMap = ["common", "java.hash_map_new"]
-LinkedHashMap = ["common", "java.hash_map_new"]
+IdentityHashMap = ["common", "java.identity_hash_map_new"]
+LinkedHashMap = ["common", "java.linked_hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]
 "java.util.TreeMap"       = ["common", "java.sorted_map_new"]
 "java.util.HashMap"       = ["common", "java.hash_map_new"]
-"java.util.IdentityHashMap" = ["common", "java.hash_map_new"]
-"java.util.LinkedHashMap" = ["common", "java.hash_map_new"]
+"java.util.IdentityHashMap" = ["common", "java.identity_hash_map_new"]
+"java.util.LinkedHashMap" = ["common", "java.linked_hash_map_new"]
 "java.util.WeakHashMap"   = ["common", "java.hash_map_new"]
 "java.util.Hashtable"     = ["common", "java.hash_map_new"]
+Boolean       = ["ecma:boolean", "new"]
 OutOfMemoryError = ["common", "java.hash_map_new"]
 UUID          = ["common", "java.uuid_new"]
 BitSet        = ["common", "java.bitset_new"]
+"java.util.BitSet" = ["common", "java.bitset_new"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# ESM DEFAULTS (namespaceplan.md): Java packages ARE its namespaces.
+# `java.*` fully-qualified chains walk the global namespace tree at the
+# `java` root (the surface tree_register.rs contributes from [builtins]);
+# the ambient root is the data form of Java's implicit `java.lang.*`
+# import — bare qualified chains (`Integer.parseInt`) additionally search
+# under `java` when nothing shadows them.
+# ────────────────────────────────────────────────────────────────────────────
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "java"
+path = "java"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "java"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES

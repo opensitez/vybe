@@ -100,7 +100,9 @@ pub fn emit_is_instance(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
-    for name in ["Integer", "Long", "Double", "Float", "Number"] {
+    for name in [
+        "Integer", "Long", "Double", "Float", "Number", "Short", "Byte",
+    ] {
         emit_class_branch(chunks, current, class_name, name, line);
         typeof_eq(chunks, current, value, "number", line);
         crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
@@ -119,15 +121,21 @@ pub fn emit_is_instance(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
-    for name in ["int[]", "byte[]", "List", "Collection", "Vector", "Cloneable"] {
+    for name in [
+        "int[]",
+        "byte[]",
+        "List",
+        "Collection",
+        "Vector",
+        "Cloneable",
+    ] {
         emit_class_branch(chunks, current, class_name, name, line);
         emit_is_array(chunks, current, value, line);
         chunks[current].emit_else(line);
     }
 
     emit_class_branch(chunks, current, class_name, "String[]", line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    emit_is_array(chunks, current, value, line);
     chunks[current].emit_else(line);
 
     for name in ["Set", "HashSet"] {
@@ -153,7 +161,7 @@ pub fn emit_is_instance(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 
     // Close every branch above plus the initial null check.
-    for _ in 0..25 {
+    for _ in 0..27 {
         chunks[current].emit_end(line);
     }
 }

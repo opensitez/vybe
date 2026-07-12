@@ -1,5 +1,6 @@
 pub mod emitter;
 pub mod normalize_class;
+pub mod tree_register;
 mod walker;
 
 use pest_derive::Parser;
