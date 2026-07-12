@@ -1,6 +1,5 @@
 //! Go runtime-surface helpers routed via `common:go.*`.
 
-use crate::emitter::collections;
 use crate::emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
@@ -23,13 +22,17 @@ pub fn emit_helper(
             crate::emitter::sprintf::emit_sprintf(chunks, current, argc, line);
         }
         "go.regex_split_pat_first" => {
-            collections::emit_runtime_helper_call(
-                chunks,
-                current,
-                "__ecma_regexp_split_pat_first",
-                argc,
-                line,
-            );
+            // `regexp.Split(str, pat)` (Go source is pattern-first) → ecma
+            // `ecma:regexp.split(str, pat)`. Args arrive as [pat, str] (str on
+            // top); swap through scratch locals then call the host fn directly
+            // instead of routing through the `__ecma_regexp_split_pat_first`
+            // bundle chunk (which was itself just this arg-swap wrapper).
+            let base = alloc_locals(&mut chunks[current], 2);
+            local_set(&mut chunks[current], base + 1, line); // str
+            local_set(&mut chunks[current], base, line); // pat
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // str
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
+            host::emit(&mut chunks[current], "ecma:regexp", "split", 2, line);
         }
         _ => return false,
     }

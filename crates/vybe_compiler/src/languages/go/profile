@@ -12,6 +12,9 @@ extensions = ["go"]
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver — same flip as the other languages.
+uses_common_resolver = true
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
@@ -201,6 +204,10 @@ Milliseconds = { emit = "common:go.dur_milliseconds", min_args = 0, max_args = 0
 Microseconds = { emit = "common:go.dur_microseconds", min_args = 0, max_args = 0 }
 
 # String methods
+# charCodeAt is a compiler-internal lowering (range-over-string / byte-index emit
+# `s.charCodeAt(i)`); resolve it straight to the native WASM js-string builtin so
+# it never depends on receiver type-inference at the member-call site.
+charCodeAt   = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 ToUpper      = { emit = "common:str_to_upper",      min_args = 0, max_args = 0 }
 ToLower      = { emit = "common:str_to_lower",      min_args = 0, max_args = 0 }
 Trim         = { emit = "common:str_trim",          min_args = 0, max_args = 0 }

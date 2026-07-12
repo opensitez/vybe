@@ -28,7 +28,7 @@
 
 use super::{GoParser, Rule};
 use crate::ast::*;
-use crate::common::channels;
+use crate::emitter::channels;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
