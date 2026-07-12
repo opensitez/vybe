@@ -25,14 +25,16 @@ pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Dart `print(value)` — calls value.toString() before logging, per
 /// dart:core. Stack: [value] → []. Composes ecma:string.String (which
-/// invokes the object's toString method) and wasi:cli.log. Imports
-/// register on chunks[0] (the module-level imports chunk).
+/// invokes the object's toString method) and wasi:cli.log. Import
+/// tables are PER CHUNK: register on chunks[current], the chunk whose
+/// CALL_IMPORT indexes them (registering on chunks[0] made the index
+/// misresolve whenever the tables diverged).
 pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     use vybe_bytecode::Op as VOp;
-    let to_str = chunks[0].add_import("ecma:string", "String");
+    let to_str = chunks[current].add_import("ecma:string", "String");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
     chunks[current].emit(1, line);
-    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
+    let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, log_idx, line);
     chunks[current].emit(1, line);
 }
@@ -41,7 +43,7 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 /// Stack: [value] → [string].
 pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     use vybe_bytecode::Op as VOp;
-    let to_str = chunks[0].add_import("ecma:string", "String");
+    let to_str = chunks[current].add_import("ecma:string", "String");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
     chunks[current].emit(1, line);
 }
@@ -116,9 +118,9 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
     // Object/Map fall-through — count own enumerable properties via
-    // `ecma:object.length`. Imports must register on chunks[0] (the
-    // module-level imports chunk).
-    let idx = chunks[0].add_import("ecma:object", "length");
+    // `ecma:object.length`. Import tables are per chunk: register on
+    // the chunk whose CALL_IMPORT indexes them.
+    let idx = chunks[current].add_import("ecma:object", "length");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_end(line);

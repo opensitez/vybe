@@ -268,6 +268,10 @@ statement = _{
     empty_statement
     | block_statement
     | function_declaration
+    // `yield <ident>;` must win over variable_declaration, which otherwise
+    // parses it as a declaration of <ident> with type "yield" (yield_kw is
+    // word-bounded, so `yielded = …` still falls through).
+    | yield_statement
     | variable_declaration_statement
     | if_statement
     | for_statement

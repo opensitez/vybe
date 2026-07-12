@@ -20,7 +20,7 @@
 //!   - Dart doesn't have destructors (uses Finalizer from dart:ffi).
 
 use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
-use crate::common::classes::{
+use crate::compiler::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,

@@ -19,9 +19,18 @@ string_indexing = "zero_based"
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md).
 uses_normalize_class = true
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver (compiler::resolver) instead of the legacy hardcoded
+# arms — same flip as JS/VB/C#/PHP/C, driven by the esm_default data below.
+uses_common_resolver = true
 entry_point = "main"
 # Dart `+` on strings concatenates (per dart:core String.+).
 dynamic_add = true
+# `sync*` / `async*` markers make generators statically detectable — route
+# them through the lazy spec-generator machinery (like JS/PHP) instead of
+# the eager run-to-completion fallback, so `for (v in gen())` with `break`
+# and infinite generators suspend per yield.
+has_generators = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -144,6 +153,26 @@ sort      = "__array_sort"
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Dart library prefixes → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
+
+# Component-Model package roots (namespaceplan.md Phase 1): literal host
+# prefix chains (`vybe.gui.setProperty(...)`, `wasi.cli.log(...)`) resolve
+# through the common resolver's package-root step — the same data the
+# hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
+
+[[esm_default]]
+kind = "package-root"
+prefix = "vybe"
+module_root = "vybe:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasi"
+module_root = "wasi:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasm"
+module_root = "wasm:"
 
 [[esm_default]]
 kind = "namespace"
