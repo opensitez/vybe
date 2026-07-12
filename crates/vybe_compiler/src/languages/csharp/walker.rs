@@ -1933,7 +1933,7 @@ fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Op
     }
 }
 
-use crate::common::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
+use crate::emitter::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
 
 /// A `var (a, b) = t;` where `t` is a tuple-valued expression lowers to a block
 /// ending in `t.Deconstruct(out a, out b)`. Tuples carry no `Deconstruct`, so
@@ -4914,8 +4914,8 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                         optional: false,
                                     }));
                                 }
-                                if crate::common::events::is_known_gui_event_field(field)
-                                    && crate::common::events::is_event_handler_expr(&right)
+                                if crate::emitter::events::is_known_gui_event_field(field)
+                                    && crate::emitter::events::is_event_handler_expr(&right)
                                 {
                                     let control = (**object).clone();
                                     let event = field.to_lowercase();
@@ -8312,7 +8312,7 @@ fn lower_initialize_component_event_stmt(stmt: &Statement) -> Option<StmtKind> {
         stmt.span,
     );
 
-    crate::common::events::lower_event_compound_assignment(&expr)
+    crate::emitter::events::lower_event_compound_assignment(&expr)
 }
 
 fn is_this_rooted_member_target(expr: &Expression) -> bool {
@@ -11328,8 +11328,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if has_names {
                 // Named tuples lower to the shared canonical shape so a C#
                 // named tuple is the same runtime value as one from any other
-                // language. See `crate::common::tuples`.
-                Ok(crate::common::tuples::build_named_tuple(parsed))
+                // language. See `crate::emitter::tuples`.
+                Ok(crate::emitter::tuples::build_named_tuple(parsed))
             } else {
                 let elems: Vec<Expression> = parsed.into_iter().map(|(_, e)| e).collect();
                 Ok(ExprKind::Tuple(elems))

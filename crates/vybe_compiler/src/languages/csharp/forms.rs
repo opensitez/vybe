@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::projects::vbforms::form::Form;
+use crate::platforms::dotnet::winforms::form::Form;
 use std::sync::Arc;
 use vybe_host::GuiState;
 

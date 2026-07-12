@@ -3039,7 +3039,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 field: method_name.clone(),
                 null_safe: false,
             });
-            new_stmts.push(Statement::new(crate::common::events::add_handler_stmt(
+            new_stmts.push(Statement::new(crate::emitter::events::add_handler_stmt(
                 control, event, handler,
             )));
         }
@@ -3787,14 +3787,14 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let event_target_str = inner.next().unwrap().as_str().to_string();
             let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
-            crate::common::events::add_handler_stmt(control, event, handler)
+            crate::emitter::events::add_handler_stmt(control, event, handler)
         }
         Rule::removehandler_statement => {
             let mut inner = pair.into_inner();
             let event_target_str = inner.next().unwrap().as_str().to_string();
             let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
-            crate::common::events::remove_handler_stmt(control, event, handler)
+            crate::emitter::events::remove_handler_stmt(control, event, handler)
         }
         Rule::static_statement => {
             let mut name = String::new();

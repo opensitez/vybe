@@ -1,6 +1,6 @@
-use crate::projects::vbforms::control::{Control, ControlType};
-use crate::projects::vbforms::form::Form;
-use crate::projects::vbforms::properties::PropertyValue;
+use crate::platforms::dotnet::winforms::control::{Control, ControlType};
+use crate::platforms::dotnet::winforms::form::Form;
+use crate::platforms::dotnet::winforms::properties::PropertyValue;
 
 /// Returns the field name for a control in VB.NET designer code.
 /// Array members use `Name_Index` (e.g., `Command1_0`), non-array use `Name`.
