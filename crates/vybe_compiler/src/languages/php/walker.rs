@@ -2937,9 +2937,7 @@ fn php_backslash_display(expr: Expression, span: &Span) -> Expression {
             callee: Box::new(Expression::new(ExprKind::Ident("str_replace".into()))),
             args: vec![
                 Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(".".into())))),
-                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(
-                    "\\".into(),
-                )))),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("\\".into())))),
                 Argument::positional(expr),
             ],
             optional: false,
@@ -12363,10 +12361,7 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                     Expression::ident("iterator_to_array"),
                     vec![
                         arg(0)?,
-                        Expression::with_span(
-                            ExprKind::Lit(Literal::Bool(false)),
-                            span.clone(),
-                        ),
+                        Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone()),
                     ],
                 ),
                 span.clone(),
