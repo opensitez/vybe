@@ -218,10 +218,12 @@ fn stringbuilder_compare_to_greater_than() {
 
 #[test]
 fn stringbuilder_compare_to_case_sensitive() {
+    // JLS String.compareTo: difference of the first differing chars —
+    // 'A' (65) - 'a' (97) == -32.
     let out = run_main(
         r#"StringBuilder sb = new StringBuilder("A"); System.out.println(sb.compareTo(new StringBuilder("a")));"#,
     );
-    assert_eq!(out, vec!["-1"]);
+    assert_eq!(out, vec!["-32"]);
 }
 
 #[test]

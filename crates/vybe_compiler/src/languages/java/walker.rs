@@ -21,8 +21,8 @@
 
 use super::{JavaParser, Rule};
 use crate::ast::*;
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -37,6 +37,9 @@ thread_local! {
     // Locals declared as StringBuilder/StringBuffer — their method calls
     // route through the __j_sb_* runtime (emitter/format_runtime.rs).
     static JAVA_SB_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_CHAR_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     // Locals declared as java.util.regex Pattern / Matcher — routed
     // through the __j_pat_*/__j_m_* runtime.
     static JAVA_PATTERN_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -56,6 +59,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_RECORD_COMPONENTS.with(|components| components.borrow_mut().clear());
     JAVA_PRINTSTREAM_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SB_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_URL_VARS.with(|vars| vars.borrow_mut().clear());
@@ -88,14 +94,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     // `Math.max(…)`), recorded as an inert Simple import.
                     let member_path = member_path.trim();
                     let mut segments: Vec<&str> = member_path.split('.').collect();
-                    if let (Some(last), Some(ty)) =
-                        (segments.pop(), segments.last().copied())
-                    {
+                    if let (Some(last), Some(ty)) = (segments.pop(), segments.last().copied()) {
                         if last == "*" {
                             static_on_demand_types.push(ty.to_string());
                         } else if segments.len() >= 1 {
-                            static_single_members
-                                .insert(last.to_string(), ty.to_string());
+                            static_single_members.insert(last.to_string(), ty.to_string());
                         }
                     }
                     imports.push(Import {
@@ -271,7 +274,8 @@ fn rewrite_static_import_stmt(
     declared: &HashSet<String>,
 ) {
     let e = |expr: &mut Expression| rewrite_static_import_expr(expr, singles, on_demand, declared);
-    let b = |body: &mut [Statement]| rewrite_static_import_stmts(body, singles, on_demand, declared);
+    let b =
+        |body: &mut [Statement]| rewrite_static_import_stmts(body, singles, on_demand, declared);
     match &mut stmt.kind {
         StmtKind::Expr(expr) => e(expr),
         StmtKind::Block(stmts) => b(stmts),
@@ -290,7 +294,9 @@ fn rewrite_static_import_stmt(
                         rewrite_static_import_stmt(method, singles, on_demand, declared);
                     }
                     ClassMember::Constructor { body, .. } => b(body),
-                    ClassMember::Field { init: Some(init), .. } => e(init),
+                    ClassMember::Field {
+                        init: Some(init), ..
+                    } => e(init),
                     _ => {}
                 }
             }
@@ -1423,12 +1429,36 @@ fn walk_var_declarator(
     {
         JAVA_SB_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("StringJoiner"))
+    {
+        JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("StringTokenizer"))
+    {
+        JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.replace(' ', "").contains("char[]"))
+    {
+        JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
 
     // java.util.regex Pattern/Matcher locals — __j_pat_*/__j_m_* runtime.
-    if type_hint.as_deref().is_some_and(|hint| hint.contains("Pattern")) {
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("Pattern"))
+    {
         JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
-    if type_hint.as_deref().is_some_and(|hint| hint.contains("Matcher")) {
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("Matcher"))
+    {
         JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
 
@@ -2999,6 +3029,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "capacity" => Some("__j_sb_capacity"),
             "ensureCapacity" => Some("__j_sb_ensure_capacity"),
             "compareTo" => Some("__j_sb_compare_to"),
+            "appendCodePoint" => Some("__j_sb_append_code_point"),
             _ => None,
         };
         if let Some(prelude_fn) = prelude_fn {
@@ -3012,13 +3043,28 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
         if matches!(
             method.as_str(),
-            "substring" | "indexOf" | "lastIndexOf" | "codePointAt" | "isEmpty" | "contains"
+            "substring"
+                | "indexOf"
+                | "lastIndexOf"
+                | "codePointAt"
+                | "codePointCount"
+                | "isEmpty"
+                | "contains"
         ) {
             let as_string = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_sb_to_string")),
                 args: vec![Argument::positional(receiver)],
                 optional: false,
             });
+            if method == "codePointCount" {
+                let mut call_args = vec![Argument::positional(as_string)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_string_code_point_count")),
+                    args: call_args,
+                    optional: false,
+                });
+            }
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(as_string),
@@ -3026,6 +3072,136 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     null_safe: false,
                 })),
                 args,
+                optional: false,
+            });
+        }
+    }
+
+    let string_prelude_fn = match method.as_str() {
+        "split" if args.len() == 2 => Some("__j_string_split_n"),
+        "split" => Some("__j_string_split"),
+        "codePointBefore" => Some("__j_string_code_point_before"),
+        "codePointCount" => Some("__j_string_code_point_count"),
+        "offsetByCodePoints" => Some("__j_string_offset_by_code_points"),
+        "compareTo" => Some("__j_string_compare_to"),
+        "regionMatches" if args.len() == 4 => Some("__j_string_region_matches"),
+        "regionMatches" if args.len() == 5 => Some("__j_string_region_matches_ignore"),
+        "getBytes" => Some("__j_string_get_bytes"),
+        "chars" => Some("__j_string_chars"),
+        "codePoints" => Some("__j_string_code_points"),
+        "stripIndent" => Some("__j_string_strip_indent"),
+        "translateEscapes" => Some("__j_string_translate_escapes"),
+        _ => None,
+    };
+    if method == "length" && args.is_empty() {
+        if let ExprKind::Call {
+            callee,
+            args: call_args,
+            ..
+        } = &receiver.kind
+        {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_string_from_array")
+                && call_args.len() == 1
+            {
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(call_args[0].value.clone()),
+                    field: "length".to_string(),
+                    null_safe: false,
+                });
+            }
+        }
+        if let ExprKind::New {
+            class,
+            args: ctor_args,
+        } = &receiver.kind
+        {
+            if matches!(&class.kind, ExprKind::Ident(name) if name == "String")
+                && ctor_args.len() == 1
+            {
+                let source = &ctor_args[0];
+                let is_char_source = java_arg_is_char_array(source)
+                    || matches!(
+                        &source.value.kind,
+                        ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_char_to_chars")
+                    );
+                if is_char_source {
+                    return Expression::new(ExprKind::Member {
+                        object: Box::new(source.value.clone()),
+                        field: "length".to_string(),
+                        null_safe: false,
+                    });
+                }
+            }
+        }
+    }
+    let receiver_is_static_type = match &receiver.kind {
+        ExprKind::Ident(name) => is_java_type_or_util(name),
+        _ => java_qualified_static_type(&receiver).is_some(),
+    };
+    if !receiver_is_static_type {
+        if let Some(prelude_fn) = string_prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let string_joiner_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => {
+            JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow().contains(n.as_str()))
+        }
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_sj_new" | "__j_sj_add" | "__j_sj_merge" | "__j_sj_set_empty_value"))
+        }
+        _ => false,
+    };
+    if string_joiner_receiver {
+        let prelude_fn = match method.as_str() {
+            "add" => Some("__j_sj_add"),
+            "merge" => Some("__j_sj_merge"),
+            "setEmptyValue" => Some("__j_sj_set_empty_value"),
+            "length" => Some("__j_sj_length"),
+            "toString" => Some("__j_sj_to_string"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let string_tokenizer_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => {
+            JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow().contains(n.as_str()))
+        }
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_st_new")
+        }
+        _ => false,
+    };
+    if string_tokenizer_receiver {
+        let prelude_fn = match method.as_str() {
+            "hasMoreTokens" | "hasMoreElements" => Some("__j_st_has_more"),
+            "nextToken" | "nextElement" => Some("__j_st_next"),
+            "countTokens" => Some("__j_st_count"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
                 optional: false,
             });
         }
@@ -3049,9 +3225,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             });
         }
         let pattern_recv = match &receiver.kind {
-            ExprKind::Ident(n) => {
-                JAVA_PATTERN_VARS.with(|vars| vars.borrow().contains(n.as_str()))
-            }
+            ExprKind::Ident(n) => JAVA_PATTERN_VARS.with(|vars| vars.borrow().contains(n.as_str())),
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_compile")
             }
@@ -3076,9 +3250,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             }
         }
         let matcher_recv = match &receiver.kind {
-            ExprKind::Ident(n) => {
-                JAVA_MATCHER_VARS.with(|vars| vars.borrow().contains(n.as_str()))
-            }
+            ExprKind::Ident(n) => JAVA_MATCHER_VARS.with(|vars| vars.borrow().contains(n.as_str())),
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_matcher")
             }
@@ -3158,9 +3330,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 
     // System.arraycopy(src, srcPos, dest, destPos, len) →
     // __j_arraycopy prelude fn (JLS in-place, overlap-safe).
-    if method == "arraycopy"
-        && matches!(&receiver.kind, ExprKind::Ident(n) if n == "System")
-    {
+    if method == "arraycopy" && matches!(&receiver.kind, ExprKind::Ident(n) if n == "System") {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_arraycopy")),
             args,
@@ -3213,8 +3383,15 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             }
         }
         if type_name == "String" && method == "valueOf" {
+            let callee = if args.len() == 3 {
+                "__j_array_chars_to_string"
+            } else if args.len() == 1 && java_arg_is_char_array(&args[0]) {
+                "__j_string_copy_value_of"
+            } else {
+                "__java_string_value_of"
+            };
             return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__java_string_value_of")),
+                callee: Box::new(Expression::ident(callee)),
                 args,
                 optional: false,
             });
@@ -3232,6 +3409,29 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 args,
                 optional: false,
             });
+        }
+        if type_name == "String" && matches!(method.as_str(), "copyValueOf" | "translateEscapes") {
+            let callee = if method == "copyValueOf" && args.len() == 3 {
+                "__j_array_chars_to_string"
+            } else if method == "copyValueOf" {
+                "__j_string_copy_value_of"
+            } else {
+                "__j_string_translate_escapes"
+            };
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(callee)),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "Character" {
+            if let Some(callee) = java_character_prelude_fn(&method) {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(callee)),
+                    args,
+                    optional: false,
+                });
+            }
         }
         if type_name.contains('.') {
             return Expression::new(ExprKind::Call {
@@ -3262,8 +3462,15 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 }
             }
             if type_name == "String" && method == "valueOf" {
+                let callee = if args.len() == 3 {
+                    "__j_array_chars_to_string"
+                } else if args.len() == 1 && java_arg_is_char_array(&args[0]) {
+                    "__j_string_copy_value_of"
+                } else {
+                    "__java_string_value_of"
+                };
                 return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__java_string_value_of")),
+                    callee: Box::new(Expression::ident(callee)),
                     args,
                     optional: false,
                 });
@@ -3281,6 +3488,31 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     args,
                     optional: false,
                 });
+            }
+            if type_name == "String"
+                && matches!(method.as_str(), "copyValueOf" | "translateEscapes")
+            {
+                let callee = if method == "copyValueOf" && args.len() == 3 {
+                    "__j_array_chars_to_string"
+                } else if method == "copyValueOf" {
+                    "__j_string_copy_value_of"
+                } else {
+                    "__j_string_translate_escapes"
+                };
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(callee)),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "Character" {
+                if let Some(callee) = java_character_prelude_fn(&method) {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
+                        args,
+                        optional: false,
+                    });
+                }
             }
             let dotted = format!("{}.{}", type_name, method);
             return Expression::new(ExprKind::Call {
@@ -3508,6 +3740,40 @@ fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> O
     }
 }
 
+fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
+    match method {
+        "toChars" => Some("__j_char_to_chars"),
+        "toCodePoint" => Some("__j_char_to_code_point"),
+        "isSurrogate" => Some("__j_char_is_surrogate"),
+        "isHighSurrogate" => Some("__j_char_is_high_surrogate"),
+        "isLowSurrogate" => Some("__j_char_is_low_surrogate"),
+        "highSurrogate" => Some("__j_char_high_surrogate"),
+        "lowSurrogate" => Some("__j_char_low_surrogate"),
+        "charCount" => Some("__j_char_char_count"),
+        "codePointAt" => Some("__j_string_code_point_at"),
+        "codePointBefore" => Some("__j_string_code_point_before"),
+        "codePointCount" => Some("__j_string_code_point_count"),
+        "offsetByCodePoints" => Some("__j_string_offset_by_code_points"),
+        "isValidCodePoint" => Some("__j_char_is_valid_code_point"),
+        "isBmpCodePoint" => Some("__j_char_is_bmp_code_point"),
+        "isSupplementaryCodePoint" => Some("__j_char_is_supplementary_code_point"),
+        "digit" => Some("__j_char_digit"),
+        "forDigit" => Some("__j_char_for_digit"),
+        "compare" => Some("__j_char_compare"),
+        "reverseBytes" => Some("__j_char_reverse_bytes"),
+        "isDefined" => Some("__j_char_is_defined"),
+        "getType" => Some("__j_char_get_type"),
+        _ => None,
+    }
+}
+
+fn java_arg_is_char_array(arg: &Argument) -> bool {
+    matches!(
+        &arg.value.kind,
+        ExprKind::Ident(name) if JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+    )
+}
+
 fn is_java_type_or_util(name: &str) -> bool {
     matches!(
         name,
@@ -3631,6 +3897,50 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     };
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(ctor)),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if class_name == "String" && args.len() == 3 {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_code_points_to_string")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if class_name == "String" && args.len() == 1 {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_string_from_array")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(
+                    class_name.as_str(),
+                    "StringJoiner" | "java.util.StringJoiner"
+                ) {
+                    let callee = if args.len() == 3 {
+                        "__j_sj_new3"
+                    } else {
+                        "__j_sj_new"
+                    };
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(
+                    class_name.as_str(),
+                    "StringTokenizer" | "java.util.StringTokenizer"
+                ) {
+                    let callee = match args.len() {
+                        2 => "__j_st_new2",
+                        3 => "__j_st_new3",
+                        _ => "__j_st_new",
+                    };
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
                         args,
                         optional: false,
                     }));
@@ -4375,6 +4685,11 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::char_literal => {
             let s = inner.as_str();
             let content = &s[1..s.len() - 1];
+            if let Some(code) = java_unicode_escape_code_unit(content) {
+                if (0xD800..0xE000).contains(&code) {
+                    return Ok(Expression::int(code as i64));
+                }
+            }
             Ok(Expression::string(&unescape_java_string(content)))
         }
         Rule::string_literal => {
@@ -8680,8 +8995,7 @@ fn unescape_java_string(s: &str) -> String {
                                 }
                                 if let Ok(lo) = u32::from_str_radix(&lo_hex, 16) {
                                     if (0xDC00..0xE000).contains(&lo) {
-                                        let cp =
-                                            0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+                                        let cp = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
                                         if let Some(ch) = char::from_u32(cp) {
                                             out.push(ch);
                                             chars = peek;
@@ -8712,6 +9026,14 @@ fn unescape_java_string(s: &str) -> String {
         }
     }
     out
+}
+
+fn java_unicode_escape_code_unit(s: &str) -> Option<u32> {
+    let rest = s.strip_prefix("\\u")?;
+    if rest.len() < 4 {
+        return None;
+    }
+    u32::from_str_radix(&rest[..4], 16).ok()
 }
 
 fn find_main_class(body: &[Statement]) -> Option<String> {

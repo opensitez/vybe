@@ -6,8 +6,8 @@
 
 use crate::emitter::collections;
 use crate::emitter::instructions::host;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 const STREAM_GENERATED_LIMIT: i32 = 128;
 

@@ -5,8 +5,8 @@
 
 use crate::emitter::collections;
 use crate::emitter::instructions::host;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 pub fn emit_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "indexOf", argc, line);
@@ -58,27 +58,49 @@ pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
-    let other_slot = chunk.alloc_scratch(1);
-    let self_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, other_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
+    let cmp = chunks[current].add_import("ecma:string", "localeCompare");
+    chunks[current].emit_call(cmp, 2, line);
+}
 
-    chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_if_value(line);
-    chunk.emit_i32_const(0, line);
-    chunk.emit_else(line);
-    let char_code = chunk.add_import("wasm:js-string", "charCodeAt");
-    chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
-    chunk.emit_i32_const(0, line);
-    chunk.emit_call(char_code, 2, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
-    chunk.emit_i32_const(0, line);
-    chunk.emit_call(char_code, 2, line);
-    chunk.emit_op(Op::I32_SUB, line);
-    chunk.emit_end(line);
+pub fn emit_char_ord(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_trunc_cast(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    crate::emitter::math::emit_trunc(&mut chunks[current], line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_compare_ignore_case(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -148,6 +170,31 @@ pub fn emit_join(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_SET, first_elem_slot + k as u16, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, delim_slot, line);
+
+    if elem_count == 1 {
+        let elem_slot = first_elem_slot;
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+        let len = chunks[current].add_import("ecma:array", "length");
+        chunks[current].emit_call(len, 1, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if(line);
+        collections::emit_array_new(chunks, current, 0, line);
+        let array_slot = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+        let push_idx = chunks[current].add_import("ecma:array", "push");
+        chunks[current].emit_call(push_idx, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, delim_slot, line);
+        let join_idx = chunks[current].add_import("ecma:array", "join");
+        chunks[current].emit_call(join_idx, 2, line);
+        return;
+    }
 
     collections::emit_array_new(chunks, current, 0, line);
     let array_slot = chunks[current].alloc_scratch(1);

@@ -4,8 +4,8 @@ use crate::emitter::{
     collections,
     instructions::{core_wasm, host},
 };
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 const NAMES_KEY: &str = "__java_enum_names";
 const CLASS_KEY: &str = "__java_class_name";
@@ -37,19 +37,37 @@ fn emit_names(chunks: &mut [Chunk], current: usize, set_slot: u16, line: u32) {
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
 }
 
-fn emit_name_for_value(chunks: &mut [Chunk], current: usize, set_slot: u16, value_slot: u16, line: u32) {
+fn emit_name_for_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    set_slot: u16,
+    value_slot: u16,
+    line: u32,
+) {
     emit_names(chunks, current, set_slot, line);
     get(&mut chunks[current], value_slot, line);
     collections::emit_get(chunks, current, line);
 }
 
-fn emit_contains_name(chunks: &mut [Chunk], current: usize, set_slot: u16, name_slot: u16, line: u32) {
+fn emit_contains_name(
+    chunks: &mut [Chunk],
+    current: usize,
+    set_slot: u16,
+    name_slot: u16,
+    line: u32,
+) {
     get(&mut chunks[current], set_slot, line);
     get(&mut chunks[current], name_slot, line);
     collections::emit_contains(chunks, current, line);
 }
 
-fn push_name_if_absent(chunks: &mut [Chunk], current: usize, set_slot: u16, name_slot: u16, line: u32) {
+fn push_name_if_absent(
+    chunks: &mut [Chunk],
+    current: usize,
+    set_slot: u16,
+    name_slot: u16,
+    line: u32,
+) {
     emit_contains_name(chunks, current, set_slot, name_slot, line);
     crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);

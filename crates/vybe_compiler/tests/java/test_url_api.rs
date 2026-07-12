@@ -298,10 +298,12 @@ fn url_relative_parent_segment_in_context() {
 
 #[test]
 fn url_encoded_space_in_path() {
+    // java.net.URL.getPath() returns the RAW path — no percent-decoding
+    // (decoding is URI.getPath()'s behavior).
     let out = run_main(
         r#"java.net.URL u = new java.net.URL("http://enc.url.test/a%20b"); System.out.println(u.getPath());"#,
     );
-    assert_eq!(out, vec!["/a b"]);
+    assert_eq!(out, vec!["/a%20b"]);
 }
 
 #[test]

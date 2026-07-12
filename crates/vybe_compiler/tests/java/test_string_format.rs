@@ -14,8 +14,9 @@ fn format_percent_d_inserts_integer_argument() {
 
 #[test]
 fn format_percent_f_inserts_double_argument() {
+    // Java %f defaults to 6 fraction digits.
     let out = run_main(r#"System.out.println(String.format("%f", 3.5));"#);
-    assert_eq!(out, vec!["3.5"]);
+    assert_eq!(out, vec!["3.500000"]);
 }
 
 #[test]
@@ -26,8 +27,9 @@ fn format_mixed_specifiers_in_order() {
 
 #[test]
 fn format_string_int_and_double_together() {
+    // Java %f defaults to 6 fraction digits.
     let out = run_main(r#"System.out.println(String.format("%s %d %f", "pi", 3, 3.14));"#);
-    assert_eq!(out, vec!["pi 3 3.14"]);
+    assert_eq!(out, vec!["pi 3 3.140000"]);
 }
 
 #[test]
@@ -188,8 +190,9 @@ fn format_double_scientific_notation_uppercase() {
 
 #[test]
 fn format_double_general_format() {
+    // Java %g: 6 significant digits — String.format("%g", 3.0) == "3.00000".
     let out = run_main(r#"System.out.println(String.format("%g", 3.0));"#);
-    assert_eq!(out, vec!["3"]);
+    assert_eq!(out, vec!["3.00000"]);
 }
 
 #[test]
@@ -236,6 +239,7 @@ fn format_three_indexed_arguments_in_custom_order() {
 
 #[test]
 fn format_combines_width_precision_and_string_specifier() {
+    // Precision truncates to "long" (4), then width pads to 10.
     let out = run_main(r#"System.out.println(String.format("%10.4s", "longword"));"#);
-    assert_eq!(out, vec!["    long"]);
+    assert_eq!(out, vec!["      long"]);
 }

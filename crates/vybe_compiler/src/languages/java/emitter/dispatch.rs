@@ -9,17 +9,30 @@
 
 use crate::emitter::instructions::{core_wasm, host};
 use crate::emitter::{collections, strings};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
         // ── Print ──────────────────────────────────────────────────────────
         "java.print_no_newline" => {
-            let to_str = chunks[0].add_import("ecma:string", "String");
+            // Real WASI stdout (the old target, `wasi:cli.print`, never
+            // existed as a host fn). Import tables are PER CHUNK —
+            // register on the chunk whose CALL_IMPORT indexes them.
+            let to_str = chunks[current].add_import("ecma:string", "String");
             chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
             chunks[current].emit(1, line);
-            host::emit(&mut chunks[current], "wasi:cli", "print", 1, line);
+            let text_slot = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+            host::emit(&mut chunks[current], "wasi:cli/stdout", "get-stdout", 0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+            host::emit(
+                &mut chunks[current],
+                "wasi:io/streams",
+                "[method]output-stream.blocking-write-and-flush",
+                2,
+                line,
+            );
         }
         "java.identity" => {}
         "java.field_set" => {
@@ -131,6 +144,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.compare_to" => {
             super::string_adapter::emit_compare_to(chunks, current, line);
+        }
+        "java.char_ord" => {
+            super::string_adapter::emit_char_ord(chunks, current, line);
         }
 
         // ── Numeric conversions ───────────────────────────────────────────
@@ -304,7 +320,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
         }
         "java.trunc_cast" => {
-            crate::emitter::math::emit_trunc(&mut chunks[current], line);
+            super::string_adapter::emit_trunc_cast(chunks, current, line);
         }
         "java.double_to_string" => {
             super::list_adapter::emit_double_to_string(chunks, current, line);

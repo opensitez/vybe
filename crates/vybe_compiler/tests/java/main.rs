@@ -98,6 +98,7 @@ mod test_operators;
 mod test_optional_chaining;
 mod test_optional_full;
 mod test_overloading;
+mod test_packages;
 mod test_polymorphism;
 mod test_primitive_functional_interfaces;
 mod test_print_stream_format;

@@ -34,8 +34,17 @@ pub fn run(src: &str) -> Value {
 
 pub fn run_prints(src: &str) -> Vec<String> {
     let chunks = compile(src);
+    // Raw stdout fragments in call order (the C harness model). Java
+    // output reaches the harness on two surfaces:
+    // - `wasi:io/streams.[method]output-stream.blocking-write-and-flush` —
+    //   the byte-faithful stdout path (`__j_write` / `intrinsic:
+    //   write_stdout`); text is the second arg, newlines are the
+    //   program's own.
+    // - `wasi:logging/logging.log` — line-oriented; one record per call,
+    //   newline implied (bare `println` builtin paths).
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
+    let log_out = output.clone();
+    let stream_out = output.clone();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
@@ -46,7 +55,22 @@ pub fn run_prints(src: &str) -> Vec<String> {
             "log",
             Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
                 let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-                out.lock().unwrap().push(s.join(" "));
+                let mut joined = s.join(" ");
+                joined.push('\n');
+                log_out.lock().unwrap().push(joined);
+                Value::Null
+            }),
+        );
+        vm.register_host_fn(
+            "wasi:io/streams",
+            "[method]output-stream.blocking-write-and-flush",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                if let Some(text) = args.get(1) {
+                    let s = format!("{}", text);
+                    if !s.is_empty() {
+                        stream_out.lock().unwrap().push(s);
+                    }
+                }
                 Value::Null
             }),
         );
@@ -62,7 +86,21 @@ pub fn run_prints(src: &str) -> Vec<String> {
         }
         Err(_) => panic!("run failed: timed out after 5s (probable infinite loop)"),
     }
-    output.lock().unwrap().clone()
+    // Concatenate fragments and split into lines so each completed output
+    // line is one captured entry — identical expectations to before (one
+    // entry per line), independent of which sink carried the bytes.
+    let joined: String = output.lock().unwrap().concat();
+    if joined.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = joined
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if joined.ends_with('\n') {
+        lines.pop();
+    }
+    lines
 }
 
 pub fn parse_ok(src: &str) -> bool {

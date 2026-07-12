@@ -258,10 +258,12 @@ fn matcher_looking_at_false_for_case_sensitive_mismatch() {
 
 #[test]
 fn matcher_find_on_hex_pattern() {
+    // First [0-9a-f]+ run in "color:ff00aa" is the 'c' of "color"
+    // ('o'/'l'/'r' fall outside the class) — real java prints "c".
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("[0-9a-f]+"); java.util.regex.Matcher m = p.matcher("color:ff00aa"); m.find(); System.out.println(m.group(0));"#,
     );
-    assert_eq!(out, vec!["0"]);
+    assert_eq!(out, vec!["c"]);
 }
 
 #[test]

@@ -150,6 +150,10 @@ __java_zone_compare_to = { emit = "common:java.zone_compare_to", min_args = 2, m
 __java_zone_hash_code = { emit = "common:java.zone_hash_code", min_args = 1, max_args = 1 }
 __java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
 __java_string_concat     = { emit = "common:java.string_concat",   min_args = 2, max_args = 2 }
+__j_char_code_at         = { emit = "host:wasm:js-string:charCodeAt", min_args = 2, max_args = 2 }
+__j_from_char_code       = { emit = "host:ecma:string:fromCharCode", min_args = 1, max_args = 1 }
+__j_from_code_point      = { emit = "host:ecma:string:fromCodePoint", min_args = 1, max_args = 1 }
+__java_char_ord          = { emit = "common:java.char_ord", min_args = 1, max_args = 1 }
 __java_to_char_array     = { emit = "common:java.to_char_array",   min_args = 1, max_args = 1 }
 __java_trunc_cast        = { emit = "common:java.trunc_cast",      min_args = 1, max_args = 1 }
 __java_bigint            = { emit = "host:ecma:bigint:BigInt",     min_args = 1, max_args = 1 }
@@ -253,6 +257,12 @@ __java_uuid_hash_code = { emit = "common:java.uuid_hash_code", min_args = 1, max
 "Integer.toString"       = { emit = "intrinsic:tostring",        min_args = 1, max_args = 2 }
 "Integer.toBinaryString" = { emit = "common:java.to_binary_string",  min_args = 1, max_args = 1 }
 "Integer.toHexString"    = { emit = "common:java.to_hex_string",     min_args = 1, max_args = 1 }
+# Byte-faithful stdout write — the REAL WASI surface (wasi:cli/stdout
+# get-stdout + wasi:io/streams blocking-write-and-flush), the same
+# proven intrinsic the libc runtime uses. No wasi:logging, no implicit
+# newline.
+__j_write          = { emit = "intrinsic:write_stdout",     min_args = 1, max_args = 1 }
+
 # java.net.URL/URI constructor → WHATWG parse (web:url); the __j_url_*
 # prelude getters read the parsed object's fields.
 __j_url_parse      = { emit = "host:web:url:new",           min_args = 1, max_args = 2 }
@@ -740,6 +750,7 @@ tostring  = [["to_string"]]
 "Double.NEGATIVE_INFINITY" = "-Infinity"
 "Boolean.TRUE" = true
 "Boolean.FALSE" = false
+"Character.UPPERCASE_LETTER" = 1
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor resolution for `new X()`

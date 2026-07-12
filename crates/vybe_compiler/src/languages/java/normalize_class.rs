@@ -15,7 +15,7 @@
 use crate::ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility,
 };
-use crate::common::classes::{
+use crate::compiler::class_normalize::{
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,

@@ -234,10 +234,12 @@ fn system_arraycopy_forward_overlap_in_six_element_buffer() {
 
 #[test]
 fn system_arraycopy_backward_overlap_in_six_element_buffer() {
+    // JLS: overlapping copy behaves as if through a temporary —
+    // src[3..6]=[4,5,6] lands at dest[1..4], so data == {1,4,5,6,5,6}.
     let out = run_main(
         "int[] data = {1, 2, 3, 4, 5, 6}; System.arraycopy(data, 3, data, 1, 3); System.out.println(data[1]); System.out.println(data[3]);",
     );
-    assert_eq!(out, vec!["4", "4"]);
+    assert_eq!(out, vec!["4", "6"]);
 }
 
 #[test]

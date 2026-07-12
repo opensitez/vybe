@@ -1,8 +1,8 @@
 //! Small Java `java.time` adapter backed by ECMA date helpers.
 
 use crate::emitter::instructions::{core_wasm, host};
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -110,7 +110,9 @@ fn emit_time_from_components(
     kind: &str,
     line: u32,
 ) {
-    date_utc_from_slots(chunks, current, year, month, day, hour, minute, second, line);
+    date_utc_from_slots(
+        chunks, current, year, month, day, hour, minute, second, line,
+    );
     emit_offset_seconds_from_value(chunks, current, offset, line);
     core_wasm::f64_const(&mut chunks[current], line, 1000.0);
     chunks[current].emit_op(Op::F64_MUL, line);
@@ -889,7 +891,12 @@ pub fn emit_get_offset(chunks: &mut [Chunk], current: usize, line: u32) {
     prop_get(chunks, current, inst, "offset", line);
 }
 
-fn emit_offset_seconds_from_value(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+fn emit_offset_seconds_from_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    line: u32,
+) {
     get(&mut chunks[current], value_slot, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("string", line);
@@ -996,7 +1003,13 @@ pub fn emit_zone_rules_get_offset(chunks: &mut [Chunk], current: usize, line: u3
 }
 
 pub fn emit_zone_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:string", "localeCompare", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:string",
+        "localeCompare",
+        2,
+        line,
+    );
 }
 
 pub fn emit_zone_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {

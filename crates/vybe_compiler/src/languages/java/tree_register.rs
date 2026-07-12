@@ -16,7 +16,7 @@
 use std::sync::Once;
 
 use crate::emitter::namespaces::{self, NamespaceNode, Subtree};
-use crate::profile::{parse_profile, BuiltinEmit};
+use crate::profile::{BuiltinEmit, parse_profile};
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.
