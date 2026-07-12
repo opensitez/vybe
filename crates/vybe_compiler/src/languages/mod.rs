@@ -2,7 +2,6 @@ pub mod c;
 pub mod cobol;
 pub mod csharp;
 pub mod dart;
-pub mod form_modules;
 pub mod fortran;
 pub mod go;
 pub mod java;

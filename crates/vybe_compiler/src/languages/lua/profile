@@ -11,6 +11,9 @@ extensions = ["lua"]
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "constructor"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver — same flip as JS/PHP/dotnet/dart/java/python/ruby.
+uses_common_resolver = true
 case_sensitive = true
 string_indexing = "zero_based"
 array_indexing = "one_based"
