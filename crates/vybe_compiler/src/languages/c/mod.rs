@@ -1,4 +1,5 @@
 pub mod emitter;
+pub mod tree_register;
 pub(crate) mod walker;
 
 use pest_derive::Parser;
