@@ -10,6 +10,10 @@ extensions = ["py", "pyw"]
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "__init__"
+# namespaceplan.md: namespace-shaped entry points resolve through the
+# common resolver (compiler::resolver) — completes the Phase 2 opt-in
+# (imports already bind through ESM+CM at link time).
+uses_common_resolver = true
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
@@ -377,6 +381,26 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
+
+# Component-Model package roots (namespaceplan.md Phase 1): literal host
+# prefix chains (`vybe.gui.setProperty(...)`, `wasi.cli.log(...)`) resolve
+# through the common resolver's package-root step — the same data the
+# hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
+
+[[esm_default]]
+kind = "package-root"
+prefix = "vybe"
+module_root = "vybe:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasi"
+module_root = "wasi:"
+
+[[esm_default]]
+kind = "package-root"
+prefix = "wasm"
+module_root = "wasm:"
 
 [[esm_default]]
 kind = "namespace"

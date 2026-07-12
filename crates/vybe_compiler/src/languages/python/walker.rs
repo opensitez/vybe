@@ -279,9 +279,7 @@ fn walk_stmt_into(
             if let ImportKind::Simple { path, alias } = &import.kind {
                 let root = path.split('.').next().unwrap_or(path).to_string();
                 if !py_known_module(&root) {
-                    body.push(py_import_error_stmt(&format!(
-                        "No module named '{root}'"
-                    )));
+                    body.push(py_import_error_stmt(&format!("No module named '{root}'")));
                     return Ok(());
                 }
                 body.extend(py_module_rename_stmts(&root));
@@ -300,9 +298,7 @@ fn walk_stmt_into(
                             .collect()
                     });
                     body.push(Statement::new(StmtKind::Assign {
-                        targets: vec![Expression::new(ExprKind::Ident(
-                            "__py_sys_modules".into(),
-                        ))],
+                        targets: vec![Expression::new(ExprKind::Ident("__py_sys_modules".into()))],
                         value: Expression::new(ExprKind::Object(props)),
                     }));
                 } else if PY_SYS_MODULES_BOUND.with(|b| b.get()) {
@@ -335,9 +331,7 @@ fn walk_stmt_into(
                 }
                 let root = path.split('.').next().unwrap_or(path).to_string();
                 if *level == 0 && !path.is_empty() && !py_known_module(&root) {
-                    body.push(py_import_error_stmt(&format!(
-                        "No module named '{root}'"
-                    )));
+                    body.push(py_import_error_stmt(&format!("No module named '{root}'")));
                     return Ok(());
                 }
                 // A module whose export surface the walker knows rejects
@@ -523,9 +517,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             if let ImportKind::Simple { path, .. } = &import.kind {
                 let root = path.split('.').next().unwrap_or(path);
                 if !py_known_module(root) {
-                    return Ok(py_import_error_stmt(&format!(
-                        "No module named '{root}'"
-                    )));
+                    return Ok(py_import_error_stmt(&format!("No module named '{root}'")));
                 }
             }
             return Ok(Statement::new(StmtKind::Empty));
@@ -536,9 +528,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 let root = path.split('.').next().unwrap_or(path);
                 if *level == 0 && !path.is_empty() && path != "__future__" {
                     if !py_known_module(root) {
-                        return Ok(py_import_error_stmt(&format!(
-                            "No module named '{root}'"
-                        )));
+                        return Ok(py_import_error_stmt(&format!("No module named '{root}'")));
                     }
                     if let Some(surface) = py_module_surface(path) {
                         let renames = py_module_renames(path).unwrap_or(&[]);
@@ -2692,20 +2682,91 @@ fn py_known_module(root: &str) -> bool {
     py_module_surface(root).is_some()
         || matches!(
             root,
-            "math" | "cmath" | "os" | "sys" | "json" | "re" | "random" | "time" | "datetime"
-                | "calendar" | "collections" | "itertools" | "functools" | "operator"
-                | "string" | "textwrap" | "unicodedata" | "struct" | "codecs" | "io"
-                | "abc" | "numbers" | "decimal" | "fractions" | "statistics" | "array"
-                | "bisect" | "heapq" | "copy" | "pprint" | "enum" | "typing"
-                | "dataclasses" | "contextlib" | "traceback" | "warnings" | "gc"
-                | "inspect" | "builtins" | "pickle" | "hashlib" | "hmac" | "secrets"
-                | "uuid" | "base64" | "binascii" | "shutil" | "tempfile" | "pathlib"
-                | "stat" | "subprocess" | "threading" | "queue" | "socket" | "select"
-                | "signal" | "errno" | "platform" | "getpass" | "logging" | "argparse"
-                | "unittest" | "doctest" | "timeit" | "csv" | "configparser" | "sqlite3"
-                | "zlib" | "gzip" | "zipfile" | "tarfile" | "asyncio" | "weakref"
-                | "atexit" | "keyword" | "token" | "ast" | "dis" | "sysconfig"
-                | "__future__" | "urllib" | "http" | "email" | "xml" | "html"
+            "math"
+                | "cmath"
+                | "os"
+                | "sys"
+                | "json"
+                | "re"
+                | "random"
+                | "time"
+                | "datetime"
+                | "calendar"
+                | "collections"
+                | "itertools"
+                | "functools"
+                | "operator"
+                | "string"
+                | "textwrap"
+                | "unicodedata"
+                | "struct"
+                | "codecs"
+                | "io"
+                | "abc"
+                | "numbers"
+                | "decimal"
+                | "fractions"
+                | "statistics"
+                | "array"
+                | "bisect"
+                | "heapq"
+                | "copy"
+                | "pprint"
+                | "enum"
+                | "typing"
+                | "dataclasses"
+                | "contextlib"
+                | "traceback"
+                | "warnings"
+                | "gc"
+                | "inspect"
+                | "builtins"
+                | "pickle"
+                | "hashlib"
+                | "hmac"
+                | "secrets"
+                | "uuid"
+                | "base64"
+                | "binascii"
+                | "shutil"
+                | "tempfile"
+                | "pathlib"
+                | "stat"
+                | "subprocess"
+                | "threading"
+                | "queue"
+                | "socket"
+                | "select"
+                | "signal"
+                | "errno"
+                | "platform"
+                | "getpass"
+                | "logging"
+                | "argparse"
+                | "unittest"
+                | "doctest"
+                | "timeit"
+                | "csv"
+                | "configparser"
+                | "sqlite3"
+                | "zlib"
+                | "gzip"
+                | "zipfile"
+                | "tarfile"
+                | "asyncio"
+                | "weakref"
+                | "atexit"
+                | "keyword"
+                | "token"
+                | "ast"
+                | "dis"
+                | "sysconfig"
+                | "__future__"
+                | "urllib"
+                | "http"
+                | "email"
+                | "xml"
+                | "html"
         )
 }
 
@@ -3011,9 +3072,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             kind: ComprehensionKind::Dict,
                             element: Box::new(element),
                             generators: vec![ComprehensionGen {
-                                target: Expression::new(ExprKind::Ident(
-                                    "__py_dict_pair".into(),
-                                )),
+                                target: Expression::new(ExprKind::Ident("__py_dict_pair".into())),
                                 iter: entries,
                                 conditions: Vec::new(),
                                 is_async: false,
@@ -3603,37 +3662,28 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         // weirdly, sets trap on index — both
                                         // short-circuit out first.
                                         let dict_check = || {
-                                            let keys_probe =
-                                                Expression::new(ExprKind::Binary {
-                                                    op: BinOp::StrictNotEq,
-                                                    left: Box::new(Expression::new(
-                                                        ExprKind::Index {
-                                                            object: Box::new(
-                                                                args[0].value.clone(),
-                                                            ),
-                                                            index: Box::new(Expression::string(
-                                                                "__keys",
-                                                            )),
-                                                            null_safe: false,
-                                                        },
-                                                    )),
-                                                    right: Box::new(Expression::new(
-                                                        ExprKind::Lit(Literal::Null),
-                                                    )),
-                                                });
+                                            let keys_probe = Expression::new(ExprKind::Binary {
+                                                op: BinOp::StrictNotEq,
+                                                left: Box::new(Expression::new(ExprKind::Index {
+                                                    object: Box::new(args[0].value.clone()),
+                                                    index: Box::new(Expression::string("__keys")),
+                                                    null_safe: false,
+                                                })),
+                                                right: Box::new(Expression::new(ExprKind::Lit(
+                                                    Literal::Null,
+                                                ))),
+                                            });
                                             let not_set = Expression::new(ExprKind::Unary {
                                                 op: UnaryOp::Not,
                                                 expr: Box::new(ref_test("Set")),
                                             });
                                             Expression::new(ExprKind::Binary {
                                                 op: BinOp::And,
-                                                left: Box::new(Expression::new(
-                                                    ExprKind::Binary {
-                                                        op: BinOp::And,
-                                                        left: Box::new(typeof_check("object")),
-                                                        right: Box::new(not_set),
-                                                    },
-                                                )),
+                                                left: Box::new(Expression::new(ExprKind::Binary {
+                                                    op: BinOp::And,
+                                                    left: Box::new(typeof_check("object")),
+                                                    right: Box::new(not_set),
+                                                })),
                                                 right: Box::new(keys_probe),
                                             })
                                         };
@@ -3656,7 +3706,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             {
                                                 Some(Expression::bool(true))
                                             }
-                                            _ => None,
+                                            // User class: `isinstance(x, MyClass)` → `x instanceof
+                                            // MyClass` (shared JS path — reads the constructor name
+                                            // and checks the __types ancestry, so inheritance works).
+                                            _ => Some(as_bool(ref_test(type_name.as_str()))),
                                         };
                                         if let Some(r) = rewritten {
                                             expr = r;

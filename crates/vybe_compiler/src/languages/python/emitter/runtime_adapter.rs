@@ -600,7 +600,11 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         if argc == 0 {
             let r = chunks[current].add_import("ecma:math", "random");
             chunks[current].emit_call(r, 0, line);
-            crate::emitter::instructions::core_wasm::f64_const(&mut chunks[current], line, 1073741824.0);
+            crate::emitter::instructions::core_wasm::f64_const(
+                &mut chunks[current],
+                line,
+                1073741824.0,
+            );
             chunks[current].emit_op(Op::F64_MUL, line);
             chunks[current].emit_op(Op::I32_FROM_F64, line);
         }
@@ -623,6 +627,26 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         crate::emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
+    // Regex adapters. Source calls are pattern-first — `re.findall(pat, s)`,
+    // `re.split(pat, s)`, `re.sub(pat, repl, s)` — while `ecma:regexp` is
+    // subject-first. Reorder args through scratch locals and call the host fn
+    // directly instead of routing through the `__ecma_regexp_*_pat_first`
+    // bundle chunks (which were themselves just this reorder + call).
+    match name {
+        "python.regex_findall" => {
+            emit_python_findall(chunks, current, line);
+            return true;
+        }
+        "python.regex_split" => {
+            emit_regexp_pat_first(chunks, current, "split", line);
+            return true;
+        }
+        "python.regex_sub" => {
+            emit_regexp_replace_pat_first(chunks, current, line);
+            return true;
+        }
+        _ => {}
+    }
     let global = match name {
         "python.hex" => "__vybe_pyhex",
         "python.oct" => "__vybe_pyoct",
@@ -638,9 +662,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "python.isinf" => "__vybe_isinf",
         "python.id" => "__vybe_id",
         "python.hash" => "__vybe_hash",
-        "python.regex_findall" => "__ecma_regexp_match_all_pat_first",
-        "python.regex_sub" => "__ecma_regexp_replace_pat_first",
-        "python.regex_split" => "__ecma_regexp_split_pat_first",
         "python.format_map" => "__vybe_format_map",
         "python.setdefault" => "__vybe_setdefault",
         "python.tostring" => "__vybe_tostring",
@@ -648,4 +669,114 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
+}
+
+/// Python `re.findall(pat, subject)` → `ecma:regexp.matchAll` flattened to
+/// Python's result shape: no capture groups → the full match string; exactly
+/// one group → that group; two+ groups → a tuple (array) of the groups.
+/// Leverages the shared `loops::emit_for_in_*` scaffold. Stack `[pat, subject]`
+/// → `[list]`.
+fn emit_python_findall(chunks: &mut [Chunk], current: usize, line: u32) {
+    use crate::emitter::instructions::core_wasm::i32_const;
+    use crate::emitter::{collections, loops, ops};
+
+    let (pat, subj, arr, result, idx, m, len, flat) = {
+        let c = &mut chunks[current];
+        (
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+            c.alloc_scratch(1),
+        )
+    };
+
+    // arr = matchAll(subject, pat)  (pattern-first source → subject-first host)
+    chunks[current].emit_op_u16(Op::LOCAL_SET, subj, line); // subject (stack top)
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pat, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, subj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pat, line);
+    let ma = chunks[current].add_import("ecma:regexp", "matchAll");
+    chunks[current].emit_call(ma, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // for m in arr:
+    let state = loops::emit_for_in_start(chunks, current, arr, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, m, line); // element (a match array)
+
+    // len = m.length
+    chunks[current].emit_op_u16(Op::LOCAL_GET, m, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+
+    // flat = (len <= 1) ? m[0]
+    //      : (len <= 2) ? m[1]
+    //      : m.slice(1, len)          # tuple of capture groups
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    i32_const(&mut chunks[current], line, 1);
+    ops::emit_dyn_le(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, m, line);
+    i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    i32_const(&mut chunks[current], line, 2);
+    ops::emit_dyn_le(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, m, line);
+    i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, m, line);
+    i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    collections::emit_slice(chunks, current, line); // ecma:array.slice(m, 1, len)
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, flat, line);
+
+    // result.push(flat)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, flat, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// Pattern-first 2-arg regex adapter (`split`→`split`).
+/// Stack `[pat, subject]` → `ecma:regexp.<method>(subject, pat)`.
+fn emit_regexp_pat_first(chunks: &mut [Chunk], current: usize, method: &str, line: u32) {
+    let base = chunks[current].alloc_scratch(2);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 1, line); // subject (top)
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base, line); // pat
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // subject
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
+    let idx = chunks[current].add_import("ecma:regexp", method);
+    chunks[current].emit_call(idx, 2, line);
+}
+
+/// `re.sub(pat, repl, subject)` → `ecma:regexp.replaceAll(subject, pat, repl)`
+/// (always-global, matching Python/PHP semantics).
+fn emit_regexp_replace_pat_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line); // subject (top)
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 1, line); // repl
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base, line); // pat
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line); // subject
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // repl
+    let idx = chunks[current].add_import("ecma:regexp", "replaceAll");
+    chunks[current].emit_call(idx, 3, line);
 }
