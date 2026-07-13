@@ -9,6 +9,7 @@ name = "java"
 extensions = ["java"]
 
 [compiler]
+field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 function_return    = "explicit"
 self_keyword       = "this"
 base_keyword       = "super"

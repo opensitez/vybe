@@ -45,6 +45,12 @@ thread_local! {
     // through the __j_pat_*/__j_m_* runtime.
     static JAVA_PATTERN_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_MATCHER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    // Pending `instanceof T var` pattern bindings (JLS §14.30.1): each is
+    // (binding var, type name, subject expr). walk_if drains the bindings
+    // its condition produced and prepends `T var = subject;` to the
+    // then-body (flow-scoped, like the record/switch pattern paths).
+    static JAVA_INSTANCEOF_BINDINGS: RefCell<Vec<(String, String, Expression)>> =
+        RefCell::new(Vec::new());
     // Locals declared as java.net.URL/URI — __j_url_* runtime.
     static JAVA_URL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
@@ -67,6 +73,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_URL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow_mut().clear());
 
     let mut pairs =
         JavaParser::parse(Rule::program, source).map_err(|e| format!("Java parse error: {}", e))?;
@@ -128,11 +135,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     rewrite_java_static_imports(&mut body, &static_single_members, &static_on_demand_types);
+    // Local (method-body) classes → static nested siblings of the enclosing
+    // class, with any captured enclosing locals threaded through the
+    // constructor. Runs before nested-type qualification so hoisted classes
+    // are treated as ordinary nested types by every pass below.
+    hoist_java_local_classes(&mut body);
     qualify_java_nested_types(&mut body);
     rewrite_java_user_tostring_calls(&mut body);
     erase_java_interface_param_hints(&mut body);
     normalize_java_class_tree(&mut body);
-    add_java_nested_static_receiver_params(&mut body, false);
 
     // PrintStream/Formatter runtime (emitter/format_runtime.rs) — same
     // pattern as the libc runtime prelude for C: platform functions as
@@ -1850,9 +1861,33 @@ fn walk_initializer(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
+    let bindings_before = JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow().len());
     let cond = walk_expr_inner(&mut inner)?;
+    // `instanceof T var` bindings produced by THIS condition — drain only
+    // the ones added during this cond walk (isolate from any stale entries).
+    let pattern_bindings: Vec<(String, String, Expression)> =
+        JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow_mut().split_off(bindings_before));
     let then_pair = inner.next().ok_or("if: missing then")?;
-    let then_body = walk_statement_into_body(then_pair)?;
+    let mut then_body = walk_statement_into_body(then_pair)?;
+    if !pattern_bindings.is_empty() {
+        let mut decls: Vec<Statement> = pattern_bindings
+            .into_iter()
+            .map(|(var, type_name, subject)| {
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(var),
+                        type_hint: Some(type_name),
+                        init: Some(subject),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                })
+            })
+            .collect();
+        decls.append(&mut then_body);
+        then_body = decls;
+    }
 
     let mut elifs: Vec<(Expression, Vec<Statement>)> = Vec::new();
     let mut else_body: Option<Vec<Statement>> = None;
@@ -3093,6 +3128,9 @@ fn walk_instanceof(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut base = walk_expression(inner.next().ok_or("instanceof: empty")?)?;
 
     let mut saw_instanceof = false;
+    // The value being tested by the most recent `instanceof`, kept so a
+    // trailing pattern-binding ident can capture it.
+    let mut pending: Option<(String, Expression)> = None;
     for p in inner {
         match p.as_rule() {
             Rule::instanceof_kw => {
@@ -3100,17 +3138,52 @@ fn walk_instanceof(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::type_ref if saw_instanceof => {
                 let type_name = extract_ref_name(&p);
-                base = Expression::new(ExprKind::IsType {
-                    expr: Box::new(base),
-                    type_name,
-                });
+                let subject = base.clone();
+                base = java_instanceof_match_expr(&subject, &type_name);
+                pending = Some((type_name, subject));
                 saw_instanceof = false;
             }
-            Rule::ident_name => {} // pattern binding var — skip
+            Rule::ident_name => {
+                // `instanceof T var` (JLS §14.30.1) — record the flow-scoped
+                // binding for walk_if to inject into the then-body.
+                if let Some((type_name, subject)) = pending.take() {
+                    JAVA_INSTANCEOF_BINDINGS.with(|b| {
+                        b.borrow_mut()
+                            .push((p.as_str().to_string(), type_name, subject))
+                    });
+                }
+            }
             _ => {}
         }
     }
     Ok(base)
+}
+
+/// The type-test expression for `subject instanceof Type`. Builtin classes
+/// (String, Integer, …) and enums route through the same `__java_class_is_instance`
+/// / enum-membership helpers the switch-pattern path uses; user types stay
+/// as `ExprKind::IsType` (TypeRegistry subtype test).
+fn java_instanceof_match_expr(subject: &Expression, type_name: &str) -> Expression {
+    if let ExprKind::Ident(name) = &subject.kind {
+        return java_pattern_type_match_expr(name, type_name);
+    }
+    let simple = java_type_simple_name(type_name);
+    if java_builtin_class_is_instance_type(type_name) || java_builtin_class_is_instance_type(simple)
+    {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_class_is_instance")),
+            args: vec![
+                Argument::positional(Expression::string(simple)),
+                Argument::positional(subject.clone()),
+            ],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::IsType {
+            expr: Box::new(subject.clone()),
+            type_name: type_name.to_string(),
+        })
+    }
 }
 
 fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -5610,6 +5683,527 @@ fn default_expr_for_java_type(type_name: &str) -> Option<Expression> {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Local (method-body) classes → static nested siblings
+// ════════════════════════════════════════════════════════════════════════════
+
+fn hoist_java_local_classes(body: &mut [Statement]) {
+    for stmt in body {
+        hoist_java_local_classes_stmt(stmt);
+    }
+}
+
+fn hoist_java_local_classes_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::ClassDecl { name, members, .. } => {
+            let class_name = name.clone();
+            let mut hoisted: Vec<ClassMember> = Vec::new();
+            let mut counter = 0usize;
+            for member in members.iter_mut() {
+                match member {
+                    ClassMember::Method(m) => {
+                        if let StmtKind::FunctionDecl { params, body, .. } = &mut m.kind {
+                            let mut scope: HashSet<String> =
+                                params.iter().map(|p| p.name.clone()).collect();
+                            hoist_local_classes_in_body(
+                                body,
+                                &mut scope,
+                                &class_name,
+                                &mut counter,
+                                &mut hoisted,
+                            );
+                        }
+                    }
+                    ClassMember::Constructor { params, body, .. } => {
+                        let mut scope: HashSet<String> =
+                            params.iter().map(|p| p.name.clone()).collect();
+                        hoist_local_classes_in_body(
+                            body,
+                            &mut scope,
+                            &class_name,
+                            &mut counter,
+                            &mut hoisted,
+                        );
+                    }
+                    ClassMember::NestedType(ns) => hoist_java_local_classes_stmt(ns),
+                    _ => {}
+                }
+            }
+            members.extend(hoisted);
+        }
+        StmtKind::Block(b) | StmtKind::NamespaceDecl { body: b, .. } => {
+            hoist_java_local_classes(b)
+        }
+        _ => {}
+    }
+}
+
+/// Process one statement list: hoist any local class declarations out to
+/// `hoisted` (as static nested siblings), thread captured enclosing locals
+/// through their constructors, and rewrite `new Local(...)` sites in this
+/// body to the hoisted name with capture values appended.
+fn hoist_local_classes_in_body(
+    body: &mut Vec<Statement>,
+    scope: &mut HashSet<String>,
+    enclosing: &str,
+    counter: &mut usize,
+    hoisted: &mut Vec<ClassMember>,
+) {
+    // (old local name, hoisted name, capture value exprs) for `new` rewrite.
+    let mut mappings: Vec<(String, String, Vec<Expression>)> = Vec::new();
+
+    for stmt in body.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    collect_binding_names(&decl.pattern, scope);
+                }
+            }
+            StmtKind::ClassDecl {
+                name: local_name,
+                members: local_members,
+                parents,
+                ..
+            } => {
+                // Captured enclosing locals: free idents used in the class
+                // body that are in scope and not the class's own members.
+                let mut used: HashSet<String> = HashSet::new();
+                java_collect_member_idents(local_members, &mut used);
+                let own: HashSet<String> = local_members
+                    .iter()
+                    .filter_map(|m| match m {
+                        ClassMember::Field { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let mut captures: Vec<String> = used
+                    .into_iter()
+                    .filter(|n| scope.contains(n) && !own.contains(n))
+                    .collect();
+                captures.sort();
+
+                let new_name = format!("{enclosing}__local{counter}__{local_name}");
+                *counter += 1;
+                let old_name = local_name.clone();
+
+                if !captures.is_empty() {
+                    java_thread_local_class_captures(local_members, &captures);
+                }
+                let capture_vals: Vec<Expression> =
+                    captures.iter().map(|c| Expression::ident(c)).collect();
+
+                // Build the hoisted static nested class.
+                let mut modifiers = ClassModifiers::default();
+                modifiers.is_static = true;
+                let hoisted_stmt = Statement::new(StmtKind::ClassDecl {
+                    name: new_name.clone(),
+                    parents: std::mem::take(parents),
+                    interfaces: vec![],
+                    members: std::mem::take(local_members),
+                    modifiers,
+                    decorators: vec![],
+                });
+                hoisted.push(ClassMember::NestedType(Box::new(hoisted_stmt)));
+                mappings.push((old_name, new_name, capture_vals));
+
+                // Blank the original declaration statement.
+                stmt.kind = StmtKind::Block(vec![]);
+            }
+            // Recurse into nested control-flow bodies with the current scope.
+            StmtKind::Block(b) | StmtKind::NamespaceDecl { body: b, .. } => {
+                hoist_local_classes_in_body(b, &mut scope.clone(), enclosing, counter, hoisted);
+            }
+            StmtKind::For { body: b, .. }
+            | StmtKind::While { body: b, .. }
+            | StmtKind::DoWhile { body: b, .. }
+            | StmtKind::ForIn { body: b, .. } => {
+                hoist_local_classes_in_body(b, &mut scope.clone(), enclosing, counter, hoisted);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                hoist_local_classes_in_body(
+                    then_body,
+                    &mut scope.clone(),
+                    enclosing,
+                    counter,
+                    hoisted,
+                );
+                for (_, eb) in elifs {
+                    hoist_local_classes_in_body(eb, &mut scope.clone(), enclosing, counter, hoisted);
+                }
+                if let Some(eb) = else_body {
+                    hoist_local_classes_in_body(eb, &mut scope.clone(), enclosing, counter, hoisted);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Rewrite construction sites for each hoisted local class.
+    for (old_name, new_name, capture_vals) in &mappings {
+        for stmt in body.iter_mut() {
+            rewrite_java_new_local_stmt(stmt, old_name, new_name, capture_vals);
+        }
+    }
+}
+
+/// Add capture fields + constructor threading to a local class for each
+/// captured enclosing local. A field with the captured name is added (so
+/// existing bare-name → `this.field` qualification handles method refs), and
+/// every constructor (or a synthesized one) takes the value as a trailing
+/// parameter and stores it.
+fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[String]) {
+    for name in captures {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: name.clone(),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+            },
+        );
+    }
+    // The ctor param must NOT share the capture field's name — the
+    // bare-field → `this.field` qualification pass would otherwise rewrite
+    // the store's RHS to `this.<name>` (self-assigning the uninitialized
+    // field). Java relies on param-shadowing here; we use a distinct name.
+    let capture_param = |name: &str| Param {
+        name: format!("__cap_{name}"),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let store = |name: &str| {
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: name.to_string(),
+                null_safe: false,
+            })],
+            value: Expression::ident(&format!("__cap_{name}")),
+        })
+    };
+    let mut saw_ctor = false;
+    for member in members.iter_mut() {
+        if let ClassMember::Constructor { params, body, .. } = member {
+            saw_ctor = true;
+            for name in captures {
+                params.push(capture_param(name));
+            }
+            let mut prelude: Vec<Statement> = captures.iter().map(|n| store(n)).collect();
+            prelude.append(body);
+            *body = prelude;
+        }
+    }
+    if !saw_ctor {
+        members.push(ClassMember::Constructor {
+            params: captures.iter().map(|n| capture_param(n)).collect(),
+            body: captures.iter().map(|n| store(n)).collect(),
+            base_args: None,
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: ParsedModifiers::default().visibility,
+        });
+    }
+}
+
+/// Collect every identifier referenced anywhere in a class's members.
+fn java_collect_member_idents(members: &[ClassMember], out: &mut HashSet<String>) {
+    for member in members {
+        match member {
+            ClassMember::Field { init: Some(e), .. } => java_collect_idents_expr(e, out),
+            ClassMember::Method(m) => {
+                if let StmtKind::FunctionDecl { body, .. } = &m.kind {
+                    java_collect_idents_stmts(body, out);
+                }
+            }
+            ClassMember::Constructor { body, .. } => java_collect_idents_stmts(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn java_collect_idents_stmts(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        java_collect_idents_stmt(stmt, out);
+    }
+}
+
+fn java_collect_idents_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
+            java_collect_idents_expr(e, out)
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                if let Some(e) = &d.init {
+                    java_collect_idents_expr(e, out);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for t in targets {
+                java_collect_idents_expr(t, out);
+            }
+            java_collect_idents_expr(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            java_collect_idents_expr(target, out);
+            java_collect_idents_expr(value, out);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            java_collect_idents_expr(cond, out);
+            java_collect_idents_stmts(then_body, out);
+            for (c, b) in elifs {
+                java_collect_idents_expr(c, out);
+                java_collect_idents_stmts(b, out);
+            }
+            if let Some(b) = else_body {
+                java_collect_idents_stmts(b, out);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                java_collect_idents_stmt(i, out);
+            }
+            if let Some(c) = cond {
+                java_collect_idents_expr(c, out);
+            }
+            if let Some(u) = update {
+                java_collect_idents_expr(u, out);
+            }
+            java_collect_idents_stmts(body, out);
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            java_collect_idents_expr(cond, out);
+            java_collect_idents_stmts(body, out);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            java_collect_idents_expr(iter, out);
+            java_collect_idents_stmts(body, out);
+        }
+        StmtKind::Block(b) => java_collect_idents_stmts(b, out),
+        _ => {}
+    }
+}
+
+fn java_collect_idents_expr(expr: &Expression, out: &mut HashSet<String>) {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            out.insert(name.clone());
+        }
+        ExprKind::Binary { left, right, .. } => {
+            java_collect_idents_expr(left, out);
+            java_collect_idents_expr(right, out);
+        }
+        ExprKind::Unary { expr: e, .. }
+        | ExprKind::Spread(e)
+        | ExprKind::Await(e)
+        | ExprKind::TypeOf(e) => java_collect_idents_expr(e, out),
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_collect_idents_expr(cond, out);
+            java_collect_idents_expr(then, out);
+            java_collect_idents_expr(else_, out);
+        }
+        ExprKind::Member { object, .. } => java_collect_idents_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            java_collect_idents_expr(object, out);
+            java_collect_idents_expr(index, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            java_collect_idents_expr(callee, out);
+            for a in args {
+                java_collect_idents_expr(&a.value, out);
+            }
+        }
+        ExprKind::New { class, args } => {
+            java_collect_idents_expr(class, out);
+            for a in args {
+                java_collect_idents_expr(&a.value, out);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            java_collect_idents_expr(target, out);
+            java_collect_idents_expr(value, out);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems {
+                java_collect_idents_expr(&e.value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rewrite `new OldLocal(args)` → `new HoistedName(args, capture_vals…)`
+/// everywhere in a statement.
+fn rewrite_java_new_local_stmt(
+    stmt: &mut Statement,
+    old_name: &str,
+    new_name: &str,
+    capture_vals: &[Expression],
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
+            rewrite_java_new_local_expr(e, old_name, new_name, capture_vals)
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations {
+                // Retype `Local loc = …` → the hoisted name so `loc.method()`
+                // resolves to the user class (not a builtin value-method).
+                if d.type_hint.as_deref() == Some(old_name) {
+                    d.type_hint = Some(new_name.to_string());
+                }
+                if let Some(e) = &mut d.init {
+                    rewrite_java_new_local_expr(e, old_name, new_name, capture_vals);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for t in targets {
+                rewrite_java_new_local_expr(t, old_name, new_name, capture_vals);
+            }
+            rewrite_java_new_local_expr(value, old_name, new_name, capture_vals);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_java_new_local_expr(target, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(value, old_name, new_name, capture_vals);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_java_new_local_expr(cond, old_name, new_name, capture_vals);
+            for s in then_body.iter_mut() {
+                rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+            }
+            for (c, b) in elifs {
+                rewrite_java_new_local_expr(c, old_name, new_name, capture_vals);
+                for s in b.iter_mut() {
+                    rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+                }
+            }
+            if let Some(b) = else_body {
+                for s in b.iter_mut() {
+                    rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+                }
+            }
+        }
+        StmtKind::For {
+            cond, update, body, ..
+        } => {
+            if let Some(c) = cond {
+                rewrite_java_new_local_expr(c, old_name, new_name, capture_vals);
+            }
+            if let Some(u) = update {
+                rewrite_java_new_local_expr(u, old_name, new_name, capture_vals);
+            }
+            for s in body.iter_mut() {
+                rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_java_new_local_expr(cond, old_name, new_name, capture_vals);
+            for s in body.iter_mut() {
+                rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_java_new_local_expr(iter, old_name, new_name, capture_vals);
+            for s in body.iter_mut() {
+                rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+            }
+        }
+        StmtKind::Block(b) => {
+            for s in b.iter_mut() {
+                rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_new_local_expr(
+    expr: &mut Expression,
+    old_name: &str,
+    new_name: &str,
+    capture_vals: &[Expression],
+) {
+    match &mut expr.kind {
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(n) = &class.kind {
+                if n == old_name {
+                    class.kind = ExprKind::Ident(new_name.to_string());
+                    for v in capture_vals {
+                        args.push(Argument::positional(v.clone()));
+                    }
+                }
+            }
+            for a in args.iter_mut() {
+                rewrite_java_new_local_expr(&mut a.value, old_name, new_name, capture_vals);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_new_local_expr(left, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(right, old_name, new_name, capture_vals);
+        }
+        ExprKind::Unary { expr: e, .. }
+        | ExprKind::Spread(e)
+        | ExprKind::Await(e)
+        | ExprKind::TypeOf(e) => rewrite_java_new_local_expr(e, old_name, new_name, capture_vals),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_java_new_local_expr(cond, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(then, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(else_, old_name, new_name, capture_vals);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_java_new_local_expr(object, old_name, new_name, capture_vals)
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_new_local_expr(object, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(index, old_name, new_name, capture_vals);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_java_new_local_expr(callee, old_name, new_name, capture_vals);
+            for a in args.iter_mut() {
+                rewrite_java_new_local_expr(&mut a.value, old_name, new_name, capture_vals);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_java_new_local_expr(target, old_name, new_name, capture_vals);
+            rewrite_java_new_local_expr(value, old_name, new_name, capture_vals);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems.iter_mut() {
+                rewrite_java_new_local_expr(&mut e.value, old_name, new_name, capture_vals);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn qualify_java_nested_types(body: &mut [Statement]) {
     for stmt in body {
         qualify_java_nested_types_stmt(stmt, None);
@@ -6006,60 +6600,6 @@ fn java_outer_param(owner_name: &str) -> Param {
     }
 }
 
-fn java_static_receiver_param() -> Param {
-    Param {
-        name: "__java_static_receiver".to_string(),
-        type_hint: Some("Object".to_string()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    }
-}
-
-fn add_java_nested_static_receiver_params(stmts: &mut [Statement], nested: bool) {
-    for stmt in stmts {
-        match &mut stmt.kind {
-            StmtKind::ClassDecl { members, .. }
-            | StmtKind::EnumDecl {
-                body_members: members,
-                ..
-            } => {
-                for member in members {
-                    match member {
-                        ClassMember::Method(method) if nested => {
-                            if let StmtKind::FunctionDecl {
-                                params, modifiers, ..
-                            } = &mut method.kind
-                            {
-                                if modifiers.is_static
-                                    && !params
-                                        .first()
-                                        .is_some_and(|p| p.name == "__java_static_receiver")
-                                {
-                                    params.insert(0, java_static_receiver_param());
-                                }
-                            }
-                        }
-                        ClassMember::NestedType(nested_stmt) => {
-                            add_java_nested_static_receiver_params(
-                                std::slice::from_mut(nested_stmt),
-                                true,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
-                add_java_nested_static_receiver_params(body, nested);
-            }
-            _ => {}
-        }
-    }
-}
 
 fn java_outer_assign_stmt() -> Statement {
     Statement::new(StmtKind::Assign {
@@ -6163,9 +6703,39 @@ fn rewrite_java_nested_type_refs_stmt(
                 rewrite_java_nested_type_refs_stmts(else_body, nested_types);
             }
         }
-        StmtKind::While { cond, body, .. } => {
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             rewrite_java_nested_type_refs_expr(cond, nested_types);
             rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_java_nested_type_refs_stmt(init, nested_types);
+            }
+            if let Some(cond) = cond {
+                rewrite_java_nested_type_refs_expr(cond, nested_types);
+            }
+            if let Some(update) = update {
+                rewrite_java_nested_type_refs_expr(update, nested_types);
+            }
+            rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_java_nested_type_refs_expr(iter, nested_types);
+            rewrite_java_nested_type_refs_stmts(body, nested_types);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_java_nested_type_refs_expr(target, nested_types);
+            rewrite_java_nested_type_refs_expr(value, nested_types);
+        }
+        StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_java_nested_type_refs_expr(expr, nested_types);
         }
         _ => {}
     }
