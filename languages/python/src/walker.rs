@@ -178,6 +178,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
+
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
@@ -267,6 +268,7 @@ def __vybe_bytes_decode(a):
         r += chr(b)
     return r
 "#;
+
 
 fn walk_stmt_into(
     pair: Pair<Rule>,

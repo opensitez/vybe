@@ -17,6 +17,12 @@ uses_common_resolver = true
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
+# `a[::0]` raises `ValueError: slice step cannot be zero` (CPython). The
+# shared slices emitter (vybe_emitter::slices) reads this property.
+slice_step_zero_raises = true
+# `(1, 2, 3)` is a tuple, not a list: array-backed but tagged so
+# repr/type()/slicing distinguish it. Read by the shared tuple lowering.
+tuple_literals_tagged = true
 base_keyword = "super"
 dynamic_add = true
 # Route bracket reads/writes (`d['k']`, `d['k'] = v`) through the dynamic

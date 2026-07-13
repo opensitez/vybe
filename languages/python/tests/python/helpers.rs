@@ -84,6 +84,7 @@ pub fn run_python(src: &str) -> Vec<String> {
     // Run through the RuntimeCompilerService like the real exe (and the PHP
     // harness) — a bare `vm.run` never activates the compiler-as-a-service, so
     // `eval`/`exec`/`compile` (which route to the `vybe:eval` host) break.
+    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_python::register); }
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     vybe_host::register_all(&mut vm);

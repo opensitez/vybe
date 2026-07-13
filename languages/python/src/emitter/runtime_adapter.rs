@@ -313,6 +313,19 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("\"", line);
     chunk.emit_string_const("'", line);
     chunk.emit_call(replace_all, 3, line);
+    // Tuple (tagged array): rewrite the just-built `[a, b]` into `(a, b)` via
+    // the shared tuple emitter — element formatting stays Python's, the
+    // structural transform is cross-language.
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    let tag_k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        vybe_emitter::tuples::TUPLE_TAG,
+    )));
+    chunk.emit_op_u16(Op::STRUCT_GET, tag_k, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // 1 when tag present
+    chunk.emit_if(line); // [list_string] → [tuple_string], net-zero height
+    vybe_emitter::tuples::emit_list_string_to_tuple(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_else(line);
 
     // Not array: a string/number coerces straight to string; anything else is
