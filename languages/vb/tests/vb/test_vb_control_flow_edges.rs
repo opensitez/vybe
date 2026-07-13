@@ -384,7 +384,7 @@ Module M
 End Module
 "#,
     );
-    assert_eq!(out, vec!["Num10"]); ' Because late binding parses "10" to 10 for comparison first in Option Strict Off generally, or it matches on Type
+    assert_eq!(out, vec!["Num10"]); // Because late binding parses "10" to 10 for comparison first in Option Strict Off generally, or it matches on Type
 }
 
 #[test]

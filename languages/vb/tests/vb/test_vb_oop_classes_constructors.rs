@@ -1,0 +1,31 @@
+use super::helpers::run_vb;
+
+#[test] fn class_basic_instantiation() { assert_eq!(run_vb("Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["1"]); }
+#[test] fn class_object_initializer() { assert_eq!(run_vb("Class C\nPublic X As Integer\nPublic Y As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C() With {.X = 1, .Y = 2}\nConsole.WriteLine(c1.X + c1.Y)\nEnd Sub\nEnd Module"), vec!["3"]); }
+#[test] fn class_object_initializer_no_parens() { assert_eq!(run_vb("Class C\nPublic X As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C With {.X = 5}\nConsole.WriteLine(c1.X)\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test] fn class_constructor_sub_new() { assert_eq!(run_vb("Class C\nPublic V As Integer\nPublic Sub New()\nV = 10\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
+#[test] fn class_constructor_parameterized() { assert_eq!(run_vb("Class C\nPublic V As Integer\nPublic Sub New(val As Integer)\nV = val\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(20)\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["20"]); }
+
+#[test] fn class_constructor_overloads() { assert_eq!(run_vb("Class C\nPublic V As Integer\nPublic Sub New()\nV = 1\nEnd Sub\nPublic Sub New(val As Integer)\nV = val\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(2)\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["2"]); }
+#[test] fn class_constructor_chaining_myclass() { assert_eq!(run_vb("Class C\nPublic V As Integer\nPublic Sub New()\nMyClass.New(10)\nEnd Sub\nPublic Sub New(val As Integer)\nV = val\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
+#[test] fn class_constructor_chaining_me() { assert_eq!(run_vb("Class C\nPublic V As Integer\nPublic Sub New()\nMe.New(10) ' Me.New is valid for chaining in VB\nEnd Sub\nPublic Sub New(val As Integer)\nV = val\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
+#[test] fn class_field_initializer_runs_first() { assert_eq!(run_vb("Class C\nPublic V As Integer = 5\nPublic Sub New()\nV += 5\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
+#[test] fn class_shared_constructor() { assert_eq!(run_vb("Class C\nPublic Shared V As Integer\nShared Sub New()\nV = 42\nEnd Sub\nEnd Class\nModule M\nSub Main()\nConsole.WriteLine(C.V)\nEnd Sub\nEnd Module"), vec!["42"]); }
+
+#[test] fn class_shared_member_access() { assert_eq!(run_vb("Class C\nPublic Shared V As Integer = 1\nEnd Class\nModule M\nSub Main()\nConsole.WriteLine(C.V)\nEnd Sub\nEnd Module"), vec!["1"]); }
+#[test] fn class_shared_member_instance_access() { assert_eq!(run_vb("Class C\nPublic Shared V As Integer = 1\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["1"]); } // VB allows accessing Shared members via instance
+#[test] fn class_shared_method() { assert_eq!(run_vb("Class C\nPublic Shared Function M1() As String\nReturn \"A\"\nEnd Function\nEnd Class\nModule M\nSub Main()\nConsole.WriteLine(C.M1())\nEnd Sub\nEnd Module"), vec!["A"]); }
+#[test] fn class_destructor_finalize() { assert_eq!(run_vb("Class C\nProtected Overrides Sub Finalize()\n' Finalizer\nMyBase.Finalize()\nEnd Sub\nEnd Class\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test] fn class_notinheritable() { assert_eq!(run_vb("NotInheritable Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1 IsNot Nothing)\nEnd Sub\nEnd Module"), vec!["True"]); }
+
+#[test] fn class_mustinherit() { assert_eq!(run_vb("MustInherit Class C\nEnd Class\nClass D\nInherits C\nEnd Class\nModule M\nSub Main()\nDim d1 As New D()\nConsole.WriteLine(d1 IsNot Nothing)\nEnd Sub\nEnd Module"), vec!["True"]); }
+#[test] fn class_partial_classes() { assert_eq!(run_vb("Partial Class C\nPublic V1 As Integer = 1\nEnd Class\nPartial Class C\nPublic V2 As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"), vec!["3"]); }
+#[test] fn class_nested() { assert_eq!(run_vb("Class Outer\nClass Inner\nPublic V As Integer = 5\nEnd Class\nEnd Class\nModule M\nSub Main()\nDim i As New Outer.Inner()\nConsole.WriteLine(i.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test] fn class_me_reference() { assert_eq!(run_vb("Class C\nPublic V As Integer = 10\nPublic Function GetV() As Integer\nReturn Me.V\nEnd Function\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.GetV())\nEnd Sub\nEnd Module"), vec!["10"]); }
+#[test] fn class_with_block() { assert_eq!(run_vb("Class C\nPublic V1 As Integer\nPublic V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.V1 = 1\n.V2 = 2\nConsole.WriteLine(.V1 + .V2)\nEnd With\nEnd Sub\nEnd Module"), vec!["3"]); }
+
+#[test] fn class_generic_instantiation() { assert_eq!(run_vb("Class C(Of T)\nPublic V As T\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(Of Integer)()\nc1.V = 5\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test] fn class_generic_multiple_types() { assert_eq!(run_vb("Class C(Of T, U)\nPublic V1 As T\nPublic V2 As U\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(Of Integer, String)()\nc1.V1 = 5: c1.V2 = \"A\"\nConsole.WriteLine(c1.V1 & c1.V2)\nEnd Sub\nEnd Module"), vec!["5A"]); }
+#[test] fn class_default_instance() { assert_eq!(run_vb("Module M\n' VB has default instances for Forms (My.Forms.Form1), but for normal classes it requires special attributes\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test] fn class_empty() { assert_eq!(run_vb("Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.GetType().Name)\nEnd Sub\nEnd Module"), vec!["C"]); }
+#[test] fn class_shadowing_constructor() { assert_eq!(run_vb("Class B\nPublic Sub New(v As Integer)\nEnd Sub\nEnd Class\nClass C\nInherits B\nPublic Sub New()\nMyBase.New(1)\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1 IsNot Nothing)\nEnd Sub\nEnd Module"), vec!["True"]); }
