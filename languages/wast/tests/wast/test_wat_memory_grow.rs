@@ -7,7 +7,7 @@ wat_exec! {
   i32.const 2
   memory.grow
   call $log)
-"#, "1" }, ;; returns old size
+"#, "1" }, // returns old size
 
     test_memory_grow_multiple => { r#"
 (memory 1)
@@ -18,7 +18,7 @@ wat_exec! {
   i32.const 3
   memory.grow
   call $log)
-"#, "3" }, ;; returns old size (1 + 2 = 3)
+"#, "3" }, // returns old size (1 + 2 = 3)
 
     test_memory_grow_zero => { r#"
 (memory 1)
@@ -34,7 +34,7 @@ wat_exec! {
   i32.const 5
   memory.grow
   call $log)
-"#, "-1" }, ;; fails because 1+5 > 2
+"#, "-1" }, // fails because 1+5 > 2
 
     test_memory_size_initial => { r#"
 (memory 5)

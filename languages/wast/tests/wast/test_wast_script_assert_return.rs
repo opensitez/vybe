@@ -1,4 +1,10 @@
-use super::helpers::{compile_ok, parse_ok};
+use super::helpers::run_wast_asserts;
+
+/// Run the WAST script and require every `assert_return` to match its expected
+/// value — validates the computed RESULT, not just that the script compiles.
+fn compile_ok(src: &str) {
+    run_wast_asserts(src).unwrap_or_else(|e| panic!("assert_return validation failed: {e}"));
+}
 
 #[test]
 fn assert_return_basic_i32() {

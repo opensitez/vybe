@@ -35,7 +35,7 @@ wat_exec! {
   string.measure_wtf16
   call $log
 )
-"#, "5" }, ;; ascii characters take 1 code unit in wtf16
+"#, "5" }, // ascii characters take 1 code unit in wtf16
 
     test_string_measure_utf8_multibyte => { r#"
 (memory 1)

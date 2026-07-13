@@ -80,7 +80,7 @@ wat_exec! {
   table.grow 0
   call $log
 )
-"#, "5" }, ;; returns old size
+"#, "5" }, // returns old size
 
     test_table_grow_fail => { r#"
 (table 5 5 funcref)

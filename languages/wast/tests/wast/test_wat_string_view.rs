@@ -20,7 +20,6 @@ wat_exec! {
   call $log
 )
 "#, "42" },
-    ;; I'll simplify the string view testing
     test_string_view_utf8 => { r#"
 (memory 1)
 (data (i32.const 0) "hello")

@@ -92,5 +92,5 @@ wat_exec! {
   string.measure_utf8
   call $log
 )
-"#, "6" } ;; replacement character \ufffd is 3 bytes in utf8, two of them = 6 bytes
+"#, "6" } // replacement character \ufffd is 3 bytes in utf8, two of them = 6 bytes
 }
