@@ -69,7 +69,7 @@ fn js_can_read_python_dict_fields() {
 
     // Create dict like Python does (struct_new + struct_set)
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-    chunk.emit_op(Op::DUP, 0);
+    chunk.emit_dup(0);
     let name_val = chunk.add_constant(Value::String(Arc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, name_val, 0);
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
@@ -98,7 +98,7 @@ fn python_can_read_js_object_fields() {
 
     // JS-style object creation
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-    chunk.emit_op(Op::DUP, 0);
+    chunk.emit_dup(0);
     let val = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, val, 0);
     let key = chunk.add_constant(Value::String(Arc::from("msg")));
@@ -114,150 +114,6 @@ fn python_can_read_js_object_fields() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.to_string(), "hello");
-}
-
-#[test]
-fn typed_class_across_languages() {
-    // VB defines class Dog with type_id
-    // Python receives the object and can read fields + check type
-    let mut vm = VM::new();
-
-    // Register Dog type
-    let mut td = TypeDef::new("Dog");
-    td.add_field("name");
-    td.add_field("breed");
-    let dog_id = vm.type_registry.register(td);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 3;
-
-    // VB-style: create typed object
-    let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::CONST, tid, 0);
-    chunk.emit_op(Op::SHARED_NEW, 0); // creates object with type_id + pre-allocated fields
-
-    // Set fields via struct_set (VB way)
-    chunk.emit_op(Op::DUP, 0);
-    let name_val = chunk.add_constant(Value::String(Arc::from("Rex")));
-    chunk.emit_op_u16(Op::CONST, name_val, 0);
-    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
-    chunk.emit_op(Op::DROP, 0);
-
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    // Python-style: read field with struct_get
-    chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let get_name = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.to_string(), "Rex");
-}
-
-#[test]
-fn ref_test_works_across_languages() {
-    // C# creates a Dog, Python checks isinstance(obj, Dog)
-    let mut vm = VM::new();
-
-    let dog_id = vm.type_registry.register(TypeDef::new("Dog"));
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 3;
-
-    // C#-style: create Dog object with type_id
-    let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::CONST, tid, 0);
-    chunk.emit_op(Op::SHARED_NEW, 0);
-
-    // Python-style: ref_test against "dog"
-    let type_name = chunk.add_constant(Value::String(Arc::from("dog")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_wasm_true(&result, "Dog should match Dog");
-}
-
-#[test]
-fn inheritance_works_across_languages() {
-    // VB defines Animal, C# defines Dog : Animal, Python checks isinstance(dog, Animal)
-    let mut vm = VM::new();
-
-    let animal_id = vm.type_registry.register(TypeDef::new("Animal"));
-    let mut dog_td = TypeDef::new("Dog");
-    dog_td.parent = Some(animal_id);
-    let dog_id = vm.type_registry.register(dog_td);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::CONST, tid, 0);
-    chunk.emit_op(Op::SHARED_NEW, 0);
-
-    // Check if Dog is-a Animal
-    let type_name = chunk.add_constant(Value::String(Arc::from("animal")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_wasm_true(&result, "Dog should be instanceof Animal");
-}
-
-#[test]
-fn interface_works_across_languages() {
-    // VB defines Interface IAnimal, C# class Dog : IAnimal, Python checks isinstance
-    let mut vm = VM::new();
-
-    let iface_id = vm
-        .type_registry
-        .register_interface("IAnimal", &[("speak", 1)]);
-    let mut dog_td = TypeDef::new("Dog");
-    dog_td
-        .methods
-        .insert("speak".into(), typedef::Method::ChunkFn(0));
-    let dog_id = vm.type_registry.register(dog_td);
-    vm.type_registry.add_implements(dog_id, iface_id);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let tid = chunk.add_constant(Value::I32(dog_id as i32));
-    chunk.emit_op_u16(Op::CONST, tid, 0);
-    chunk.emit_op(Op::SHARED_NEW, 0);
-
-    let type_name = chunk.add_constant(Value::String(Arc::from("ianimal")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_wasm_true(&result, "Dog implements IAnimal");
-}
-
-#[test]
-fn array_from_any_language_is_same() {
-    // All languages produce identical array bytecode
-    let mut vm = VM::new();
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    // [1, "two", true] — same across Python/JS/VB/C#/Dart
-    let v1 = chunk.add_constant(Value::I32(1));
-    let v2 = chunk.add_constant(Value::String(Arc::from("two")));
-    chunk.emit_op_u16(Op::CONST, v1, 0);
-    chunk.emit_op_u16(Op::CONST, v2, 0);
-    chunk.emit_op(Op::TRUE, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
-
-    // Access element 1
-    chunk.emit_op(Op::I32_CONST_1, 0);
-    chunk.emit_op(Op::ARRAY_GET, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.to_string(), "two");
 }
 
 #[test]

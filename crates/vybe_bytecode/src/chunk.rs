@@ -199,9 +199,18 @@ pub struct Chunk {
     /// Entries align with `memory_min_pages`; `None` means unbounded by the
     /// module type.
     pub memory_max_pages: Vec<Option<u64>>,
+    /// Per-memory index type: `true` = 64-bit (memory64), `false` = 32-bit.
+    /// Aligns with `memory_min_pages`. Memory64 adds NO new opcodes — the VM
+    /// reads this at each load/store to decide the address width (i32 vs i64)
+    /// and memarg-offset width, exactly as the spec (`C.mems[i] = at limits`).
+    pub memory_is_64: Vec<bool>,
     /// Declared reference tables for modules decoded from standard WASM.
     /// Entries are minimum element counts, in spec table-index order.
     pub table_min_sizes: Vec<u64>,
+    /// Per-table index type: `true` = 64-bit (table64). Aligns with
+    /// `table_min_sizes`. Like memory64, table64 adds no new opcodes — the
+    /// VM reads this to pick the index operand width (i32 vs i64).
+    pub table_is_64: Vec<bool>,
     /// Passive data segment payloads decoded from standard WASM.
     pub data_segments: Vec<Vec<u8>>,
     /// Passive element segment payloads decoded from standard WASM.
@@ -271,7 +280,9 @@ impl Chunk {
             continuation_tags: Vec::new(),
             memory_min_pages: Vec::new(),
             memory_max_pages: Vec::new(),
+            memory_is_64: Vec::new(),
             table_min_sizes: Vec::new(),
+            table_is_64: Vec::new(),
             data_segments: Vec::new(),
             elem_segments: Vec::new(),
             active_data_segments: Vec::new(),

@@ -575,6 +575,12 @@ pub struct VM {
     pub(crate) elem_segments: Vec<Vec<Value>>,
     /// Currently selected memory index (for load/store ops). Default 0.
     pub(crate) active_memory: usize,
+    /// Per-memory index type: `true` = 64-bit (memory64). Populated at
+    /// instantiation from the script chunk's `memory_is_64`. Read by every
+    /// load/store to pick the address width (memory64 adds no new opcodes).
+    pub(crate) memory_is_64: Vec<bool>,
+    /// Per-table 64-bit index type (table64), populated at instantiation.
+    pub(crate) table_is_64: Vec<bool>,
     /// The module's function index space (imports then defined funcs) —
     /// populated by `ref.func` and host-fn registration, read by call-by-index
     /// and `return_call_indirect`. This is NOT a WASM table: a `(table …)` is a
@@ -795,6 +801,8 @@ impl VM {
             data_segments: Vec::new(),
             elem_segments: Vec::new(),
             active_memory: 0,
+            memory_is_64: Vec::new(),
+            table_is_64: Vec::new(),
             func_table: Vec::new(),
             wasm_tables: Vec::new(),
             type_recorder: None,
@@ -1814,7 +1822,9 @@ impl VM {
 
         let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
         let declared_memory_maxes = self.chunks[script_idx].memory_max_pages.clone();
+        self.memory_is_64 = self.chunks[script_idx].memory_is_64.clone();
         self.instantiate_declared_memories(&declared_memories, &declared_memory_maxes)?;
+        self.table_is_64 = self.chunks[script_idx].table_is_64.clone();
         let declared_tables = self.chunks[script_idx].table_min_sizes.clone();
         self.instantiate_declared_tables(&declared_tables)?;
         let data_segments = self.chunks[script_idx].data_segments.clone();
@@ -2343,34 +2353,5 @@ impl VM {
                 e
             }
         })
-    }
-}
-
-pub(crate) fn dyn_truthy(v: &Value) -> bool {
-    match v {
-        Value::Null | Value::Undefined => false,
-        Value::Bool(b) => *b,
-        Value::F64(n) => *n != 0.0 && !n.is_nan(),
-        Value::F32(n) => *n != 0.0 && !n.is_nan(),
-        Value::I32(n) => *n != 0,
-        Value::I64(n) => *n != 0,
-        Value::String(s) => !s.is_empty(),
-        Value::Object(o) => {
-            let ob = o.lock().unwrap();
-            // Check __bool__ property (set by Python classes as a bool value).
-            // If __bool__ is a Bool value, use it. If it's a function, we can't
-            // call it from here (no VM access) — the compiler should call it
-            // and set the result as a bool property.
-            if let Some(Value::Bool(b)) = ob.properties.get("__bool__") {
-                return *b;
-            }
-            // JS semantics: all objects are truthy (including empty arrays/objects).
-            // Python's bool() builtin handles empty-container checks at the compiler level.
-            true
-        }
-        Value::WeakRef(w) => w.upgrade().is_some(),
-        Value::V128(b) => b.iter().any(|&x| x != 0),
-        Value::Symbol(_) => true,
-        Value::BigInt(n) => !n.is_zero(),
     }
 }

@@ -39,7 +39,7 @@ fn helper_reversed() {
     script.emit_op_u8(Op::CALL_REF, 1, 0);
 
     // Get first element — should be 3
-    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
     script.emit_op(Op::HALT, 0);
 
@@ -76,7 +76,7 @@ fn helper_sorted() {
     script.emit_op_u8(Op::CALL_REF, 1, 0);
 
     // First element should be 1 (smallest)
-    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
     script.emit_op(Op::HALT, 0);
 
@@ -112,7 +112,7 @@ fn helper_sorted_preserves_original() {
 
     // Original first element should still be 3
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
     script.emit_op(Op::HALT, 0);
 

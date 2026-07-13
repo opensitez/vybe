@@ -56,6 +56,27 @@ impl Op {
     pub const STRUCT_NEW_DESC: Op = Op::new(0xFB, 0x20); // struct.new_desc $typeidx
     pub const STRUCT_NEW_DEFAULT_DESC: Op = Op::new(0xFB, 0x21); // struct.new_default_desc $typeidx
     pub const REF_GET_DESC: Op = Op::new(0xFB, 0x22); // ref.get_desc $typeidx
+
+    // Stringref proposal (0x80..=0xB7). Byte values per proposals/stringref
+    // Overview.md. Strings map onto `Value::String`. Ops carrying a `$mem`
+    // immediate in the binary format use `operand_format: None` here — the VM
+    // defaults to memory 0 (see the None-consistency note in the macro block).
+    pub const STRING_NEW_UTF8: Op = Op::new(0xFB, 0x80);
+    pub const STRING_MEASURE_UTF8: Op = Op::new(0xFB, 0x83);
+    pub const STRING_MEASURE_WTF8: Op = Op::new(0xFB, 0x84);
+    pub const STRING_MEASURE_WTF16: Op = Op::new(0xFB, 0x85);
+    pub const STRING_ENCODE_UTF8: Op = Op::new(0xFB, 0x86);
+    pub const STRING_ENCODE_WTF16: Op = Op::new(0xFB, 0x87);
+    pub const STRING_CONCAT: Op = Op::new(0xFB, 0x88);
+    pub const STRING_EQ: Op = Op::new(0xFB, 0x89);
+    pub const STRING_NEW_LOSSY_UTF8: Op = Op::new(0xFB, 0x8B);
+    pub const STRING_NEW_WTF8: Op = Op::new(0xFB, 0x8C);
+    pub const STRING_AS_WTF8: Op = Op::new(0xFB, 0x90);
+    pub const STRING_AS_WTF16: Op = Op::new(0xFB, 0x98);
+    pub const STRING_NEW_UTF8_ARRAY: Op = Op::new(0xFB, 0xB0);
+    pub const STRING_NEW_WTF16_ARRAY: Op = Op::new(0xFB, 0xB1);
+    pub const STRING_ENCODE_UTF8_ARRAY: Op = Op::new(0xFB, 0xB2);
+    pub const STRING_ENCODE_WTF16_ARRAY: Op = Op::new(0xFB, 0xB3);
 }
 
 opcode_category! {
@@ -110,4 +131,48 @@ opcode_category! {
     [0x20] struct_new_desc         => U16, "struct.new_desc";
     [0x21] struct_new_default_desc => U16, "struct.new_default_desc";
     [0x22] ref_get_desc            => U16, "ref.get_desc";
+
+    // ── Stringref proposal (0x80..=0xB7) ──────────────────────────────────
+    // operand_format is None for ALL of these: the ops that take a `$mem`
+    // (new/encode) default to memory 0 in the VM, and the dispatch reads zero
+    // immediate bytes. This keeps the three-way contract (table None / dispatch
+    // reads nothing / codec writes nothing) internally consistent — the WASM
+    // binary `$mem`/`$idx` uleb is a codec concern, not needed for text exec.
+    [0x80] string_new_utf8            => None, "string.new_utf8";
+    [0x81] string_new_wtf16           => None, "string.new_wtf16";
+    [0x82] string_const               => None, "string.const";
+    [0x83] string_measure_utf8        => None, "string.measure_utf8";
+    [0x84] string_measure_wtf8        => None, "string.measure_wtf8";
+    [0x85] string_measure_wtf16       => None, "string.measure_wtf16";
+    [0x86] string_encode_utf8         => None, "string.encode_utf8";
+    [0x87] string_encode_wtf16        => None, "string.encode_wtf16";
+    [0x88] string_concat              => None, "string.concat";
+    [0x89] string_eq                  => None, "string.eq";
+    [0x8A] string_is_usv_sequence     => None, "string.is_usv_sequence";
+    [0x8B] string_new_lossy_utf8      => None, "string.new_lossy_utf8";
+    [0x8C] string_new_wtf8            => None, "string.new_wtf8";
+    [0x8D] string_encode_lossy_utf8   => None, "string.encode_lossy_utf8";
+    [0x8E] string_encode_wtf8         => None, "string.encode_wtf8";
+    [0x90] string_as_wtf8             => None, "string.as_wtf8";
+    [0x91] stringview_wtf8_advance    => None, "stringview_wtf8.advance";
+    [0x92] stringview_wtf8_encode_utf8 => None, "stringview_wtf8.encode_utf8";
+    [0x93] stringview_wtf8_slice      => None, "stringview_wtf8.slice";
+    [0x98] string_as_wtf16            => None, "string.as_wtf16";
+    [0x99] stringview_wtf16_length    => None, "stringview_wtf16.length";
+    [0x9A] stringview_wtf16_get_codeunit => None, "stringview_wtf16.get_codeunit";
+    [0x9B] stringview_wtf16_encode    => None, "stringview_wtf16.encode";
+    [0x9C] stringview_wtf16_slice     => None, "stringview_wtf16.slice";
+    [0xA0] string_as_iter             => None, "string.as_iter";
+    [0xA1] stringview_iter_next       => None, "stringview_iter.next";
+    [0xA2] stringview_iter_advance    => None, "stringview_iter.advance";
+    [0xA3] stringview_iter_rewind     => None, "stringview_iter.rewind";
+    [0xA4] stringview_iter_slice      => None, "stringview_iter.slice";
+    [0xB0] string_new_utf8_array      => None, "string.new_utf8_array";
+    [0xB1] string_new_wtf16_array     => None, "string.new_wtf16_array";
+    [0xB2] string_encode_utf8_array   => None, "string.encode_utf8_array";
+    [0xB3] string_encode_wtf16_array  => None, "string.encode_wtf16_array";
+    [0xB4] string_new_lossy_utf8_array => None, "string.new_lossy_utf8_array";
+    [0xB5] string_new_wtf8_array      => None, "string.new_wtf8_array";
+    [0xB6] string_encode_lossy_utf8_array => None, "string.encode_lossy_utf8_array";
+    [0xB7] string_encode_wtf8_array   => None, "string.encode_wtf8_array";
 }

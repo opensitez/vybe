@@ -336,50 +336,6 @@ fn host_receives_object_args() {
 }
 
 // 10. Host fn receiving mixed types (string, number, bool, null)
-#[test]
-fn host_receives_mixed_types() {
-    let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-    let recv = received.clone();
-
-    let mut vm = VM::new();
-    vm.register_host_fn(
-        "test",
-        "mixed",
-        Box::new(
-            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-                *recv.lock().unwrap() = args.to_vec();
-                Value::Null
-            },
-        ),
-    );
-
-    let mut main = Chunk::new("main");
-    main.local_count = 1;
-    let imp = main.add_import("test", "mixed");
-    let cs = main.add_constant(Value::String(Arc::from("text")));
-    main.emit_op_u16(Op::CONST, cs, 0);
-    let cn = main.add_constant(Value::F64(3.14));
-    main.emit_op_u16(Op::CONST, cn, 0);
-    main.emit_op(Op::TRUE, 0);
-    main.emit_op(Op::NULL, 0);
-    emit_call_import(&mut main, imp, 4);
-    main.emit_op(Op::HALT, 0);
-
-    vm.run(vec![main]).unwrap();
-    let args = received.lock().unwrap();
-    assert_eq!(args.len(), 4);
-    assert_string(&args[0], "text");
-    assert_f64(&args[1], 3.14);
-    match &args[2] {
-        Value::Bool(true) => {}
-        other => panic!("Expected Bool(true), got {:?}", other),
-    }
-    match &args[3] {
-        Value::Null => {}
-        other => panic!("Expected Null, got {:?}", other),
-    }
-}
-
 // ============================================================
 // B. Object passing host <-> VM (tests 11-20)
 // ============================================================
@@ -1165,50 +1121,6 @@ fn invoke_host_function_object() {
 }
 
 // 28. invoke() a closure that captures upvalue
-#[test]
-fn invoke_closure_with_upvalue() {
-    let mut vm = VM::new();
-
-    // chunk 0: main — creates a local, creates closure capturing it, returns closure
-    let mut main_chunk = Chunk::new("main");
-    main_chunk.local_count = 2; // local 0 = script, local 1 = captured var
-    // local 1 = 100
-    let c100 = main_chunk.add_constant(Value::I32(100));
-    main_chunk.emit_op_u16(Op::CONST, c100, 0);
-    main_chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    // ref_func chunk 1, 1 upvalue (is_local=1, index=1)
-    main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
-    main_chunk.emit(1, 0); // 1 upvalue
-    main_chunk.emit(1, 0); // is_local = true
-    main_chunk.emit(1, 0); // index = 1 (local 1)
-    // Store the closure in global "closure"
-    let gc = main_chunk.add_constant(Value::String(Arc::from("closure")));
-    main_chunk.emit_op_u16(Op::GLOBAL_SET, gc, 0);
-    main_chunk.emit_op(Op::NULL, 0);
-    main_chunk.emit_op(Op::HALT, 0);
-
-    // chunk 1: closure — reads upvalue 0, adds arg, returns sum
-    let mut closure = Chunk::new("closure");
-    closure.arity = 1;
-    closure.local_count = 1;
-    closure.emit_op_u8(Op::UPVALUE_GET, 0, 0);
-    closure.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    closure.emit_op(Op::I32_ADD, 0);
-    closure.emit_op(Op::RETURN, 0);
-
-    vm.run(vec![main_chunk, closure]).unwrap();
-
-    // Retrieve the closure from globals
-    let closure_val = vm
-        .globals
-        .get("closure")
-        .cloned()
-        .expect("closure global should exist");
-
-    let result = vm.invoke(&closure_val, &[Value::I32(23)]).unwrap();
-    assert_i32(&result, 123); // 100 + 23
-}
-
 // 29. invoke() twice — second call uses updated globals from first
 #[test]
 fn invoke_twice_globals_updated() {
@@ -1367,64 +1279,6 @@ fn callback_store_and_invoke() {
 }
 
 // 32. Host fn receives closure, invoke() with captured state
-#[test]
-fn callback_closure_with_captured_state() {
-    let callback_store: Arc<std::sync::Mutex<Option<Value>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let store = callback_store.clone();
-
-    let mut vm = VM::new();
-    vm.register_host_fn(
-        "test",
-        "register_cb",
-        Box::new(
-            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-                *store.lock().unwrap() = Some(args[0].clone());
-                Value::Null
-            },
-        ),
-    );
-
-    let mut main_chunk = Chunk::new("main");
-    main_chunk.local_count = 2; // local 0 = script, local 1 = captured
-    let imp = main_chunk.add_import("test", "register_cb");
-
-    // local 1 = 500
-    let c500 = main_chunk.add_constant(Value::I32(500));
-    main_chunk.emit_op_u16(Op::CONST, c500, 0);
-    main_chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    // Create closure capturing local 1
-    main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
-    main_chunk.emit(1, 0); // 1 upvalue
-    main_chunk.emit(1, 0); // is_local = true
-    main_chunk.emit(1, 0); // index = 1
-
-    emit_call_import(&mut main_chunk, imp, 1);
-    main_chunk.emit_op(Op::DROP, 0);
-    main_chunk.emit_op(Op::NULL, 0);
-    main_chunk.emit_op(Op::HALT, 0);
-
-    // chunk 1: closure(x) => upvalue[0] + x
-    let mut closure = Chunk::new("closure_cb");
-    closure.arity = 1;
-    closure.local_count = 1;
-    closure.emit_op_u8(Op::UPVALUE_GET, 0, 0);
-    closure.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    closure.emit_op(Op::I32_ADD, 0);
-    closure.emit_op(Op::RETURN, 0);
-
-    vm.run(vec![main_chunk, closure]).unwrap();
-
-    let cb_val = callback_store
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("callback should be stored");
-    let result = vm.invoke(&cb_val, &[Value::I32(7)]).unwrap();
-    assert_i32(&result, 507); // 500 + 7
-}
-
 // 33. Host fn receives class method, invoke() with Me arg
 #[test]
 fn callback_method_with_me_arg() {

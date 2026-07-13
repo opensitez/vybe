@@ -37,7 +37,7 @@ fn to_bool_null_is_false() {
 #[test]
 fn to_bool_undefined_is_false() {
     let r = run(|c| {
-        c.emit_op(Op::UNDEFINED, 0);
+        push(c, Value::Undefined);
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -91,7 +91,7 @@ fn to_bool_nonzero_number_is_true() {
 #[test]
 fn to_bool_false_bool_is_false() {
     let r = run(|c| {
-        c.emit_op(Op::FALSE, 0);
+        push(c, Value::Bool(false));
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -100,7 +100,7 @@ fn to_bool_false_bool_is_false() {
 #[test]
 fn to_bool_true_bool_is_true() {
     let r = run(|c| {
-        c.emit_op(Op::TRUE, 0);
+        push(c, Value::Bool(true));
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -129,7 +129,7 @@ fn to_bool_bigint_nonzero_is_true() {
 #[test]
 fn not_true_gives_false() {
     let r = run(|c| {
-        c.emit_op(Op::TRUE, 0);
+        push(c, Value::Bool(true));
         ops::emit_dyn_not(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -138,7 +138,7 @@ fn not_true_gives_false() {
 #[test]
 fn not_false_gives_true() {
     let r = run(|c| {
-        c.emit_op(Op::FALSE, 0);
+        push(c, Value::Bool(false));
         ops::emit_dyn_not(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -228,7 +228,7 @@ fn eq_both_null() {
 fn eq_null_and_undefined_are_equal() {
     let r = run(|c| {
         c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::UNDEFINED, 0);
+        push(c, Value::Undefined);
         ops::emit_dyn_eq(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -257,8 +257,8 @@ fn eq_different_bigints() {
 #[test]
 fn eq_true_booleans() {
     let r = run(|c| {
-        c.emit_op(Op::TRUE, 0);
-        c.emit_op(Op::TRUE, 0);
+        push(c, Value::Bool(true));
+        push(c, Value::Bool(true));
         ops::emit_dyn_eq(c, 0);
     });
     assert_eq!(r.as_i32(), 1);

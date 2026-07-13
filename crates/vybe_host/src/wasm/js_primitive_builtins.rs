@@ -216,7 +216,7 @@ fn register_boolean(vm: &mut VM) {
     // cast(externref) -> i32 — extract as 0/1
     // Spec traps on non-boolean, but Vybe's internal Bool/I32 duality means
     // CALL_IMPORT cast may receive I32(0/1) from WASM comparison ops.
-    // Follow Op::BOOL_CAST semantics: Bool extracts value, I32 passes through,
+    // Follow wasm:js-boolean.cast semantics: Bool extracts value, I32 passes through,
     // other falsy values (null, undefined, 0, "", NaN) return 0, truthy return 1.
     vm.register_host_fn(
         "wasm:js-boolean",

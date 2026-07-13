@@ -4988,7 +4988,7 @@ impl Compiler {
                             self.emit_const(Value::I32(i32::MAX)); // end (clamped by VM)
                         }
                         // C# `s.Substring(start)` — 1-arg form means
-                        // "from start to end of string". STR_SUBSTRING
+                        // "from start to end of string". wasm:js-string.substring
                         // wants `[s, start, end]`; default end to a
                         // sentinel large value (VM clamps to s.len()).
                         // Same shape applies to ECMA-262 §22.1.3.16
@@ -4996,10 +4996,10 @@ impl Compiler {
                         "strings.substring" | "strings.slice" if arg_exprs.len() < 2 => {
                             self.emit_const(Value::I32(i32::MAX));
                         }
-                        // C#'s `string.ToCharArray()` lowers to STR_SPLIT
-                        // which needs a delimiter on the stack. The .NET
-                        // semantics ("each char one element") match
-                        // splitting on the empty string.
+                        // C#'s `string.ToCharArray()` lowers to a split which
+                        // needs a delimiter on the stack. The .NET semantics
+                        // ("each char one element") match splitting on the
+                        // empty string.
                         "str_split" if arg_exprs.is_empty() => {
                             self.emit_const(Value::String(Arc::from("")));
                         }

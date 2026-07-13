@@ -226,7 +226,7 @@ pub fn is_exception_type(name: &str) -> bool {
 
 /// Stack-based exception constructor. Use this in two phases:
 ///
-/// 1. Caller emits `Op::STRUCT_NEW` and `Op::DUP` to push `[obj, obj]`,
+/// 1. Caller emits `Op::STRUCT_NEW` and `emit_dup` to push `[obj, obj]`,
 ///    then emits the message expression to push `[obj, obj, msg]`.
 /// 2. Caller invokes `emit_exception_new_finalize(chunk, exc_name, line)`
 ///    which consumes the inner `[obj, msg]` pair into `obj.message=msg`,

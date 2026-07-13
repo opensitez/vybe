@@ -392,6 +392,24 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // IsCallable(v) → i32 (1 if v is a callable function object, else 0).
+    // ECMA-262 §7.2.3. Replaces the retired VM-internal `REF_IS_FUNC` opcode;
+    // callers emit `call ecma:reflect.isCallable` instead of a custom op.
+    vm.register_host_fn(
+        "ecma:reflect",
+        "isCallable",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let callable = matches!(
+                args.first(),
+                Some(Value::Object(o)) if matches!(
+                    o.lock().unwrap().kind,
+                    ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                )
+            );
+            Value::I32(i32::from(callable))
+        }),
+    );
+
     // Reflect.has(target, key) → bool. Mirrors `key in target` (own + proto).
     vm.register_host_fn(
         "ecma:reflect",

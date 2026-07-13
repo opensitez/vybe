@@ -2728,7 +2728,7 @@ fn build_val(imports: &mut Chunk) -> Chunk {
 
 // ── cchar(s) → string — first character of `s` (VB CChar) ────────
 //
-// `STR_SUBSTRING(s, 0, 1)` — pure WASM string-builtins primitive.
+// `wasm:js-string.substring(s, 0, 1)` — pure WASM string-builtins primitive.
 fn build_cchar(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_cchar");
     c.arity = 1;
@@ -4015,7 +4015,7 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, empty, 0);
     c.emit_op_u16(Op::LOCAL_SET, out, 0);
 
-    // i = 0; len = STR_LENGTH(s)
+    // i = 0; len = wasm:js-string.length(s)
     core_wasm::i32_const(&mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -4035,7 +4035,7 @@ fn build_format_map(imports: &mut Chunk) -> Chunk {
     crate::emitter::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(1, 0);
 
-    // ch = STR_CHAR_CODE_AT(s, i)
+    // ch = wasm:js-string.charCodeAt(s, i)
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     emit_str_char_code_at(&mut c, 0);

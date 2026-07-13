@@ -7,11 +7,11 @@ use vybe_compiler::emitter::ops;
 fn ternary_emits_jumps() {
     let mut chunk = Chunk::new("test");
     // Simulate: condition already on stack
-    chunk.emit_op(Op::TRUE, 0); // condition
+    chunk.emit_i32_const(1, 0); // condition
     let false_jump = expressions::emit_ternary_start(&mut chunk, 0);
-    chunk.emit_op(Op::I32_CONST_1, 0); // then value
+    chunk.emit_i32_const(1, 0); // then value
     let end_jump = expressions::emit_ternary_middle(&mut chunk, false_jump, 0);
-    chunk.emit_op(Op::I32_CONST_0, 0); // else value
+    chunk.emit_i32_const(0, 0); // else value
     expressions::emit_ternary_end(&mut chunk, end_jump);
     assert!(chunk.code.len() > 5, "ternary should emit jump structure");
 }
@@ -19,9 +19,9 @@ fn ternary_emits_jumps() {
 #[test]
 fn and_short_circuit() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::TRUE, 0); // left
+    chunk.emit_i32_const(1, 0); // left
     let jump = expressions::emit_and_start(&mut chunk, 0);
-    chunk.emit_op(Op::FALSE, 0); // right
+    chunk.emit_i32_const(0, 0); // right
     expressions::emit_short_circuit_end(&mut chunk, jump);
     assert!(chunk.code.len() > 3);
 }
@@ -29,9 +29,9 @@ fn and_short_circuit() {
 #[test]
 fn or_short_circuit() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::FALSE, 0); // left
+    chunk.emit_i32_const(0, 0); // left
     let jump = expressions::emit_or_start(&mut chunk, 0);
-    chunk.emit_op(Op::TRUE, 0); // right
+    chunk.emit_i32_const(1, 0); // right
     expressions::emit_short_circuit_end(&mut chunk, jump);
     assert!(chunk.code.len() > 3);
 }
@@ -41,7 +41,7 @@ fn null_coalesce() {
     let mut chunk = Chunk::new("test");
     chunk.emit_op(Op::NULL, 0); // left
     let (_null_jump, end_jump) = expressions::emit_null_coalesce_start(&mut chunk, 0);
-    chunk.emit_op(Op::I32_CONST_1, 0); // right (default)
+    chunk.emit_i32_const(1, 0); // right (default)
     expressions::emit_null_coalesce_end(&mut chunk, end_jump);
     assert!(chunk.code.len() > 4);
 }

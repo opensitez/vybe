@@ -468,9 +468,9 @@ fn extended_opcode_executes() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let s = chunk.add_constant(Value::String(Arc::from("hello")));
+    let s = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, s, 0);
-    chunk.emit_op(Op::STR_LENGTH, 0);
+    chunk.emit_dup(0); // 0xFF extended opcode
     chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 5);

@@ -715,7 +715,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
-                        self.emit(Op::REF_IS_FUNC);
+                        // IsCallable(iter.iterator) via the host — replaces the
+                        // retired VM-internal REF_IS_FUNC opcode.
+                        let is_callable_idx = self.import("ecma:reflect", "isCallable");
+                        self.emit_host_call(is_callable_idx, 1);
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_not(self.chunk(), line);

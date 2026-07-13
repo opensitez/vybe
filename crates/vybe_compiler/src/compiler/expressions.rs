@@ -2511,8 +2511,8 @@ impl Compiler {
                     let line = self.line;
                     if self.profile.ecma_array_method_dispatch {
                         // Emit an inline polymorphic slice for JS: strings use
-                        // STR_SUBSTRING, arrays call ecma:array.slice. Save
-                        // operands to locals so we can test the receiver.
+                        // wasm:js-string.substring, arrays call ecma:array.slice.
+                        // Save operands to locals so we can test the receiver.
                         let obj_slot = self.define_local("__js_range_slice_obj");
                         let start_slot = self.define_local("__js_range_slice_start");
                         let end_slot = self.define_local("__js_range_slice_end");
@@ -2567,8 +2567,8 @@ impl Compiler {
                     if step.is_none() {
                         if self.profile.ecma_array_method_dispatch {
                             // JS: compute start/end into locals, then dispatch
-                            // to STR_SUBSTRING for strings or ecma:array.slice
-                            // for arrays.
+                            // to wasm:js-string.substring for strings or
+                            // ecma:array.slice for arrays.
                             let obj_slot = self.define_local("__js_index_slice_obj");
                             let start_slot = self.define_local("__js_index_slice_start");
                             let end_slot = self.define_local("__js_index_slice_end");

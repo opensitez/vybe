@@ -12,11 +12,10 @@
 use crate::error::VMError;
 use crate::opcode::{Op, read_leb_u32};
 use crate::value::{
-    Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, UpvalueLocation, Value,
+    Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, Value,
 };
 use crate::vm::{
-    ActiveContinuation, BlockTargets, ExceptionHandler, FinalizerEntry, ImportTarget, LabelEntry,
-    ResumeMode, VM, dyn_truthy,
+    ActiveContinuation, BlockTargets, ExceptionHandler, ImportTarget, LabelEntry, ResumeMode, VM,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -506,6 +505,44 @@ impl VM {
         memidx
     }
 
+    /// Pop a stringref operand, trapping on a null reference (WASM stringref
+    /// spec: every stringref-consuming op except `string.eq` traps on null).
+    fn pop_stringref(&mut self) -> Result<Arc<str>, VMError> {
+        match self.pop() {
+            Value::String(s) => Ok(s),
+            Value::Null | Value::Undefined => {
+                Err(VMError::new("trap: null string reference"))
+            }
+            other => Err(VMError::new(format!(
+                "trap: expected stringref, got {}",
+                other.type_tag()
+            ))),
+        }
+    }
+
+    /// Read `[start, end)` bytes from a GC array of i8/i16 elements (used by
+    /// the `string.new_*_array` ops). Each element is one code unit.
+    fn read_array_code_units(
+        &mut self,
+        arr: &Value,
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<u32>, VMError> {
+        let obj = match arr {
+            Value::Object(o) => o,
+            _ => return Err(VMError::new("trap: null array reference")),
+        };
+        let guard = obj.lock().unwrap();
+        let elems = match &guard.kind {
+            ObjectKind::Array(v) => v,
+            _ => return Err(VMError::new("trap: expected array reference")),
+        };
+        if start > end || end > elems.len() {
+            return Err(VMError::new("trap: array access out of bounds"));
+        }
+        Ok(elems[start..end].iter().map(|v| v.as_i32() as u32).collect())
+    }
+
     pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
         if self.next_bytes_decode_opcode() {
             return (0, 0);
@@ -514,7 +551,10 @@ impl VM {
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frame().ip;
         let align = read_leb_u32(code, &mut ip);
-        let offset = read_leb_u32(code, &mut ip) as usize;
+        // Offset is read as u64 so a 64-bit memory's memarg (memory64
+        // proposal) decodes correctly. A 32-bit u32 offset decodes to the
+        // same value, so this is backward-compatible.
+        let offset = read_leb_u64(code, &mut ip) as usize;
         let memidx = if align & 0x40 != 0 {
             read_leb_u32(code, &mut ip) as usize
         } else {
@@ -524,19 +564,47 @@ impl VM {
         (offset, memidx)
     }
 
-    fn read_optional_memarg64(&mut self) -> (u64, usize) {
-        let chunk_idx = self.frame().chunk_index;
-        let code = &self.chunks[chunk_idx].code;
-        let mut ip = self.frame().ip;
-        let align = read_leb_u32(code, &mut ip);
-        let offset = read_leb_u64(code, &mut ip);
-        let memidx = if align & 0x40 != 0 {
-            read_leb_u32(code, &mut ip) as usize
+    /// Pop a load/store address operand, widening per the target memory's
+    /// index type: a 64-bit (memory64) memory pops an i64 address, a 32-bit
+    /// memory pops an unsigned i32. Memory64 adds no opcodes — the width comes
+    /// from the memory's declared type, exactly as the spec requires.
+    fn effective_addr(&mut self, memidx: usize, offset: usize) -> usize {
+        if self.mem_is_64(memidx) {
+            (self.pop().as_i64() as u64 as usize).saturating_add(offset)
         } else {
-            0
-        };
-        self.frame_mut().ip = ip;
-        (offset, memidx)
+            (self.pop().as_i32() as u32 as usize).saturating_add(offset)
+        }
+    }
+
+    /// Whether memory `memidx` has a 64-bit index type (memory64 proposal).
+    fn mem_is_64(&self, memidx: usize) -> bool {
+        self.memory_is_64.get(memidx).copied().unwrap_or(false)
+    }
+
+    /// Whether table `tidx` has a 64-bit index type (table64 proposal).
+    fn tbl_is_64(&self, tidx: usize) -> bool {
+        self.table_is_64.get(tidx).copied().unwrap_or(false)
+    }
+
+    /// Pop a table index/count operand: i64 (trapping on negative) for a
+    /// 64-bit table, else `max(0)` i32. Used by table.grow/fill/copy/init.
+    fn pop_table_count(&mut self, is64: bool) -> Result<usize, VMError> {
+        if is64 {
+            Self::table64_index(self.pop(), "table")
+        } else {
+            Ok(self.pop().as_i32().max(0) as usize)
+        }
+    }
+
+    /// Pop a memory-op count/index operand, widening per the memory's index
+    /// type: i64 for a 64-bit memory, unsigned i32 otherwise. Used by
+    /// `memory.size/grow/copy/fill` — all standard opcodes; memory64 adds none.
+    fn pop_mem_index(&mut self, is64: bool) -> usize {
+        if is64 {
+            self.pop().as_i64().max(0) as usize
+        } else {
+            self.pop().as_i32().max(0) as usize
+        }
     }
 
     fn memory64_effective_addr(&self, base: i64, offset: u64) -> Result<usize, VMError> {
@@ -735,10 +803,6 @@ impl VM {
                         self.pop();
                     }
                 }
-                _ if op == Op::DUP => {
-                    let val = self.peek(0).clone();
-                    self.push(val)?;
-                }
 
                 // -- Variables --
                 _ if op == Op::LOCAL_GET => {
@@ -839,25 +903,6 @@ impl VM {
                     };
                     let val = self.pop();
                     self.globals.insert(key, val);
-                }
-                _ if op == Op::UPVALUE_GET => {
-                    let idx = self.read_byte() as usize;
-                    let uv = self.frame().upvalues[idx].clone();
-                    let val = match &uv.lock().unwrap().location {
-                        UpvalueLocation::Open(si) => self.stack[*si].clone(),
-                        UpvalueLocation::Closed(v) => v.clone(),
-                    };
-                    self.push(val)?;
-                }
-                _ if op == Op::UPVALUE_SET => {
-                    let idx = self.read_byte() as usize;
-                    let val = self.peek(0).clone();
-                    let uv = self.frame().upvalues[idx].clone();
-                    let mut u = uv.lock().unwrap();
-                    match &mut u.location {
-                        UpvalueLocation::Open(si) => self.stack[*si] = val,
-                        UpvalueLocation::Closed(v) => *v = val,
-                    }
                 }
 
                 // -- Properties --
@@ -1465,9 +1510,15 @@ impl VM {
                 // the table slot as a value. Table 0 is `func_table`
                 // (the function-reference table). Tables 1+ live in
                 // `wasm_tables`, indexed directly by tableidx.
+                // `table.get tbl` — the index is i64 for a 64-bit (table64)
+                // table, else i32. table64 adds no new opcodes.
                 _ if op == Op::TABLE_GET => {
                     let table_idx = self.read_byte() as usize;
-                    let idx = self.pop().as_i32() as usize;
+                    let idx = if self.tbl_is_64(table_idx) {
+                        Self::table64_index(self.pop(), "table.get")?
+                    } else {
+                        self.pop().as_i32() as usize
+                    };
                     let table = self
                         .table_ref(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.get unknown table"))?;
@@ -1477,36 +1528,16 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: table.get out of bounds"))?;
                     self.push(val)?;
                 }
-                // `table.set tbl` — pop value + i32 index, write into
-                // table. Trap on out-of-bounds index per spec.
+                // `table.set tbl` — pop value + index, write into table.
+                // Trap on out-of-bounds index per spec.
                 _ if op == Op::TABLE_SET => {
                     let table_idx = self.read_byte() as usize;
                     let val = self.pop();
-                    let idx = self.pop().as_i32() as usize;
-                    let table = self
-                        .table_mut(table_idx)
-                        .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
-                    if idx >= table.len() {
-                        return Err(VMError::new("trap: table.set out of bounds"));
-                    }
-                    table[idx] = val;
-                }
-                _ if op == Op::TABLE_GET_64 => {
-                    let table_idx = self.read_byte() as usize;
-                    let idx = Self::table64_index(self.pop(), "table.get")?;
-                    let table = self
-                        .table_ref(table_idx)
-                        .ok_or_else(|| VMError::new("trap: table.get unknown table"))?;
-                    let val = table
-                        .get(idx)
-                        .cloned()
-                        .ok_or_else(|| VMError::new("trap: table.get out of bounds"))?;
-                    self.push(val)?;
-                }
-                _ if op == Op::TABLE_SET_64 => {
-                    let table_idx = self.read_byte() as usize;
-                    let val = self.pop();
-                    let idx = Self::table64_index(self.pop(), "table.set")?;
+                    let idx = if self.tbl_is_64(table_idx) {
+                        Self::table64_index(self.pop(), "table.set")?
+                    } else {
+                        self.pop().as_i32() as usize
+                    };
                     let table = self
                         .table_mut(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
@@ -1551,23 +1582,6 @@ impl VM {
                 }
 
                 // -- String --
-                _ if op == Op::STR_CONCAT => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let s = format!("{}{}", a, b);
-                    self.push(Value::String(Arc::from(s.as_str())))?;
-                }
-                _ if op == Op::STR_CONCAT_N => {
-                    let count = self.read_byte() as usize;
-                    let count = count.min(self.stack.len());
-                    let start = self.stack.len() - count;
-                    let mut result = String::new();
-                    for i in start..self.stack.len() {
-                        result.push_str(&format!("{}", self.stack[i]));
-                    }
-                    self.stack.truncate(start);
-                    self.push(Value::String(Arc::from(result.as_str())))?;
-                }
 
                 // -- Bitwise --
                 _ if op == Op::I32_AND => {
@@ -1782,14 +1796,6 @@ impl VM {
                         self.branch_to_label(depth, entry);
                     }
                 }
-                _ if op == Op::BR_IF_FALSE => {
-                    let offset = self.read_i16();
-                    let val = self.pop();
-                    if val.as_bool() == false {
-                        let f = self.frame_mut();
-                        f.ip = (f.ip as i64 + offset as i64) as usize;
-                    }
-                }
                 _ if op == Op::BR_IF => {
                     let ci = self.frame().chunk_index;
                     let mut ip = self.frame().ip;
@@ -1809,14 +1815,6 @@ impl VM {
                         if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
                             self.branch_to_label(depth, entry);
                         }
-                    }
-                }
-                _ if op == Op::BR_IF_NULL => {
-                    let offset = self.read_i16();
-                    let val = self.pop();
-                    if matches!(val, Value::Null) {
-                        let f = self.frame_mut();
-                        f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
 
@@ -2466,171 +2464,7 @@ impl VM {
                 }
 
                 // -- Immediates --
-                _ if op == Op::NULL
-                    || op == Op::NULL_FUNC
-                    || op == Op::NULL_ANY
-                    || op == Op::NULL_NONE =>
-                {
-                    self.push(Value::Null)?
-                }
-                _ if op == Op::UNDEFINED => self.push(Value::Undefined)?,
-                _ if op == Op::SYMBOL => {
-                    // Each `SYMBOL` execution produces a *fresh* identity
-                    // (new Arc allocation) so `symbol.eq` correctly returns
-                    // false for two symbols made with the same description.
-                    let idx = self.read_u16();
-                    let desc: Arc<str> = match self.get_constant(idx) {
-                        Value::String(s) => Arc::from(s.to_string().as_str()),
-                        _ => Arc::from(""),
-                    };
-                    self.push(Value::Symbol(desc))?;
-                }
-                _ if op == Op::BIGINT => {
-                    let idx = self.read_u16();
-                    let n = match self.get_constant(idx) {
-                        Value::I64(n) => n,
-                        Value::I32(n) => n as i64,
-                        Value::F64(n) => n as i64,
-                        _ => 0,
-                    };
-                    self.push(Value::bigint_i64(n))?;
-                }
-                _ if op == Op::REF_IS_UNDEFINED => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::Undefined)))?;
-                }
-                _ if op == Op::REF_IS_SYMBOL => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::Symbol(_))))?;
-                }
-                _ if op == Op::REF_IS_BIGINT => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::BigInt(_))))?;
-                }
-                _ if op == Op::REF_IS_I32 => {
-                    // JS Number that fits in i32 range with no fractional part.
-                    let v = self.pop();
-                    let is_i32 = match &v {
-                        Value::I32(_) => true,
-                        Value::I64(n) => *n >= i32::MIN as i64 && *n <= i32::MAX as i64,
-                        Value::F64(n) => n.is_finite() && *n == (*n as i32) as f64,
-                        Value::BigInt(n) => n.fits_i32(),
-                        _ => false,
-                    };
-                    self.push(wasm_bool(is_i32))?;
-                }
-                _ if op == Op::REF_IS_U32 => {
-                    let v = self.pop();
-                    let is_u32 = match &v {
-                        Value::I32(n) => *n >= 0,
-                        Value::I64(n) => *n >= 0 && *n <= u32::MAX as i64,
-                        Value::F64(n) => n.is_finite() && *n >= 0.0 && *n == (*n as u32) as f64,
-                        Value::BigInt(n) => n.fits_u32(),
-                        _ => false,
-                    };
-                    self.push(wasm_bool(is_u32))?;
-                }
-                _ if op == Op::NUM_BOX_U32 => {
-                    // Interpret the top-of-stack i32 as unsigned and
-                    // push a Value::F64 in the u32 range (matches JS
-                    // semantics: all Numbers are double-precision).
-                    let n = self.pop().as_i32() as u32;
-                    self.push(Value::F64(n as f64))?;
-                }
-                _ if op == Op::NUM_UNBOX_U32 => {
-                    let v = self.pop();
-                    let n = match v {
-                        Value::F64(n) => n as u32,
-                        Value::I32(n) => n as u32,
-                        Value::I64(n) => n as u32,
-                        Value::BigInt(n) => n.to_u64_wrapping() as u32,
-                        _ => 0,
-                    };
-                    // u32 stored in i32 slot with its bit pattern preserved.
-                    self.push(Value::I32(n as i32))?;
-                }
-                _ if op == Op::BOOL_CAST => {
-                    // Traps in the spec if value isn't a boolean; we
-                    // fall back to truthiness.
-                    let v = self.pop();
-                    let b = match v {
-                        Value::Bool(b) => {
-                            if b {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        other => {
-                            if dyn_truthy(&other) {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                    };
-                    self.push(Value::I32(b))?;
-                }
-                _ if op == Op::STR_CAST => {
-                    // Validating cast: pass the String through unchanged,
-                    // or convert via Display. The emitter-side trap
-                    // semantics apply only in the JS host.
-                    let v = self.pop();
-                    let s = match v {
-                        Value::String(s) => s,
-                        Value::Symbol(s) => s,
-                        other => Arc::from(format!("{}", other).as_str()),
-                    };
-                    self.push(Value::String(s))?;
-                }
-                _ if op == Op::STR_FROM_I32 => {
-                    let n = self.pop().as_i32();
-                    self.push(Value::String(Arc::from(n.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_FROM_U32 => {
-                    let n = self.pop().as_i32() as u32;
-                    self.push(Value::String(Arc::from(n.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_FROM_I64 => {
-                    let n = self.pop().as_i64();
-                    self.push(Value::String(Arc::from(n.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_FROM_U64 => {
-                    let n = self.pop().as_i64() as u64;
-                    self.push(Value::String(Arc::from(n.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_FROM_F64 => {
-                    let n = self.pop().as_f64();
-                    // JS-compatible formatting: integer-valued doubles print without `.0`.
-                    let s = if n.is_nan() {
-                        "NaN".to_string()
-                    } else if n.is_infinite() {
-                        if n > 0.0 {
-                            "Infinity".to_string()
-                        } else {
-                            "-Infinity".to_string()
-                        }
-                    } else if n == (n as i64) as f64 && n.abs() < 1e21 {
-                        (n as i64).to_string()
-                    } else {
-                        format!("{}", n)
-                    };
-                    self.push(Value::String(Arc::from(s.as_str())))?;
-                }
-                _ if op == Op::SYMBOL_EQ => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let eq = match (&a, &b) {
-                        (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
-                        _ => false,
-                    };
-                    self.push(wasm_bool(eq))?;
-                }
-                _ if op == Op::TRUE => self.push(Value::Bool(true))?,
-                _ if op == Op::FALSE => self.push(Value::Bool(false))?,
-                _ if op == Op::I32_CONST_0 => self.push(Value::I32(0))?,
-                _ if op == Op::I32_CONST_1 => self.push(Value::I32(1))?,
-                _ if op == Op::F64_CONST_0 => self.push(Value::F64(0.0))?,
+                _ if op == Op::NULL => self.push(Value::Null)?,
 
                 _ if op == Op::I32_CONST => {
                     let v = self.read_leb_i32();
@@ -2742,6 +2576,126 @@ impl VM {
                     self.push(Value::I32(v & 0x7FFF_FFFF))?;
                 }
 
+                // ── Stringref proposal ────────────────────────────────────
+                // Strings are `Value::String`. The `$mem` immediate defaults to
+                // memory 0 (no immediate bytes read — matches operand_format).
+                _ if op == Op::STRING_NEW_UTF8 || op == Op::STRING_NEW_WTF8 => {
+                    let len = self.pop().as_i32() as u32 as usize;
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, ptr, len)?;
+                    // string.new_utf8 traps on invalid UTF-8; new_wtf8 accepts
+                    // valid UTF-8 identically (WTF-8 surrogate forms unsupported).
+                    let s = String::from_utf8(bytes)
+                        .map_err(|_| VMError::new("trap: invalid UTF-8"))?;
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_NEW_LOSSY_UTF8 => {
+                    let len = self.pop().as_i32() as u32 as usize;
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, ptr, len)?;
+                    let s = String::from_utf8_lossy(&bytes).into_owned();
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_NEW_UTF8_ARRAY
+                    || op == Op::STRING_NEW_WTF16_ARRAY =>
+                {
+                    let end = self.pop().as_i32() as u32 as usize;
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let arr = self.pop();
+                    let units = self.read_array_code_units(&arr, start, end)?;
+                    let s: String = if op == Op::STRING_NEW_WTF16_ARRAY {
+                        let u16s: Vec<u16> = units.iter().map(|&u| u as u16).collect();
+                        String::from_utf16_lossy(&u16s)
+                    } else {
+                        let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
+                        String::from_utf8(bytes)
+                            .map_err(|_| VMError::new("trap: invalid UTF-8"))?
+                    };
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_MEASURE_UTF8
+                    || op == Op::STRING_MEASURE_WTF8 =>
+                {
+                    let s = self.pop_stringref()?;
+                    self.push(Value::I32(s.len() as i32))?;
+                }
+                _ if op == Op::STRING_MEASURE_WTF16 => {
+                    let s = self.pop_stringref()?;
+                    self.push(Value::I32(s.encode_utf16().count() as i32))?;
+                }
+                _ if op == Op::STRING_ENCODE_UTF8 => {
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let bytes = s.as_bytes().to_vec();
+                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.push(Value::I32(bytes.len() as i32))?;
+                }
+                _ if op == Op::STRING_ENCODE_WTF16 => {
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let mut bytes = Vec::with_capacity(units.len() * 2);
+                    for u in &units {
+                        bytes.extend_from_slice(&u.to_le_bytes());
+                    }
+                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.push(Value::I32(units.len() as i32))?;
+                }
+                _ if op == Op::STRING_ENCODE_UTF8_ARRAY
+                    || op == Op::STRING_ENCODE_WTF16_ARRAY =>
+                {
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let arr = self.pop();
+                    let s = self.pop_stringref()?;
+                    let obj = match &arr {
+                        Value::Object(o) => o.clone(),
+                        _ => return Err(VMError::new("trap: null array reference")),
+                    };
+                    let wtf16 = op == Op::STRING_ENCODE_WTF16_ARRAY;
+                    let units: Vec<u32> = if wtf16 {
+                        s.encode_utf16().map(|u| u as u32).collect()
+                    } else {
+                        s.as_bytes().iter().map(|&b| b as u32).collect()
+                    };
+                    let mut guard = obj.lock().unwrap();
+                    let elems = match &mut guard.kind {
+                        ObjectKind::Array(v) => v,
+                        _ => return Err(VMError::new("trap: expected array reference")),
+                    };
+                    if start.saturating_add(units.len()) > elems.len() {
+                        return Err(VMError::new("trap: array access out of bounds"));
+                    }
+                    for (i, u) in units.iter().enumerate() {
+                        elems[start + i] = Value::I32(*u as i32);
+                    }
+                    self.push(Value::I32(units.len() as i32))?;
+                }
+                _ if op == Op::STRING_CONCAT => {
+                    let b = self.pop_stringref()?;
+                    let a = self.pop_stringref()?;
+                    let mut s = String::with_capacity(a.len() + b.len());
+                    s.push_str(&a);
+                    s.push_str(&b);
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_EQ => {
+                    // Does NOT trap on null: null == null → 1, null vs string → 0.
+                    let b = self.pop();
+                    let a = self.pop();
+                    let eq = match (&a, &b) {
+                        (Value::Null, Value::Null) => true,
+                        (Value::String(x), Value::String(y)) => x == y,
+                        _ => false,
+                    };
+                    self.push(Value::I32(i32::from(eq)))?;
+                }
+                _ if op == Op::STRING_AS_WTF8 || op == Op::STRING_AS_WTF16 => {
+                    // Views over the same content: return the string unchanged
+                    // (trap on null). Full stringview cursor ops are unimplemented.
+                    let s = self.pop_stringref()?;
+                    self.push(Value::String(s))?;
+                }
+
                 _ if op == Op::REF_IS_NULL => {
                     let v = self.pop();
                     self.push(Value::I32(if matches!(v, Value::Null | Value::Undefined) {
@@ -2750,31 +2704,6 @@ impl VM {
                         0
                     }))?;
                 }
-                _ if op == Op::REF_IS_STRING => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::String(_))))?;
-                }
-                _ if op == Op::REF_IS_NUMBER => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(
-                        v,
-                        Value::F64(_) | Value::I32(_) | Value::I64(_)
-                    )))?;
-                }
-                _ if op == Op::REF_IS_BOOL => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::Bool(_))))?;
-                }
-                _ if op == Op::REF_IS_OBJECT => {
-                    let v = self.pop();
-                    self.push(wasm_bool(matches!(v, Value::Object(_))))?;
-                }
-                _ if op == Op::REF_IS_FUNC => {
-                    let v = self.pop();
-                    let is_fn = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Function(_)));
-                    self.push(wasm_bool(is_fn))?;
-                }
-
                 // -- Conversions --
                 _ if op == Op::F64_FROM_I32 => {
                     let v = self.pop();
@@ -2889,12 +2818,6 @@ impl VM {
 
                 // -- Async (await) --
                 // r#await: removed (duplicate of promise_suspend, use JSPI proposal name)
-                _ if op == Op::SET_TIMER => {
-                    let ms = self.pop().as_f64();
-                    let callback = self.pop();
-                    self.event_loop.borrow_mut().queue_timer(callback, ms);
-                    self.push(Value::Null)?;
-                }
 
                 // -- Exceptions (WASM exception-handling proposal, final) --
                 _ if op == Op::TRY_START => {
@@ -3076,59 +2999,65 @@ impl VM {
                 // -- Linear memory --
                 _ if op == Op::MEMORY_SIZE => {
                     let memidx = self.read_optional_memidx_immediate();
-                    let pages = (self.mem_len(memidx) / 65536) as i32;
-                    self.push(Value::I32(pages))?;
+                    let pages = self.mem_len(memidx) / 65536;
+                    // memory64: page count is i64; 32-bit memory: i32.
+                    if self.mem_is_64(memidx) {
+                        self.push(Value::I64(pages as i64))?;
+                    } else {
+                        self.push(Value::I32(pages as i32))?;
+                    }
                 }
                 _ if op == Op::MEMORY_GROW => {
                     let memidx = self.read_optional_memidx_immediate();
-                    let pages = self.pop().as_i32() as u32 as usize;
+                    let is64 = self.mem_is_64(memidx);
+                    let pages = self.pop_mem_index(is64);
                     let old_pages = self.mem_grow(memidx, pages);
-                    let result = if old_pages == usize::MAX {
-                        -1
+                    let failed = old_pages == usize::MAX;
+                    if is64 {
+                        self.push(Value::I64(if failed { -1 } else { old_pages as i64 }))?;
                     } else {
-                        old_pages as i32
-                    };
-                    self.push(Value::I32(result))?;
+                        self.push(Value::I32(if failed { -1 } else { old_pages as i32 }))?;
+                    }
                 }
                 _ if op == Op::I32_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I32(i32::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     self.push(Value::I64(i64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::I64_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::F64_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 8)?;
                     self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
                 }
                 _ if op == Op::F64_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_f64();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I32_LOAD8_U => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I32(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i32,
                     ))?;
@@ -3136,12 +3065,12 @@ impl VM {
                 _ if op == Op::I32_STORE8 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as u8;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &[val])?;
                 }
                 _ if op == Op::F32_LOAD => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     let val = f32::from_le_bytes(read_le(&bytes));
                     self.push(Value::F32(val))?;
@@ -3149,26 +3078,26 @@ impl VM {
                 _ if op == Op::F32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_f64() as f32;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I32_LOAD8_S => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I32(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i32,
                     ))?;
                 }
                 _ if op == Op::I32_LOAD16_S => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = i16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
                 }
                 _ if op == Op::I32_LOAD16_U => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = u16::from_le_bytes(read_le(&bytes)) as i32;
                     self.push(Value::I32(val))?;
@@ -3176,65 +3105,65 @@ impl VM {
                 _ if op == Op::I32_STORE16 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i32() as i16;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_LOAD8_S => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I64(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i64,
                     ))?;
                 }
                 _ if op == Op::I64_LOAD8_U => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.push(Value::I64(
                         self.read_memory_bytes(memidx, addr, 1)?[0] as i64,
                     ))?;
                 }
                 _ if op == Op::I64_LOAD16_S => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = i16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD16_U => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 2)?;
                     let val = u16::from_le_bytes(read_le(&bytes)) as i64;
                     self.push(Value::I64(val))?;
                 }
                 _ if op == Op::I64_LOAD32_S => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as i64))?;
                 }
                 _ if op == Op::I64_LOAD32_U => {
                     let (offset, memidx) = self.read_optional_memarg();
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
                     self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as u32 as i64))?;
                 }
                 _ if op == Op::I64_STORE8 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as u8;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &[val])?;
                 }
                 _ if op == Op::I64_STORE16 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i16;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
                 _ if op == Op::I64_STORE32 => {
                     let (offset, memidx) = self.read_optional_memarg();
                     let val = self.pop().as_i64() as i32;
-                    let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
+                    let addr = self.effective_addr(memidx, offset);
                     self.write_memory_bytes(memidx, addr, &val.to_le_bytes())?;
                 }
 
@@ -3490,180 +3419,12 @@ impl VM {
                     }
                     self.push(val)?;
                 }
-                _ if op == Op::TYPE_IMPORT => {
-                    let import_idx = self.read_u16() as usize;
-                    // Resolve type import: look up in type_imports table and register.
-                    // The type should already be registered during linking.
-                    // Push the type_id onto the stack for use by constructors.
-                    if import_idx < self.chunks[0].type_imports.len() {
-                        let (_iface, type_name) = &self.chunks[0].type_imports[import_idx];
-                        if let Some(tid) = self.type_registry.get_id(type_name) {
-                            self.push(Value::I32(tid as i32))?;
-                        } else {
-                            self.push(Value::Null)?;
-                        }
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-                _ if op == Op::TYPE_EXPORT => {
-                    let type_id = self.read_u16() as usize;
-                    // Mark type as exported. This is a compile-time declaration;
-                    // at runtime, ensure the type is visible to the linker.
-                    // No stack effect.
-                    let _ = type_id;
-                }
-                _ if op == Op::SHARED_NEW => {
-                    // Create a new shared object from the type_id on stack.
-                    let type_id_val = self.pop();
-                    let type_id = type_id_val.as_f64() as usize;
-                    let mut obj = Object::new();
-                    obj.type_id = type_id;
-                    if let Some(td) = self.type_registry.get(type_id) {
-                        obj.fields = vec![Value::Null; td.field_count()];
-                    }
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
-                }
 
                 // -- Shared-Everything Threads (shared GC objects) --
-                _ if op == Op::SHARED_STRUCT_GET => {
-                    let field_idx = self.read_u16() as usize;
-                    let obj_val = self.pop();
-                    if let Value::Object(ref obj) = obj_val {
-                        let o = obj.lock().unwrap();
-                        // Atomic read of indexed field
-                        let val = if field_idx < o.fields.len() {
-                            o.fields[field_idx].clone()
-                        } else {
-                            Value::Null
-                        };
-                        self.push(val)?;
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-                _ if op == Op::SHARED_STRUCT_SET => {
-                    let field_idx = self.read_u16() as usize;
-                    let value = self.pop();
-                    let obj_val = self.pop();
-                    if let Value::Object(ref obj) = obj_val {
-                        let mut o = obj.lock().unwrap();
-                        // Atomic write of indexed field
-                        if field_idx < o.fields.len() {
-                            o.fields[field_idx] = value;
-                        } else {
-                            // Grow fields if needed
-                            while o.fields.len() <= field_idx {
-                                o.fields.push(Value::Null);
-                            }
-                            o.fields[field_idx] = value;
-                        }
-                    }
-                }
-                _ if op == Op::SHARED_ARRAY_GET => {
-                    let idx_val = self.pop();
-                    let arr_val = self.pop();
-                    let idx = idx_val.as_f64() as usize;
-                    if let Value::Object(ref obj) = arr_val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref elems) = o.kind {
-                            self.push(elems.get(idx).cloned().unwrap_or(Value::Null))?;
-                        } else {
-                            self.push(Value::Null)?;
-                        }
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-                _ if op == Op::SHARED_ARRAY_SET => {
-                    let value = self.pop();
-                    let idx_val = self.pop();
-                    let arr_val = self.pop();
-                    let idx = idx_val.as_f64() as usize;
-                    if let Value::Object(ref obj) = arr_val {
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut elems) = o.kind {
-                            if idx < elems.len() {
-                                elems[idx] = value;
-                            }
-                        }
-                    }
-                }
-                _ if op == Op::SHARED_STRUCT_CAS => {
-                    let field_idx = self.read_u16() as usize;
-                    let new_val = self.pop();
-                    let expected = self.pop();
-                    let obj_val = self.pop();
-                    if let Value::Object(ref obj) = obj_val {
-                        let mut o = obj.lock().unwrap();
-                        if field_idx < o.fields.len() {
-                            let old = o.fields[field_idx].clone();
-                            // Compare (using string repr for simplicity)
-                            if format!("{}", old) == format!("{}", expected) {
-                                o.fields[field_idx] = new_val;
-                            }
-                            self.push(old)?;
-                        } else {
-                            self.push(Value::Null)?;
-                        }
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
 
                 // -- Weak References & Finalizers --
-                _ if op == Op::REF_MAKE_WEAK => {
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        self.push(Value::WeakRef(Arc::downgrade(obj)))?;
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-                _ if op == Op::REF_DEREF_WEAK => {
-                    let val = self.pop();
-                    if let Value::WeakRef(ref weak) = val {
-                        if let Some(strong) = weak.upgrade() {
-                            self.push(Value::Object(strong))?;
-                        } else {
-                            self.push(Value::Null)?;
-                        }
-                    } else {
-                        // If it's already a strong ref, just pass through
-                        self.push(val)?;
-                    }
-                }
-                _ if op == Op::REF_IS_ALIVE => {
-                    let val = self.pop();
-                    let alive = match &val {
-                        Value::WeakRef(weak) => weak.upgrade().is_some(),
-                        Value::Object(_) => true,
-                        _ => false,
-                    };
-                    self.push(Value::Bool(alive))?;
-                }
-                _ if op == Op::REF_REGISTER_FINALIZER => {
-                    let callback = self.pop();
-                    let target = self.pop();
-                    if let Value::Object(ref obj) = target {
-                        self.finalizers.push(FinalizerEntry {
-                            target: Arc::downgrade(obj),
-                            callback,
-                        });
-                    }
-                }
 
                 // -- Multi-Memory --
-                _ if op == Op::MEMORY_SELECT => {
-                    let mem_idx = self.read_byte() as usize;
-                    self.active_memory = mem_idx;
-                }
-                _ if op == Op::MEMORY_NEW => {
-                    let pages = self.pop().as_f64() as usize;
-                    let mem_idx = self.extra_memories.len() + 1; // 0 is default memory
-                    self.extra_memories.push(vec![0u8; pages * 65536]);
-                    self.push(Value::I32(mem_idx as i32))?;
-                }
                 _ if op == Op::MEMORY_INIT => {
                     let data_idx = self.read_byte() as u32;
                     let memidx = self.read_optional_memidx_immediate() as usize;
@@ -3693,15 +3454,21 @@ impl VM {
                 // indexed directly in `wasm_tables`.
                 _ if op == Op::TABLE_SIZE => {
                     let tidx = self.read_byte() as usize;
-                    let table = self
+                    let size = self
                         .table_ref(tidx)
-                        .ok_or_else(|| VMError::new("trap: table.size unknown table"))?;
-                    let size = table.len() as i32;
-                    self.push(Value::I32(size))?;
+                        .ok_or_else(|| VMError::new("trap: table.size unknown table"))?
+                        .len();
+                    // table64: size is i64; 32-bit table: i32.
+                    if self.tbl_is_64(tidx) {
+                        self.push(Value::I64(size as i64))?;
+                    } else {
+                        self.push(Value::I32(size as i32))?;
+                    }
                 }
                 _ if op == Op::TABLE_GROW => {
                     let tidx = self.read_byte() as usize;
-                    let delta = self.pop().as_i32().max(0) as usize;
+                    let is64 = self.tbl_is_64(tidx);
+                    let delta = self.pop_table_count(is64)?;
                     let init = self.pop();
                     let table = self
                         .table_mut(tidx)
@@ -3709,13 +3476,18 @@ impl VM {
                     let old_size = table.len();
                     let new_size = old_size.saturating_add(delta);
                     table.resize(new_size, init);
-                    self.push(Value::I32(old_size as i32))?;
+                    if is64 {
+                        self.push(Value::I64(old_size as i64))?;
+                    } else {
+                        self.push(Value::I32(old_size as i32))?;
+                    }
                 }
                 _ if op == Op::TABLE_FILL => {
                     let tidx = self.read_byte() as usize;
-                    let count = self.pop().as_i32().max(0) as usize;
+                    let is64 = self.tbl_is_64(tidx);
+                    let count = self.pop_table_count(is64)?;
                     let value = self.pop();
-                    let dst = self.pop().as_i32().max(0) as usize;
+                    let dst = self.pop_table_count(is64)?;
                     let table = self
                         .table_mut(tidx)
                         .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
@@ -3730,9 +3502,11 @@ impl VM {
                 _ if op == Op::TABLE_COPY => {
                     let dst_table_idx = self.read_byte() as usize;
                     let src_table_idx = self.read_byte() as usize;
-                    let count = self.pop().as_i32().max(0) as usize;
-                    let src = self.pop().as_i32().max(0) as usize;
-                    let dst = self.pop().as_i32().max(0) as usize;
+                    // table64: operands are i64 if either table is 64-bit.
+                    let is64 = self.tbl_is_64(dst_table_idx) || self.tbl_is_64(src_table_idx);
+                    let count = self.pop_table_count(is64)?;
+                    let src = self.pop_table_count(is64)?;
+                    let dst = self.pop_table_count(is64)?;
                     let source = self
                         .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
@@ -3754,90 +3528,10 @@ impl VM {
                     if self.dropped_elems.contains(&elem_idx) {
                         return Err(VMError::new("table.init: element segment dropped"));
                     }
-                    let count = self.pop().as_i32().max(0) as usize;
-                    let src = self.pop().as_i32().max(0) as usize;
-                    let dst = self.pop().as_i32().max(0) as usize;
-                    let elems = self
-                        .elem_segments
-                        .get(elem_idx as usize)
-                        .ok_or_else(|| VMError::new("table.init: missing element segment"))?;
-                    if src.saturating_add(count) > elems.len() {
-                        return Err(VMError::new("trap: table.init source out of bounds"));
-                    }
-                    let values: Vec<Value> = elems[src..src + count].to_vec();
-                    let table = self
-                        .table_mut(table_idx)
-                        .ok_or_else(|| VMError::new("trap: table.init unknown table"))?;
-                    if dst.saturating_add(count) > table.len() {
-                        return Err(VMError::new("trap: table.init destination out of bounds"));
-                    }
-                    table[dst..dst + count].clone_from_slice(&values);
-                }
-                _ if op == Op::TABLE_SIZE_64 => {
-                    let tidx = self.read_byte() as usize;
-                    let table = self
-                        .table_ref(tidx)
-                        .ok_or_else(|| VMError::new("trap: table.size unknown table"))?;
-                    self.push(Value::I64(table.len() as i64))?;
-                }
-                _ if op == Op::TABLE_GROW_64 => {
-                    let tidx = self.read_byte() as usize;
-                    let delta = Self::table64_index(self.pop(), "table.grow")?;
-                    let init = self.pop();
-                    let table = self
-                        .table_mut(tidx)
-                        .ok_or_else(|| VMError::new("trap: table.grow unknown table"))?;
-                    let old_size = table.len();
-                    let new_size = old_size.saturating_add(delta);
-                    table.resize(new_size, init);
-                    self.push(Value::I64(old_size as i64))?;
-                }
-                _ if op == Op::TABLE_FILL_64 => {
-                    let tidx = self.read_byte() as usize;
-                    let count = Self::table64_index(self.pop(), "table.fill")?;
-                    let value = self.pop();
-                    let dst = Self::table64_index(self.pop(), "table.fill")?;
-                    let table = self
-                        .table_mut(tidx)
-                        .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
-                    let end = dst.saturating_add(count);
-                    if end > table.len() {
-                        return Err(VMError::new("trap: table.fill out of bounds"));
-                    }
-                    for i in dst..end {
-                        table[i] = value.clone();
-                    }
-                }
-                _ if op == Op::TABLE_COPY_64 => {
-                    let dst_table_idx = self.read_byte() as usize;
-                    let src_table_idx = self.read_byte() as usize;
-                    let count = Self::table64_index(self.pop(), "table.copy")?;
-                    let src = Self::table64_index(self.pop(), "table.copy")?;
-                    let dst = Self::table64_index(self.pop(), "table.copy")?;
-                    let source = self
-                        .table_ref(src_table_idx)
-                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
-                    if src.saturating_add(count) > source.len() {
-                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
-                    }
-                    let values: Vec<Value> = source[src..src + count].to_vec();
-                    let destination = self
-                        .table_mut(dst_table_idx)
-                        .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
-                    if dst.saturating_add(count) > destination.len() {
-                        return Err(VMError::new("trap: table.copy out of bounds".to_string()));
-                    }
-                    destination[dst..dst + count].clone_from_slice(&values);
-                }
-                _ if op == Op::TABLE_INIT_64 => {
-                    let elem_idx = self.read_byte() as u32;
-                    let table_idx = self.read_byte() as usize;
-                    if self.dropped_elems.contains(&elem_idx) {
-                        return Err(VMError::new("table.init: element segment dropped"));
-                    }
-                    let count = Self::table64_index(self.pop(), "table.init")?;
-                    let src = Self::table64_index(self.pop(), "table.init")?;
-                    let dst = Self::table64_index(self.pop(), "table.init")?;
+                    let is64 = self.tbl_is_64(table_idx);
+                    let count = self.pop_table_count(is64)?;
+                    let src = self.pop_table_count(is64)?;
+                    let dst = self.pop_table_count(is64)?;
                     let elems = self
                         .elem_segments
                         .get(elem_idx as usize)
@@ -3865,379 +3559,25 @@ impl VM {
                 _ if op == Op::MEMORY_COPY => {
                     let dst_mem = self.read_optional_memidx_immediate();
                     let src_mem = self.read_optional_memidx_immediate();
-                    let count = self.pop().as_i32().max(0) as usize;
-                    let src = self.pop().as_i32().max(0) as usize;
-                    let dst = self.pop().as_i32().max(0) as usize;
+                    // memory64: operands are i64 if either memory is 64-bit.
+                    let is64 = self.mem_is_64(dst_mem) || self.mem_is_64(src_mem);
+                    let count = self.pop_mem_index(is64);
+                    let src = self.pop_mem_index(is64);
+                    let dst = self.pop_mem_index(is64);
                     let buf = self.read_memory_bytes(src_mem, src, count)?;
                     self.write_memory_bytes(dst_mem, dst, &buf)?;
                 }
                 _ if op == Op::MEMORY_FILL => {
                     let memidx = self.read_optional_memidx_immediate();
-                    let count = self.pop().as_i32().max(0) as usize;
+                    let is64 = self.mem_is_64(memidx);
+                    let count = self.pop_mem_index(is64);
                     let val = self.pop().as_i32() as u8;
-                    let dst = self.pop().as_i32().max(0) as usize;
+                    let dst = self.pop_mem_index(is64);
                     let buf = vec![val; count];
                     self.write_memory_bytes(memidx, dst, &buf)?;
                 }
-                _ if op == Op::MEMORY_COPY_CROSS => {
-                    let len = self.pop().as_f64() as usize;
-                    let src_addr = self.pop().as_f64() as usize;
-                    let src_mem = self.pop().as_f64() as usize;
-                    let dst_addr = self.pop().as_f64() as usize;
-                    let dst_mem = self.pop().as_f64() as usize;
-                    // Copy bytes between memories
-                    let src_data: Vec<u8> = if src_mem == 0 {
-                        let mut buf = vec![0u8; len];
-                        self.memory.read_bytes(src_addr, &mut buf);
-                        buf
-                    } else {
-                        let src = self.extra_mem(src_mem);
-                        if src_addr + len <= src.len() {
-                            src[src_addr..src_addr + len].to_vec()
-                        } else {
-                            vec![0u8; len]
-                        }
-                    };
-                    if dst_mem == 0 {
-                        self.memory.write_bytes(dst_addr, &src_data);
-                    } else {
-                        let dst = self.extra_mem_mut(dst_mem);
-                        if dst_addr + len <= dst.len() {
-                            dst[dst_addr..dst_addr + len].copy_from_slice(&src_data);
-                        }
-                    }
-                }
 
-                // -- JS String Builtins (wasm:js-string proposal) --
-                _ if op == Op::STR_LENGTH => {
-                    let s = self.pop();
-                    let len = match &s {
-                        Value::String(s) => s.chars().count() as i32,
-                        Value::Object(obj) => {
-                            let o = obj.lock().unwrap();
-                            if let ObjectKind::Array(a) = &o.kind {
-                                a.len() as i32
-                            } else if let Some(Value::F64(n)) = o.properties.get("length") {
-                                *n as i32
-                            } else {
-                                0
-                            }
-                        }
-                        _ => 0,
-                    };
-                    self.push(Value::I32(len))?;
-                }
-                _ if op == Op::STR_CHAR_CODE_AT => {
-                    let idx = self.pop().as_i32() as usize;
-                    let s = self.pop();
-                    let code = if let Value::String(s) = &s {
-                        s.chars().nth(idx).map(|c| c as i32).unwrap_or(-1)
-                    } else {
-                        -1
-                    };
-                    self.push(Value::I32(code))?;
-                }
-                _ if op == Op::STR_FROM_CHAR_CODE => {
-                    let code = self.pop().as_i32() as u32;
-                    let ch = char::from_u32(code).unwrap_or('\0');
-                    self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_CHAR_AT => {
-                    let idx = self.pop().as_i32() as usize;
-                    let s = self.pop();
-                    let ch = if let Value::String(s) = &s {
-                        s.chars()
-                            .nth(idx)
-                            .map(|c| Arc::from(c.to_string().as_str()))
-                            .unwrap_or(Arc::from(""))
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(ch))?;
-                }
-                _ if op == Op::STR_SUBSTRING || op == Op::STR_SLICE => {
-                    let end = self.pop().as_i32() as usize;
-                    let start = self.pop().as_i32() as usize;
-                    let s = self.pop();
-                    let result = if let Value::String(s) = &s {
-                        let chars: Vec<char> = s.chars().collect();
-                        let end = end.min(chars.len());
-                        let start = start.min(end);
-                        let sub: String = chars[start..end].iter().collect();
-                        Arc::from(sub.as_str())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(result))?;
-                }
-                _ if op == Op::STR_INDEX_OF => {
-                    let needle = self.pop();
-                    let haystack = self.pop();
-                    let pos = match (&haystack, &needle) {
-                        (Value::String(h), Value::String(n)) => {
-                            h.find(n.as_ref()).map(|p| p as i32).unwrap_or(-1)
-                        }
-                        _ => -1,
-                    };
-                    self.push(Value::I32(pos))?;
-                }
-                _ if op == Op::STR_LAST_INDEX_OF => {
-                    let needle = self.pop();
-                    let haystack = self.pop();
-                    let pos = match (&haystack, &needle) {
-                        (Value::String(h), Value::String(n)) => {
-                            h.rfind(n.as_ref()).map(|p| p as i32).unwrap_or(-1)
-                        }
-                        _ => -1,
-                    };
-                    self.push(Value::I32(pos))?;
-                }
-                _ if op == Op::STR_EQUALS => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let eq = match (&a, &b) {
-                        (Value::String(a), Value::String(b)) => a == b,
-                        _ => false,
-                    };
-                    self.push(Value::Bool(eq))?;
-                }
-                _ if op == Op::STR_COMPARE => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let cmp = match (&a, &b) {
-                        (Value::String(a), Value::String(b)) => match a.cmp(b) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        },
-                        _ => 0,
-                    };
-                    self.push(Value::I32(cmp))?;
-                }
-                _ if op == Op::STR_TO_UPPER => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.to_uppercase().as_str())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_TO_LOWER => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.to_lowercase().as_str())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_TRIM => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.trim())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_TRIM_START => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.trim_start())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_TRIM_END => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.trim_end())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_STARTS_WITH => {
-                    let prefix = self.pop();
-                    let s = self.pop();
-                    let r = match (&s, &prefix) {
-                        (Value::String(s), Value::String(p)) => s.starts_with(p.as_ref()),
-                        _ => false,
-                    };
-                    self.push(Value::Bool(r))?;
-                }
-                _ if op == Op::STR_ENDS_WITH => {
-                    let suffix = self.pop();
-                    let s = self.pop();
-                    let r = match (&s, &suffix) {
-                        (Value::String(s), Value::String(p)) => s.ends_with(p.as_ref()),
-                        _ => false,
-                    };
-                    self.push(Value::Bool(r))?;
-                }
-                _ if op == Op::STR_CONTAINS => {
-                    let needle = self.pop();
-                    let s = self.pop();
-                    let r = match (&s, &needle) {
-                        (Value::String(s), Value::String(n)) => s.contains(n.as_ref()),
-                        _ => false,
-                    };
-                    self.push(Value::Bool(r))?;
-                }
-                _ if op == Op::STR_REPLACE => {
-                    let new = self.pop();
-                    let old = self.pop();
-                    let s = self.pop();
-                    let r = match (&s, &old, &new) {
-                        (Value::String(s), Value::String(o), Value::String(n)) => {
-                            Arc::from(s.replace(o.as_ref(), n.as_ref()).as_str())
-                        }
-                        _ => Arc::from(""),
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_SPLIT => {
-                    let delim = self.pop();
-                    let s = self.pop();
-                    let parts: Vec<Value> = match (&s, &delim) {
-                        (Value::String(s), Value::String(d)) => s
-                            .split(d.as_ref())
-                            .map(|p| Value::String(Arc::from(p)))
-                            .collect(),
-                        _ => vec![],
-                    };
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        parts,
-                    )))))?;
-                }
-                _ if op == Op::STR_REPEAT => {
-                    let count = self.pop().as_i32().max(0) as usize;
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.repeat(count).as_str())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_PAD_START => {
-                    let fill = self.pop();
-                    let target_len = self.pop().as_i32().max(0) as usize;
-                    let s = self.pop();
-                    let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
-                        if s.len() >= target_len {
-                            Arc::clone(s)
-                        } else {
-                            let pad = target_len - s.len();
-                            let fill_str: String = f.chars().cycle().take(pad).collect();
-                            Arc::from(format!("{}{}", fill_str, s).as_str())
-                        }
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_PAD_END => {
-                    let fill = self.pop();
-                    let target_len = self.pop().as_i32().max(0) as usize;
-                    let s = self.pop();
-                    let r = if let (Value::String(s), Value::String(f)) = (&s, &fill) {
-                        if s.len() >= target_len {
-                            Arc::clone(s)
-                        } else {
-                            let pad = target_len - s.len();
-                            let fill_str: String = f.chars().cycle().take(pad).collect();
-                            Arc::from(format!("{}{}", s, fill_str).as_str())
-                        }
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::STR_REVERSE => {
-                    let s = self.pop();
-                    let r = if let Value::String(s) = &s {
-                        Arc::from(s.chars().rev().collect::<String>().as_str())
-                    } else {
-                        Arc::from("")
-                    };
-                    self.push(Value::String(r))?;
-                }
-                // Unicode code points (beyond BMP — emoji, CJK)
-                _ if op == Op::STR_FROM_CODE_POINT => {
-                    let cp = self.pop().as_i32() as u32;
-                    let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
-                    self.push(Value::String(Arc::from(ch.to_string().as_str())))?;
-                }
-                _ if op == Op::STR_CODE_POINT_AT => {
-                    let idx = self.pop().as_i32() as usize;
-                    let s = self.pop();
-                    let cp = if let Value::String(s) = &s {
-                        s.chars().nth(idx).map(|c| c as i32).unwrap_or(-1)
-                    } else {
-                        -1
-                    };
-                    self.push(Value::I32(cp))?;
-                }
-                // Bulk char code operations
-                _ if op == Op::STR_INTO_CHAR_CODES => {
-                    let s = self.pop();
-                    let codes: Vec<Value> = if let Value::String(s) = &s {
-                        s.chars().map(|c| Value::I32(c as i32)).collect()
-                    } else {
-                        vec![]
-                    };
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        codes,
-                    )))))?;
-                }
-                _ if op == Op::STR_FROM_CHAR_CODES => {
-                    let arr = self.pop();
-                    let s = if let Value::Object(obj) = &arr {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(a) = &o.kind {
-                            a.iter()
-                                .filter_map(|v| char::from_u32(v.as_i32() as u32))
-                                .collect::<String>()
-                        } else {
-                            String::new()
-                        }
-                    } else {
-                        String::new()
-                    };
-                    self.push(Value::String(Arc::from(s.as_str())))?;
-                }
                 // Type discrimination opcodes
-                _ if op == Op::REF_TYPEOF => {
-                    let v = self.pop();
-                    let tag = match &v {
-                        Value::Undefined => "undefined",
-                        Value::Null => "object", // JS spec: typeof null === "object"
-                        Value::Bool(_) => "boolean",
-                        Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => "number",
-                        Value::String(_) => "string",
-                        Value::Symbol(_) => "symbol",
-                        Value::BigInt(_) => "bigint",
-                        Value::V128(_) => "v128",
-                        Value::WeakRef(_) => "weakref",
-                        Value::Object(o) => {
-                            let ob = o.lock().unwrap();
-                            match &ob.kind {
-                                ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
-                                ObjectKind::Array(_) => "array",
-                                _ => "object",
-                            }
-                        }
-                    };
-                    self.push(Value::String(Arc::from(tag)))?;
-                }
-                _ if op == Op::REF_IS_ARRAY => {
-                    let v = self.pop();
-                    let is_arr = matches!(&v, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)));
-                    self.push(wasm_bool(is_arr))?;
-                }
 
                 // -- Array builtins --
                 _ if op == Op::ARRAY_LENGTH => {
@@ -5024,140 +4364,8 @@ impl VM {
                 }
 
                 // -- Extended Const Expressions --
-                _ if op == Op::GLOBAL_INIT => {
-                    let idx = self.read_u16() as usize;
-                    // Evaluate the const expr for global at index idx and store result.
-                    // This is a runtime opcode for cases where init can't be done at load time.
-                    if idx < self.chunks[0].global_inits.len() {
-                        let gi = self.chunks[0].global_inits[idx].clone();
-                        let val = self.eval_const_expr(&gi.init);
-                        self.globals.insert(gi.name.clone(), val);
-                    }
-                }
 
                 // -- Typed Continuations --
-                _ if op == Op::CONT_NEW_TYPED => {
-                    let tag_idx = self.read_u16() as usize;
-                    let func_val = self.pop();
-                    let mut obj = Object::new_typed(0);
-                    obj.properties.insert("__cont_func".into(), func_val);
-                    obj.properties
-                        .insert("__cont_state".into(), Value::String(Arc::from("ready")));
-                    obj.properties.insert("__cont_value".into(), Value::Null);
-                    // Store tag info for type checking on suspend/resume
-                    obj.properties
-                        .insert("__cont_tag".into(), Value::I32(tag_idx as i32));
-                    if tag_idx < self.chunks[0].continuation_tags.len() {
-                        let tag = &self.chunks[0].continuation_tags[tag_idx];
-                        obj.properties.insert(
-                            "__cont_yield_type".into(),
-                            Value::String(Arc::from(tag.yield_type.as_str())),
-                        );
-                        obj.properties.insert(
-                            "__cont_resume_type".into(),
-                            Value::String(Arc::from(tag.resume_type.as_str())),
-                        );
-                    }
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
-                }
-                _ if op == Op::SUSPEND_TYPED => {
-                    let tag_idx = self.read_u16() as usize;
-                    let val = self.pop();
-                    let expected_type = self
-                        .chunks
-                        .first()
-                        .and_then(|chunk| chunk.continuation_tags.get(tag_idx))
-                        .map(|tag| tag.yield_type.clone())
-                        .unwrap_or_default();
-                    if !expected_type.is_empty()
-                        && expected_type != "any"
-                        && !self.test_type(&val, &expected_type.to_lowercase())
-                    {
-                        return Err(VMError::new(format!(
-                            "suspend_typed: yield type mismatch, expected {}",
-                            expected_type
-                        )));
-                    }
-                    return Ok(val);
-                }
-                _ if op == Op::RESUME_TYPED => {
-                    let tag_idx = self.read_u16() as usize;
-                    let val = self.pop();
-                    let cont = self.pop();
-                    if let Value::Object(obj) = &cont {
-                        let (actual_tag, expected_type) = {
-                            let o = obj.lock().unwrap();
-                            let actual_tag = o
-                                .properties
-                                .get("__cont_tag")
-                                .map(|v| v.as_i32() as usize)
-                                .unwrap_or(usize::MAX);
-                            let expected_type = o
-                                .properties
-                                .get("__cont_resume_type")
-                                .map(|v| format!("{}", v))
-                                .unwrap_or_default();
-                            (actual_tag, expected_type)
-                        };
-                        if actual_tag != tag_idx {
-                            return Err(VMError::new(format!(
-                                "resume_typed: tag mismatch, expected {}, got {}",
-                                actual_tag, tag_idx
-                            )));
-                        }
-                        if !expected_type.is_empty() && expected_type != "any" {
-                            if !self.test_type(&val, &expected_type.to_lowercase()) {
-                                return Err(VMError::new(format!(
-                                    "resume_typed: resume type mismatch, expected {}",
-                                    expected_type
-                                )));
-                            }
-                        }
-                        let func_val = {
-                            let o = obj.lock().unwrap();
-                            o.properties
-                                .get("__cont_func")
-                                .cloned()
-                                .unwrap_or(Value::Null)
-                        };
-                        {
-                            let mut o = obj.lock().unwrap();
-                            o.properties
-                                .insert("__cont_state".into(), Value::String(Arc::from("running")));
-                            o.properties.insert("__cont_value".into(), val.clone());
-                        }
-                        self.push(func_val)?;
-                        self.push(val)?;
-                        self.call_value(1)?;
-                    } else {
-                        self.push(val)?;
-                    }
-                }
-
-                // -- String References (zero-copy) --
-                _ if op == Op::STRING_AS_REF => {
-                    // String → StringRef: since our strings are already Arc<str>,
-                    // this is effectively a no-op — we keep the same Arc.
-                    // The semantic difference: stringref signals cross-component sharing intent.
-                    let val = self.pop();
-                    // Just pass through — Arc<str> is already shared
-                    self.push(val)?;
-                }
-                _ if op == Op::STRING_FROM_REF => {
-                    // StringRef → String: dereference (zero-copy with Arc).
-                    let val = self.pop();
-                    self.push(val)?;
-                }
-                _ if op == Op::STRING_REF_EQ => {
-                    // Pointer identity comparison for string refs.
-                    let b = self.pop();
-                    let a = self.pop();
-                    let eq = match (&a, &b) {
-                        (Value::String(sa), Value::String(sb)) => Arc::ptr_eq(sa, sb),
-                        _ => false,
-                    };
-                    self.push(Value::Bool(eq))?;
-                }
 
                 // ── SIMD (128-bit vectors) ────────────────────────────────────
                 // Memory
@@ -6861,208 +6069,6 @@ impl VM {
                 _ if op.group() == 0xFE && self.execute_threads_op(op)? => {}
 
                 // -- Memory64 --
-                _ if op == Op::I64_MEMORY_SIZE => {
-                    let memidx = self.read_optional_memidx_immediate();
-                    self.push(Value::I64((self.mem_len(memidx) / 65536) as i64))?;
-                }
-                _ if op == Op::I64_MEMORY_GROW => {
-                    let memidx = self.read_optional_memidx_immediate();
-                    let pages = self.pop().as_i64() as usize;
-                    let old = self.mem_grow(memidx, pages);
-                    let result = if old == usize::MAX { -1 } else { old as i64 };
-                    self.push(Value::I64(result))?;
-                }
-                _ if op == Op::I64_MEMORY_COPY => {
-                    let dst_mem = self.read_optional_memidx_immediate();
-                    let src_mem = self.read_optional_memidx_immediate();
-                    let count = Self::table64_index(self.pop(), "memory.copy")?;
-                    let src = Self::table64_index(self.pop(), "memory.copy")?;
-                    let dst = Self::table64_index(self.pop(), "memory.copy")?;
-                    if count != 0 {
-                        let bytes = self.read_memory_bytes(src_mem, src, count)?;
-                        self.write_memory_bytes(dst_mem, dst, &bytes)?;
-                    } else {
-                        self.read_memory_bytes(src_mem, src, 0)?;
-                        self.write_memory_bytes(dst_mem, dst, &[])?;
-                    }
-                }
-                _ if op == Op::I64_MEMORY_FILL => {
-                    let memidx = self.read_optional_memidx_immediate();
-                    let count = Self::table64_index(self.pop(), "memory.fill")?;
-                    let value = self.pop().as_i32() as u8;
-                    let dst = Self::table64_index(self.pop(), "memory.fill")?;
-                    if count != 0 {
-                        let bytes = vec![value; count];
-                        self.write_memory_bytes(memidx, dst, &bytes)?;
-                    } else {
-                        self.write_memory_bytes(memidx, dst, &[])?;
-                    }
-                }
-                _ if op == Op::I32_LOAD_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
-                    self.push(Value::I32(i32::from_le_bytes(read_le(&bytes))))?;
-                }
-                _ if op == Op::I64_LOAD_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
-                    self.push(Value::I64(i64::from_le_bytes(read_le(&bytes))))?;
-                }
-                _ if op == Op::F64_LOAD_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 8)?;
-                    self.push(Value::F64(f64::from_le_bytes(read_le(&bytes))))?;
-                }
-                _ if op == Op::F32_LOAD_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
-                    self.push(Value::F64(f32::from_le_bytes(read_le(&bytes)) as f64))?;
-                }
-                _ if op == Op::I32_LOAD8_S_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.push(Value::I32(
-                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i32,
-                    ))?;
-                }
-                _ if op == Op::I32_LOAD8_U_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.push(Value::I32(
-                        self.read_memory_bytes(memidx, addr, 1)?[0] as i32,
-                    ))?;
-                }
-                _ if op == Op::I32_LOAD16_S_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
-                    self.push(Value::I32(i16::from_le_bytes(read_le(&bytes)) as i32))?;
-                }
-                _ if op == Op::I32_LOAD16_U_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
-                    self.push(Value::I32(u16::from_le_bytes(read_le(&bytes)) as i32))?;
-                }
-                _ if op == Op::I64_LOAD8_S_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.push(Value::I64(
-                        self.read_memory_bytes(memidx, addr, 1)?[0] as i8 as i64,
-                    ))?;
-                }
-                _ if op == Op::I64_LOAD8_U_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.push(Value::I64(
-                        self.read_memory_bytes(memidx, addr, 1)?[0] as i64,
-                    ))?;
-                }
-                _ if op == Op::I64_LOAD16_S_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
-                    self.push(Value::I64(i16::from_le_bytes(read_le(&bytes)) as i64))?;
-                }
-                _ if op == Op::I64_LOAD16_U_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 2)?;
-                    self.push(Value::I64(u16::from_le_bytes(read_le(&bytes)) as i64))?;
-                }
-                _ if op == Op::I64_LOAD32_S_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
-                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as i64))?;
-                }
-                _ if op == Op::I64_LOAD32_U_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    let bytes = self.read_memory_bytes(memidx, addr, 4)?;
-                    self.push(Value::I64(i32::from_le_bytes(read_le(&bytes)) as u32 as i64))?;
-                }
-                _ if op == Op::I32_STORE_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i32();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::I64_STORE_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::F32_STORE_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_f64() as f32;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::I32_STORE8_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i32() as u8;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &[v])?;
-                }
-                _ if op == Op::I32_STORE16_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i32() as i16;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::I64_STORE8_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i64() as u8;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &[v])?;
-                }
-                _ if op == Op::I64_STORE16_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i64() as i16;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::I64_STORE32_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_i64() as i32;
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
-                _ if op == Op::F64_STORE_64 => {
-                    let (offset, memidx) = self.read_optional_memarg64();
-                    let v = self.pop().as_f64();
-                    let base = self.pop().as_i64();
-                    let addr = self.memory64_effective_addr(base, offset)?;
-                    self.write_memory_bytes(memidx, addr, &v.to_le_bytes())?;
-                }
 
                 // -- Relaxed-SIMD proposal (prefix 0xDD internal, 0xFD 0x100+ in WASM) --
                 //
@@ -7429,48 +6435,6 @@ impl VM {
                 }
 
                 // -- CM3 / WASI 0.3 async (Track B) --
-                _ if op == Op::FUTURE_AWAIT => {
-                    use crate::event_loop::FuturePhase;
-                    use crate::value::ObjectKind;
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Future { id } = o.kind {
-                            let future_id = id;
-                            drop(o);
-                            let (phase, fval) = {
-                                let el = self.event_loop.borrow();
-                                if let Some(rec) = el.future_states.get(&future_id) {
-                                    (rec.phase, rec.value.clone())
-                                } else {
-                                    (FuturePhase::Resolved, None)
-                                }
-                            };
-                            match phase {
-                                FuturePhase::Pending => {
-                                    let fiber = self.save_fiber();
-                                    self.event_loop
-                                        .borrow_mut()
-                                        .suspend_future(future_id, fiber);
-                                    return Err(VMError::new(format!("__future__:{}", future_id)));
-                                }
-                                FuturePhase::Resolved => {
-                                    self.push(fval.unwrap_or(Value::Null))?;
-                                }
-                                FuturePhase::Rejected => {
-                                    let reason = fval.unwrap_or(Value::Null);
-                                    self.raise_exception_value(reason)?;
-                                    continue;
-                                }
-                            }
-                        } else {
-                            drop(o);
-                            self.push(val)?;
-                        }
-                    } else {
-                        self.push(val)?;
-                    }
-                }
 
                 _ if op == Op::STREAM_READ => {
                     use crate::value::ObjectKind;
@@ -7819,18 +6783,6 @@ impl VM {
 
                 // -- Iteration protocol --
                 // iter_get, iter_next: removed (non-WASM, were unused by compilers)
-                _ if op == Op::SPREAD => {
-                    // Spread array onto stack: [array] → [elem0, elem1, ...]
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(elems) = &o.kind {
-                            for elem in elems {
-                                self.push(elem.clone())?;
-                            }
-                        }
-                    }
-                }
                 // class_new, method_def, inherit: removed (non-WASM, were NOPs)
                 _ => {
                     return Err(VMError::new(format!(

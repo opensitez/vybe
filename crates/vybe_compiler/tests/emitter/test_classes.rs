@@ -282,7 +282,7 @@ fn dict_set_const_key_tracks_key() {
     let mut chunks = one_chunk();
     dict::emit_new(&mut chunks, 0, 0);
     // Simulate: dup dict, push value, then set key
-    chunks[0].emit_op(Op::DUP, 0);
+    chunks[0].emit_dup(0);
     chunks[0].emit_op(Op::NULL, 0); // placeholder value
     dict::emit_set_const_key(&mut chunks, 0, "name", 0);
     // Should have "name" in constants (for struct_set AND for __keys push)
