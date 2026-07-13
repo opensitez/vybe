@@ -885,7 +885,7 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
     // For each prepend round (width - 1 of them), check if length <
     // width and prepend "0" if so. Unrolled because width is constant.
     for _ in 1..width {
-        // if STR_LENGTH(s) < width: s = "0" + s
+        // if wasm:js-string.length(s) < width: s = "0" + s
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
         {
             let idx = chunk.add_import("wasm:js-string", "length");
@@ -1704,7 +1704,7 @@ fn emit_format_dt_runtime(
     // i = 0
     push_const(chunk, Value::F64(0.0), line);
     local_set(chunk, i_slot, line);
-    // len = STR_LENGTH(fmt)
+    // len = wasm:js-string.length(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     {
         let idx = chunk.add_import("wasm:js-string", "length");

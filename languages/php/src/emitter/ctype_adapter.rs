@@ -3,7 +3,7 @@
 //! Each `emit_ctype_*` writes a char-iteration loop that returns
 //! `false` on empty input, otherwise returns `true` iff every char
 //! lies in at least one of the predicate's UTF-16 code-unit ranges.
-//! Composes only WASM string ops (`STR_LENGTH`, `STR_CODE_POINT_AT`)
+//! Composes only WASM string ops (`wasm:js-string.length`, `wasm:js-string.codePointAt`)
 //! + numeric comparisons. No host fns; no JS polyfills.
 
 use vybe_bytecode::Chunk;

@@ -10698,7 +10698,7 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
         // when only one arg is present we leave it alone so the array
         // surfaces at index 0 and the host fn falls back to "," default.
         "implode" | "join" if args.len() == 2 => &[1, 0],
-        // PHP: explode($delim, $string [, $limit]) — opcode `STR_SPLIT`
+        // PHP: explode($delim, $string [, $limit]) — opcode `ecma:string.split`
         // expects `[string, delim]`; swap so the canonical (string,
         // separator) order reaches the VM.
         "explode" if args.len() >= 2 => &[1, 0, 2],
@@ -14277,7 +14277,7 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // PHP `substr($s, $start, $length?)` →
         //   2-arg: `__php_substr($s, $start)`
         //   3-arg: `__php_substr($s, $start, $length)`
-        // The compiler intrinsic lowers this directly to STR_SUBSTRING,
+        // The compiler intrinsic lowers this directly to wasm:js-string.substring,
         // which keeps dynamic receivers safe (e.g. `$_SERVER[...]`).
         "substr" | "mb_substr" if args.len() == 2 => mk_call(
             Expression::with_span(ExprKind::Ident("__php_substr".to_string()), span.clone()),

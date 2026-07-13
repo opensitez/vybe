@@ -1,8 +1,8 @@
 //! PHP string helpers — Rust inline opcode emitters.
 //!
 //! Each `emit_*` writes opcodes directly into `chunks[current]`,
-//! composing only WASM string ops (`STR_LENGTH`, `STR_CHAR_AT`,
-//! `STR_INDEX_OF`, `STR_TO_LOWER`, etc.) and where ECMA-262 already
+//! composing only WASM string ops (`wasm:js-string.length`, `wasm:js-string.charCodeAt`,
+//! `ecma:string.indexOf`, `STR_TO_LOWER`, etc.) and where ECMA-262 already
 //! covers the surface, `ecma:string.{encodeURIComponent,
 //! decodeURIComponent}` / `ecma:number.toFixed`. No PHP-specific
 //! host fns; no JS polyfills.
@@ -1847,17 +1847,17 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
 // ── str_ireplace, str_replace, wordwrap ────────────────────────────
 //
 // These three are larger and rare in the test surface. To keep this
-// migration focused, route them through the simple `STR_REPLACE`
+// migration focused, route them through the simple `ecma:string.replaceAll`
 // opcode in the common case (single search/replace string) and leave
 // the array-aware / case-insensitive paths as runtime fallbacks
-// later. For now their dispatch arms emit the three-arg STR_REPLACE
+// later. For now their dispatch arms emit the three-arg ecma:string.replaceAll
 // directly when the inputs are strings; PHP-array shapes were
 // covered by the polyfills and aren't exercised by current tests.
 
 /// PHP `str_ireplace(search, replace, subject)`.
 /// Case-insensitive find: walk by chunks of length(needle), comparing
 /// lowercased segments. Falls back to the JS-host
-/// `STR_REPLACE` for the simple case and emits a manual scan for
+/// `ecma:string.replaceAll` for the simple case and emits a manual scan for
 /// case insensitivity.
 pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
@@ -1988,13 +1988,13 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 // ── str_replace (array-aware) ──────────────────────────────────────
 
 /// PHP `str_replace(search, replace, subject)`. When `search` and
-/// `replace` are both strings, this is one `STR_REPLACE` opcode. The
+/// `replace` are both strings, this is one `ecma:string.replaceAll` opcode. The
 /// adapter handles the array-aware variants too: when `search` is an
 /// array, iterate and apply each pair (with `replace` as either a
 /// scalar or a parallel array).
 ///
 /// Strategy: probe `Array.isArray(search)` at runtime via
-/// `ecma:array.isArray`. If false, fall back to `STR_REPLACE`.
+/// `ecma:array.isArray`. If false, fall back to `ecma:string.replaceAll`.
 /// Otherwise loop over the array and split/join per element.
 pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
@@ -2035,7 +2035,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, is_array_repl_slot, line);
     chunk.emit_end(line);
 
-    // for i in 0..srch.length: needle = srch[i]; rep = ...; subj = STR_REPLACE(subj, needle, rep)
+    // for i in 0..srch.length: needle = srch[i]; rep = ...; subj = ecma:string.replaceAll(subj, needle, rep)
     let i_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
     let needle_slot = alloc_local(chunk);
@@ -2102,7 +2102,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_end(line);
     lset(chunk, rep_slot, line);
 
-    // subj = STR_REPLACE(subj, needle, rep)
+    // subj = ecma:string.replaceAll(subj, needle, rep)
     lget(chunk, subj_slot, line);
     lget(chunk, needle_slot, line);
     lget(chunk, rep_slot, line);
@@ -2127,7 +2127,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_else(line); // else branch of scalar_path if-value
 
     // ── Scalar path ──
-    // STR_REPLACE(subj, "" + srch, "" + repl)
+    // ecma:string.replaceAll(subj, "" + srch, "" + repl)
     lget(chunk, subj_slot, line);
     push_str(chunk, "", line);
     lget(chunk, srch_slot, line);
@@ -3479,8 +3479,8 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
 /// PHP `trim($s, $chars?)` — strip from both ends. When `$chars` is
 /// passed, strip those exact bytes; otherwise strip standard whitespace
-/// + `\0` + `\v` (PHP defaults). Composes only `STR_TRIM` /
-/// `STR_LENGTH` / `STR_CHAR_AT` / `STR_INDEX_OF` / `STR_SUBSTRING`.
+/// + `\0` + `\v` (PHP defaults). Composes only `ecma:string.trim` /
+/// `wasm:js-string.length` / `wasm:js-string.charCodeAt` / `ecma:string.indexOf` / `wasm:js-string.substring`.
 pub fn emit_php_trim(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_trim_impl(
         chunks, current, argc, /*left=*/ true, /*right=*/ true, line,
@@ -5570,7 +5570,7 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lset(chunk, limit_slot, line); // pop limit
     lset(chunk, delim_slot, line); // pop delim; str remains on stack
-    lget(chunk, delim_slot, line); // push delim back for STR_SPLIT
+    lget(chunk, delim_slot, line); // push delim back for ecma:string.split
     {
         let idx = chunk.add_import("ecma:string", "split");
         chunk.emit_call(idx, 2, line);
@@ -5732,7 +5732,7 @@ pub fn emit_preg_replace_limited(chunks: &mut [Chunk], current: usize, _argc: u8
 }
 
 // ── strripos ──────────────────────────────────────────────────────────────
-/// Case-insensitive `strrpos`: lowercase both strings, then use STR_LAST_INDEX_OF.
+/// Case-insensitive `strrpos`: lowercase both strings, then use ecma:string.lastIndexOf.
 pub fn emit_strripos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     // Stack: (haystack, needle) or (haystack, needle, offset)

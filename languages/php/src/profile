@@ -116,7 +116,7 @@ mb_strpos           = { emit = "common:php.strpos",          min_args = 2, max_a
 basename            = { emit = "common:php.basename",  min_args = 1, max_args = 2 }
 dirname             = { emit = "common:php.dirname", min_args = 1, max_args = 2 }
 pathinfo            = { emit = "common:php.pathinfo",           min_args = 1, max_args = 2 }
-# Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
+# Substring replace — direct ecma:string.replaceAll opcode (ECMA replaceAll-equivalent).
 str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4 }
 ctype_alpha         = { emit = "common:php.ctype_alpha",     min_args = 1, max_args = 1 }
 ctype_digit         = { emit = "common:php.ctype_digit",     min_args = 1, max_args = 1 }
@@ -208,7 +208,7 @@ round               = { emit = "host:ecma:math:round",      min_args = 1, max_ar
 implode             = { emit = "common:php.implode",         min_args = 1, max_args = 2 }
 join                = { emit = "common:php.implode",         min_args = 1, max_args = 2 }
 # `strtr($str, $array)` — multi-pair substring replacement. Iterates the
-# array's entries in insertion order and applies STR_REPLACE per (key,
+# array's entries in insertion order and applies ecma:string.replaceAll per (key,
 # value) pair. Compiled as a multi-opcode intrinsic; no host call.
 strtr               = { emit = "common:php.strtr",           min_args = 2, max_args = 3 }
 quotemeta           = { emit = "common:php.quotemeta",       min_args = 1, max_args = 1 }
@@ -230,7 +230,7 @@ __php_dir_close     = { emit = "common:php.dir_close",      min_args = 1, max_ar
 # String split — PHP limit semantics need an adapter for the 3-arg form.
 explode             = { emit = "common:php.explode",        min_args = 2, max_args = 3 }
 # `file($path)` returns the file as an array of lines. runtime helper
-# composing wasi:filesystem:readFile + STR_SPLIT on "\n".
+# composing wasi:filesystem:readFile + ecma:string.split on "\n".
 file                = { emit = "common:php.file",           min_args = 1, max_args = 3 }
 # `glob($pattern)` currently supports the common single-`*` filename form
 # used by apps like Keynote, returning matching full paths.

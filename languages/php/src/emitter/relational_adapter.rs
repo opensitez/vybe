@@ -1,7 +1,7 @@
 //! PHP relational comparison — Rust inline opcode emitter.
 //!
 //! PHP `<` / `>` / `<=` / `>=` (and the `<=>` spaceship) compare two
-//! strings lexicographically (`STR_COMPARE`) but fall back to the
+//! strings lexicographically (`wasm:js-string.compare`) but fall back to the
 //! numeric/dynamic comparison otherwise — unlike JS, which coerces to
 //! primitive. DateTime objects are unboxed to their `__time` field
 //! first so chronological comparison works.

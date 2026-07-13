@@ -560,7 +560,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── PHP string helpers ─────────────────────────────────────
-        // Char/index loops + ECMA string ops (`STR_INDEX_OF`,
+        // Char/index loops + ECMA string ops (`ecma:string.indexOf`,
         // `STR_TO_LOWER`, `STR_PAD_*`) and `ecma:string.{encode,decode}URIComponent`.
         "php.ucwords" => {
             crate::emitter::string_adapter::emit_ucwords(chunks, current, argc, line)
