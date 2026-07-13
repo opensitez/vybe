@@ -9,6 +9,7 @@ name = "php"
 extensions = ["php", "phtml"]
 
 [compiler]
+separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (method) coexist
 # namespaceplan.md (PHP phase): namespace-shaped entry points (package-root
 # `\Vybe\...` chains, wildcard namespace member access) resolve through the
 # common resolver instead of the legacy hardcoded arms. PHP's vybe/wasi/wasm

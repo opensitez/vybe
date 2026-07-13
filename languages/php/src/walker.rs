@@ -2707,6 +2707,9 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
                 ExprKind::Tuple(exprs) | ExprKind::Set(exprs) | ExprKind::Sequence(exprs) => {
                     stack.extend(exprs.iter().map(Node::Expr));
                 }
+                ExprKind::NamedTuple { fields, .. } => {
+                    stack.extend(fields.iter().map(|(_, v)| Node::Expr(v)));
+                }
                 ExprKind::Object(props) => {
                     for prop in props {
                         match prop {
