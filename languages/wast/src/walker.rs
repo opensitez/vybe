@@ -87,6 +87,40 @@ fn peek_opener_has_param(pair: &Pair<Rule>) -> bool {
     })
 }
 
+/// How many stack values an unfolded `block`/`loop` opener consumes as block
+/// parameters — the total `val_type` count across its `(param …)` block-type
+/// immediates. WASM `block (param t*)` pops `t*` off the enclosing stack into
+/// the block body; this count lets the fold seed the body with those values
+/// instead of discarding them.
+fn peek_block_param_count(pair: &Pair<Rule>) -> usize {
+    let inner = if pair.as_rule() == Rule::instr {
+        match pair.clone().into_inner().next() {
+            Some(p) => p,
+            None => return 0,
+        }
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return 0;
+    }
+    let mut count = 0;
+    for c in inner.into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
+        }
+        if let Some(bt) = c.into_inner().next() {
+            if bt.as_rule() == Rule::block_type && bt.as_str().trim_start().starts_with("(param") {
+                count += bt
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::val_type)
+                    .count();
+            }
+        }
+    }
+    count
+}
+
 /// Does an unfolded `block`/`loop`/`if` opener carry a `block_type` immediate
 /// (`(result …)`) — i.e. does it produce a value on the stack?
 fn peek_has_block_type(pair: &Pair<Rule>) -> bool {
@@ -1188,6 +1222,17 @@ fn wat_float_format(x: Expression) -> Expression {
 
 fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
     match name.as_str() {
+        // Typeless array access: the WAT typeidx (`$t`) immediates are the first
+        // arg(s) but the VM's array.get/set/fill/copy don't read them — drop and
+        // keep only the stack operands. array.copy carries two typeidxs.
+        "array.get" | "array.set" | "array.fill" => {
+            let rest: Vec<Expression> = args.into_iter().skip(1).collect();
+            Ok(make_call(&name.replace('.', "_"), rest, span))
+        }
+        "array.copy" => {
+            let rest: Vec<Expression> = args.into_iter().skip(2).collect();
+            Ok(make_call("array_copy", rest, span))
+        }
         // ── Constants ─────────────────────────────────────────────────────
         // i32.const carries a 32-bit pattern: reinterpret the (possibly
         // unsigned, e.g. 0x80000000) literal into signed i32 range so it stays
@@ -1322,10 +1367,12 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
 
         // ── select → ternary ──────────────────────────────────────────────
         "select" => {
-            let mut it = args.into_iter();
-            let val1 = it.next().unwrap_or(Expression::null());
-            let val2 = it.next().unwrap_or(Expression::null());
-            let cond = it.next().unwrap_or(Expression::bool(false));
+            // `select (result t)` prepends a result-type annotation; the stack
+            // operands (val1, val2, cond) are always the last three args.
+            let n = args.len();
+            let val1 = args.get(n.wrapping_sub(3)).cloned().unwrap_or(Expression::null());
+            let val2 = args.get(n.wrapping_sub(2)).cloned().unwrap_or(Expression::null());
+            let cond = args.get(n.wrapping_sub(1)).cloned().unwrap_or(Expression::bool(false));
             Ok(Expression::with_span(
                 ExprKind::Ternary {
                     cond: Box::new(cond),
@@ -1389,6 +1436,13 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             ))
         }
 
+        // ── GC / WasmGC reference ops ─────────────────────────────────────
+        // ref.null <heaptype> pushes a typed null reference. The heap type is
+        // an immediate annotation, not a stack value, and the VM has a single
+        // null — so drop the arg and produce a plain null (like `nop`). Applies
+        // to bare heap types (`func`/`extern`) and indexed types (`$T`) alike.
+        "ref.null" => Ok(Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+
         // ── GC / WasmGC struct ops ────────────────────────────────────────
         // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ...}
         // args: [typeidx, field_val_0, field_val_1, ...]
@@ -1410,6 +1464,25 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         }
         // struct.new_default $T → {}
         "struct.new_default" => Ok(Expression::with_span(ExprKind::Object(vec![]), span)),
+        // array.new_fixed $T N v0 v1 … → [v0, v1, …]. args: [typeidx, N, v0…].
+        // The typeidx + count immediates are dropped (VM arrays are typeless);
+        // the N popped stack values become an array literal.
+        "array.new_fixed" => {
+            let vals: Vec<ArrayElement> = if args.len() > 2 {
+                args[2..]
+                    .iter()
+                    .map(|v| ArrayElement {
+                        key: None,
+                        value: v.clone(),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            Ok(Expression::with_span(ExprKind::Array(vals), span))
+        }
         // struct.get $T N ref  → ref["N"]
         // args: [typeidx, fieldidx, ref_expr]
         "struct.get" | "struct.get_s" | "struct.get_u" => {
@@ -2023,8 +2096,46 @@ fn parse_float(s: &str) -> Expression {
         // All NaN forms — plain, `nan:0x…`, `nan:canonical`, `nan:arithmetic`
         // (payload/kind is not observable through an f64 in this VM).
         _ if s.contains("nan") => Expression::float(f64::NAN),
-        _ => Expression::float(s.parse::<f64>().unwrap_or(0.0)),
+        _ => {
+            let cleaned = s.replace('_', "");
+            if cleaned.contains("0x") || cleaned.contains("0X") {
+                if let Some(v) = parse_hex_float(&cleaned) {
+                    return Expression::float(v);
+                }
+            }
+            Expression::float(cleaned.parse::<f64>().unwrap_or(0.0))
+        }
     }
+}
+
+/// Parse a WAT hex float like `0x1.8p1` (= 1.5 × 2¹ = 3.0). Rust's `f64::parse`
+/// rejects hex floats, so evaluate the mantissa (hex int + hex fraction) and
+/// scale by the binary `p` exponent.
+fn parse_hex_float(s: &str) -> Option<f64> {
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let rest = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X"))?;
+    let (mantissa, exp) = match rest.find(['p', 'P']) {
+        Some(i) => (&rest[..i], rest[i + 1..].parse::<i32>().ok()?),
+        None => (rest, 0),
+    };
+    let (int_part, frac_part) = match mantissa.find('.') {
+        Some(i) => (&mantissa[..i], &mantissa[i + 1..]),
+        None => (mantissa, ""),
+    };
+    let mut value = 0.0f64;
+    for c in int_part.chars() {
+        value = value * 16.0 + c.to_digit(16)? as f64;
+    }
+    let mut scale = 1.0 / 16.0;
+    for c in frac_part.chars() {
+        value += c.to_digit(16)? as f64 * scale;
+        scale /= 16.0;
+    }
+    value *= 2f64.powi(exp);
+    Some(if neg { -value } else { value })
 }
 
 fn unquote(s: &str) -> String {
@@ -2126,7 +2237,17 @@ fn fold_instructions(
     pairs: Vec<Pair<Rule>>,
     labels: &mut LabelStack,
 ) -> Result<Vec<Statement>, String> {
-    let mut stack: Vec<Expression> = Vec::new();
+    fold_instructions_seeded(pairs, labels, Vec::new())
+}
+
+/// Like `fold_instructions`, but the value stack starts pre-loaded with `seed`
+/// (bottom-to-top). Used to thread WASM `block (param …)` inputs into the body.
+fn fold_instructions_seeded(
+    pairs: Vec<Pair<Rule>>,
+    labels: &mut LabelStack,
+    seed: Vec<Expression>,
+) -> Result<Vec<Statement>, String> {
+    let mut stack: Vec<Expression> = seed;
     let mut statements: Vec<Statement> = Vec::new();
 
     let mut i = 0;
@@ -2199,8 +2320,15 @@ fn fold_instructions(
                             ));
                         }
                     } else {
-                        // block / loop take no condition; sequence any pending
-                        // side effects before the structured statement.
+                        // block / loop take no condition. Pop the block's
+                        // param values off the top to seed the body, then
+                        // sequence any remaining pending side effects.
+                        let param_count = peek_block_param_count(&pairs[i]);
+                        let seed = if param_count > 0 && stack.len() >= param_count {
+                            stack.split_off(stack.len() - param_count)
+                        } else {
+                            Vec::new()
+                        };
                         for e in stack.drain(..) {
                             statements.push(Statement::new(StmtKind::Expr(e)));
                         }
@@ -2238,7 +2366,7 @@ fn fold_instructions(
                         }
                         let effective =
                             labels.push(label.clone(), kind, result_temp.clone());
-                        let mut body = fold_instructions(body_pairs, labels)?;
+                        let mut body = fold_instructions_seeded(body_pairs, labels, seed)?;
                         labels.pop();
                         // Capture the fall-through value (unreachable if the body
                         // always branches out, which is why it's safe to append).
@@ -2588,6 +2716,49 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "table.set" | "table.grow" => 2, // (index,value) / (init,delta)
         "table.size" => 0,
         "table.fill" | "table.copy" | "table.init" => 3,
+
+        // GC references without a type/field immediate — pure stack arity.
+        "ref.i31" => 1,               // i32 → i31ref
+        "i31.get_s" | "i31.get_u" => 1, // i31ref → i32
+        "ref.as_non_null" | "any.convert_extern" | "extern.convert_any" => 1,
+        "ref.is_null" => 1,           // [ref] → [i32]
+        "ref.eq" => 2,
+
+        // ── Stringref proposal (stack-operand counts; $mem is an immediate) ──
+        "string.new_utf8" | "string.new_wtf8" | "string.new_lossy_utf8" => 2, // ptr, len
+        "string.new_utf8_array" | "string.new_wtf16_array"
+        | "string.new_wtf8_array" | "string.new_lossy_utf8_array" => 3, // arr, start, end
+        "string.measure_utf8" | "string.measure_wtf8" | "string.measure_wtf16" => 1,
+        "string.encode_utf8" | "string.encode_wtf16"
+        | "string.encode_lossy_utf8" | "string.encode_wtf8" => 2, // str, ptr
+        "string.encode_utf8_array" | "string.encode_wtf16_array"
+        | "string.encode_lossy_utf8_array" | "string.encode_wtf8_array" => 3, // str, arr, start
+        "string.concat" | "string.eq" | "string.compare" => 2,
+        "string.is_usv_sequence"
+        | "string.as_wtf8" | "string.as_wtf16" | "string.as_iter" => 1,
+        "stringview_iter.next" | "stringview_iter.advance"
+        | "stringview_wtf16.length" => 1,
+        "array.len" => 1,             // arrayref → i32
+        // Array ops carrying a type-index immediate (kept as an immediate arg):
+        "array.new" => 2,            // value, length
+        "array.new_default" => 1,    // length
+        // array.new_fixed $T N: typeidx + count are immediates; N stack values.
+        "array.new_fixed" => args
+            .get(1)
+            .and_then(|a| {
+                if let ExprKind::Lit(Literal::Int(n)) = &a.kind {
+                    Some(*n as usize)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0),
+        "array.get_s" | "array.get_u" => 2, // arrayref, index
+        // Typeless array access (VM ignores the WAT typeidx → walker drops it):
+        "array.get" => 2,            // arrayref, index
+        "array.set" => 3,            // arrayref, index, value
+        "array.fill" => 4,           // arrayref, index, value, count
+        "array.copy" => 5,           // dst, dst_off, src, src_off, len (2 typeidxs dropped)
 
         // br_if
         "br_if" => 1,

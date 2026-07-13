@@ -363,12 +363,18 @@ tag_type  = { "(" ~ "func" ~ param* ~ ")" | param* }
 
 elem_field = {
     "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_type? ~ ("(" ~ "item" ~ instr* ~ ")")* ~ ")"
-  | "(" ~ "elem" ~ id? ~ elem_mode? ~ "func" ~ index* ~ ")"
+  | "(" ~ "elem" ~ id? ~ elem_mode? ~ "func"? ~ index* ~ ")"
 }
 
+// Active offset (`(offset …)` or the abbreviated single folded instr like
+// `(i32.const 0)`), an explicit `(table …)(offset …)`, or `declare`. Mirrors
+// `data_mode`. The `func` keyword in the element list is optional, so bare
+// funcidx lists (`(elem $e $f1 $f2)`, `(elem (i32.const 0) $f1)`) parse.
 elem_mode = {
     "(" ~ "table" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
+  | "(" ~ "offset" ~ instr* ~ ")"
   | "declare"
+  | folded_instr
 }
 
 // ── Data segment ──────────────────────────────────────────────────────────────
@@ -385,12 +391,19 @@ data_mode = {
 
 // ── Type definition ───────────────────────────────────────────────────────────
 
-type_field     = { "(" ~ "type" ~ id? ~ composite_type ~ ")" }
-composite_type = { struct_type | array_type | func_type }
+type_field     = { "(" ~ "type" ~ id? ~ (sub_type | composite_type) ~ ")" }
+// Standard subtyping: `(sub $Base? (struct …))` / `(sub final $Base? …)`.
+sub_type       = { "(" ~ "sub" ~ "final"? ~ index* ~ composite_type ~ ")" }
+composite_type = { struct_type | array_type | func_type | struct_subtype | array_subtype | cont_type }
 struct_type    = { "(" ~ "struct" ~ field_def* ~ ")" }
-array_type     = { "(" ~ "array" ~ field_def ~ ")" }
+array_type     = { "(" ~ "array" ~ (field_def | storage_type) ~ ")" }
+// Legacy GC-MVP subtype forms (fields/storage followed by the supertype index).
+struct_subtype = { "(" ~ "struct_subtype" ~ field_def* ~ index ~ ")" }
+array_subtype  = { "(" ~ "array_subtype" ~ (field_def | storage_type) ~ index ~ ")" }
+// Continuation type (stack-switching proposal): `(cont $func_type)`.
+cont_type      = { "(" ~ "cont" ~ index ~ ")" }
 field_def      = { "(" ~ "field" ~ id? ~ storage_type ~ ")" }
-storage_type   = { "(" ~ "mut" ~ val_type ~ ")" | val_type | packed_type | ref_val_type }
+storage_type   = { "(" ~ "mut" ~ (val_type | packed_type | ref_val_type) ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
 ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
 heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id }
