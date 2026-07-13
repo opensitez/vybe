@@ -630,8 +630,9 @@ fn memory_f32_roundtrip() {
 
     let result = run_chunks(vec![chunk]);
     match result {
-        Value::F64(v) => assert!((v - 3.14).abs() < 0.01, "Expected ~3.14, got {}", v),
-        _ => panic!("Expected F64, got {:?}", result),
+        // f32.load loads an f32 (spec) → Value::F32.
+        Value::F32(v) => assert!((v as f64 - 3.14).abs() < 0.01, "Expected ~3.14, got {}", v),
+        _ => panic!("Expected F32, got {:?}", result),
     }
 }
 

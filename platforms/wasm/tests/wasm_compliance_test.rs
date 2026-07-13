@@ -2988,7 +2988,9 @@ fn emit_try_catch_wasm() -> Vec<u8> {
     script.emit(0u8, 0);
     let one = script.add_constant(Value::I32(1));
     script.emit_op_u16(Op::CONST, one, 0);
-    script.emit_op(Op::THROW, 0);
+    // `throw <tagidx>` carries its tag index as a u16 immediate (spec form);
+    // emitting the bare opcode desynced the bytecode scan.
+    script.emit_op_u16(Op::THROW, 0, 0);
     script.emit_op(Op::TRY_END, 0);
     // skip-catch BR placeholder
     let skip = script.emit_jump(Op::BR, 0);
@@ -3522,10 +3524,12 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
 
 #[test]
 fn table_size_returns_current_size() {
-    let result = run_script(|c| {
-        c.emit_op_u8(Op::TABLE_SIZE, 0, 0); // table index 0
-    });
-    assert_eq!(result.as_i32(), 0);
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0); // table index 0
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    vm.wasm_tables = vec![Vec::new()]; // declare table 0 (empty)
+    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
 }
 
 #[test]
@@ -3539,6 +3543,7 @@ fn table_grow_returns_old_size_and_resizes() {
     chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
+    vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown by the op)
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 3);
 }
 
@@ -3561,6 +3566,7 @@ fn table_fill_assigns_value_across_range() {
     chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
+    vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown + filled by the ops)
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 5);
 }
 

@@ -313,6 +313,9 @@ fn multiple_chunks_cross_call() {
 #[test]
 fn call_indirect_vm_function() {
     let mut vm = VM::new();
+    // WASM table 0 with one slot to receive the funcref (spec value model:
+    // ref.func yields a value, table.set stores it, call_indirect dispatches it).
+    vm.wasm_tables = vec![vec![Value::Null]];
 
     // Chunk 1: function that returns 99
     let mut f = Chunk::new("get99");
@@ -322,28 +325,18 @@ fn call_indirect_vm_function() {
     f.emit_op_u16(Op::CONST, val, 0);
     f.emit_op(Op::RETURN, 0);
 
-    // Script: ref_func creates function + adds to func_table
-    // Then get __table_idx and use call_indirect
     let mut main = Chunk::new("<script>");
     main.local_count = 2;
 
-    // ref_func 1 → pushes function object
+    // table.set 0: push slot index 0, then the ref.func value.
+    let zero = main.add_constant(Value::I32(0));
+    main.emit_op_u16(Op::CONST, zero, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
+    main.emit_op_u8(Op::TABLE_SET, 0, 0);
 
-    // Get __table_idx from the function object
-    let idx_name = main.add_constant(Value::String(Arc::from("__table_idx")));
-    main.emit_op(Op::DUP, 0);
-    main.emit_op_u16(Op::STRUCT_GET, idx_name, 0);
-
-    // Stack: [func_obj, table_idx]
-    // Save func_obj to local, keep table_idx for call_indirect
-    let _tmp = 1u16;
-    // Swap: drop func_obj from under table_idx
-    // Actually struct_get popped func_obj and pushed table_idx
-    // So stack: [table_idx]
-
-    // call_indirect with 0 args
+    // call_indirect table 0 with index 0, 0 args.
+    main.emit_op_u16(Op::CONST, zero, 0);
     main.emit_op_u8_u8(Op::CALL_INDIRECT, 0, 0, 0);
     main.emit_op(Op::HALT, 0);
 
@@ -381,8 +374,9 @@ fn decoded_standard_call_indirect_executes_vm_table_function() {
     });
 
     let mut vm = VM::new();
-    vm.func_table
-        .push(Value::Object(Arc::new(Mutex::new(function))));
+    // Populate WASM table 0 slot 0 with the target (an elem segment would do
+    // this at instantiation; here we set it directly).
+    vm.wasm_tables = vec![vec![Value::Object(Arc::new(Mutex::new(function)))]];
     let result = vm.run(vec![caller, target]).unwrap();
     assert_eq!(result.as_i32(), 77);
 }
@@ -416,8 +410,11 @@ fn decoded_standard_call_indirect_uses_encoded_table_index() {
     });
 
     let mut vm = VM::new();
-    vm.extra_tables
-        .push(vec![Value::Object(Arc::new(Mutex::new(function)))]);
+    // Table 0 empty, table 1 holds the target (call_indirect selects table 1).
+    vm.wasm_tables = vec![
+        Vec::new(),
+        vec![Value::Object(Arc::new(Mutex::new(function)))],
+    ];
     let result = vm.run(vec![caller, target]).unwrap();
     assert_eq!(result.as_i32(), 88);
 }

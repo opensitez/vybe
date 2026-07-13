@@ -651,7 +651,7 @@ fn decoded_standard_table64_grow_returns_old_i64_size() {
     let mut vm = VM::new();
     let result = vm.run(vec![chunks[1].clone()]).unwrap();
     assert_eq!(result, Value::I64(2));
-    assert_eq!(vm.func_table.len(), 5);
+    assert_eq!(vm.wasm_tables[0].len(), 5);
 }
 
 #[test]
@@ -1087,7 +1087,7 @@ fn spec_memory64_fill_and_copy_use_i64_addresses_and_memory_indices() {
 #[test]
 fn spec_table64_runtime_uses_i64_indices_and_results() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(1), Value::I32(2), Value::I32(3)];
+    vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2), Value::I32(3)]];
 
     let mut grow = Chunk::new("<grow>");
     grow.emit_op(Op::NULL, 0);
@@ -1097,7 +1097,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     grow.emit_op(Op::HALT, 0);
     let result = vm.run(vec![grow]).unwrap();
     assert_eq!(result.as_i64(), 3);
-    assert_eq!(vm.func_table.len(), 5);
+    assert_eq!(vm.wasm_tables[0].len(), 5);
 
     let mut chunk = Chunk::new("<table64>");
     let idx1 = chunk.add_constant(Value::I64(1));
@@ -1127,15 +1127,15 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 7);
-    assert_eq!(vm.func_table[1].as_i32(), 7);
-    assert_eq!(vm.func_table[2].as_i32(), 9);
-    assert_eq!(vm.func_table[3].as_i32(), 7);
+    assert_eq!(vm.wasm_tables[0][1].as_i32(), 7);
+    assert_eq!(vm.wasm_tables[0][2].as_i32(), 9);
+    assert_eq!(vm.wasm_tables[0][3].as_i32(), 7);
 }
 
 #[test]
 fn spec_table64_init_copies_element_segment_with_i64_indices() {
     let mut vm = VM::new();
-    vm.func_table.resize(6, Value::Null);
+    vm.wasm_tables = vec![vec![Value::Null; 6]];
     vm.set_elem_segment(
         0,
         vec![
@@ -1156,8 +1156,8 @@ fn spec_table64_init_copies_element_segment_with_i64_indices() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).expect("table64.init should copy");
-    assert_eq!(vm.func_table[3].as_i32(), 22);
-    assert_eq!(vm.func_table[4].as_i32(), 23);
+    assert_eq!(vm.wasm_tables[0][3].as_i32(), 22);
+    assert_eq!(vm.wasm_tables[0][4].as_i32(), 23);
 }
 
 #[test]

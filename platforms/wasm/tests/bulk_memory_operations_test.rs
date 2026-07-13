@@ -356,10 +356,10 @@ fn memory_init_after_data_drop_traps() {
 fn table_copy_copies_entries() {
     let mut vm = VM::new();
     // Set up func_table with 8 slots: [0,1,2,3,null,null,null,null]
-    vm.func_table = (0..4)
+    vm.wasm_tables = vec![(0..4)
         .map(|i| Value::I32(i))
         .chain(std::iter::repeat(Value::Null).take(4))
-        .collect();
+        .collect()];
 
     let mut chunk = Chunk::new("<script>");
     // table.copy dst_table=0; stack: dst=4, src=0, count=4
@@ -371,7 +371,7 @@ fn table_copy_copies_entries() {
     vm.run(vec![chunk]).expect("table.copy should not trap");
 
     for i in 0..4 {
-        assert_eq!(vm.func_table[4 + i].as_i32(), i as i32);
+        assert_eq!(vm.wasm_tables[0][4 + i].as_i32(), i as i32);
     }
 }
 
@@ -379,7 +379,7 @@ fn table_copy_copies_entries() {
 fn table_copy_overlapping_backward() {
     // Copy [0..4] to [1..5] — dst > src, must not clobber before reading
     let mut vm = VM::new();
-    vm.func_table = (0..8).map(|i| Value::I32(i)).collect();
+    vm.wasm_tables = vec![(0..8).map(|i| Value::I32(i)).collect()];
 
     let mut chunk = Chunk::new("<script>");
     push_i32(&mut chunk, 1); // dst
@@ -390,10 +390,10 @@ fn table_copy_overlapping_backward() {
     vm.run(vec![chunk])
         .expect("table.copy overlapping should not trap");
 
-    assert_eq!(vm.func_table[1].as_i32(), 0);
-    assert_eq!(vm.func_table[2].as_i32(), 1);
-    assert_eq!(vm.func_table[3].as_i32(), 2);
-    assert_eq!(vm.func_table[4].as_i32(), 3);
+    assert_eq!(vm.wasm_tables[0][1].as_i32(), 0);
+    assert_eq!(vm.wasm_tables[0][2].as_i32(), 1);
+    assert_eq!(vm.wasm_tables[0][3].as_i32(), 2);
+    assert_eq!(vm.wasm_tables[0][4].as_i32(), 3);
 }
 
 #[test]
@@ -450,7 +450,7 @@ fn elem_drop_does_not_trap() {
 #[test]
 fn table_init_stub_does_not_trap() {
     let mut vm = VM::new();
-    vm.func_table.resize(8, Value::Null);
+    vm.wasm_tables = vec![vec![Value::Null; 8]];
     vm.set_elem_segment(0, vec![Value::I32(10), Value::I32(11), Value::I32(12)]);
     let mut chunk = Chunk::new("<script>");
     push_i32(&mut chunk, 2); // dst
@@ -460,8 +460,8 @@ fn table_init_stub_does_not_trap() {
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("table.init should not trap");
 
-    assert_eq!(vm.func_table[2].as_i32(), 11);
-    assert_eq!(vm.func_table[3].as_i32(), 12);
+    assert_eq!(vm.wasm_tables[0][2].as_i32(), 11);
+    assert_eq!(vm.wasm_tables[0][3].as_i32(), 12);
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn decoded_standard_table_init_copies_passive_element_segment() {
         matches!(&result, Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)))
     );
     assert!(
-        matches!(&vm.func_table[0], Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)))
+        matches!(&vm.wasm_tables[0][0], Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)))
     );
 }
 
@@ -587,7 +587,7 @@ fn decoded_standard_active_element_segment_initializes_table() {
 #[test]
 fn table_init_source_oob_traps() {
     let mut vm = VM::new();
-    vm.func_table.resize(8, Value::Null);
+    vm.wasm_tables = vec![vec![Value::Null; 8]];
     vm.set_elem_segment(0, vec![Value::I32(10)]);
     let mut chunk = Chunk::new("<script>");
     push_i32(&mut chunk, 0); // dst
@@ -605,7 +605,7 @@ fn table_init_source_oob_traps() {
 #[test]
 fn table_init_destination_oob_traps() {
     let mut vm = VM::new();
-    vm.func_table.resize(1, Value::Null);
+    vm.wasm_tables = vec![vec![Value::Null; 1]];
     vm.set_elem_segment(0, vec![Value::I32(10), Value::I32(11)]);
     let mut chunk = Chunk::new("<script>");
     push_i32(&mut chunk, 0); // dst
@@ -623,7 +623,7 @@ fn table_init_destination_oob_traps() {
 #[test]
 fn table_init_after_elem_drop_traps() {
     let mut vm = VM::new();
-    vm.func_table.resize(8, Value::Null);
+    vm.wasm_tables = vec![vec![Value::Null; 8]];
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
     push_i32(&mut chunk, 0); // dst

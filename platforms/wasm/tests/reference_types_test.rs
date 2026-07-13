@@ -17,7 +17,7 @@ fn table_get_returns_func_table_slot() {
     // Pre-populate func_table with three values, then `table.get` the
     // middle one via a synthetic chunk.
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(100), Value::I32(200), Value::I32(300)];
+    vm.wasm_tables = vec![vec![Value::I32(100), Value::I32(200), Value::I32(300)]];
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -34,7 +34,7 @@ fn table_get_returns_func_table_slot() {
 #[test]
 fn table_get_traps_on_out_of_bounds() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null];
+    vm.wasm_tables = vec![vec![Value::Null]];
 
     let mut chunk = Chunk::new("<script>");
     let idx = chunk.add_constant(Value::I32(1));
@@ -49,7 +49,7 @@ fn table_get_traps_on_out_of_bounds() {
 #[test]
 fn table_set_writes_to_func_table_slot() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null, Value::Null];
+    vm.wasm_tables = vec![vec![Value::Null, Value::Null]];
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -63,13 +63,13 @@ fn table_set_writes_to_func_table_slot() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    assert_eq!(vm.func_table[0].as_i32(), 42);
+    assert_eq!(vm.wasm_tables[0][0].as_i32(), 42);
 }
 
 #[test]
 fn table_set_traps_on_out_of_bounds() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null];
+    vm.wasm_tables = vec![vec![Value::Null]];
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -194,8 +194,8 @@ fn multi_table_routes_by_tableidx() {
     // A table.get against each returns the pre-stamped sentinel value,
     // confirming the tableidx operand reaches the right storage.
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(1111)];
-    vm.extra_tables.push(vec![Value::I32(2222)]);
+    vm.wasm_tables = vec![vec![Value::I32(1111)]];
+    vm.wasm_tables.push(vec![Value::I32(2222)]);
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;
@@ -225,7 +225,8 @@ fn multi_table_routes_by_tableidx() {
 #[test]
 fn table_grow_extends_selected_table() {
     let mut vm = VM::new();
-    vm.extra_tables.push(vec![Value::Null, Value::Null]);
+    // table 0 empty, table 1 = two slots (the op below grows table 1).
+    vm.wasm_tables = vec![Vec::new(), vec![Value::Null, Value::Null]];
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
@@ -238,14 +239,14 @@ fn table_grow_extends_selected_table() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 2, "table.grow returns old size");
-    assert_eq!(vm.extra_tables[0].len(), 5, "table grew by delta");
+    assert_eq!(vm.wasm_tables[1].len(), 5, "table grew by delta");
 }
 
 #[test]
 fn table_size_reports_selected_table_length() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null; 3];
-    vm.extra_tables.push(vec![Value::Null; 7]);
+    vm.wasm_tables = vec![vec![Value::Null; 3]];
+    vm.wasm_tables.push(vec![Value::Null; 7]);
 
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_u8(Op::TABLE_SIZE, 1, 0);
@@ -281,7 +282,7 @@ fn table_grow_unknown_table_traps() {
 #[test]
 fn table_fill_writes_requested_range() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(0); 5];
+    vm.wasm_tables = vec![vec![Value::I32(0); 5]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(1));
@@ -295,17 +296,17 @@ fn table_fill_writes_requested_range() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    assert_eq!(vm.func_table[0].as_i32(), 0);
-    assert_eq!(vm.func_table[1].as_i32(), 55);
-    assert_eq!(vm.func_table[2].as_i32(), 55);
-    assert_eq!(vm.func_table[3].as_i32(), 55);
-    assert_eq!(vm.func_table[4].as_i32(), 0);
+    assert_eq!(vm.wasm_tables[0][0].as_i32(), 0);
+    assert_eq!(vm.wasm_tables[0][1].as_i32(), 55);
+    assert_eq!(vm.wasm_tables[0][2].as_i32(), 55);
+    assert_eq!(vm.wasm_tables[0][3].as_i32(), 55);
+    assert_eq!(vm.wasm_tables[0][4].as_i32(), 0);
 }
 
 #[test]
 fn table_fill_oob_traps() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null; 2];
+    vm.wasm_tables = vec![vec![Value::Null; 2]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(1));
@@ -339,7 +340,7 @@ fn table_fill_unknown_table_traps() {
 #[test]
 fn table_fill_zero_count_at_table_end_is_noop() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(1), Value::I32(2)];
+    vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2)]];
 
     let mut chunk = Chunk::new("<script>");
     let end = chunk.add_constant(Value::I32(2));
@@ -353,14 +354,14 @@ fn table_fill_zero_count_at_table_end_is_noop() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    let got: Vec<i32> = vm.func_table.iter().map(Value::as_i32).collect();
+    let got: Vec<i32> = vm.wasm_tables[0].iter().map(Value::as_i32).collect();
     assert_eq!(got, vec![1, 2]);
 }
 
 #[test]
 fn table_copy_overlapping_forward_preserves_source_snapshot() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)];
+    vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(1));
@@ -374,14 +375,14 @@ fn table_copy_overlapping_forward_preserves_source_snapshot() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    let got: Vec<i32> = vm.func_table.iter().map(Value::as_i32).collect();
+    let got: Vec<i32> = vm.wasm_tables[0].iter().map(Value::as_i32).collect();
     assert_eq!(got, vec![1, 1, 2, 3]);
 }
 
 #[test]
 fn table_copy_destination_oob_traps() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null; 3];
+    vm.wasm_tables = vec![vec![Value::Null; 3]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(2));
@@ -401,7 +402,7 @@ fn table_copy_destination_oob_traps() {
 #[test]
 fn table_copy_source_oob_traps() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::Null; 3];
+    vm.wasm_tables = vec![vec![Value::Null; 3]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(0));
@@ -421,8 +422,8 @@ fn table_copy_source_oob_traps() {
 #[test]
 fn table_copy_routes_to_selected_extra_table() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(10), Value::I32(20), Value::I32(30)];
-    vm.extra_tables
+    vm.wasm_tables = vec![vec![Value::I32(10), Value::I32(20), Value::I32(30)]];
+    vm.wasm_tables
         .push(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
 
     let mut chunk = Chunk::new("<script>");
@@ -437,8 +438,8 @@ fn table_copy_routes_to_selected_extra_table() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    let table0: Vec<i32> = vm.func_table.iter().map(Value::as_i32).collect();
-    let table1: Vec<i32> = vm.extra_tables[0].iter().map(Value::as_i32).collect();
+    let table0: Vec<i32> = vm.wasm_tables[0].iter().map(Value::as_i32).collect();
+    let table1: Vec<i32> = vm.wasm_tables[1].iter().map(Value::as_i32).collect();
     assert_eq!(
         table0,
         vec![10, 20, 30],
@@ -450,7 +451,7 @@ fn table_copy_routes_to_selected_extra_table() {
 #[test]
 fn table_copy_zero_count_at_table_end_is_noop() {
     let mut vm = VM::new();
-    vm.func_table = vec![Value::I32(1), Value::I32(2)];
+    vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2)]];
 
     let mut chunk = Chunk::new("<script>");
     let end = chunk.add_constant(Value::I32(2));
@@ -463,7 +464,7 @@ fn table_copy_zero_count_at_table_end_is_noop() {
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).unwrap();
-    let got: Vec<i32> = vm.func_table.iter().map(Value::as_i32).collect();
+    let got: Vec<i32> = vm.wasm_tables[0].iter().map(Value::as_i32).collect();
     assert_eq!(got, vec![1, 2]);
 }
 

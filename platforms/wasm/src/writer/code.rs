@@ -487,7 +487,7 @@ pub fn encode_code_section(
                 body.push(0x00); // variant: catch (tag, label)
                 write_leb128_u32(&mut body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
                 write_leb128_u32(&mut body, 0); // label 0 = $catch
-                ip += 6;
+                ip += 8; // opcode(4) + catch_off(2) + finally(2) header
                 continue;
             }
             // TRY_END → close try_table. An `else` body (Python/Ruby) runs
