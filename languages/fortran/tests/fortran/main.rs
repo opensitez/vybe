@@ -1,5 +1,7 @@
 #[macro_use]
 mod helpers;
+mod fortran_catalog_calibrate;
+mod fortran_format_probe;
 mod test_allocate_statement;
 mod test_allocation;
 mod test_allocation_mold;
