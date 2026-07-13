@@ -25,6 +25,9 @@ constructor_name = "constructor"
 uses_common_resolver = true
 case_sensitive   = true
 string_indexing  = "zero_based"
+# `+` is JS-shaped: numeric when both sides are numbers, string concat when a
+# string is involved. Needed for WAT float text formatting ($log_f32/$log_f64).
+dynamic_add      = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS
@@ -43,6 +46,11 @@ string_indexing  = "zero_based"
 
 log   = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
 logf  = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
+# Type-suffixed log imports (log_i64 / log_f32 / log_f64) are the same WASI "log"
+# import bound to a typed local id; they all resolve to the one host sink.
+log_i64 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
+log_f32 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
+log_f64 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
 
 # ── vybe:gui imports ──────────────────────────────────────────────────────────
 # WAT modules import these by local name; the profile resolves them to the
@@ -92,6 +100,62 @@ __wasm_br_table    = { emit = "noop", min_args = 1, max_args = 255 }
 __wasm_unreachable = { emit = "host:vybe:wast:unreachable", min_args = 0, max_args = 0 }
 __wasm_try         = { emit = "host:vybe:wast:try",         min_args = 0, max_args = 255 }
 
+# ── Integer arithmetic / bitwise / comparison ────────────────────────────────
+# All i32/i64 ops route to their real opcodes so the VM applies true WASM
+# semantics: 32/64-bit wrapping, signed vs unsigned division/shift/compare, and
+# exact bit patterns. (The generic `opcode:` resolver reads these straight from
+# the VM's one opcode table.)
+
+i32_add          = { emit = "opcode:i32_add",           min_args = 2, max_args = 2 }
+i32_sub          = { emit = "opcode:i32_sub",           min_args = 2, max_args = 2 }
+i32_mul          = { emit = "opcode:i32_mul",           min_args = 2, max_args = 2 }
+i32_div_s        = { emit = "opcode:i32_div_s",         min_args = 2, max_args = 2 }
+i32_div_u        = { emit = "opcode:i32_div_u",         min_args = 2, max_args = 2 }
+i32_rem_s        = { emit = "opcode:i32_rem_s",         min_args = 2, max_args = 2 }
+i32_rem_u        = { emit = "opcode:i32_rem_u",         min_args = 2, max_args = 2 }
+i32_and          = { emit = "opcode:i32_and",           min_args = 2, max_args = 2 }
+i32_or           = { emit = "opcode:i32_or",            min_args = 2, max_args = 2 }
+i32_xor          = { emit = "opcode:i32_xor",           min_args = 2, max_args = 2 }
+i32_shl          = { emit = "opcode:i32_shl",           min_args = 2, max_args = 2 }
+i32_shr_s        = { emit = "opcode:i32_shr_s",         min_args = 2, max_args = 2 }
+i32_shr_u        = { emit = "opcode:i32_shr_u",         min_args = 2, max_args = 2 }
+i32_eq           = { emit = "opcode:i32_eq",            min_args = 2, max_args = 2 }
+i32_ne           = { emit = "opcode:i32_ne",            min_args = 2, max_args = 2 }
+i32_lt_s         = { emit = "opcode:i32_lt_s",          min_args = 2, max_args = 2 }
+i32_lt_u         = { emit = "opcode:i32_lt_u",          min_args = 2, max_args = 2 }
+i32_gt_s         = { emit = "opcode:i32_gt_s",          min_args = 2, max_args = 2 }
+i32_gt_u         = { emit = "opcode:i32_gt_u",          min_args = 2, max_args = 2 }
+i32_le_s         = { emit = "opcode:i32_le_s",          min_args = 2, max_args = 2 }
+i32_le_u         = { emit = "opcode:i32_le_u",          min_args = 2, max_args = 2 }
+i32_ge_s         = { emit = "opcode:i32_ge_s",          min_args = 2, max_args = 2 }
+i32_ge_u         = { emit = "opcode:i32_ge_u",          min_args = 2, max_args = 2 }
+i32_eqz          = { emit = "opcode:i32_eqz",           min_args = 1, max_args = 1 }
+
+i64_add          = { emit = "opcode:i64_add",           min_args = 2, max_args = 2 }
+i64_sub          = { emit = "opcode:i64_sub",           min_args = 2, max_args = 2 }
+i64_mul          = { emit = "opcode:i64_mul",           min_args = 2, max_args = 2 }
+i64_div_s        = { emit = "opcode:i64_div_s",         min_args = 2, max_args = 2 }
+i64_div_u        = { emit = "opcode:i64_div_u",         min_args = 2, max_args = 2 }
+i64_rem_s        = { emit = "opcode:i64_rem_s",         min_args = 2, max_args = 2 }
+i64_rem_u        = { emit = "opcode:i64_rem_u",         min_args = 2, max_args = 2 }
+i64_and          = { emit = "opcode:i64_and",           min_args = 2, max_args = 2 }
+i64_or           = { emit = "opcode:i64_or",            min_args = 2, max_args = 2 }
+i64_xor          = { emit = "opcode:i64_xor",           min_args = 2, max_args = 2 }
+i64_shl          = { emit = "opcode:i64_shl",           min_args = 2, max_args = 2 }
+i64_shr_s        = { emit = "opcode:i64_shr_s",         min_args = 2, max_args = 2 }
+i64_shr_u        = { emit = "opcode:i64_shr_u",         min_args = 2, max_args = 2 }
+i64_eq           = { emit = "opcode:i64_eq",            min_args = 2, max_args = 2 }
+i64_ne           = { emit = "opcode:i64_ne",            min_args = 2, max_args = 2 }
+i64_lt_s         = { emit = "opcode:i64_lt_s",          min_args = 2, max_args = 2 }
+i64_lt_u         = { emit = "opcode:i64_lt_u",          min_args = 2, max_args = 2 }
+i64_gt_s         = { emit = "opcode:i64_gt_s",          min_args = 2, max_args = 2 }
+i64_gt_u         = { emit = "opcode:i64_gt_u",          min_args = 2, max_args = 2 }
+i64_le_s         = { emit = "opcode:i64_le_s",          min_args = 2, max_args = 2 }
+i64_le_u         = { emit = "opcode:i64_le_u",          min_args = 2, max_args = 2 }
+i64_ge_s         = { emit = "opcode:i64_ge_s",          min_args = 2, max_args = 2 }
+i64_ge_u         = { emit = "opcode:i64_ge_u",          min_args = 2, max_args = 2 }
+i64_eqz          = { emit = "opcode:i64_eqz",           min_args = 1, max_args = 1 }
+
 # ── Numeric ops not mapped to BinOp (unary / conversion / bitwise) ────────────
 
 i32_clz          = { emit = "opcode:i32_clz",           min_args = 1, max_args = 1 }
@@ -105,6 +169,13 @@ i32_rotr         = { emit = "opcode:i32_rotr",          min_args = 2, max_args =
 i64_rotl         = { emit = "opcode:i64_rotl",          min_args = 2, max_args = 2 }
 i64_rotr         = { emit = "opcode:i64_rotr",          min_args = 2, max_args = 2 }
 
+# f32 arithmetic maps to the real f32 opcodes so results round to single
+# precision (Value::F32) — the walker routes f32.add/sub/mul/div here.
+f32_add          = { emit = "opcode:f32_add",           min_args = 2, max_args = 2 }
+f32_sub          = { emit = "opcode:f32_sub",           min_args = 2, max_args = 2 }
+f32_mul          = { emit = "opcode:f32_mul",           min_args = 2, max_args = 2 }
+f32_div          = { emit = "opcode:f32_div",           min_args = 2, max_args = 2 }
+f32_neg          = { emit = "opcode:f32_neg",           min_args = 1, max_args = 1 }
 f32_abs          = { emit = "opcode:f32_abs",           min_args = 1, max_args = 1 }
 f32_sqrt         = { emit = "opcode:f32_sqrt",          min_args = 1, max_args = 1 }
 f32_ceil         = { emit = "opcode:f32_ceil",          min_args = 1, max_args = 1 }
@@ -168,35 +239,37 @@ i64_trunc_sat_f64_u   = { emit = "opcode:i64_trunc_sat_f64_u",  min_args = 1, ma
 
 # ── Memory ops ────────────────────────────────────────────────────────────────
 
-memory_size  = { emit = "host:wasi:memory:size",  min_args = 0, max_args = 0 }
-memory_grow  = { emit = "host:wasi:memory:grow",  min_args = 1, max_args = 1 }
-memory_copy  = { emit = "host:wasi:memory:copy",  min_args = 3, max_args = 3 }
-memory_fill  = { emit = "host:wasi:memory:fill",  min_args = 3, max_args = 3 }
-memory_init  = { emit = "host:wasi:memory:init",  min_args = 3, max_args = 3 }
+# Direct WASM memory opcodes on the VM's linear memory (memarg read via the
+# VM's optional-memarg heuristic; offset defaults to 0 when none is emitted).
+memory_size  = { emit = "opcode:memory_size",  min_args = 0, max_args = 0 }
+memory_grow  = { emit = "opcode:memory_grow",  min_args = 1, max_args = 1 }
+memory_copy  = { emit = "opcode:memory_copy",  min_args = 3, max_args = 3 }
+memory_fill  = { emit = "opcode:memory_fill",  min_args = 3, max_args = 3 }
+memory_init  = { emit = "opcode:memory_init",  min_args = 3, max_args = 3 }
 
-i32_load     = { emit = "host:wasi:memory:i32_load",    min_args = 1, max_args = 1 }
-i64_load     = { emit = "host:wasi:memory:i64_load",    min_args = 1, max_args = 1 }
-f32_load     = { emit = "host:wasi:memory:f32_load",    min_args = 1, max_args = 1 }
-f64_load     = { emit = "host:wasi:memory:f64_load",    min_args = 1, max_args = 1 }
-i32_load8_s  = { emit = "host:wasi:memory:i32_load8_s", min_args = 1, max_args = 1 }
-i32_load8_u  = { emit = "host:wasi:memory:i32_load8_u", min_args = 1, max_args = 1 }
-i32_load16_s = { emit = "host:wasi:memory:i32_load16_s",min_args = 1, max_args = 1 }
-i32_load16_u = { emit = "host:wasi:memory:i32_load16_u",min_args = 1, max_args = 1 }
-i64_load8_s  = { emit = "host:wasi:memory:i64_load8_s", min_args = 1, max_args = 1 }
-i64_load8_u  = { emit = "host:wasi:memory:i64_load8_u", min_args = 1, max_args = 1 }
-i64_load16_s = { emit = "host:wasi:memory:i64_load16_s",min_args = 1, max_args = 1 }
-i64_load16_u = { emit = "host:wasi:memory:i64_load16_u",min_args = 1, max_args = 1 }
-i64_load32_s = { emit = "host:wasi:memory:i64_load32_s",min_args = 1, max_args = 1 }
-i64_load32_u = { emit = "host:wasi:memory:i64_load32_u",min_args = 1, max_args = 1 }
-i32_store    = { emit = "host:wasi:memory:i32_store",   min_args = 2, max_args = 2 }
-i64_store    = { emit = "host:wasi:memory:i64_store",   min_args = 2, max_args = 2 }
-f32_store    = { emit = "host:wasi:memory:f32_store",   min_args = 2, max_args = 2 }
-f64_store    = { emit = "host:wasi:memory:f64_store",   min_args = 2, max_args = 2 }
-i32_store8   = { emit = "host:wasi:memory:i32_store8",  min_args = 2, max_args = 2 }
-i32_store16  = { emit = "host:wasi:memory:i32_store16", min_args = 2, max_args = 2 }
-i64_store8   = { emit = "host:wasi:memory:i64_store8",  min_args = 2, max_args = 2 }
-i64_store16  = { emit = "host:wasi:memory:i64_store16", min_args = 2, max_args = 2 }
-i64_store32  = { emit = "host:wasi:memory:i64_store32", min_args = 2, max_args = 2 }
+i32_load     = { emit = "opcode:i32_load",    min_args = 1, max_args = 1 }
+i64_load     = { emit = "opcode:i64_load",    min_args = 1, max_args = 1 }
+f32_load     = { emit = "opcode:f32_load",    min_args = 1, max_args = 1 }
+f64_load     = { emit = "opcode:f64_load",    min_args = 1, max_args = 1 }
+i32_load8_s  = { emit = "opcode:i32_load8_s", min_args = 1, max_args = 1 }
+i32_load8_u  = { emit = "opcode:i32_load8_u", min_args = 1, max_args = 1 }
+i32_load16_s = { emit = "opcode:i32_load16_s",min_args = 1, max_args = 1 }
+i32_load16_u = { emit = "opcode:i32_load16_u",min_args = 1, max_args = 1 }
+i64_load8_s  = { emit = "opcode:i64_load8_s", min_args = 1, max_args = 1 }
+i64_load8_u  = { emit = "opcode:i64_load8_u", min_args = 1, max_args = 1 }
+i64_load16_s = { emit = "opcode:i64_load16_s",min_args = 1, max_args = 1 }
+i64_load16_u = { emit = "opcode:i64_load16_u",min_args = 1, max_args = 1 }
+i64_load32_s = { emit = "opcode:i64_load32_s",min_args = 1, max_args = 1 }
+i64_load32_u = { emit = "opcode:i64_load32_u",min_args = 1, max_args = 1 }
+i32_store    = { emit = "opcode:i32_store",   min_args = 2, max_args = 2 }
+i64_store    = { emit = "opcode:i64_store",   min_args = 2, max_args = 2 }
+f32_store    = { emit = "opcode:f32_store",   min_args = 2, max_args = 2 }
+f64_store    = { emit = "opcode:f64_store",   min_args = 2, max_args = 2 }
+i32_store8   = { emit = "opcode:i32_store8",  min_args = 2, max_args = 2 }
+i32_store16  = { emit = "opcode:i32_store16", min_args = 2, max_args = 2 }
+i64_store8   = { emit = "opcode:i64_store8",  min_args = 2, max_args = 2 }
+i64_store16  = { emit = "opcode:i64_store16", min_args = 2, max_args = 2 }
+i64_store32  = { emit = "opcode:i64_store32", min_args = 2, max_args = 2 }
 
 # ── call_indirect ─────────────────────────────────────────────────────────────
 

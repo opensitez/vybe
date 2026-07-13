@@ -46,6 +46,79 @@ thread_local! {
     // profile builtin table by their local id, so they are excluded.
     static DEFINED_FUNC_NAMES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
+    // Exported function name → the static-method name it maps to on the module
+    // class, so a WAST script `(invoke "name" …)` resolves to `Class.method`.
+    static EXPORT_FUNC_MAP: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    // Monotonic counter for synthetic result temporaries of value-producing
+    // structured control (block/if with a `(result …)` type).
+    static WAST_TEMP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+}
+
+/// A fresh unique identifier for a structured-control result temporary.
+fn fresh_result_temp() -> String {
+    WAST_TEMP_COUNTER.with(|c| {
+        let mut n = c.borrow_mut();
+        let name = format!("__wat_res{}", *n);
+        *n += 1;
+        name
+    })
+}
+
+/// Does an unfolded `loop` opener declare a `(param …)` block type? Loop
+/// parameters thread stack values across iterations, which the while(true)
+/// lowering doesn't model — such loops are emitted once (not looped) so they
+/// fail cleanly instead of spinning forever.
+fn peek_opener_has_param(pair: &Pair<Rule>) -> bool {
+    let inner = if pair.as_rule() == Rule::instr {
+        match pair.clone().into_inner().next() {
+            Some(p) => p,
+            None => return false,
+        }
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return false;
+    }
+    inner.into_inner().any(|c| {
+        c.as_rule() == Rule::instr_arg
+            && c.clone().into_inner().next().map(|i| i.as_rule()) == Some(Rule::block_type)
+            && c.into_inner().next().map(|i| i.as_str().contains("param")) == Some(true)
+    })
+}
+
+/// Does an unfolded `block`/`loop`/`if` opener carry a `block_type` immediate
+/// (`(result …)`) — i.e. does it produce a value on the stack?
+fn peek_has_block_type(pair: &Pair<Rule>) -> bool {
+    let inner = if pair.as_rule() == Rule::instr {
+        match pair.clone().into_inner().next() {
+            Some(p) => p,
+            None => return false,
+        }
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return false;
+    }
+    inner.into_inner().any(|c| {
+        c.as_rule() == Rule::instr_arg
+            && c.into_inner().next().map(|i| i.as_rule()) == Some(Rule::block_type)
+    })
+}
+
+/// Rewrite the final value-producing statement of a branch body into an
+/// assignment to `tmp`, so the branch's stack result is captured.
+fn assign_last_expr_to(body: &mut [Statement], tmp: &str) {
+    if let Some(last) = body.last_mut() {
+        if let StmtKind::Expr(e) = &last.kind {
+            let value = e.clone();
+            last.kind = StmtKind::Expr(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::ident(tmp)),
+                value: Box::new(value),
+            }));
+        }
+    }
 }
 
 // ── Label context ─────────────────────────────────────────────────────────────
@@ -58,26 +131,97 @@ enum LabelKind {
     Loop,
 }
 
-struct LabelStack(Vec<(Option<String>, LabelKind)>);
+#[derive(Clone)]
+struct LabelEntry {
+    /// Always present — a synthetic name is minted when the source omits one, so
+    /// every block/loop is addressable (numeric `br N` needs no source label).
+    name: String,
+    kind: LabelKind,
+    /// The result temporary for a value-producing block/loop; `br` to this frame
+    /// carries the top of stack into it.
+    result_temp: Option<String>,
+}
+
+/// A fresh synthetic block/loop label.
+fn fresh_block_label() -> String {
+    WAST_TEMP_COUNTER.with(|c| {
+        let mut n = c.borrow_mut();
+        let name = format!("__wat_lbl{}", *n);
+        *n += 1;
+        name
+    })
+}
+
+struct LabelStack(Vec<LabelEntry>);
 
 impl LabelStack {
     fn new() -> Self {
         LabelStack(Vec::new())
     }
-    fn push(&mut self, name: Option<String>, kind: LabelKind) {
-        self.0.push((name, kind));
+    /// Push a frame, minting a synthetic name if the source has none. Returns the
+    /// effective label so the caller can build the matching `Labeled` statement.
+    fn push(&mut self, name: Option<String>, kind: LabelKind, result_temp: Option<String>) -> String {
+        let effective = name.unwrap_or_else(fresh_block_label);
+        self.0.push(LabelEntry {
+            name: effective.clone(),
+            kind,
+            result_temp,
+        });
+        effective
     }
     fn pop(&mut self) {
         self.0.pop();
     }
 
     fn kind_of(&self, label: &str) -> Option<LabelKind> {
-        for (name, kind) in self.0.iter().rev() {
-            if name.as_deref() == Some(label) {
-                return Some(kind.clone());
+        self.0
+            .iter()
+            .rev()
+            .find(|e| e.name == label)
+            .map(|e| e.kind.clone())
+    }
+
+    /// Resolve a `br` target: symbolic `$name`, numeric index (0 = innermost), or
+    /// None (defaults to innermost).
+    fn resolve(&self, target: &BrTarget) -> Option<LabelEntry> {
+        match target {
+            BrTarget::Named(n) => self.0.iter().rev().find(|e| &e.name == n).cloned(),
+            BrTarget::Index(i) => {
+                let len = self.0.len();
+                (*i < len).then(|| self.0[len - 1 - i].clone())
             }
+            BrTarget::Innermost => self.0.last().cloned(),
         }
-        None
+    }
+}
+
+/// How a `br`/`br_if` names its destination frame.
+enum BrTarget {
+    Named(String),
+    Index(usize),
+    Innermost,
+}
+
+/// Derive a `br` target from its first argument (label id or numeric index).
+fn br_target_of(arg: Option<&Expression>) -> BrTarget {
+    match arg.map(|a| &a.kind) {
+        Some(ExprKind::Ident(n)) => BrTarget::Named(n.clone()),
+        Some(ExprKind::Lit(Literal::Int(i))) => BrTarget::Index(*i as usize),
+        _ => BrTarget::Innermost,
+    }
+}
+
+/// The break/continue statement for a resolved `br` target frame.
+fn br_stmt_for(entry: &LabelEntry, span: Span) -> Statement {
+    match entry.kind {
+        LabelKind::Loop => Statement::with_span(
+            StmtKind::Continue(ContinueTarget::Label(entry.name.clone())),
+            span,
+        ),
+        LabelKind::Block => Statement::with_span(
+            StmtKind::Break(BreakTarget::Label(entry.name.clone())),
+            span,
+        ),
     }
 }
 
@@ -178,31 +322,13 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut index_arities = Vec::new();
     let mut name_arities = HashMap::new();
 
-    // 1. Pre-scan imports
+    // 1. Pre-scan imports. Params live inside `typeuse` (and, for imports, inside
+    //    `import_desc`), so the signature scan must descend, not read direct children.
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::import_field {
-                    let mut name: Option<String> = None;
-                    let mut params_count = 0;
-                    for sub in inner.into_inner() {
-                        match sub.as_rule() {
-                            Rule::id => name = Some(sub.as_str()[1..].to_string()),
-                            Rule::param => {
-                                let mut has_id = false;
-                                let mut types_count = 0;
-                                for p in sub.into_inner() {
-                                    if p.as_rule() == Rule::id {
-                                        has_id = true;
-                                    } else if p.as_rule() == Rule::val_type {
-                                        types_count += 1;
-                                    }
-                                }
-                                params_count += if has_id { 1 } else { types_count };
-                            }
-                            _ => {}
-                        }
-                    }
+                    let (name, params_count) = scan_func_signature(inner);
                     index_arities.push(params_count);
                     if let Some(n) = name {
                         name_arities.insert(n, params_count);
@@ -214,34 +340,44 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     // 2. Pre-scan defined functions
     let mut defined_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut export_map: HashMap<String, String> = HashMap::new();
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::func_field {
-                    let mut name: Option<String> = None;
-                    let mut params_count = 0;
-                    for sub in inner.into_inner() {
-                        match sub.as_rule() {
-                            Rule::id => name = Some(sub.as_str()[1..].to_string()),
-                            Rule::param => {
-                                let mut has_id = false;
-                                let mut types_count = 0;
-                                for p in sub.into_inner() {
-                                    if p.as_rule() == Rule::id {
-                                        has_id = true;
-                                    } else if p.as_rule() == Rule::val_type {
-                                        types_count += 1;
-                                    }
-                                }
-                                params_count += if has_id { 1 } else { types_count };
-                            }
+                    let (name, params_count) = scan_func_signature(inner.clone());
+                    index_arities.push(params_count);
+                    if let Some(n) = &name {
+                        defined_names.insert(n.clone());
+                        name_arities.insert(n.clone(), params_count);
+                    }
+                    // Inline exports: `(func $id (export "e") …)`. The method name
+                    // is the id, or (for an unnamed func) its first export name.
+                    let exports: Vec<String> = inner
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::export_inline)
+                        .filter_map(|c| c.into_inner().find(|p| p.as_rule() == Rule::string))
+                        .map(|s| unquote(s.as_str()))
+                        .collect();
+                    let method = name.clone().or_else(|| exports.first().cloned());
+                    if let Some(m) = method {
+                        for e in exports {
+                            export_map.insert(e, m.clone());
+                        }
+                    }
+                } else if inner.as_rule() == Rule::export_field {
+                    // `(export "e" (func $g))`: map the export name to the func id.
+                    let mut ename: Option<String> = None;
+                    let mut target: Option<String> = None;
+                    for c in inner.into_inner() {
+                        match c.as_rule() {
+                            Rule::string => ename = Some(unquote(c.as_str())),
+                            Rule::id => target = Some(c.as_str()[1..].to_string()),
                             _ => {}
                         }
                     }
-                    index_arities.push(params_count);
-                    if let Some(n) = name {
-                        defined_names.insert(n.clone());
-                        name_arities.insert(n, params_count);
+                    if let (Some(e), Some(t)) = (ename, target) {
+                        export_map.insert(e, t);
                     }
                 }
             }
@@ -251,6 +387,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     FUNC_INDEX_ARITIES.with(|f| *f.borrow_mut() = index_arities);
     FUNC_NAME_ARITIES.with(|f| *f.borrow_mut() = name_arities);
     DEFINED_FUNC_NAMES.with(|f| *f.borrow_mut() = defined_names);
+    EXPORT_FUNC_MAP.with(|f| *f.borrow_mut() = export_map);
 
     // 3. Pre-scan struct type definitions to know field counts for struct.new arity
     let mut struct_counts: HashMap<String, usize> = HashMap::new();
@@ -375,7 +512,14 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     Rule::start_field => {
                         post_stmts.push(Statement::new(StmtKind::Expr(walk_start_field(inner)?)));
                     }
-                    _ => {} // table, memory, elem, data, type — structural metadata
+                    // Linear memory + data segments: emitted before the class so
+                    // the compiler lowers them into the script chunk's memory /
+                    // data tables (the VM allocates pages and writes active data
+                    // at instantiation, before `_start`).
+                    Rule::memory_field => pre_stmts.push(walk_memory_field(inner)?),
+                    Rule::data_field => pre_stmts.push(walk_data_field(inner)?),
+                    Rule::table_field => pre_stmts.push(walk_table_field(inner)?),
+                    _ => {} // elem, tag, type — structural metadata
                 }
             }
             _ => {}
@@ -489,6 +633,48 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     ))
 }
 
+/// Recursively read a func/import field's signature: its (first) id and its
+/// parameter count. Parameters are wrapped in `typeuse`, and imported funcs are
+/// further wrapped in `import_desc`, so a flat scan of direct children misses
+/// them — the call-site arity would then be 0 and stack operands never consumed.
+fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize) {
+    let mut name: Option<String> = None;
+    let mut count = 0usize;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::id => {
+                if name.is_none() {
+                    name = Some(child.as_str()[1..].to_string());
+                }
+            }
+            Rule::param => {
+                // `(param $id t)` is one slot; `(param t1 t2 …)` is one per type.
+                let mut has_id = false;
+                let mut types = 0usize;
+                for p in child.into_inner() {
+                    match p.as_rule() {
+                        Rule::id => has_id = true,
+                        // Types are wrapped in `any_val_type` (which may hold a
+                        // plain `val_type` or a `(ref …)` form).
+                        Rule::any_val_type | Rule::val_type => types += 1,
+                        _ => {}
+                    }
+                }
+                count += if has_id { 1 } else { types };
+            }
+            Rule::typeuse | Rule::import_desc => {
+                let (n, c) = scan_func_signature(child);
+                if name.is_none() {
+                    name = n;
+                }
+                count += c;
+            }
+            _ => {}
+        }
+    }
+    (name, count)
+}
+
 fn walk_typeuse_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
     for child in pair.into_inner() {
@@ -505,7 +691,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => name = Some(child.as_str()[1..].to_string()),
-            Rule::val_type => types.push(child.as_str().to_string()),
+            Rule::any_val_type | Rule::val_type => types.push(child.as_str().to_string()),
             _ => {}
         }
     }
@@ -546,7 +732,7 @@ fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => name = Some(child.as_str()[1..].to_string()),
-            Rule::val_type => types.push(child.as_str().to_string()),
+            Rule::any_val_type | Rule::val_type => types.push(child.as_str().to_string()),
             _ => {}
         }
     }
@@ -664,21 +850,17 @@ fn walk_folded_instr_as_stmts(
                     _ => {}
                 }
             }
-            labels.push(label.clone(), LabelKind::Block);
+            let effective = labels.push(label.clone(), LabelKind::Block, None);
             let body = fold_instructions(instr_pairs, labels)?;
             labels.pop();
             let block_stmt = Statement::with_span(StmtKind::Block(body), span);
-            if let Some(lbl) = label {
-                Ok(vec![Statement::with_span(
-                    StmtKind::Labeled {
-                        label: lbl,
-                        body: Box::new(block_stmt),
-                    },
-                    span,
-                )])
-            } else {
-                Ok(vec![block_stmt])
-            }
+            Ok(vec![Statement::with_span(
+                StmtKind::Labeled {
+                    label: effective,
+                    body: Box::new(block_stmt),
+                },
+                span,
+            )])
         }
 
         // ── (loop $label instr*) → Labeled { label, While(true, [stmts]) }
@@ -693,9 +875,11 @@ fn walk_folded_instr_as_stmts(
                     _ => {}
                 }
             }
-            labels.push(label.clone(), LabelKind::Loop);
-            let body = fold_instructions(instr_pairs, labels)?;
+            let effective = labels.push(label.clone(), LabelKind::Loop, None);
+            let mut body = fold_instructions(instr_pairs, labels)?;
             labels.pop();
+            // A WASM loop exits on fall-through; while(true) needs an explicit break.
+            body.push(Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span));
             let while_stmt = Statement::with_span(
                 StmtKind::While {
                     cond: Expression::bool(true),
@@ -704,17 +888,13 @@ fn walk_folded_instr_as_stmts(
                 },
                 span,
             );
-            if let Some(lbl) = label {
-                Ok(vec![Statement::with_span(
-                    StmtKind::Labeled {
-                        label: lbl,
-                        body: Box::new(while_stmt),
-                    },
-                    span,
-                )])
-            } else {
-                Ok(vec![while_stmt])
-            }
+            Ok(vec![Statement::with_span(
+                StmtKind::Labeled {
+                    label: effective,
+                    body: Box::new(while_stmt),
+                },
+                span,
+            )])
         }
 
         // ── (return instr?) ───────────────────────────────────────────────
@@ -835,7 +1015,7 @@ fn walk_folded_core(
                 _ => {}
             }
         }
-        labels.push(label.clone(), kind.clone());
+        labels.push(label.clone(), kind.clone(), None);
         let body = fold_instructions(instr_pairs, labels)?;
         labels.pop();
         let last_expr = if let Some(last) = body.last() {
@@ -955,13 +1135,93 @@ fn walk_folded_core(
     map_instr_to_ast(name, args, span)
 }
 
+/// Build an expression that renders `x` the way the WAT text format prints a
+/// float: NaN → "nan", ±∞ → "inf"/"-inf", whole numbers gain a ".0" suffix, and
+/// everything else uses the natural decimal. Uses only native operators (so it
+/// needs the profile's `dynamic_add` for the string concatenation) — no host
+/// helpers. `x` is pure arithmetic at every call site, so re-reading it is safe.
+fn wat_float_format(x: Expression) -> Expression {
+    fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    }
+    fn tern(c: Expression, t: Expression, e: Expression) -> Expression {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(c),
+            then: Box::new(t),
+            else_: Box::new(e),
+        })
+    }
+    let zero = || Expression::float(0.0);
+    // whole number → "<x>.0"; otherwise the natural decimal string.
+    let finite = tern(
+        bin(BinOp::StrictEq, bin(BinOp::Mod, x.clone(), Expression::float(1.0)), zero()),
+        bin(
+            BinOp::Add,
+            bin(BinOp::Add, x.clone(), Expression::string("")),
+            Expression::string(".0"),
+        ),
+        bin(BinOp::Add, x.clone(), Expression::string("")),
+    );
+    // (x - x) is 0 for finite values but NaN for ±∞.
+    let inf_or_finite = tern(
+        bin(BinOp::StrictNotEq, bin(BinOp::Sub, x.clone(), x.clone()), zero()),
+        tern(
+            bin(BinOp::Lt, x.clone(), zero()),
+            Expression::string("-inf"),
+            Expression::string("inf"),
+        ),
+        finite,
+    );
+    // NaN is the only value not equal to itself.
+    tern(
+        bin(BinOp::StrictNotEq, x.clone(), x.clone()),
+        Expression::string("nan"),
+        inf_or_finite,
+    )
+}
+
 // ── map_instr_to_ast — WAT instruction name → common AST expression ───────────
 
 fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
     match name.as_str() {
         // ── Constants ─────────────────────────────────────────────────────
-        "i32.const" | "i64.const" => Ok(args.into_iter().next().unwrap_or(Expression::int(0))),
-        "f32.const" | "f64.const" => Ok(args.into_iter().next().unwrap_or(Expression::float(0.0))),
+        // i32.const carries a 32-bit pattern: reinterpret the (possibly
+        // unsigned, e.g. 0x80000000) literal into signed i32 range so it stays
+        // exactly representable and the i32 opcodes read the right bits.
+        "i32.const" => {
+            let v = args.into_iter().next().unwrap_or(Expression::int(0));
+            if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
+                let reinterp = (*n as u32) as i32 as i64;
+                Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Int(reinterp)),
+                    span,
+                ))
+            } else {
+                Ok(v)
+            }
+        }
+        // i64.const needs an exact 64-bit value; a plain Int literal compiles to
+        // f64 (losing bits past 2^53), so carry it as the exact-integer literal
+        // the i64 opcodes read via `as_i64`.
+        "i64.const" => {
+            let v = args.into_iter().next().unwrap_or(Expression::int(0));
+            if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
+                Ok(Expression::with_span(ExprKind::Lit(Literal::BigInt(*n)), span))
+            } else {
+                Ok(v)
+            }
+        }
+        "f64.const" => Ok(args.into_iter().next().unwrap_or(Expression::float(0.0))),
+        // f32.const carries an f32 value: demote the (exact-text) f64 literal to
+        // single precision so it lands as `Value::F32`, matching WASM.
+        "f32.const" => {
+            let v = args.into_iter().next().unwrap_or(Expression::float(0.0));
+            Ok(make_call("f32_demote_f64", vec![v], span))
+        }
         // wasm:js-string builtins — string.const "text" → string literal
         "string.const" => Ok(args.into_iter().next().unwrap_or(Expression::string(""))),
 
@@ -1024,50 +1284,32 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         }
 
         // ── Binary arithmetic ─────────────────────────────────────────────
-        "i32.add" | "i64.add" | "f32.add" | "f64.add" => bin_op(args, BinOp::Add, span),
-        "i32.sub" | "i64.sub" | "f32.sub" | "f64.sub" => bin_op(args, BinOp::Sub, span),
-        "i32.mul" | "i64.mul" | "f32.mul" | "f64.mul" => bin_op(args, BinOp::Mul, span),
-        "i32.div_s" | "i32.div_u" | "i64.div_s" | "i64.div_u" | "f32.div" | "f64.div" => {
-            bin_op(args, BinOp::Div, span)
-        }
-        "i32.rem_s" | "i32.rem_u" | "i64.rem_s" | "i64.rem_u" => bin_op(args, BinOp::Mod, span),
-        "i32.and" | "i64.and" => bin_op(args, BinOp::BitAnd, span),
-        "i32.or" | "i64.or" => bin_op(args, BinOp::BitOr, span),
-        "i32.xor" | "i64.xor" => bin_op(args, BinOp::BitXor, span),
-        "i32.shl" | "i64.shl" => bin_op(args, BinOp::Shl, span),
-        "i32.shr_s" | "i32.shr_u" | "i64.shr_s" | "i64.shr_u" => bin_op(args, BinOp::Shr, span),
+        // Every typed WASM op routes to its real opcode (via the default
+        // make_call below → profile `opcode:<op>`) so the VM applies genuine
+        // WASM semantics — i32/i64 wrapping and signed/unsigned splits, f32
+        // single precision. Only f64 arithmetic (native IEEE double) and float
+        // comparisons stay on the shared BinOp path, where they are exact.
+        "f64.add" => bin_op(args, BinOp::Add, span),
+        "f64.sub" => bin_op(args, BinOp::Sub, span),
+        "f64.mul" => bin_op(args, BinOp::Mul, span),
+        "f64.div" => bin_op(args, BinOp::Div, span),
 
         // ── Comparisons ───────────────────────────────────────────────────
-        "i32.eq" | "i64.eq" | "f32.eq" | "f64.eq" => bin_op(args, BinOp::Eq, span),
-        "i32.ne" | "i64.ne" | "f32.ne" | "f64.ne" => bin_op(args, BinOp::NotEq, span),
-        "i32.lt_s" | "i32.lt_u" | "i64.lt_s" | "i64.lt_u" | "f32.lt" | "f64.lt" => {
-            bin_op(args, BinOp::Lt, span)
-        }
-        "i32.gt_s" | "i32.gt_u" | "i64.gt_s" | "i64.gt_u" | "f32.gt" | "f64.gt" => {
-            bin_op(args, BinOp::Gt, span)
-        }
-        "i32.le_s" | "i32.le_u" | "i64.le_s" | "i64.le_u" | "f32.le" | "f64.le" => {
-            bin_op(args, BinOp::LtEq, span)
-        }
-        "i32.ge_s" | "i32.ge_u" | "i64.ge_s" | "i64.ge_u" | "f32.ge" | "f64.ge" => {
-            bin_op(args, BinOp::GtEq, span)
-        }
+        // Float comparisons compare exact f64 widenings; i32/i64 comparisons
+        // (with signed/unsigned variants) route to their opcodes below.
+        "f32.eq" | "f64.eq" => bin_op(args, BinOp::Eq, span),
+        "f32.ne" | "f64.ne" => bin_op(args, BinOp::NotEq, span),
+        "f32.lt" | "f64.lt" => bin_op(args, BinOp::Lt, span),
+        "f32.gt" | "f64.gt" => bin_op(args, BinOp::Gt, span),
+        "f32.le" | "f64.le" => bin_op(args, BinOp::LtEq, span),
+        "f32.ge" | "f64.ge" => bin_op(args, BinOp::GtEq, span),
 
-        // ── eqz → == 0 ───────────────────────────────────────────────────
-        "i32.eqz" | "i64.eqz" => {
-            let operand = args.into_iter().next().unwrap_or(Expression::int(0));
-            Ok(Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(operand),
-                    right: Box::new(Expression::int(0)),
-                },
-                span,
-            ))
-        }
+        // i32.eqz / i64.eqz route to their opcodes (default make_call below).
 
         // ── Unary negation ────────────────────────────────────────────────
-        "f32.neg" | "f64.neg" => {
+        // f32.neg routes to the f32 opcode (default make_call below) so it
+        // yields a single-precision Value::F32; f64.neg uses the AST Unary.
+        "f64.neg" => {
             let operand = args.into_iter().next().unwrap_or(Expression::float(0.0));
             Ok(Expression::with_span(
                 ExprKind::Unary {
@@ -1108,7 +1350,16 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         "call" => {
             let mut it = args.into_iter();
             let callee = it.next().unwrap_or(Expression::null());
-            let call_args: Vec<Expression> = it.collect();
+            let mut call_args: Vec<Expression> = it.collect();
+            // `$log_f64` prints in WAT text (`4.0`, `inf`, `nan`) rather than
+            // ECMA `ToString` (`4`, `Infinity`); pre-format its f64 argument.
+            // `$log_f32` needs no wrapper — a `Value::F32` already Displays as
+            // WAT float text (f32 is a WASM-only value type).
+            if let ExprKind::Ident(n) = &callee.kind {
+                if n == "log_f64" {
+                    call_args = call_args.into_iter().map(wat_float_format).collect();
+                }
+            }
             // A call to a function DEFINED in this module targets a static method
             // of the module class; qualify `Ident(f)` as `ClassName.f`. Imports
             // keep their bare name so the profile builtin table resolves them.
@@ -1237,6 +1488,7 @@ fn instr_arg_inner_to_expr(inner: Pair<Rule>) -> Expression {
         Rule::val_type
         | Rule::bare_val_type
         | Rule::bare_lane_type
+        | Rule::bare_heap_type
         | Rule::mem_arg
         | Rule::val_lane_type => Expression::string(inner.as_str()),
         _ => Expression::null(),
@@ -1331,6 +1583,186 @@ fn walk_start_field(pair: Pair<Rule>) -> Result<Expression, String> {
     }))
 }
 
+// ── Linear memory + data segments ─────────────────────────────────────────────
+
+fn walk_memory_field(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut min_pages: u64 = 0;
+    let mut max_pages: Option<u64> = None;
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::mem_type {
+            let mut nums = child.into_inner().filter(|p| p.as_rule() == Rule::integer);
+            if let Some(min) = nums.next() {
+                min_pages = parse_wat_u64(min.as_str());
+            }
+            if let Some(max) = nums.next() {
+                max_pages = Some(parse_wat_u64(max.as_str()));
+            }
+        }
+    }
+    Ok(Statement::with_span(
+        StmtKind::MemoryDecl {
+            min_pages,
+            max_pages,
+        },
+        span,
+    ))
+}
+
+fn walk_table_field(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut min_size: u64 = 0;
+    let mut max_size: Option<u64> = None;
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::table_type {
+            // table_type = integer integer? ref_type — pages then optional max.
+            let mut nums = child.into_inner().filter(|p| p.as_rule() == Rule::integer);
+            if let Some(min) = nums.next() {
+                min_size = parse_wat_u64(min.as_str());
+            }
+            if let Some(max) = nums.next() {
+                max_size = Some(parse_wat_u64(max.as_str()));
+            }
+        }
+    }
+    Ok(Statement::with_span(
+        StmtKind::TableDecl { min_size, max_size },
+        span,
+    ))
+}
+
+fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut memory_index: u32 = 0;
+    let mut offset: Option<Expression> = None;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut labels = LabelStack::new();
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            // `(memory idx)(offset …)`, `(offset …)`, or the abbreviated
+            // `(i32.const N)` single-instruction offset — all active segments.
+            // Absent entirely → passive segment (offset stays None).
+            Rule::data_mode => {
+                for m in child.into_inner() {
+                    match m.as_rule() {
+                        Rule::index => {
+                            if let Some(i) = m.into_inner().next() {
+                                if i.as_rule() == Rule::integer {
+                                    memory_index = parse_wat_u64(i.as_str()) as u32;
+                                }
+                            }
+                        }
+                        Rule::instr => offset = Some(walk_instr_as_expr(m, &mut labels)?),
+                        Rule::folded_instr => {
+                            let sp = to_span(&m);
+                            offset = Some(walk_folded_instr_as_expr(m, sp, &mut labels)?);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::string => bytes.extend(decode_wat_data_string(child.as_str())),
+            _ => {}
+        }
+    }
+    Ok(Statement::with_span(
+        StmtKind::DataSegment {
+            memory_index,
+            offset,
+            bytes,
+        },
+        span,
+    ))
+}
+
+fn parse_wat_u64(s: &str) -> u64 {
+    let s = s.trim().replace('_', "");
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).unwrap_or(0)
+    } else {
+        s.parse::<u64>().unwrap_or(0)
+    }
+}
+
+/// Decode a WAT data-string literal into raw bytes. Data strings differ from
+/// text strings: `\HH` (two hex digits) is an arbitrary byte — the dominant
+/// form in data segments — alongside `\n \t \r \\ \" \'` and `\u{…}`.
+fn decode_wat_data_string(s: &str) -> Vec<u8> {
+    let s = s.trim();
+    let inner = if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+    let bytes = inner.as_bytes();
+    let hex_val = |c: u8| -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0,
+        }
+    };
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        match bytes[i + 1] {
+            b'n' => {
+                out.push(b'\n');
+                i += 2;
+            }
+            b't' => {
+                out.push(b'\t');
+                i += 2;
+            }
+            b'r' => {
+                out.push(b'\r');
+                i += 2;
+            }
+            b'\\' => {
+                out.push(b'\\');
+                i += 2;
+            }
+            b'"' => {
+                out.push(b'"');
+                i += 2;
+            }
+            b'\'' => {
+                out.push(b'\'');
+                i += 2;
+            }
+            b'u' if i + 2 < bytes.len() && bytes[i + 2] == b'{' => {
+                if let Some(close_rel) = inner[i + 3..].find('}') {
+                    let hex = &inner[i + 3..i + 3 + close_rel];
+                    if let Ok(cp) = u32::from_str_radix(hex, 16) {
+                        if let Some(ch) = char::from_u32(cp) {
+                            let mut buf = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                        }
+                    }
+                    i += 3 + close_rel + 1;
+                } else {
+                    i += 2;
+                }
+            }
+            c if c.is_ascii_hexdigit() && i + 2 < bytes.len() && bytes[i + 2].is_ascii_hexdigit() => {
+                out.push((hex_val(c) << 4) | hex_val(bytes[i + 2]));
+                i += 3;
+            }
+            c => {
+                out.push(c);
+                i += 2;
+            }
+        }
+    }
+    out
+}
+
 // ── WAST script commands ──────────────────────────────────────────────────────
 
 fn walk_invoke_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1349,10 +1781,26 @@ fn walk_invoke_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
+    // Resolve the exported name to the module class's static method so the call
+    // actually reaches the function (exports are `Class.method`).
+    let callee = match EXPORT_FUNC_MAP.with(|m| m.borrow().get(&func_name).cloned()) {
+        Some(method) => {
+            let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
+            Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::ident(&class)),
+                    field: method,
+                    null_safe: false,
+                },
+                span,
+            )
+        }
+        None => Expression::ident(&func_name),
+    };
     Ok(Statement::with_span(
         StmtKind::Expr(Expression::with_span(
             ExprKind::Call {
-                callee: Box::new(Expression::ident(&func_name)),
+                callee: Box::new(callee),
                 args: args.into_iter().map(Argument::positional).collect(),
                 optional: false,
             },
@@ -1551,10 +1999,20 @@ fn parse_integer(s: &str) -> Expression {
     {
         (false, if s.starts_with('+') { &s[3..] } else { &s[2..] })
     } else {
-        return Expression::int(s.parse::<i64>().unwrap_or(0));
+        // Decimal: fall back to u64 (then reinterpret) for values above i64::MAX
+        // such as an unsigned 64-bit literal written in decimal.
+        let v = s
+            .parse::<i64>()
+            .or_else(|_| s.parse::<u64>().map(|u| u as i64))
+            .unwrap_or(0);
+        return Expression::int(v);
     };
-    let v = i64::from_str_radix(digits, 16).unwrap_or(0);
-    Expression::int(if neg { -v } else { v })
+    // Hex: a 64-bit pattern like 0x8000000000000000 exceeds i64::MAX, so parse as
+    // u64 and reinterpret to the signed value it denotes.
+    let v = i64::from_str_radix(digits, 16)
+        .or_else(|_| u64::from_str_radix(digits, 16).map(|u| u as i64))
+        .unwrap_or(0);
+    Expression::int(if neg { v.wrapping_neg() } else { v })
 }
 
 fn parse_float(s: &str) -> Expression {
@@ -1562,8 +2020,9 @@ fn parse_float(s: &str) -> Expression {
     match s {
         "inf" | "+inf" => Expression::float(f64::INFINITY),
         "-inf" => Expression::float(f64::NEG_INFINITY),
-        "nan" | "+nan" | "-nan" => Expression::float(f64::NAN),
-        _ if s.contains("nan:0x") => Expression::float(f64::NAN),
+        // All NaN forms — plain, `nan:0x…`, `nan:canonical`, `nan:arithmetic`
+        // (payload/kind is not observable through an f64 in this VM).
+        _ if s.contains("nan") => Expression::float(f64::NAN),
         _ => Expression::float(s.parse::<f64>().unwrap_or(0.0)),
     }
 }
@@ -1593,6 +2052,76 @@ fn to_span(pair: &Pair<Rule>) -> Span {
     }
 }
 
+/// Peek the plain-instruction keyword of an `instr`/`plain_instr` pair without
+/// consuming it. Returns None for folded instructions (which carry no linear
+/// `block`/`loop`/`if`/`else`/`end` tokens).
+fn peek_plain_name(pair: &Pair<Rule>) -> Option<String> {
+    let inner = if pair.as_rule() == Rule::instr {
+        pair.clone().into_inner().next()?
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() == Rule::plain_instr {
+        inner
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::instr_name)
+            .map(|c| c.as_str().to_string())
+    } else {
+        None
+    }
+}
+
+/// The `$id` label immediately following a `block`/`loop`/`if` keyword, if any.
+fn peek_plain_label(pair: &Pair<Rule>) -> Option<String> {
+    let inner = if pair.as_rule() == Rule::instr {
+        pair.clone().into_inner().next()?
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return None;
+    }
+    inner
+        .into_inner()
+        .filter_map(|c| {
+            if c.as_rule() == Rule::instr_arg {
+                c.into_inner().next()
+            } else {
+                None
+            }
+        })
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+}
+
+/// Given the index of an unfolded `block`/`loop`/`if` opener, find the matching
+/// `end` (respecting nesting) and, for `if`, the `else` at the same depth.
+fn find_matching_end(
+    pairs: &[Pair<Rule>],
+    opener: usize,
+) -> Result<(Option<usize>, usize), String> {
+    let mut depth = 1usize;
+    let mut else_idx: Option<usize> = None;
+    let mut j = opener + 1;
+    while j < pairs.len() {
+        if let Some(kw) = peek_plain_name(&pairs[j]) {
+            match kw.as_str() {
+                "block" | "loop" | "if" => depth += 1,
+                "else" if depth == 1 => else_idx = Some(j),
+                "end" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok((else_idx, j));
+                    }
+                }
+                _ => {}
+            }
+        }
+        j += 1;
+    }
+    Err("unterminated block/loop/if (missing end)".to_string())
+}
+
 fn fold_instructions(
     pairs: Vec<Pair<Rule>>,
     labels: &mut LabelStack,
@@ -1600,7 +2129,166 @@ fn fold_instructions(
     let mut stack: Vec<Expression> = Vec::new();
     let mut statements: Vec<Statement> = Vec::new();
 
-    for pair in pairs {
+    let mut i = 0;
+    while i < pairs.len() {
+        // ── Unfolded structured control: block/loop/if … else … end ──────────
+        // These arrive as flat `plain_instr` tokens; group them into the same
+        // Labeled/Block/While/If statements the folded S-expr forms produce.
+        if let Some(kw) = peek_plain_name(&pairs[i]) {
+            match kw.as_str() {
+                "block" | "loop" | "if" => {
+                    let span = to_span(&pairs[i]);
+                    let label = peek_plain_label(&pairs[i]);
+                    let (else_idx, end_idx) = find_matching_end(&pairs, i)?;
+
+                    if kw == "if" {
+                        let produces_value = peek_has_block_type(&pairs[i]);
+                        // Condition is the value on top of the stack.
+                        let cond = stack.pop().unwrap_or(Expression::bool(false));
+                        for e in stack.drain(..) {
+                            statements.push(Statement::new(StmtKind::Expr(e)));
+                        }
+                        let then_end = else_idx.unwrap_or(end_idx);
+                        let then_pairs: Vec<Pair<Rule>> = pairs[i + 1..then_end].to_vec();
+                        labels.push(label.clone(), LabelKind::Block, None);
+                        let mut then_body = fold_instructions(then_pairs, labels)?;
+                        let mut else_body = if let Some(ei) = else_idx {
+                            let else_pairs: Vec<Pair<Rule>> = pairs[ei + 1..end_idx].to_vec();
+                            Some(fold_instructions(else_pairs, labels)?)
+                        } else {
+                            None
+                        };
+                        labels.pop();
+                        // A `(result …)` if yields a value: capture each branch's
+                        // trailing value in a temp and leave that temp on the stack.
+                        if produces_value {
+                            let tmp = fresh_result_temp();
+                            statements.push(Statement::new(StmtKind::VarDecl {
+                                declarations: vec![VarDeclarator {
+                                    pattern: BindingPattern::Ident(tmp.clone()),
+                                    type_hint: None,
+                                    init: Some(Expression::null()),
+                                    array_bounds: None,
+                                    with_events: false,
+                                }],
+                                kind: VarDeclKind::Let,
+                            }));
+                            assign_last_expr_to(&mut then_body, &tmp);
+                            if let Some(eb) = else_body.as_mut() {
+                                assign_last_expr_to(eb, &tmp);
+                            }
+                            statements.push(Statement::with_span(
+                                StmtKind::If {
+                                    cond,
+                                    then_body,
+                                    else_body,
+                                    elifs: Vec::new(),
+                                },
+                                span,
+                            ));
+                            stack.push(Expression::ident(&tmp));
+                        } else {
+                            statements.push(Statement::with_span(
+                                StmtKind::If {
+                                    cond,
+                                    then_body,
+                                    else_body,
+                                    elifs: Vec::new(),
+                                },
+                                span,
+                            ));
+                        }
+                    } else {
+                        // block / loop take no condition; sequence any pending
+                        // side effects before the structured statement.
+                        for e in stack.drain(..) {
+                            statements.push(Statement::new(StmtKind::Expr(e)));
+                        }
+                        let body_pairs: Vec<Pair<Rule>> = pairs[i + 1..end_idx].to_vec();
+                        // Loop parameters thread values across iterations, which
+                        // this lowering can't model — treat such loops as a
+                        // one-shot block so `br` breaks (terminates) rather than
+                        // continues forever.
+                        let loop_has_param =
+                            kw == "loop" && peek_opener_has_param(&pairs[i]);
+                        let kind = if kw == "block" || loop_has_param {
+                            LabelKind::Block
+                        } else {
+                            LabelKind::Loop
+                        };
+                        // A `(result …)` block/loop yields a value: `br` to it
+                        // carries the stack top into a temp, and the fall-through
+                        // value assigns the same temp; the temp is left on the stack.
+                        let result_temp = if peek_has_block_type(&pairs[i]) {
+                            Some(fresh_result_temp())
+                        } else {
+                            None
+                        };
+                        if let Some(tmp) = &result_temp {
+                            statements.push(Statement::new(StmtKind::VarDecl {
+                                declarations: vec![VarDeclarator {
+                                    pattern: BindingPattern::Ident(tmp.clone()),
+                                    type_hint: None,
+                                    init: Some(Expression::null()),
+                                    array_bounds: None,
+                                    with_events: false,
+                                }],
+                                kind: VarDeclKind::Let,
+                            }));
+                        }
+                        let effective =
+                            labels.push(label.clone(), kind, result_temp.clone());
+                        let mut body = fold_instructions(body_pairs, labels)?;
+                        labels.pop();
+                        // Capture the fall-through value (unreachable if the body
+                        // always branches out, which is why it's safe to append).
+                        if let Some(tmp) = &result_temp {
+                            assign_last_expr_to(&mut body, tmp);
+                        }
+                        let inner_stmt = if kw == "block" || loop_has_param {
+                            Statement::with_span(StmtKind::Block(body), span)
+                        } else {
+                            // A WASM loop exits when control falls off its end;
+                            // `while (true)` needs an explicit break to match.
+                            body.push(Statement::with_span(
+                                StmtKind::Break(BreakTarget::Implicit),
+                                span,
+                            ));
+                            Statement::with_span(
+                                StmtKind::While {
+                                    cond: Expression::bool(true),
+                                    body,
+                                    else_body: None,
+                                },
+                                span,
+                            )
+                        };
+                        statements.push(Statement::with_span(
+                            StmtKind::Labeled {
+                                label: effective,
+                                body: Box::new(inner_stmt),
+                            },
+                            span,
+                        ));
+                        if let Some(tmp) = &result_temp {
+                            stack.push(Expression::ident(tmp));
+                        }
+                    }
+                    i = end_idx + 1;
+                    continue;
+                }
+                "end" | "else" => {
+                    // Stray delimiter (already consumed by find_matching_end for
+                    // real openers) — skip defensively.
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        let pair = pairs[i].clone();
+        i += 1;
         let span = to_span(&pair);
         let inner = if pair.as_rule() == Rule::instr {
             pair.into_inner().next().ok_or("Empty instr")?
@@ -1632,14 +2320,6 @@ fn fold_instructions(
 
                 // Determine stack arity
                 let arity = get_instruction_arity(&name, &args);
-                if name == "call" {
-                    eprintln!(
-                        "DBG call args={:?} arity={} stack_len={}",
-                        args.iter().map(|a| format!("{:?}", a.kind)).collect::<Vec<_>>(),
-                        arity,
-                        stack.len()
-                    );
-                }
                 let pop_count = usize::min(arity, stack.len());
                 let drain_start = stack.len() - pop_count;
                 let popped: Vec<Expression> = stack.drain(drain_start..).collect();
@@ -1666,34 +2346,115 @@ fn fold_instructions(
                         statements.push(Statement::with_span(StmtKind::Return(val), span));
                     }
                     "br" => {
-                        let lbl = args.first().and_then(|a| match &a.kind {
-                            ExprKind::Ident(n) => Some(n.as_str()),
-                            _ => None,
-                        });
-                        statements.push(make_br_stmt_opt(lbl, labels, span));
+                        let target = br_target_of(args.first());
+                        if let Some(entry) = labels.resolve(&target) {
+                            // Unconditional branch: carry the top of stack into a
+                            // value-producing target, then jump.
+                            if let Some(tmp) = &entry.result_temp {
+                                if let Some(val) = stack.pop() {
+                                    statements.push(Statement::new(StmtKind::Expr(
+                                        Expression::new(ExprKind::Assign {
+                                            target: Box::new(Expression::ident(tmp)),
+                                            value: Box::new(val),
+                                        }),
+                                    )));
+                                }
+                            }
+                            statements.push(br_stmt_for(&entry, span));
+                        } else {
+                            statements.push(make_br_stmt_opt(None, labels, span));
+                        }
                     }
                     "br_if" => {
-                        let mut lbl = None;
-                        let mut cond = None;
+                        // Arity 1 pops the condition; the label (if any) is the
+                        // remaining immediate arg.
+                        let mut lbl_arg: Option<&Expression> = None;
+                        let mut cond: Option<Expression> = None;
                         if args.len() >= 2 {
-                            if let ExprKind::Ident(ref n) = args[0].kind {
-                                lbl = Some(n.clone());
-                            }
+                            lbl_arg = Some(&args[0]);
                             cond = Some(args[1].clone());
                         } else if args.len() == 1 {
                             cond = Some(args[0].clone());
                         }
                         let cond_expr = cond.unwrap_or(Expression::int(0));
-                        let branch = make_br_stmt_opt(lbl.as_deref(), labels, span);
+                        let target = br_target_of(lbl_arg);
+                        let mut then_body: Vec<Statement> = Vec::new();
+                        let branch = match labels.resolve(&target) {
+                            Some(entry) => {
+                                // The block result passes through a conditional
+                                // branch, so peek (don't consume) the stack value.
+                                if let Some(tmp) = &entry.result_temp {
+                                    if let Some(val) = stack.last() {
+                                        then_body.push(Statement::new(StmtKind::Expr(
+                                            Expression::new(ExprKind::Assign {
+                                                target: Box::new(Expression::ident(tmp)),
+                                                value: Box::new(val.clone()),
+                                            }),
+                                        )));
+                                    }
+                                }
+                                br_stmt_for(&entry, span)
+                            }
+                            None => make_br_stmt_opt(None, labels, span),
+                        };
+                        then_body.push(branch);
                         statements.push(Statement::with_span(
                             StmtKind::If {
                                 cond: cond_expr,
-                                then_body: vec![branch],
+                                then_body,
                                 else_body: None,
                                 elifs: Vec::new(),
                             },
                             span,
                         ));
+                    }
+                    "br_table" => {
+                        // `br_table l0 l1 … ln` pops a selector index and branches
+                        // to the l_index frame (l_n is the default). Lower to an
+                        // if/else-if chain over the index bound to a temp.
+                        let targets: Vec<BrTarget> =
+                            args.iter().map(|a| br_target_of(Some(a))).collect();
+                        let index = stack.pop().unwrap_or(Expression::int(0));
+                        let br_for = |t: &BrTarget| match labels.resolve(t) {
+                            Some(entry) => br_stmt_for(&entry, span),
+                            None => make_br_stmt_opt(None, labels, span),
+                        };
+                        if targets.is_empty() {
+                            // Degenerate: nothing to branch to.
+                        } else if targets.len() == 1 {
+                            statements.push(br_for(&targets[0]));
+                        } else {
+                            let idx_tmp = fresh_result_temp();
+                            statements.push(Statement::new(StmtKind::VarDecl {
+                                declarations: vec![VarDeclarator {
+                                    pattern: BindingPattern::Ident(idx_tmp.clone()),
+                                    type_hint: None,
+                                    init: Some(index),
+                                    array_bounds: None,
+                                    with_events: false,
+                                }],
+                                kind: VarDeclKind::Let,
+                            }));
+                            // Default (last) branch, then wrap each earlier case.
+                            let mut chain = vec![br_for(&targets[targets.len() - 1])];
+                            for k in (0..targets.len() - 1).rev() {
+                                let cond = Expression::new(ExprKind::Binary {
+                                    op: BinOp::StrictEq,
+                                    left: Box::new(Expression::ident(&idx_tmp)),
+                                    right: Box::new(Expression::int(k as i64)),
+                                });
+                                chain = vec![Statement::with_span(
+                                    StmtKind::If {
+                                        cond,
+                                        then_body: vec![br_for(&targets[k])],
+                                        else_body: Some(chain),
+                                        elifs: Vec::new(),
+                                    },
+                                    span,
+                                )];
+                            }
+                            statements.extend(chain);
+                        }
                     }
                     _ => {
                         // Value-producing or standard instruction.
@@ -1816,9 +2577,17 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8" | "i32.store16"
         | "i64.store8" | "i64.store16" | "i64.store32" => 2, // address, value
 
-        // Memory size / grow
+        // Memory size / grow / bulk. fill/copy/init each pop 3 stack operands
+        // (their data/mem-index selectors are immediates, not stack operands).
         "memory.size" => 0,
         "memory.grow" => 1,
+        "memory.fill" | "memory.copy" | "memory.init" => 3,
+
+        // Tables. The table index is an immediate; these are the stack operands.
+        "table.get" => 1,             // elem index
+        "table.set" | "table.grow" => 2, // (index,value) / (init,delta)
+        "table.size" => 0,
+        "table.fill" | "table.copy" | "table.init" => 3,
 
         // br_if
         "br_if" => 1,
@@ -1863,8 +2632,77 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "struct.get" | "struct.get_s" | "struct.get_u" => 1, // pops 1 ref
         "struct.set" => 2,         // pops ref + val
 
+        // ── SIMD v128: number of STACK operands (lane index / v128.const values
+        //    are immediates, not stack operands). ────────────────────────────
+        n if is_simd_instr(n) => simd_stack_arity(n),
+
         _ => 0,
     }
+}
+
+/// Is this a SIMD (v128) instruction mnemonic?
+fn is_simd_instr(name: &str) -> bool {
+    matches!(name.split_once('.').map(|(p, _)| p), Some(
+        "i8x16" | "i16x8" | "i32x4" | "i64x2" | "f32x4" | "f64x2" | "v128"
+    ))
+}
+
+/// How many STACK operands a SIMD op consumes (immediates excluded). Derived
+/// from the op's shape, matching the VM's expectations.
+fn simd_stack_arity(name: &str) -> usize {
+    let op = name.split_once('.').map(|(_, o)| o).unwrap_or(name);
+    if op == "const" {
+        return 0;
+    }
+    if op.contains("replace_lane") {
+        return 2; // vector + scalar (lane is immediate)
+    }
+    if op.contains("extract_lane") {
+        return 1; // vector (lane is immediate)
+    }
+    if op.ends_with("splat") {
+        return 1; // scalar
+    }
+    if op == "bitselect" || op.contains("relaxed_madd") || op.contains("relaxed_nmadd")
+        || op.contains("laneselect")
+    {
+        return 3;
+    }
+    if op.ends_with("_lane") {
+        return 2; // load_lane / store_lane: address + vector (lane immediate)
+    }
+    if op.contains("load") {
+        return 1; // v128.load, load*_splat, load*x*, load*_zero: address
+    }
+    if op.contains("store") {
+        return 2; // address + vector
+    }
+    // Unary (single vector in → out).
+    if op == "not"
+        || op.ends_with("all_true")
+        || op.ends_with("any_true")
+        || op.ends_with("bitmask")
+        || op == "abs"
+        || op == "neg"
+        || op == "sqrt"
+        || op == "ceil"
+        || op == "floor"
+        || op == "nearest"
+        || op == "popcnt"
+        || op == "trunc"
+        || op.starts_with("extend_")
+        || op.starts_with("extadd_pairwise")
+        || op.starts_with("convert")
+        || op.starts_with("promote")
+        || op.starts_with("demote")
+        || op.starts_with("trunc_sat")
+        || op.starts_with("relaxed_trunc")
+    {
+        return 1;
+    }
+    // Everything else is binary: add/sub/mul/div/min/max/logic/compare/shift/
+    // avgr/narrow/extmul/dot/*_sat/pmin/pmax/q15mulr/shuffle/swizzle/relaxed_*.
+    2
 }
 
 fn get_instruction_push_count(name: &str) -> usize {

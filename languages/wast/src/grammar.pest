@@ -47,10 +47,17 @@ integer = @{
 
 float = @{
     ("+" | "-")? ~ (
-        "nan:0x" ~ hex_digit+
+        "nan:canonical"
+      | "nan:arithmetic"
+      | "nan:0x" ~ hex_digit+
       | "nan"
       | "inf"
-      | "0x" ~ hex_digit+ ~ ("." ~ hex_digit*)? ~ (("p" | "P") ~ ("+" | "-")? ~ dec_digit+)?
+      // A hex float MUST carry a "." or a "p" exponent; without one, "0x0F" is a
+      // hex integer, not a float (the `integer` rule must win).
+      | "0x" ~ hex_digit+ ~ (
+            "." ~ hex_digit* ~ (("p" | "P") ~ ("+" | "-")? ~ dec_digit+)?
+          | ("p" | "P") ~ ("+" | "-")? ~ dec_digit+
+        )
       | dec_digit+ ~ "." ~ dec_digit* ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
       | dec_digit+ ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
     )
@@ -211,22 +218,19 @@ instr_name = @{
   | "struct.new_default" | "struct.new"
   | "struct.get_s" | "struct.get_u" | "struct.get"
   | "struct.set"
-    // ── SIMD v128 (abbreviated) ───────────────────────────────────────────
-  | "v128.const"
-  | "v128.not" | "v128.and" | "v128.andnot" | "v128.or" | "v128.xor"
-  | "v128.bitselect" | "v128.any_true"
-  | "v128.load" | "v128.store"
-  | "i8x16.splat"  | "i16x8.splat"  | "i32x4.splat"  | "i64x2.splat"
-  | "f32x4.splat"  | "f64x2.splat"
-  | "i8x16.shuffle" | "i8x16.swizzle"
-  | "i8x16.add" | "i16x8.add" | "i32x4.add" | "i64x2.add"
-  | "i8x16.sub" | "i16x8.sub" | "i32x4.sub" | "i64x2.sub"
-  | "i32x4.mul" | "i64x2.mul"
-  | "f32x4.add" | "f64x2.add" | "f32x4.sub" | "f64x2.sub"
-  | "f32x4.mul" | "f64x2.mul" | "f32x4.div" | "f64x2.div"
-  | "f32x4.sqrt" | "f64x2.sqrt"
-  | "i32x4.trunc_sat_f32x4_s" | "i32x4.trunc_sat_f32x4_u"
-  | "f32x4.convert_i32x4_s"   | "f32x4.convert_i32x4_u"
+    // ── SIMD v128 ─────────────────────────────────────────────────────────
+    // Every lane op is matched generically (i8x16.*, i16x8.*, …, v128.*) and
+    // maps 1:1 to a VM opcode resolved via `Op::from_wasm_name` at emit time —
+    // there is no per-instruction list here or in the emitter.
+  | ("i8x16" | "i16x8" | "i32x4" | "i64x2" | "f32x4" | "f64x2" | "v128") ~ "." ~ (ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")*)
+    // ── Generic mnemonic (GC, ref, table, bulk-memory: data.drop, ref.cast,
+    //    array.get, i31.get_s, call_ref, …) ────────────────────────────────
+    // Any remaining dotted-or-plain instruction name is matched generically and
+    // maps 1:1 to a VM opcode resolved via `Op::from_wasm_name` at emit time —
+    // no per-instruction list here or in the emitter. Placed last so the
+    // explicit control-flow names above (which need block_type / folded
+    // grammar) still win.
+  | (ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")*) ~ ("." ~ (ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")*))*
 }
 
 // ── Instruction arguments ─────────────────────────────────────────────────────
@@ -244,6 +248,17 @@ instr_arg = {
   | integer
   | bare_lane_type
   | bare_val_type
+  | bare_heap_type
+}
+
+// Heap-type immediate for ref.null / ref.cast / ref.test / … (`func`, `extern`,
+// `any`, `string`, …). The trailing guard stops it consuming an instruction
+// name (`array.get`) or a longer word (`structref`); `$id` targets stay on the
+// `id` arg above.
+bare_heap_type = @{
+    ("funcref" | "externref" | "func" | "extern" | "exn" | "any" | "eq" | "i31"
+    | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn")
+    ~ !(ASCII_ALPHANUMERIC | "_" | ".")
 }
 
 bare_val_type  = @{ val_type ~ !("." | ASCII_ALPHANUMERIC | "_") }
@@ -365,6 +380,7 @@ data_field = {
 data_mode = {
     "(" ~ "memory" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
   | "(" ~ "offset" ~ instr* ~ ")"
+  | folded_instr
 }
 
 // ── Type definition ───────────────────────────────────────────────────────────
@@ -377,7 +393,7 @@ field_def      = { "(" ~ "field" ~ id? ~ storage_type ~ ")" }
 storage_type   = { "(" ~ "mut" ~ val_type ~ ")" | val_type | packed_type | ref_val_type }
 packed_type    = @{ "i8" | "i16" }
 ref_val_type   = { "(" ~ "ref" ~ "null"? ~ heap_type ~ ")" | ref_type }
-heap_type      = @{ "func" | "extern" | "any" | "eq" | "i31" | "data" | "array" | "none" | "noextern" | "nofunc" | id }
+heap_type      = @{ "func" | "extern" | "exn" | "any" | "eq" | "i31" | "data" | "struct" | "array" | "string" | "none" | "noextern" | "nofunc" | "noexn" | id }
 func_type      = { "(" ~ "func" ~ param* ~ result* ~ ")" }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
@@ -434,7 +450,7 @@ result_val = {
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
   | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
-  | "(" ~ "ref.null"   ~ ref_type ~ ")"
+  | "(" ~ "ref.null"   ~ heap_type ~ ")"
   | "(" ~ "ref.extern" ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ ")"
   | "(" ~ "f32.const"  ~ "nan:canonical" ~ ")"
@@ -456,7 +472,7 @@ expr = {
   | "(" ~ "f32.const" ~ (float | integer) ~ ")"
   | "(" ~ "f64.const" ~ (float | integer) ~ ")"
   | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
-  | "(" ~ "ref.null"   ~ ref_type ~ ")"
+  | "(" ~ "ref.null"   ~ heap_type ~ ")"
   | "(" ~ "ref.extern" ~ integer ~ ")"
   | "(" ~ "ref.func"   ~ index ~ ")"
 }
