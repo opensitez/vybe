@@ -89,6 +89,36 @@ pub fn emit_if_present(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
 }
 
+pub fn emit_filter(chunks: &mut [Chunk], current: usize, line: u32) {
+    let predicate_slot = chunks[current].alloc_scratch(1);
+    let optional_slot = chunks[current].alloc_scratch(1);
+    let result_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, predicate_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, optional_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
+    emit_is_present(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
+    emit_value_from_slot(chunks, current, optional_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+    emit_empty(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_empty(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 fn emit_value_from_slot(chunks: &mut [Chunk], current: usize, optional_slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     chunks[current].emit_i32_const(1, line);

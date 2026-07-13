@@ -40,7 +40,19 @@ thread_local! {
     static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_SCANNER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_THREAD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_THREAD_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_THREAD_TARGETS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
+    static JAVA_RUNNABLE_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_FUNCTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_FUNCTIONAL_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static JAVA_OPTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_TLR_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_CHAR_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_BIGINT_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_BIGDECIMAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_DECIMAL_FORMAT_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_NUMBER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     // Locals declared as java.util.regex Pattern / Matcher — routed
     // through the __j_pat_*/__j_m_* runtime.
     static JAVA_PATTERN_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -69,7 +81,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_THREAD_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_THREAD_TYPES.with(|vars| vars.borrow_mut().clear());
+    JAVA_THREAD_TARGETS.with(|targets| targets.borrow_mut().clear());
+    JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_FUNCTIONAL_TYPES.with(|types| types.borrow_mut().clear());
+    JAVA_OPTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_TLR_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_BIGINT_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_BIGDECIMAL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_NUMBER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_URL_VARS.with(|vars| vars.borrow_mut().clear());
@@ -143,14 +167,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     qualify_java_nested_types(&mut body);
     rewrite_java_user_tostring_calls(&mut body);
     erase_java_interface_param_hints(&mut body);
-    normalize_java_class_tree(&mut body);
 
     // PrintStream/Formatter runtime (emitter/format_runtime.rs) — same
     // pattern as the libc runtime prelude for C: platform functions as
-    // common AST, defined before the injected Main.main() call runs.
+    // common AST, defined before the injected Main.main() call runs. It
+    // includes Java's built-in Thread class, so it must enter the normal
+    // class pass with user classes instead of being appended afterward.
     let mut with_prelude = super::emitter::format_runtime::prelude();
     with_prelude.append(&mut body);
     let mut body = with_prelude;
+    normalize_java_class_tree(&mut body);
 
     // Java: inject a top-level call to the class's static main method.
     // Uses the same pattern as EntryPoint::Method in bundle.rs.
@@ -643,7 +669,16 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    if !parents.is_empty() {
+    let extends_thread = parents
+        .iter()
+        .any(|parent| java_type_simple_name(parent) == "Thread");
+    if extends_thread {
+        parents.retain(|parent| java_type_simple_name(parent) != "Thread");
+        JAVA_THREAD_TYPES.with(|types| {
+            types.borrow_mut().insert(name.clone());
+        });
+        inject_java_thread_stamps(&mut members);
+    } else if !parents.is_empty() {
         inject_implicit_super(&mut members);
     }
 
@@ -668,7 +703,11 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn inject_java_exception_stamps(class_name: &str, chain: &[String], members: &mut Vec<ClassMember>) {
+fn inject_java_exception_stamps(
+    class_name: &str,
+    chain: &[String],
+    members: &mut Vec<ClassMember>,
+) {
     let this_field = |f: &str| {
         Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
@@ -1187,7 +1226,11 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             is_sub: false,
         })))
     };
-    for (mname, field) in [("name", "__name"), ("ordinal", "__ordinal"), ("toString", "__name")] {
+    for (mname, field) in [
+        ("name", "__name"),
+        ("ordinal", "__ordinal"),
+        ("toString", "__name"),
+    ] {
         if !user_method_names.iter().any(|n| n == mname) {
             body_members.push(make_method(
                 mname,
@@ -1759,11 +1802,74 @@ fn walk_var_declarator(
     {
         JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
+    if type_hint.as_deref().is_some_and(|hint| {
+        let simple = java_type_simple_name(hint);
+        simple == "Thread" || JAVA_THREAD_TYPES.with(|types| types.borrow().contains(simple))
+    }) {
+        JAVA_THREAD_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "Runnable")
+    {
+        JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+        JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+        if let Some(hint) = type_hint.as_deref() {
+            JAVA_FUNCTIONAL_TYPES
+                .with(|types| types.borrow_mut().insert(name.clone(), hint.to_string()));
+        }
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(java_is_functional_interface_type)
+    {
+        JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+        if let Some(hint) = type_hint.as_deref() {
+            JAVA_FUNCTIONAL_TYPES
+                .with(|types| types.borrow_mut().insert(name.clone(), hint.to_string()));
+        }
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "Optional")
+    {
+        JAVA_OPTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.contains("ThreadLocalRandom"))
+    {
+        JAVA_TLR_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
     if type_hint
         .as_deref()
         .is_some_and(|hint| hint.replace(' ', "").contains("char[]"))
     {
         JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "BigInteger")
+    {
+        JAVA_BIGINT_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "BigDecimal")
+    {
+        JAVA_BIGDECIMAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "DecimalFormat")
+    {
+        JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "Number")
+    {
+        JAVA_NUMBER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
 
     // java.util.regex Pattern/Matcher locals — __j_pat_*/__j_m_* runtime.
@@ -1818,6 +1924,20 @@ fn walk_var_declarator(
         } else {
             Some(value)
         };
+    }
+
+    if let Some(init_expr) = &init {
+        if let ExprKind::Call { callee, args, .. } = &init_expr.kind {
+            if matches!(&callee.kind, ExprKind::Ident(c) if c == "__j_thread_new") {
+                if let Some(target) = args.first() {
+                    JAVA_THREAD_TARGETS.with(|targets| {
+                        targets
+                            .borrow_mut()
+                            .insert(name.clone(), target.value.clone());
+                    });
+                }
+            }
+        }
     }
 
     let emitted_type_hint = if type_hint
@@ -3325,9 +3445,6 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
 fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
     let type_name = java_expr_dotted_name(object)?;
     let f64_lit = |value: f64| Expression::new(ExprKind::Lit(Literal::Float(value)));
-    if type_name != "Double" && type_name != "java.lang.Double" {
-        return None;
-    }
     let div = |left: Expression, right: Expression| {
         Expression::new(ExprKind::Binary {
             op: BinOp::Div,
@@ -3335,7 +3452,20 @@ fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Express
             right: Box::new(right),
         })
     };
+    if type_name == "StrictMath" || type_name == "java.lang.StrictMath" {
+        return match field {
+            "PI" => Some(f64_lit(std::f64::consts::PI)),
+            "E" => Some(f64_lit(std::f64::consts::E)),
+            _ => None,
+        };
+    }
+    if type_name != "Double" && type_name != "java.lang.Double" {
+        return None;
+    }
     match field {
+        "MAX_VALUE" => Some(f64_lit(f64::MAX)),
+        "MIN_VALUE" => Some(f64_lit(f64::from_bits(1))),
+        "MIN_EXPONENT" => Some(Expression::int(-1022)),
         "NaN" => Some(div(f64_lit(0.0), f64_lit(0.0))),
         "POSITIVE_INFINITY" => Some(div(f64_lit(1.0), f64_lit(0.0))),
         "NEGATIVE_INFINITY" => Some(div(f64_lit(-1.0), f64_lit(0.0))),
@@ -3465,6 +3595,131 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             };
         }
     }
+
+    if method == "run"
+        && args.is_empty()
+        && matches!(&receiver.kind, ExprKind::Ident(n) if JAVA_RUNNABLE_VARS.with(|vars| vars.borrow().contains(n.as_str())))
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_runnable_run")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if method == "filter" && args.len() == 1 && java_optional_receiver(&receiver) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_filter")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if java_functional_receiver(&receiver) {
+        if let Some(expr) = java_functional_default_method(&receiver, method.as_str(), &args) {
+            return expr;
+        }
+    }
+
+    let functional_call_result_receiver = matches!(receiver.kind, ExprKind::Call { .. })
+        && java_functional_result_method(method.as_str());
+    let functional_unknown_ident_receiver = matches!(receiver.kind, ExprKind::Ident(_))
+        && java_functional_result_method(method.as_str());
+    if (java_functional_receiver(&receiver)
+        || functional_call_result_receiver
+        || functional_unknown_ident_receiver)
+        && java_functional_method(method.as_str())
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Sequence(vec![receiver]))),
+            args,
+            optional: false,
+        });
+    }
+
+    let thread_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_THREAD_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_thread_current" | "__j_thread_new"))
+        }
+        _ => false,
+    };
+    if thread_receiver {
+        if method == "start" {
+            let mut call_args = vec![Argument::positional(receiver.clone())];
+            if let ExprKind::Ident(n) = &receiver.kind {
+                if let Some(target) =
+                    JAVA_THREAD_TARGETS.with(|targets| targets.borrow().get(n).cloned())
+                {
+                    call_args.push(Argument::positional(target));
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_thread_start_with")),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_thread_start")),
+                args: call_args,
+                optional: false,
+            });
+        }
+        let prelude_fn = match method.as_str() {
+            "join" => Some("__j_thread_join"),
+            "isAlive" => Some("__j_thread_is_alive"),
+            "getName" => Some("__j_thread_get_name"),
+            "setName" => Some("__j_thread_set_name"),
+            "getPriority" => Some("__j_thread_get_priority"),
+            "setPriority" => Some("__j_thread_set_priority"),
+            "interrupt" => Some("__j_thread_interrupt"),
+            "isInterrupted" => Some("__j_thread_is_interrupted"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let tlr_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_TLR_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_tlr_current")
+        }
+        _ => false,
+    };
+    if tlr_receiver {
+        let prelude_fn = match method.as_str() {
+            "nextInt" => Some("__j_tlr_next_int"),
+            "nextLong" => Some("__j_tlr_next_long"),
+            "nextDouble" => Some("__j_tlr_next_double"),
+            "nextFloat" => Some("__j_tlr_next_float"),
+            "nextBoolean" => Some("__j_tlr_next_bool"),
+            "nextGaussian" => Some("__j_tlr_next_gaussian"),
+            "ints" => Some("__j_tlr_ints"),
+            "longs" => Some("__j_tlr_longs"),
+            "doubles" => Some("__j_tlr_doubles"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
     // Integer bit ops: wrap the value operand in __j_i32 — the dynamic
     // as_i32 coercion saturates (0x80000000-class literals arrive as
     // f64 2147483648 and clamp to i32::MAX without it).
@@ -3651,6 +3906,106 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     null_safe: false,
                 })),
                 args,
+                optional: false,
+            });
+        }
+    }
+
+    let bigint_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_BIGINT_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(c) => java_type_simple_name(c) == "BigInteger",
+            ExprKind::Member { .. } => java_qualified_static_type(class)
+                .is_some_and(|name| java_type_simple_name(&name) == "BigInteger"),
+            _ => false,
+        },
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(n) if n.starts_with("__java_bigint") || n == "__java_bigint"
+        ),
+        _ => java_bigint_constant_replacement(&receiver).is_some(),
+    };
+    if bigint_receiver {
+        if let Some(prelude_fn) = java_bigint_method_name(&method) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let bigdecimal_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_BIGDECIMAL_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(c) => java_type_simple_name(c) == "BigDecimal",
+            ExprKind::Member { .. } => java_qualified_static_type(class)
+                .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal"),
+            _ => false,
+        },
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(n) if java_bigdecimal_function_returns_bigdecimal(n)
+        ),
+        _ => java_bigdecimal_constant_replacement(&receiver).is_some(),
+    };
+    if bigdecimal_receiver {
+        if let Some(prelude_fn) = java_bigdecimal_method_name(&method, args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let decimal_format_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => {
+            JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow().contains(n.as_str()))
+        }
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(n) if matches!(n.as_str(), "__j_df_new" | "__j_df_currency" | "__j_df_clone")
+        ),
+        _ => false,
+    };
+    if decimal_format_receiver {
+        if let Some(prelude_fn) = java_decimal_format_method_name(&method) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if method == "doubleValue"
+        && args.is_empty()
+        && matches!(&receiver.kind, ExprKind::Ident(n) if JAVA_NUMBER_VARS.with(|vars| vars.borrow().contains(n.as_str())))
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_double_to_string")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if java_stream_builder_receiver(&receiver) {
+        if method == "build" && args.is_empty() {
+            return receiver;
+        }
+        if method == "add" && args.len() == 1 {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_stream_builder_add")),
+                args: call_args,
                 optional: false,
             });
         }
@@ -4109,10 +4464,41 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     }
 
     if let Some(type_name) = java_qualified_static_type(&receiver) {
+        if let Some(expr) = java_functional_static_call(&type_name, method.as_str(), &args) {
+            return expr;
+        }
         if type_name == "BigInteger" && method == "valueOf" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_bigint")),
                 args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "BigDecimal" && method == "valueOf" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_bd_new")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "NumberFormat" && method == "getCurrencyInstance" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_df_currency")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "StrictMath" && method == "copySign" {
+            if java_args_are_copy_sign_negative_zero(&args) {
+                return Expression::string("-0.0");
+            }
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_double_to_string")),
+                args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("StrictMath.copySign")),
+                    args,
+                    optional: false,
+                }))],
                 optional: false,
             });
         }
@@ -4138,6 +4524,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if type_name == "System" {
             if let Some(expr) = java_system_static_call(&method, args.clone()) {
                 return expr;
+            }
+        }
+        if type_name == "Thread" {
+            if let Some(expr) = java_thread_static_call(&method, args.clone()) {
+                return expr;
+            }
+        }
+        if type_name == "ThreadLocalRandom" {
+            if method == "current" && args.is_empty() {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_tlr_current")),
+                    args,
+                    optional: false,
+                });
             }
         }
         if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
@@ -4220,6 +4620,9 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
     if let ExprKind::Ident(ref type_name) = receiver.kind {
         if is_java_type_or_util(type_name) {
+            if let Some(expr) = java_functional_static_call(type_name, method.as_str(), &args) {
+                return expr;
+            }
             if type_name == "Comparator" {
                 if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
                     return expr;
@@ -4244,11 +4647,53 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     return expr;
                 }
             }
+            if type_name == "Thread" {
+                if let Some(expr) = java_thread_static_call(&method, args.clone()) {
+                    return expr;
+                }
+            }
+            if type_name == "ThreadLocalRandom" {
+                if method == "current" && args.is_empty() {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_tlr_current")),
+                        args,
+                        optional: false,
+                    });
+                }
+            }
             if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
                 return java_boolean_parse_call(args);
             }
             if type_name == "Integer" && method == "toString" && !args.is_empty() {
                 return java_integer_to_string_call(args);
+            }
+            if type_name == "BigDecimal" && method == "valueOf" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_bd_new")),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "NumberFormat" && method == "getCurrencyInstance" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_df_currency")),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "StrictMath" && method == "copySign" {
+                if java_args_are_copy_sign_negative_zero(&args) {
+                    return Expression::string("-0.0");
+                }
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_double_to_string")),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("StrictMath.copySign")),
+                        args,
+                        optional: false,
+                    }))],
+                    optional: false,
+                });
             }
             if type_name == "String" && method == "valueOf" {
                 let callee = if args.len() == 3 {
@@ -4345,7 +4790,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return java_comparator_reversed(receiver);
     }
 
-    if method == "thenComparing" && args.len() == 1 {
+    if matches!(method.as_str(), "thenComparing" | "thenComparingInt") && args.len() == 1 {
         return java_comparator_then_comparing(receiver, args[0].value.clone());
     }
 
@@ -4415,6 +4860,20 @@ fn java_system_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
     }))
 }
 
+fn java_thread_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    let callee = match method {
+        "currentThread" => "__j_thread_current",
+        "sleep" => "__j_thread_sleep",
+        "interrupted" => "__j_thread_interrupted",
+        _ => return None,
+    };
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(callee)),
+        args,
+        optional: false,
+    }))
+}
+
 fn java_boolean_parse_call(args: Vec<Argument>) -> Expression {
     let value = args
         .into_iter()
@@ -4453,6 +4912,11 @@ fn normalise_comparator_static_call(method: &str, args: Vec<Argument>) -> Option
         "naturalOrder" if args.is_empty() => Some(java_natural_comparator(false)),
         "reverseOrder" if args.is_empty() => Some(java_natural_comparator(true)),
         "comparing" if args.len() == 1 => Some(java_comparing_comparator(args[0].value.clone())),
+        "comparing" if args.len() == 2 => Some(java_comparing_with_comparator(
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        "nullsLast" if args.len() == 1 => Some(java_comparator_nulls_last(args[0].value.clone())),
         _ => None,
     }
 }
@@ -4470,6 +4934,15 @@ fn java_lambda_param(name: &str) -> Param {
     }
 }
 
+fn java_one_arg_lambda(body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![java_lambda_param("__value__")],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
 fn java_two_arg_lambda(body: Expression) -> Expression {
     Expression::new(ExprKind::Lambda {
         params: vec![java_lambda_param("__a__"), java_lambda_param("__b__")],
@@ -4479,11 +4952,38 @@ fn java_two_arg_lambda(body: Expression) -> Expression {
     })
 }
 
+fn java_functional_value_call(function: Expression, args: Vec<Argument>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Sequence(vec![function]))),
+        args,
+        optional: false,
+    })
+}
+
 fn java_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
         right: Box::new(right),
+    })
+}
+
+fn java_not(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::Not,
+        expr: Box::new(expr),
+    })
+}
+
+fn java_sequence(items: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Sequence(items))
+}
+
+fn java_objects_equals(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Objects.equals")),
+        args: vec![Argument::positional(left), Argument::positional(right)],
+        optional: false,
     })
 }
 
@@ -4534,6 +5034,18 @@ fn java_comparing_comparator(key_fn: Expression) -> Expression {
     java_two_arg_lambda(java_key_compare_expr(key_fn, "__a__", "__b__"))
 }
 
+fn java_comparing_with_comparator(key_fn: Expression, comparator: Expression) -> Expression {
+    let left_key = java_call(key_fn.clone(), vec![Expression::ident("__a__")]);
+    let right_key = java_call(key_fn, vec![Expression::ident("__b__")]);
+    java_two_arg_lambda(java_functional_value_call(
+        comparator,
+        vec![
+            Argument::positional(left_key),
+            Argument::positional(right_key),
+        ],
+    ))
+}
+
 fn java_comparator_call(comparator: Expression, left_name: &str, right_name: &str) -> Expression {
     java_call(
         comparator,
@@ -4543,6 +5055,20 @@ fn java_comparator_call(comparator: Expression, left_name: &str, right_name: &st
 
 fn java_comparator_reversed(comparator: Expression) -> Expression {
     java_two_arg_lambda(java_comparator_call(comparator, "__b__", "__a__"))
+}
+
+fn java_comparator_nulls_last(comparator: Expression) -> Expression {
+    let a_is_null = java_binary(BinOp::Eq, Expression::ident("__a__"), Expression::null());
+    let b_is_null = java_binary(BinOp::Eq, Expression::ident("__b__"), Expression::null());
+    java_two_arg_lambda(java_ternary(
+        a_is_null,
+        java_ternary(b_is_null.clone(), Expression::int(0), Expression::int(1)),
+        java_ternary(
+            b_is_null,
+            Expression::int(-1),
+            java_comparator_call(comparator, "__a__", "__b__"),
+        ),
+    ))
 }
 
 fn java_comparator_then_comparing(comparator: Expression, next: Expression) -> Expression {
@@ -4572,7 +5098,10 @@ fn java_qualified_static_type(expr: &Expression) -> Option<String> {
         return Some(dotted);
     }
     if !(parts.starts_with(&["java", "util"])
+        || parts.starts_with(&["java", "util", "concurrent"])
         || parts.starts_with(&["java", "lang"])
+        || parts.starts_with(&["java", "math"])
+        || parts.starts_with(&["java", "text"])
         || parts.starts_with(&["java", "time"]))
     {
         return None;
@@ -4636,6 +5165,241 @@ fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
     }
 }
 
+fn java_is_functional_interface_type(type_name: &str) -> bool {
+    let simple = java_type_simple_name(type_name);
+    matches!(
+        simple,
+        "Runnable"
+            | "Callable"
+            | "Function"
+            | "BiFunction"
+            | "Predicate"
+            | "BiPredicate"
+            | "Consumer"
+            | "BiConsumer"
+            | "Supplier"
+            | "UnaryOperator"
+            | "BinaryOperator"
+            | "IntUnaryOperator"
+            | "LongUnaryOperator"
+            | "DoubleUnaryOperator"
+            | "IntPredicate"
+            | "LongPredicate"
+            | "DoublePredicate"
+            | "IntFunction"
+            | "LongFunction"
+            | "DoubleFunction"
+            | "IntConsumer"
+            | "LongConsumer"
+            | "DoubleConsumer"
+            | "IntSupplier"
+            | "LongSupplier"
+            | "DoubleSupplier"
+            | "BooleanSupplier"
+    ) || type_name.contains("java.util.function.")
+        || type_name.contains("java.util.concurrent.Callable")
+}
+
+fn java_functional_receiver(receiver: &Expression) -> bool {
+    match &receiver.kind {
+        ExprKind::Ident(name) => JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow().contains(name)),
+        ExprKind::Lambda { .. } => true,
+        _ => false,
+    }
+}
+
+fn java_optional_receiver(receiver: &Expression) -> bool {
+    match &receiver.kind {
+        ExprKind::Ident(name) => JAVA_OPTIONAL_VARS.with(|vars| vars.borrow().contains(name)),
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "Optional.empty" | "Optional.of" | "Optional.ofNullable"
+                )
+        ),
+        _ => false,
+    }
+}
+
+fn java_functional_method(method: &str) -> bool {
+    matches!(
+        method,
+        "apply"
+            | "applyAsInt"
+            | "applyAsLong"
+            | "applyAsDouble"
+            | "test"
+            | "accept"
+            | "get"
+            | "getAsInt"
+            | "getAsLong"
+            | "getAsDouble"
+            | "getAsBoolean"
+            | "call"
+            | "run"
+    )
+}
+
+fn java_functional_result_method(method: &str) -> bool {
+    matches!(
+        method,
+        "apply" | "applyAsInt" | "applyAsLong" | "applyAsDouble" | "test" | "accept"
+    )
+}
+
+fn java_functional_type_of(receiver: &Expression) -> Option<String> {
+    match &receiver.kind {
+        ExprKind::Ident(name) => {
+            JAVA_FUNCTIONAL_TYPES.with(|types| types.borrow().get(name).cloned())
+        }
+        _ => None,
+    }
+}
+
+fn java_functional_is_consumer(receiver: &Expression) -> bool {
+    java_functional_type_of(receiver)
+        .map(|type_name| java_type_simple_name(&type_name).contains("Consumer"))
+        .unwrap_or(false)
+}
+
+fn java_functional_is_bi(receiver: &Expression) -> bool {
+    match &receiver.kind {
+        ExprKind::Lambda { params, .. } => params.len() == 2,
+        _ => java_functional_type_of(receiver)
+            .map(|type_name| java_type_simple_name(&type_name).starts_with("Bi"))
+            .unwrap_or(false),
+    }
+}
+
+fn java_forward_args(is_bi: bool) -> Vec<Argument> {
+    if is_bi {
+        vec![
+            Argument::positional(Expression::ident("__a__")),
+            Argument::positional(Expression::ident("__b__")),
+        ]
+    } else {
+        vec![Argument::positional(Expression::ident("__value__"))]
+    }
+}
+
+fn java_forwarding_lambda(is_bi: bool, body: Expression) -> Expression {
+    if is_bi {
+        java_two_arg_lambda(body)
+    } else {
+        java_one_arg_lambda(body)
+    }
+}
+
+fn java_functional_default_method(
+    receiver: &Expression,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let is_bi = java_functional_is_bi(receiver);
+    match method {
+        "and" if args.len() == 1 => {
+            let first = java_functional_value_call(receiver.clone(), java_forward_args(is_bi));
+            let second =
+                java_functional_value_call(args[0].value.clone(), java_forward_args(is_bi));
+            Some(java_forwarding_lambda(
+                is_bi,
+                java_binary(BinOp::And, first, second),
+            ))
+        }
+        "or" if args.len() == 1 => {
+            let first = java_functional_value_call(receiver.clone(), java_forward_args(is_bi));
+            let second =
+                java_functional_value_call(args[0].value.clone(), java_forward_args(is_bi));
+            Some(java_forwarding_lambda(
+                is_bi,
+                java_binary(BinOp::Or, first, second),
+            ))
+        }
+        "negate" if args.is_empty() => {
+            let value = java_functional_value_call(receiver.clone(), java_forward_args(is_bi));
+            Some(java_forwarding_lambda(is_bi, java_not(value)))
+        }
+        "compose" if args.len() == 1 => {
+            let before = java_functional_value_call(
+                args[0].value.clone(),
+                vec![Argument::positional(Expression::ident("__value__"))],
+            );
+            let after =
+                java_functional_value_call(receiver.clone(), vec![Argument::positional(before)]);
+            Some(java_one_arg_lambda(after))
+        }
+        "andThen" if args.len() == 1 && java_functional_is_consumer(receiver) => {
+            let first = java_functional_value_call(receiver.clone(), java_forward_args(is_bi));
+            let second =
+                java_functional_value_call(args[0].value.clone(), java_forward_args(is_bi));
+            Some(java_forwarding_lambda(
+                is_bi,
+                java_sequence(vec![first, second]),
+            ))
+        }
+        "andThen" if args.len() == 1 => {
+            let first = java_functional_value_call(receiver.clone(), java_forward_args(is_bi));
+            let second = java_functional_value_call(
+                args[0].value.clone(),
+                vec![Argument::positional(first)],
+            );
+            Some(java_forwarding_lambda(is_bi, second))
+        }
+        _ => None,
+    }
+}
+
+fn java_functional_static_call(
+    type_name: &str,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match (java_type_simple_name(type_name), method) {
+        ("Function", "identity") if args.is_empty() => {
+            Some(java_one_arg_lambda(Expression::ident("__value__")))
+        }
+        ("Predicate", "isEqual") if args.len() == 1 => Some(java_one_arg_lambda(
+            java_objects_equals(Expression::ident("__value__"), args[0].value.clone()),
+        )),
+        ("BiPredicate", "isEqual") if args.len() == 1 => {
+            let first = java_objects_equals(Expression::ident("__a__"), args[0].value.clone());
+            let second = java_objects_equals(Expression::ident("__b__"), args[0].value.clone());
+            Some(java_two_arg_lambda(java_binary(BinOp::And, first, second)))
+        }
+        ("BinaryOperator", "minBy") if args.len() == 1 => {
+            let compare = java_functional_value_call(
+                args[0].value.clone(),
+                vec![
+                    Argument::positional(Expression::ident("__a__")),
+                    Argument::positional(Expression::ident("__b__")),
+                ],
+            );
+            Some(java_two_arg_lambda(java_ternary(
+                java_binary(BinOp::LtEq, compare, Expression::int(0)),
+                Expression::ident("__a__"),
+                Expression::ident("__b__"),
+            )))
+        }
+        ("BinaryOperator", "maxBy") if args.len() == 1 => {
+            let compare = java_functional_value_call(
+                args[0].value.clone(),
+                vec![
+                    Argument::positional(Expression::ident("__a__")),
+                    Argument::positional(Expression::ident("__b__")),
+                ],
+            );
+            Some(java_two_arg_lambda(java_ternary(
+                java_binary(BinOp::GtEq, compare, Expression::int(0)),
+                Expression::ident("__a__"),
+                Expression::ident("__b__"),
+            )))
+        }
+        _ => None,
+    }
+}
+
 fn java_arg_is_char_array(arg: &Argument) -> bool {
     matches!(
         &arg.value.kind,
@@ -4656,6 +5420,13 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "Character"
             | "String"
             | "Math"
+            | "StrictMath"
+            | "BigDecimal"
+            | "BigInteger"
+            | "RoundingMode"
+            | "DecimalFormat"
+            | "DecimalFormatSymbols"
+            | "NumberFormat"
             | "Arrays"
             | "List"
             | "Set"
@@ -4670,9 +5441,19 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "Collectors"
             | "System"
             | "Thread"
+            | "ThreadLocalRandom"
             | "Runtime"
             | "Class"
             | "Comparator"
+            | "Function"
+            | "BiFunction"
+            | "Predicate"
+            | "BiPredicate"
+            | "Consumer"
+            | "BiConsumer"
+            | "Supplier"
+            | "UnaryOperator"
+            | "BinaryOperator"
             | "Base64"
             | "Instant"
             | "Duration"
@@ -4778,6 +5559,33 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
+                if matches!(java_type_simple_name(&class_name), "BigDecimal") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_bd_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_simple_name(&class_name), "DecimalFormatSymbols") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_df_symbols")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_simple_name(&class_name), "DecimalFormat") {
+                    let mut args = args;
+                    if args.len() == 1 {
+                        args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                            Literal::Undefined,
+                        ))));
+                    }
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_df_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
                 if matches!(
                     class_name.as_str(),
                     "StringBuilder"
@@ -4838,6 +5646,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 if matches!(class_name.as_str(), "Scanner" | "java.util.Scanner") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_sc_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(class_name.as_str(), "Thread" | "java.lang.Thread") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_thread_new")),
                         args,
                         optional: false,
                     }));
@@ -5348,6 +6163,33 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         }));
     }
 
+    if obj_name == "System.out" && matches!(method.as_str(), "print" | "println") {
+        let callee = if method == "println" {
+            "__j_println"
+        } else {
+            "__j_print"
+        };
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(callee)),
+                args: vec![Argument::positional(Expression::ident("__value__"))],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
     if matches!(
         (obj_name.as_str(), method.as_str()),
         ("Integer", "parseInt")
@@ -5369,7 +6211,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_nullable: false,
             }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&callee)),
+                callee: Box::new(Expression::ident(
+                    if obj_name == "String" && method == "valueOf" {
+                        "__java_string_value_of"
+                    } else {
+                        &callee
+                    },
+                )),
                 args: vec![Argument::positional(Expression::ident("__value__"))],
                 optional: false,
             }))),
@@ -5378,12 +6226,25 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         }));
     }
 
+    if obj_name == "String" && method == "compareTo" {
+        return Ok(java_two_arg_lambda(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_string_compare_to")),
+            args: vec![
+                Argument::positional(Expression::ident("__a__")),
+                Argument::positional(Expression::ident("__b__")),
+            ],
+            optional: false,
+        })));
+    }
+
     if matches!(
         (obj_name.as_str(), method.as_str()),
         ("String", "length")
             | ("String", "toString")
             | ("String", "toUpperCase")
             | ("String", "toLowerCase")
+            | ("String", "isEmpty")
+            | ("String", "isBlank")
             | ("Integer", "intValue")
             | ("Long", "longValue")
             | ("Double", "doubleValue")
@@ -5426,7 +6287,13 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let params_pair = inner.next().ok_or("lambda: missing params")?;
     let params = walk_lambda_params(params_pair)?;
-    let body_pair = inner.next().ok_or("lambda: missing body")?;
+    let mut body_pair = inner.next().ok_or("lambda: missing body")?;
+    if body_pair.as_rule() == Rule::lambda_body {
+        body_pair = body_pair
+            .into_inner()
+            .next()
+            .ok_or("lambda: missing lambda body")?;
+    }
     let body = match body_pair.as_rule() {
         Rule::function_body_block => LambdaBody::Block(walk_block(body_pair)?),
         _ => LambdaBody::Expr(Box::new(walk_expression(body_pair)?)),
@@ -5638,6 +6505,193 @@ fn inject_implicit_super(members: &mut Vec<ClassMember>) {
     }
 }
 
+fn inject_java_thread_stamps(members: &mut Vec<ClassMember>) {
+    rewrite_java_thread_member_bare_calls(members);
+    let has_ctor = members
+        .iter()
+        .any(|member| matches!(member, ClassMember::Constructor { .. }));
+    if !has_ctor {
+        members.insert(
+            0,
+            ClassMember::Constructor {
+                params: Vec::new(),
+                body: vec![java_thread_init_stmt(None)],
+                base_args: None,
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            },
+        );
+        return;
+    }
+    for member in members {
+        if let ClassMember::Constructor {
+            body,
+            base_args,
+            initializer_target,
+            ..
+        } = member
+        {
+            let name_arg = if *initializer_target == ConstructorInitializerTarget::Base {
+                base_args.as_ref().and_then(|args| args.first().cloned())
+            } else {
+                None
+            };
+            if *initializer_target == ConstructorInitializerTarget::Base {
+                *base_args = None;
+            }
+            body.insert(0, java_thread_init_stmt(name_arg));
+        }
+    }
+}
+
+fn rewrite_java_thread_member_bare_calls(members: &mut [ClassMember]) {
+    for member in members {
+        match member {
+            ClassMember::Method(method) => rewrite_java_thread_bare_calls_stmt(method),
+            ClassMember::Constructor { body, .. } => {
+                for stmt in body {
+                    rewrite_java_thread_bare_calls_stmt(stmt);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_java_thread_bare_calls_expr(expr);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_java_thread_bare_calls_expr(init);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_java_thread_bare_calls_expr(target);
+            }
+            rewrite_java_thread_bare_calls_expr(value);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for nested in body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_java_thread_bare_calls_expr(cond);
+            for nested in then_body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+            for (elif_cond, elif_body) in elifs {
+                rewrite_java_thread_bare_calls_expr(elif_cond);
+                for nested in elif_body {
+                    rewrite_java_thread_bare_calls_stmt(nested);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    rewrite_java_thread_bare_calls_stmt(nested);
+                }
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_java_thread_bare_calls_expr(cond);
+            for nested in body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_java_thread_bare_calls_stmt(init);
+            }
+            if let Some(cond) = cond {
+                rewrite_java_thread_bare_calls_expr(cond);
+            }
+            if let Some(update) = update {
+                rewrite_java_thread_bare_calls_expr(update);
+            }
+            for nested in body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_java_thread_bare_calls_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_java_thread_bare_calls_expr(callee);
+            for arg in args {
+                rewrite_java_thread_bare_calls_expr(&mut arg.value);
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if matches!(
+                    name.as_str(),
+                    "getName"
+                        | "setName"
+                        | "getPriority"
+                        | "setPriority"
+                        | "isAlive"
+                        | "interrupt"
+                        | "isInterrupted"
+                        | "join"
+                ) {
+                    *callee = Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: name.clone(),
+                        null_safe: false,
+                    }));
+                }
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_java_thread_bare_calls_expr(left);
+            rewrite_java_thread_bare_calls_expr(right);
+        }
+        ExprKind::Member { object, .. } => rewrite_java_thread_bare_calls_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_java_thread_bare_calls_expr(object);
+            rewrite_java_thread_bare_calls_expr(index);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                rewrite_java_thread_bare_calls_expr(&mut elem.value);
+            }
+        }
+        ExprKind::Lambda { .. } => {}
+        _ => {}
+    }
+}
+
+fn java_thread_init_stmt(name_arg: Option<Expression>) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__j_thread_init")),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::This)),
+            Argument::positional(Expression::null()),
+            Argument::positional(
+                name_arg.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Undefined))),
+            ),
+        ],
+        optional: false,
+    })))
+}
+
 /// Extract an explicit `super(...)` / `this(...)` call from the top of a
 /// constructor body and put the args in `base_args`.
 fn extract_base_call_from_body(
@@ -5731,9 +6785,7 @@ fn hoist_java_local_classes_stmt(stmt: &mut Statement) {
             }
             members.extend(hoisted);
         }
-        StmtKind::Block(b) | StmtKind::NamespaceDecl { body: b, .. } => {
-            hoist_java_local_classes(b)
-        }
+        StmtKind::Block(b) | StmtKind::NamespaceDecl { body: b, .. } => hoist_java_local_classes(b),
         _ => {}
     }
 }
@@ -5833,10 +6885,22 @@ fn hoist_local_classes_in_body(
                     hoisted,
                 );
                 for (_, eb) in elifs {
-                    hoist_local_classes_in_body(eb, &mut scope.clone(), enclosing, counter, hoisted);
+                    hoist_local_classes_in_body(
+                        eb,
+                        &mut scope.clone(),
+                        enclosing,
+                        counter,
+                        hoisted,
+                    );
                 }
                 if let Some(eb) = else_body {
-                    hoist_local_classes_in_body(eb, &mut scope.clone(), enclosing, counter, hoisted);
+                    hoist_local_classes_in_body(
+                        eb,
+                        &mut scope.clone(),
+                        enclosing,
+                        counter,
+                        hoisted,
+                    );
                 }
             }
             _ => {}
@@ -6599,7 +7663,6 @@ fn java_outer_param(owner_name: &str) -> Param {
         is_nullable: false,
     }
 }
-
 
 fn java_outer_assign_stmt() -> Statement {
     Statement::new(StmtKind::Assign {
@@ -7823,6 +8886,15 @@ fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &H
         {
             continue;
         }
+        if java_is_double_print_call(&args[0].value) {
+            let value = args[0].value.clone();
+            args[0].value = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_double_to_string")),
+                args: vec![Argument::positional(value)],
+                optional: false,
+            });
+            continue;
+        }
         let ExprKind::Call { callee: inner, .. } = &args[0].value.kind else {
             continue;
         };
@@ -7841,6 +8913,16 @@ fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &H
     }
 }
 
+fn java_is_double_print_call(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    matches!(
+        &callee.kind,
+        ExprKind::Ident(name) if matches!(name.as_str(), "Math.copySign" | "StrictMath.copySign")
+    )
+}
+
 fn rewrite_java_tostring_expr(
     expr: &mut Expression,
     tostring_classes: &HashSet<String>,
@@ -7849,6 +8931,10 @@ fn rewrite_java_tostring_expr(
     locals: &HashMap<String, String>,
 ) {
     if let Some(replacement) = java_bigint_constant_replacement(expr) {
+        *expr = replacement;
+        return;
+    }
+    if let Some(replacement) = java_bigdecimal_constant_replacement(expr) {
         *expr = replacement;
         return;
     }
@@ -8164,7 +9250,10 @@ fn rewrite_java_tostring_expr(
                         ExprKind::Ident(ref name)
                             if matches!(
                                 locals.get(name).map(String::as_str),
-                                Some("TreeSet") | Some("PriorityQueue")
+                                Some("TreeSet")
+                                    | Some("java.util.TreeSet")
+                                    | Some("PriorityQueue")
+                                    | Some("java.util.PriorityQueue")
                             )
                     )
                 {
@@ -8185,6 +9274,19 @@ fn rewrite_java_tostring_expr(
                 }
                 if let Some(name) = java_bigint_method_name(field) {
                     if java_expr_is_bigint(object, locals) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(name)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if let Some(name) = java_bigdecimal_method_name(field, args.len()) {
+                    if java_expr_is_bigdecimal(object, locals) {
                         let mut new_args = Vec::with_capacity(args.len() + 1);
                         new_args.push(Argument::positional((**object).clone()));
                         new_args.extend(args.iter().cloned());
@@ -8416,8 +9518,12 @@ fn java_builtin_exception_chain(name: &str) -> Option<&'static [&'static str]> {
             "Throwable",
         ],
         "ArrayIndexOutOfBoundsException" | "StringIndexOutOfBoundsException" => IOOB,
-        "InterruptedException" | "CloneNotSupportedException" | "NoSuchMethodException"
-        | "NoSuchFieldException" | "ClassNotFoundException" => CHECKED,
+        "InterruptedException"
+        | "CloneNotSupportedException"
+        | "NoSuchMethodException"
+        | "NoSuchFieldException"
+        | "ClassNotFoundException"
+        | "ParseException" => CHECKED,
         _ => return None,
     })
 }
@@ -8947,6 +10053,97 @@ fn java_bigint_method_name(method: &str) -> Option<&'static str> {
     }
 }
 
+fn java_bigdecimal_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    match method {
+        "toString" => Some("__j_bd_to_string"),
+        "toPlainString" => Some("__j_bd_to_plain_string"),
+        "add" => Some("__j_bd_add"),
+        "subtract" => Some("__j_bd_subtract"),
+        "multiply" => Some("__j_bd_multiply"),
+        "divide" if argc == 1 => Some("__j_bd_divide"),
+        "divide" if argc >= 3 => Some("__j_bd_divide_scale"),
+        "scale" => Some("__j_bd_scale"),
+        "compareTo" => Some("__j_bd_compare_to"),
+        "stripTrailingZeros" => Some("__j_bd_strip"),
+        "negate" => Some("__j_bd_negate"),
+        "abs" => Some("__j_bd_abs"),
+        "plus" => Some("__j_bd_plus"),
+        "setScale" => Some("__j_bd_set_scale"),
+        "movePointRight" => Some("__j_bd_move_right"),
+        "movePointLeft" => Some("__j_bd_move_left"),
+        "signum" => Some("__j_bd_signum"),
+        "unscaledValue" => Some("__j_bd_unscaled"),
+        "precision" => Some("__j_bd_precision"),
+        "max" => Some("__j_bd_max"),
+        "min" => Some("__j_bd_min"),
+        "remainder" => Some("__j_bd_remainder"),
+        "equals" => Some("__j_bd_equals"),
+        _ => None,
+    }
+}
+
+fn java_decimal_format_method_name(method: &str) -> Option<&'static str> {
+    match method {
+        "format" => Some("__j_df_format"),
+        "parse" => Some("__j_df_parse"),
+        "setMinimumFractionDigits" => Some("__j_df_set_min_frac"),
+        "setMaximumFractionDigits" => Some("__j_df_set_max_frac"),
+        "getMinimumFractionDigits" => Some("__j_df_min_frac"),
+        "getMaximumFractionDigits" => Some("__j_df_max_frac"),
+        "setGroupingUsed" => Some("__j_df_set_grouping"),
+        "isGroupingUsed" => Some("__j_df_grouping"),
+        "applyPattern" => Some("__j_df_apply_pattern"),
+        "toPattern" => Some("__j_df_pattern"),
+        "setDecimalSeparatorAlwaysShown" => Some("__j_df_set_decimal_always"),
+        "getMultiplier" => Some("__j_df_multiplier"),
+        "setMultiplier" => Some("__j_df_set_multiplier"),
+        "setParseIntegerOnly" => Some("__j_df_set_parse_integer"),
+        "clone" => Some("__j_df_clone"),
+        "equals" => Some("__j_df_equals"),
+        _ => None,
+    }
+}
+
+fn java_stream_builder_receiver(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    matches!(
+        &callee.kind,
+        ExprKind::Ident(name)
+            if matches!(
+                name.as_str(),
+                "IntStream.builder"
+                    | "LongStream.builder"
+                    | "DoubleStream.builder"
+                    | "Stream.builder"
+                    | "__j_stream_builder_add"
+            )
+    )
+}
+
+fn java_args_are_copy_sign_negative_zero(args: &[Argument]) -> bool {
+    args.len() == 2
+        && java_expr_is_zero_f64(&args[0].value)
+        && java_expr_is_negative_f64(&args[1].value)
+}
+
+fn java_expr_is_zero_f64(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Lit(Literal::Float(value)) if value == 0.0)
+}
+
+fn java_expr_is_negative_f64(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Float(value)) => *value < 0.0,
+        ExprKind::Lit(Literal::Int(value)) => *value < 0,
+        ExprKind::Unary { expr, .. } => {
+            java_expr_is_zero_f64(expr)
+                || matches!(expr.kind, ExprKind::Lit(Literal::Float(value)) if value > 0.0)
+        }
+        _ => false,
+    }
+}
+
 fn java_expr_is_bigint(
     expr: &Expression,
     locals: &std::collections::HashMap<String, String>,
@@ -8972,6 +10169,50 @@ fn java_expr_is_bigint(
     }
 }
 
+fn java_expr_is_bigdecimal(
+    expr: &Expression,
+    locals: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => locals
+            .get(name)
+            .is_some_and(|type_hint| java_type_simple_name(type_hint) == "BigDecimal"),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => java_type_simple_name(name) == "BigDecimal",
+            ExprKind::Member { .. } => java_qualified_static_type(class)
+                .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal"),
+            _ => false,
+        },
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if java_bigdecimal_function_returns_bigdecimal(name))
+        }
+        _ => java_bigdecimal_constant_replacement(expr).is_some(),
+    }
+}
+
+fn java_bigdecimal_function_returns_bigdecimal(name: &str) -> bool {
+    matches!(
+        name,
+        "__j_bd_new"
+            | "__j_bd_box"
+            | "__j_bd_add"
+            | "__j_bd_subtract"
+            | "__j_bd_multiply"
+            | "__j_bd_divide"
+            | "__j_bd_divide_scale"
+            | "__j_bd_set_scale"
+            | "__j_bd_strip"
+            | "__j_bd_negate"
+            | "__j_bd_abs"
+            | "__j_bd_plus"
+            | "__j_bd_move_right"
+            | "__j_bd_move_left"
+            | "__j_bd_max"
+            | "__j_bd_min"
+            | "__j_bd_remainder"
+    )
+}
+
 fn java_bigint_constant_replacement(expr: &Expression) -> Option<Expression> {
     if let ExprKind::Member { object, field, .. } = &expr.kind {
         let is_bigint_type = java_qualified_static_type(object)
@@ -8989,6 +10230,30 @@ fn java_bigint_constant_replacement(expr: &Expression) -> Option<Expression> {
                 args: vec![Argument::positional(Expression::int(
                     value.parse::<i64>().unwrap_or(0),
                 ))],
+                optional: false,
+            }));
+        }
+    }
+    None
+}
+
+fn java_bigdecimal_constant_replacement(expr: &Expression) -> Option<Expression> {
+    if let ExprKind::Member { object, field, .. } = &expr.kind {
+        let is_bigdecimal_type = java_qualified_static_type(object)
+            .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal")
+            || java_expr_dotted_name(object)
+                .as_deref()
+                .is_some_and(|name| name == "java.math.BigDecimal");
+        if is_bigdecimal_type {
+            let value = match field.as_str() {
+                "ZERO" => "0",
+                "ONE" => "1",
+                "TEN" => "10",
+                _ => return None,
+            };
+            return Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_bd_new")),
+                args: vec![Argument::positional(Expression::string(value))],
                 optional: false,
             }));
         }
@@ -9080,7 +10345,10 @@ fn collect_java_class_member_names(
             StmtKind::EnumDecl {
                 name, body_members, ..
             } => {
-                out.insert(name.clone(), JavaClassMemberNames::from_members(body_members));
+                out.insert(
+                    name.clone(),
+                    JavaClassMemberNames::from_members(body_members),
+                );
                 for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
                         collect_java_class_member_names(std::slice::from_ref(nested), out);
@@ -9373,12 +10641,7 @@ fn lower_java_anonymous_class_captures_expr(
                 lower_java_anonymous_class_captures_expr(elem, locals);
             }
         }
-        ExprKind::Lambda {
-            body,
-            params,
-            captures,
-            ..
-        } => {
+        ExprKind::Lambda { body, params, .. } => {
             let mut used = std::collections::HashSet::new();
             match body {
                 LambdaBody::Expr(inner) => collect_java_lambda_used_idents_expr(inner, &mut used),
@@ -9393,16 +10656,10 @@ fn lower_java_anonymous_class_captures_expr(
             for param in params {
                 lambda_locals.insert(param.name.clone());
             }
-            let mut explicit_captures: Vec<String> = used
+            let _captured_locals: Vec<String> = used
                 .into_iter()
                 .filter(|name| locals.contains(name) && !inner_locals.contains(name))
                 .collect();
-            explicit_captures.sort();
-            for capture in explicit_captures {
-                if !captures.iter().any(|existing| existing == &capture) {
-                    captures.push(capture);
-                }
-            }
             match body {
                 LambdaBody::Expr(inner) => {
                     lower_java_anonymous_class_captures_expr(inner, &mut lambda_locals)

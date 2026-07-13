@@ -17,6 +17,7 @@ pub mod enum_set_adapter;
 pub mod format_runtime;
 pub mod instant_adapter;
 pub mod list_adapter;
+pub mod math_adapter;
 pub mod optional_adapter;
 pub mod stream_adapter;
 pub mod string_adapter;

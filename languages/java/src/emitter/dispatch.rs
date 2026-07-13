@@ -288,11 +288,68 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.signum" => {
             host::emit(&mut chunks[current], "ecma:math", "sign", 1, line);
         }
+        "java.math_scalb" => {
+            super::math_adapter::emit_scalb(chunks, current, line);
+        }
+        "java.math_ulp" => {
+            super::math_adapter::emit_ulp(chunks, current, line);
+        }
+        "java.math_get_exponent" => {
+            super::math_adapter::emit_get_exponent(chunks, current, line);
+        }
+        "java.math_copy_sign" => {
+            super::math_adapter::emit_copy_sign(chunks, current, line);
+        }
+        "java.math_next_after" => {
+            super::math_adapter::emit_next_after(chunks, current, line);
+        }
+        "java.math_next_up" => {
+            super::math_adapter::emit_next_up(chunks, current, line);
+        }
+        "java.math_next_down" => {
+            super::math_adapter::emit_next_down(chunks, current, line);
+        }
+        "java.math_fma" => {
+            super::math_adapter::emit_fma(chunks, current, line);
+        }
+        "java.math_expm1" => {
+            super::math_adapter::emit_expm1(chunks, current, line);
+        }
+        "java.math_log1p" => {
+            super::math_adapter::emit_log1p(chunks, current, line);
+        }
+        "java.math_to_degrees" => {
+            super::math_adapter::emit_to_degrees(chunks, current, line);
+        }
+        "java.math_to_radians" => {
+            super::math_adapter::emit_to_radians(chunks, current, line);
+        }
+        "java.math_ieee_remainder" => {
+            super::math_adapter::emit_ieee_remainder(chunks, current, line);
+        }
+        "java.math_add_exact" => {
+            super::math_adapter::emit_add_exact(chunks, current, line);
+        }
+        "java.math_subtract_exact" => {
+            super::math_adapter::emit_subtract_exact(chunks, current, line);
+        }
+        "java.math_multiply_exact" => {
+            super::math_adapter::emit_multiply_exact(chunks, current, line);
+        }
+        "java.math_increment_exact" => {
+            super::math_adapter::emit_increment_exact(chunks, current, line);
+        }
+        "java.math_decrement_exact" => {
+            super::math_adapter::emit_decrement_exact(chunks, current, line);
+        }
+        "java.math_negate_exact" => {
+            super::math_adapter::emit_negate_exact(chunks, current, line);
+        }
         "java.floor_div" => {
-            host::emit(&mut chunks[current], "ecma:math", "floorDiv", 2, line);
+            super::math_adapter::emit_floor_div(chunks, current, line);
         }
         "java.floor_mod" => {
-            host::emit(&mut chunks[current], "ecma:math", "floorMod", 2, line);
+            super::math_adapter::emit_floor_mod(chunks, current, line);
         }
         "java.compare" => {
             let b_slot = chunks[current].alloc_scratch(1);
@@ -880,6 +937,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.stream_builder" => {
             super::stream_adapter::emit_builder(chunks, current, line);
         }
+        "java.stream_builder_add" => {
+            super::stream_adapter::emit_builder_add(chunks, current, line);
+        }
         "java.stream_range" => {
             super::stream_adapter::emit_range(chunks, current, false, line);
         }
@@ -986,10 +1046,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::stream_adapter::emit_find_first(chunks, current, line);
         }
         "java.stream_min" => {
-            super::stream_adapter::emit_min(chunks, current, line);
+            super::stream_adapter::emit_extreme_value(chunks, current, argc, true, line);
         }
         "java.stream_max" => {
-            super::stream_adapter::emit_max(chunks, current, line);
+            super::stream_adapter::emit_extreme_value(chunks, current, argc, false, line);
         }
         "java.stream_max_value" => {
             super::stream_adapter::emit_max_value(chunks, current, line);
@@ -1110,6 +1170,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.retain_all" => {
             super::list_adapter::emit_retain_all(chunks, current, line);
+        }
+        "java.list_remove_if" => {
+            super::list_adapter::emit_remove_if(chunks, current, line);
+        }
+        "java.list_replace_all" => {
+            super::list_adapter::emit_replace_all(chunks, current, line);
         }
         "java.list_for_each" => {
             // `list.forEach(action)` → shared HOF emitter (invokes `action`
@@ -1416,6 +1482,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.optional_if_present" => {
             super::optional_adapter::emit_if_present(chunks, current, line);
+        }
+        "java.optional_filter" => {
+            super::optional_adapter::emit_filter(chunks, current, line);
         }
         "java.optional_or_else_throw" => {
             host::emit(

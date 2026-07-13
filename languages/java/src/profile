@@ -187,6 +187,7 @@ __java_list_remove_value = { emit = "common:java.list_remove_value", min_args = 
 __java_sorted_add = { emit = "common:java.sorted_add", min_args = 2, max_args = 2 }
 __java_sorted_poll = { emit = "common:java.sorted_poll", min_args = 1, max_args = 1 }
 __java_double_to_string = { emit = "common:java.double_to_string", min_args = 1, max_args = 1 }
+__j_stream_builder_add = { emit = "common:java.stream_builder_add", min_args = 2, max_args = 2 }
 __java_map_get = { emit = "common:java.map_get", min_args = 2, max_args = 2 }
 __java_map_put = { emit = "common:java.map_put", min_args = 3, max_args = 3 }
 __java_map_put_all = { emit = "common:java.map_put_all", min_args = 2, max_args = 2 }
@@ -211,6 +212,7 @@ __java_map_size = { emit = "common:java.map_size", min_args = 1, max_args = 1 }
 __java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_args = 1 }
 __java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
 __java_map_key_set_remove = { emit = "common:java.map_key_set_remove", min_args = 2, max_args = 2 }
+__java_optional_filter = { emit = "common:java.optional_filter", min_args = 2, max_args = 2 }
 __java_sorted_map_key_set = { emit = "common:java.sorted_map_key_set", min_args = 1, max_args = 1 }
 __java_sorted_map_first_key = { emit = "common:java.sorted_map_first_key", min_args = 1, max_args = 1 }
 __java_sorted_map_last_key = { emit = "common:java.sorted_map_last_key", min_args = 1, max_args = 1 }
@@ -317,8 +319,68 @@ __j_normalize      = { emit = "host:ecma:string:normalize",  min_args = 2, max_a
 "Math.E"      = { emit = "intrinsic:math_e",        min_args = 0, max_args = 0 }
 "Math.hypot"  = { emit = "host:ecma:math:hypot",    min_args = 2, max_args = 2 }
 "Math.cbrt"   = { emit = "host:ecma:math:cbrt",     min_args = 1, max_args = 1 }
+"Math.scalb"  = { emit = "common:java.math_scalb",   min_args = 2, max_args = 2 }
+"Math.ulp"    = { emit = "common:java.math_ulp",     min_args = 1, max_args = 1 }
+"Math.getExponent" = { emit = "common:java.math_get_exponent", min_args = 1, max_args = 1 }
+"Math.copySign" = { emit = "common:java.math_copy_sign", min_args = 2, max_args = 2 }
+"Math.nextAfter" = { emit = "common:java.math_next_after", min_args = 2, max_args = 2 }
+"Math.nextUp" = { emit = "common:java.math_next_up", min_args = 1, max_args = 1 }
+"Math.nextDown" = { emit = "common:java.math_next_down", min_args = 1, max_args = 1 }
+"Math.fma"    = { emit = "common:java.math_fma",     min_args = 3, max_args = 3 }
+"Math.rint"   = { emit = "opcode:f64_nearest",      min_args = 1, max_args = 1 }
+"Math.expm1"  = { emit = "common:java.math_expm1",   min_args = 1, max_args = 1 }
+"Math.log1p"  = { emit = "common:java.math_log1p",   min_args = 1, max_args = 1 }
+"Math.toDegrees" = { emit = "common:java.math_to_degrees", min_args = 1, max_args = 1 }
+"Math.toRadians" = { emit = "common:java.math_to_radians", min_args = 1, max_args = 1 }
+"Math.IEEEremainder" = { emit = "common:java.math_ieee_remainder", min_args = 2, max_args = 2 }
+"Math.addExact" = { emit = "common:java.math_add_exact", min_args = 2, max_args = 2 }
+"Math.subtractExact" = { emit = "common:java.math_subtract_exact", min_args = 2, max_args = 2 }
+"Math.multiplyExact" = { emit = "common:java.math_multiply_exact", min_args = 2, max_args = 2 }
+"Math.incrementExact" = { emit = "common:java.math_increment_exact", min_args = 1, max_args = 1 }
+"Math.decrementExact" = { emit = "common:java.math_decrement_exact", min_args = 1, max_args = 1 }
+"Math.negateExact" = { emit = "common:java.math_negate_exact", min_args = 1, max_args = 1 }
 "Math.floorDiv"   = { emit = "common:java.floor_div", min_args = 2, max_args = 2 }
 "Math.floorMod"   = { emit = "common:java.floor_mod", min_args = 2, max_args = 2 }
+
+"StrictMath.abs"    = { emit = "host:ecma:math:abs",      min_args = 1, max_args = 1 }
+"StrictMath.sqrt"   = { emit = "opcode:f64_sqrt",         min_args = 1, max_args = 1 }
+"StrictMath.floor"  = { emit = "opcode:f64_floor",        min_args = 1, max_args = 1 }
+"StrictMath.ceil"   = { emit = "opcode:f64_ceil",         min_args = 1, max_args = 1 }
+"StrictMath.min"    = { emit = "opcode:f64_min",          min_args = 2, max_args = 2 }
+"StrictMath.max"    = { emit = "opcode:f64_max",          min_args = 2, max_args = 2 }
+"StrictMath.pow"    = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
+"StrictMath.exp"    = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
+"StrictMath.log"    = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
+"StrictMath.log10"  = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
+"StrictMath.sin"    = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
+"StrictMath.cos"    = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
+"StrictMath.tan"    = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
+"StrictMath.asin"   = { emit = "host:ecma:math:asin",     min_args = 1, max_args = 1 }
+"StrictMath.acos"   = { emit = "host:ecma:math:acos",     min_args = 1, max_args = 1 }
+"StrictMath.atan"   = { emit = "host:ecma:math:atan",     min_args = 1, max_args = 1 }
+"StrictMath.atan2"  = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
+"StrictMath.sinh"   = { emit = "host:ecma:math:sinh",     min_args = 1, max_args = 1 }
+"StrictMath.cosh"   = { emit = "host:ecma:math:cosh",     min_args = 1, max_args = 1 }
+"StrictMath.tanh"   = { emit = "host:ecma:math:tanh",     min_args = 1, max_args = 1 }
+"StrictMath.signum" = { emit = "common:java.signum",      min_args = 1, max_args = 1 }
+"StrictMath.PI"     = { emit = "intrinsic:math_pi",       min_args = 0, max_args = 0 }
+"StrictMath.E"      = { emit = "intrinsic:math_e",        min_args = 0, max_args = 0 }
+"StrictMath.hypot"  = { emit = "host:ecma:math:hypot",    min_args = 2, max_args = 2 }
+"StrictMath.cbrt"   = { emit = "host:ecma:math:cbrt",     min_args = 1, max_args = 1 }
+"StrictMath.scalb"  = { emit = "common:java.math_scalb",   min_args = 2, max_args = 2 }
+"StrictMath.ulp"    = { emit = "common:java.math_ulp",     min_args = 1, max_args = 1 }
+"StrictMath.getExponent" = { emit = "common:java.math_get_exponent", min_args = 1, max_args = 1 }
+"StrictMath.copySign" = { emit = "common:java.math_copy_sign", min_args = 2, max_args = 2 }
+"StrictMath.nextAfter" = { emit = "common:java.math_next_after", min_args = 2, max_args = 2 }
+"StrictMath.nextUp" = { emit = "common:java.math_next_up", min_args = 1, max_args = 1 }
+"StrictMath.nextDown" = { emit = "common:java.math_next_down", min_args = 1, max_args = 1 }
+"StrictMath.fma"    = { emit = "common:java.math_fma",     min_args = 3, max_args = 3 }
+"StrictMath.rint"   = { emit = "opcode:f64_nearest",      min_args = 1, max_args = 1 }
+"StrictMath.expm1"  = { emit = "common:java.math_expm1",   min_args = 1, max_args = 1 }
+"StrictMath.log1p"  = { emit = "common:java.math_log1p",   min_args = 1, max_args = 1 }
+"StrictMath.toDegrees" = { emit = "common:java.math_to_degrees", min_args = 1, max_args = 1 }
+"StrictMath.toRadians" = { emit = "common:java.math_to_radians", min_args = 1, max_args = 1 }
+"StrictMath.IEEEremainder" = { emit = "common:java.math_ieee_remainder", min_args = 2, max_args = 2 }
 
 # ── Character utilities ───────────────────────────────────────────────────────
 
@@ -463,7 +525,10 @@ replace       = [
     { emit = "common:strings.replace",       min_args = 2, max_args = 2 },
     { emit = "common:java.map_replace",      min_args = 2, max_args = 3 },
 ]
-replaceAll    = { emit = "common:java.replace_regex",    min_args = 2, max_args = 2 }
+replaceAll    = [
+    { emit = "common:java.list_replace_all", min_args = 1, max_args = 1 },
+    { emit = "common:java.replace_regex",    min_args = 2, max_args = 2 },
+]
 replaceFirst  = { emit = "common:java.replace_first_regex", min_args = 2, max_args = 2 }
 split         = { emit = "common:strings.split",         min_args = 1, max_args = 2 }
 substring     = { emit = "common:strings.substring",     min_args = 1, max_args = 2 }
@@ -586,6 +651,7 @@ remove        = [
 ]
 removeAll     = { emit = "common:java.remove_all",       min_args = 1, max_args = 1 }
 retainAll     = { emit = "common:java.retain_all",       min_args = 1, max_args = 1 }
+removeIf      = { emit = "common:java.list_remove_if",   min_args = 1, max_args = 1 }
 clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
 get           = { emit = "common:java.get",              min_args = 0, max_args = 1 }
 set           = { emit = "common:java.list_set",         min_args = 2, max_args = 2 }
@@ -663,8 +729,8 @@ asDoubleStream = { emit = "noop",                        min_args = 0, max_args 
 sequential    = { emit = "noop",                         min_args = 0, max_args = 0 }
 findFirst     = { emit = "common:java.stream_find_first", min_args = 0, max_args = 0 }
 findAny       = { emit = "common:java.stream_find_first", min_args = 0, max_args = 0 }
-min           = { emit = "common:java.stream_min",       min_args = 0, max_args = 0 }
-max           = { emit = "common:java.stream_max",       min_args = 0, max_args = 0 }
+min           = { emit = "common:java.stream_min",       min_args = 0, max_args = 1 }
+max           = { emit = "common:java.stream_max",       min_args = 0, max_args = 1 }
 average       = { emit = "common:java.stream_average",   min_args = 0, max_args = 0 }
 anyMatch      = { emit = "common:java.stream_any_match", min_args = 1, max_args = 1 }
 allMatch      = { emit = "common:java.stream_all_match", min_args = 1, max_args = 1 }
@@ -724,11 +790,26 @@ tostring  = [["to_string"]]
 [namespace_constants]
 "Math.PI"             = 3.141592653589793
 "Math.E"              = 2.718281828459045
+"StrictMath.PI"       = 3.141592653589793
+"StrictMath.E"        = 2.718281828459045
+"java.lang.StrictMath.PI" = 3.141592653589793
+"java.lang.StrictMath.E"  = 2.718281828459045
+"Double.MAX_VALUE"    = 1.7976931348623157e308
+"Double.MIN_VALUE"    = 5e-324
+"Double.MIN_EXPONENT" = -1022
+"java.lang.Double.MAX_VALUE" = 1.7976931348623157e308
+"java.lang.Double.MIN_VALUE" = 5e-324
+"java.lang.Double.MIN_EXPONENT" = -1022
 "Integer.MAX_VALUE"   = 2147483647
 "Integer.MIN_VALUE"   = -2147483648
+"Thread.MIN_PRIORITY" = 1
+"Thread.NORM_PRIORITY" = 5
+"Thread.MAX_PRIORITY" = 10
+"java.lang.Thread.MIN_PRIORITY" = 1
+"java.lang.Thread.NORM_PRIORITY" = 5
+"java.lang.Thread.MAX_PRIORITY" = 10
 "Long.MAX_VALUE"      = 9.223372036854776e18
 "Long.MIN_VALUE"      = -9.223372036854776e18
-"Double.MAX_VALUE"    = 1.7976931348623157e308
 "Double.NaN"          = "NaN"
 "Double.POSITIVE_INFINITY" = "Infinity"
 "ZoneOffset.UTC" = "Z"
@@ -784,6 +865,7 @@ String        = ["ecma:string", "new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
 Integer       = ["ecma:number", "new"]
 BigInteger    = ["ecma:bigint", "BigInt"]
+"java.math.BigInteger" = ["ecma:bigint", "BigInt"]
 ArrayList     = ["common", "java.list_of"]
 LinkedList    = ["common", "java.list_of"]
 Vector        = ["common", "java.list_of"]
@@ -793,6 +875,8 @@ PriorityQueue = ["common", "java.sorted_set_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
 IdentityHashMap = ["common", "java.identity_hash_map_new"]
+"java.util.TreeSet"       = ["common", "java.sorted_set_new"]
+"java.util.PriorityQueue" = ["common", "java.sorted_set_new"]
 LinkedHashMap = ["common", "java.linked_hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]

@@ -28,16 +28,22 @@ fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u32) 
 }
 
 fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
+    let comparator = chunks[current].alloc_scratch(1);
     emit_comparator(chunks, current, value, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    set(&mut chunks[current], comparator, line);
+    get(&mut chunks[current], comparator, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("function", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
-    collections::emit_sort(chunks, current, line);
+    get(&mut chunks[current], comparator, line);
+    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
-    emit_comparator(chunks, current, value, line);
-    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+    collections::emit_sort(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 }
@@ -1656,6 +1662,115 @@ pub fn emit_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_retain_all(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_filter_members(chunks, current, line, true);
+}
+
+pub fn emit_remove_if(chunks: &mut [Chunk], current: usize, line: u32) {
+    let predicate = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let length = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let changed = chunks[current].alloc_scratch(1);
+
+    set(&mut chunks[current], predicate, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], length, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], changed, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], length, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], predicate, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], length, line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], length, line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], changed, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], changed, line);
+}
+
+pub fn emit_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
+    let operator = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let length = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+
+    set(&mut chunks[current], operator, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], length, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], length, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    get(&mut chunks[current], operator, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 fn emit_filter_members(chunks: &mut [Chunk], current: usize, line: u32, retain: bool) {

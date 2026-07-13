@@ -23,6 +23,18 @@ pub fn emit_builder(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
 }
 
+pub fn emit_builder_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let builder = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, builder, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, builder, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, builder, line);
+}
+
 pub fn emit_range(chunks: &mut [Chunk], current: usize, inclusive: bool, line: u32) {
     let end_slot = chunks[current].alloc_scratch(1);
     let index_slot = chunks[current].alloc_scratch(1);
@@ -282,6 +294,7 @@ pub fn emit_extreme_value(chunks: &mut [Chunk], current: usize, argc: u8, is_min
     let index_slot = chunks[current].alloc_scratch(1);
     let best_slot = chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].alloc_scratch(1);
+    let result_slot = chunks[current].alloc_scratch(1);
 
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, comparator_slot, line);
@@ -296,8 +309,8 @@ pub fn emit_extreme_value(chunks: &mut [Chunk], current: usize, argc: u8, is_min
     vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, best_slot, line);
+    super::optional_adapter::emit_empty(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
@@ -357,9 +370,13 @@ pub fn emit_extreme_value(chunks: &mut [Chunk], current: usize, argc: u8, is_min
     chunks[current].patch_loop(outer_loop);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer_block);
-    chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
+    super::optional_adapter::emit_of(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 pub fn emit_max_value(chunks: &mut [Chunk], current: usize, line: u32) {

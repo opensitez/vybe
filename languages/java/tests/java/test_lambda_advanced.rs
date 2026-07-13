@@ -334,7 +334,7 @@ fn comparator_chained_then_comparing_three_levels() {
     let out = run_main(
         "java.util.ArrayList<String> list = new java.util.ArrayList<String>(); list.add(\"b2\"); list.add(\"a2\"); list.add(\"a10\"); list.sort(java.util.Comparator.comparing((String s) -> s.charAt(0)).thenComparing((String s) -> s.length()).thenComparing(s -> s)); System.out.println(list.get(0)); System.out.println(list.get(2));",
     );
-    assert_eq!(out, vec!["a10", "b2"]);
+    assert_eq!(out, vec!["a2", "b2"]);
 }
 
 #[test]
