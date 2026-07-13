@@ -144,6 +144,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     PY_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
     PY_SYS_MODULES_BOUND.with(|b| b.set(false));
     PY_DEFINED_CLASSES.with(|m| m.borrow_mut().clear());
+    PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
+    PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -1943,7 +1945,29 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if all_exprs.len() >= 2 {
-        let value = all_exprs.pop().unwrap();
+        let mut value = all_exprs.pop().unwrap();
+        // `Name = namedtuple('Type', 'f1 f2', defaults=[...])`: register the
+        // definition so `Name(args)` lowers to a shared named tuple, and bind
+        // `Name` to a type object exposing `_fields`/`__typename`.
+        if all_exprs.len() == 1 {
+            if let ExprKind::Ident(target_name) = &all_exprs[0].kind {
+                if let Some(def) = parse_namedtuple_call(&value) {
+                    register_namedtuple_def(target_name, def.clone());
+                    value = namedtuple_type_object(&def);
+                } else if let ExprKind::NamedTuple { fields, type_name } = &value.kind {
+                    // `p = P(1, 2)` — track the instance so `p._asdict()` /
+                    // `p._replace(...)` can desugar with fields known.
+                    record_namedtuple_instance(
+                        target_name,
+                        NamedTupleDef {
+                            type_name: type_name.clone().unwrap_or_default(),
+                            fields: fields.iter().filter_map(|(n, _)| n.clone()).collect(),
+                            defaults: Vec::new(),
+                        },
+                    );
+                }
+            }
+        }
         // `m = json` / `m = importlib.import_module('json')` (the walker
         // already lowered the latter to the module Ident): record the
         // local as a module alias so member access substitutes the root.
@@ -2911,6 +2935,245 @@ fn note_defined_class(name: &str) {
     }
 }
 
+thread_local! {
+    // `Name = namedtuple('Type', 'f1 f2', defaults=[...])` records the type
+    // name, ordered field names, and trailing defaults here. A later
+    // `Name(args)` lowers to the shared `ExprKind::NamedTuple` (array-backed,
+    // cross-language) via `call_or_new`. See `vybe_emitter::tuples`.
+    static PY_NAMEDTUPLE_DEFS: std::cell::RefCell<std::collections::HashMap<String, NamedTupleDef>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[derive(Clone)]
+struct NamedTupleDef {
+    type_name: String,
+    fields: Vec<String>,
+    /// Trailing defaults (`namedtuple(..., defaults=[...])`); apply right-aligned.
+    defaults: Vec<Expression>,
+}
+
+fn register_namedtuple_def(name: &str, def: NamedTupleDef) {
+    PY_NAMEDTUPLE_DEFS.with(|m| {
+        m.borrow_mut().insert(name.to_string(), def);
+    });
+}
+
+fn namedtuple_def(name: &str) -> Option<NamedTupleDef> {
+    PY_NAMEDTUPLE_DEFS.with(|m| m.borrow().get(name).cloned())
+}
+
+thread_local! {
+    // Variables bound to a namedtuple instance (`p = P(1, 2)`), so `p._asdict()`
+    // / `p._replace(...)` can desugar with the field names known statically.
+    static PY_NAMEDTUPLE_INSTANCES: std::cell::RefCell<std::collections::HashMap<String, NamedTupleDef>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn record_namedtuple_instance(name: &str, def: NamedTupleDef) {
+    PY_NAMEDTUPLE_INSTANCES.with(|m| {
+        m.borrow_mut().insert(name.to_string(), def);
+    });
+}
+
+fn namedtuple_instance_def(name: &str) -> Option<NamedTupleDef> {
+    PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow().get(name).cloned())
+}
+
+/// The namedtuple definition backing a `_asdict`/`_replace` receiver: a direct
+/// `NamedTuple` node (`P(1, 2)._replace(...)`) or a tracked instance variable
+/// (`p = P(1, 2); p._replace(...)`).
+fn receiver_namedtuple_def(recv: &Expression) -> Option<NamedTupleDef> {
+    match &recv.kind {
+        ExprKind::NamedTuple { fields, type_name } => Some(NamedTupleDef {
+            type_name: type_name.clone().unwrap_or_default(),
+            fields: fields.iter().filter_map(|(n, _)| n.clone()).collect(),
+            defaults: Vec::new(),
+        }),
+        ExprKind::Ident(name) => namedtuple_instance_def(name),
+        _ => None,
+    }
+}
+
+/// Positional read `recv[index]` off a namedtuple receiver.
+fn namedtuple_index_read(recv: &Expression, index: usize) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(recv.clone()),
+        index: Box::new(Expression::int(index as i64)),
+        null_safe: false,
+    })
+}
+
+/// `nt._asdict()` → an ordered dict `{field: nt[i]}`.
+fn build_namedtuple_asdict(recv: &Expression, def: &NamedTupleDef) -> Expression {
+    let props = def
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str(f.clone()))),
+            value: namedtuple_index_read(recv, i),
+        })
+        .collect();
+    Expression::new(ExprKind::Object(props))
+}
+
+/// `nt._replace(**kw)` → a new namedtuple: each field keeps `nt[i]` unless a
+/// keyword override supplies it. Reuses the shared `NamedTuple` lowering.
+fn build_namedtuple_replace(
+    recv: &Expression,
+    def: &NamedTupleDef,
+    args: Vec<Argument>,
+) -> Expression {
+    let mut overrides: HashMap<String, Expression> = HashMap::new();
+    for arg in args {
+        if let Some(name) = arg.name {
+            overrides.insert(name, arg.value);
+        }
+    }
+    let fields = def
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let value = overrides
+                .remove(f)
+                .unwrap_or_else(|| namedtuple_index_read(recv, i));
+            (Some(f.clone()), value)
+        })
+        .collect();
+    Expression::new(ExprKind::NamedTuple {
+        fields,
+        type_name: Some(def.type_name.clone()),
+    })
+}
+
+/// Extract the string value of a string-literal expression.
+fn str_literal(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Ordered value expressions of a list/tuple literal.
+fn sequence_values(expr: &Expression) -> Option<Vec<Expression>> {
+    match &expr.kind {
+        ExprKind::Tuple(items) | ExprKind::Set(items) => Some(items.clone()),
+        ExprKind::Array(items) if items.iter().all(|e| e.key.is_none() && !e.spread) => {
+            Some(items.iter().map(|e| e.value.clone()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Parse a namedtuple field spec: a whitespace/comma-separated string
+/// (`'x y'`, `'x, y'`) or a list/tuple of name strings.
+fn parse_field_spec(expr: &Expression) -> Option<Vec<String>> {
+    if let Some(s) = str_literal(expr) {
+        return Some(
+            s.split([',', ' ', '\t', '\n'])
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
+                .collect(),
+        );
+    }
+    let values = sequence_values(expr)?;
+    values.iter().map(str_literal).collect()
+}
+
+/// If `value` is a `namedtuple('Type', fieldspec, defaults=...)` call, extract
+/// its definition.
+fn parse_namedtuple_call(value: &Expression) -> Option<NamedTupleDef> {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let ExprKind::Ident(fname) = &callee.kind else {
+        return None;
+    };
+    if fname != "namedtuple" && fname != "NamedTuple" {
+        return None;
+    }
+    let positional: Vec<&Expression> =
+        args.iter().filter(|a| a.name.is_none()).map(|a| &a.value).collect();
+    if positional.len() < 2 {
+        return None;
+    }
+    let type_name = str_literal(positional[0])?;
+    let fields = parse_field_spec(positional[1])?;
+    let defaults = args
+        .iter()
+        .find(|a| a.name.as_deref() == Some("defaults"))
+        .and_then(|a| sequence_values(&a.value))
+        .unwrap_or_default();
+    Some(NamedTupleDef {
+        type_name,
+        fields,
+        defaults,
+    })
+}
+
+/// The type object bound by `Name = namedtuple(...)` — an object exposing
+/// `_fields` (the field-name tuple) and `__typename`, so `Name._fields`
+/// resolves as an ordinary member read.
+fn namedtuple_type_object(def: &NamedTupleDef) -> Expression {
+    let field_tuple = Expression::new(ExprKind::Tuple(
+        def.fields
+            .iter()
+            .map(|f| Expression::new(ExprKind::Lit(Literal::Str(f.clone()))))
+            .collect(),
+    ));
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("_fields"),
+            value: field_tuple,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__typename"),
+            value: Expression::new(ExprKind::Lit(Literal::Str(def.type_name.clone()))),
+        },
+    ]))
+}
+
+/// Build a `namedtuple` construction: bind positional/keyword args to fields in
+/// order, filling trailing gaps from right-aligned `defaults`.
+fn build_namedtuple_construction(def: &NamedTupleDef, args: Vec<Argument>) -> ExprKind {
+    let n = def.fields.len();
+    let mut values: Vec<Option<Expression>> = vec![None; n];
+    let mut pos = 0usize;
+    for arg in args {
+        if let Some(name) = &arg.name {
+            if let Some(i) = def.fields.iter().position(|f| f == name) {
+                values[i] = Some(arg.value);
+            }
+        } else if pos < n {
+            values[pos] = Some(arg.value);
+            pos += 1;
+        }
+    }
+    // Right-aligned defaults fill any still-missing trailing fields.
+    let default_start = n.saturating_sub(def.defaults.len());
+    for (i, slot) in values.iter_mut().enumerate() {
+        if slot.is_none() && i >= default_start {
+            *slot = def.defaults.get(i - default_start).cloned();
+        }
+    }
+    let fields = def
+        .fields
+        .iter()
+        .zip(values)
+        .map(|(name, value)| {
+            (
+                Some(name.clone()),
+                value.unwrap_or_else(Expression::null),
+            )
+        })
+        .collect();
+    ExprKind::NamedTuple {
+        fields,
+        type_name: Some(def.type_name.clone()),
+    }
+}
+
 fn is_defined_class(name: &str) -> bool {
     PY_DEFINED_CLASSES.with(|m| m.borrow().contains(name))
 }
@@ -2920,12 +3183,19 @@ fn is_defined_class(name: &str) -> bool {
 /// shape across languages. Any other callee stays a plain `Call`.
 fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
     if let ExprKind::Ident(name) = &callee.kind {
+        if let Some(def) = namedtuple_def(name) {
+            return build_namedtuple_construction(&def, args);
+        }
         if is_defined_class(name) {
             return ExprKind::New {
                 class: Box::new(callee),
                 args,
             };
         }
+    }
+    // Inline `namedtuple('P', 'a b')(1, 2)` — the callee is the factory call.
+    if let Some(def) = parse_namedtuple_call(&callee) {
+        return build_namedtuple_construction(&def, args);
     }
     ExprKind::Call {
         callee: Box::new(callee),
@@ -3340,6 +3610,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     } else if let Some(rewritten) = try_rewrite_bytes_method(object, field, &[]) {
                         // bytes string-like method with no args, e.g. `b'AB'.lower()`
                         expr = rewritten;
+                    } else if field == "_asdict" && receiver_namedtuple_def(object).is_some() {
+                        // namedtuple `nt._asdict()` — no-arg instance method.
+                        let def = receiver_namedtuple_def(object).unwrap();
+                        expr = build_namedtuple_asdict(object, &def);
+                    } else if field == "_replace" && receiver_namedtuple_def(object).is_some() {
+                        // `nt._replace()` with no overrides — a plain copy.
+                        let def = receiver_namedtuple_def(object).unwrap();
+                        expr = build_namedtuple_replace(object, &def, Vec::new());
                     } else {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
@@ -3450,6 +3728,21 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     optional: false,
                                 });
                                 continue;
+                            }
+                            // namedtuple instance methods — the receiver's fields
+                            // are known statically (a NamedTuple node or a tracked
+                            // instance var), so both desugar without runtime help.
+                            if field == "_asdict" && args.is_empty() {
+                                if let Some(def) = receiver_namedtuple_def(object) {
+                                    expr = build_namedtuple_asdict(object, &def);
+                                    continue;
+                                }
+                            }
+                            if field == "_replace" {
+                                if let Some(def) = receiver_namedtuple_def(object) {
+                                    expr = build_namedtuple_replace(object, &def, args);
+                                    continue;
+                                }
                             }
                         }
                         // Python `super(Type, self)` explicit 2-arg form → ExprKind::Super

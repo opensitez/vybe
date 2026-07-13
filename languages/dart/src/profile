@@ -26,6 +26,15 @@ uses_common_resolver = true
 entry_point = "main"
 # Dart `+` on strings concatenates (per dart:core String.+).
 dynamic_add = true
+# Dart `bool` is a real boolean (like C#), not a C-style int: comparison and
+# equality results print as `true`/`false`. Materialize them so `print(a == b)`
+# / `print(x < y)` render correctly instead of `1`/`0`.
+materialize_bool_results = true
+# Dart records `(1, 2)` / `(x: 1, y: 2)` are a first-class type distinct from
+# List: array-backed but tagged so `.$1` positional + `.name` by-name access,
+# repr `(1, 2)`, and structural `==` behave as records, not lists. Same shared
+# lowering (vybe_emitter::tuples) as Python tuples / C# ValueTuple.
+tuple_literals_tagged = true
 # `sync*` / `async*` markers make generators statically detectable — route
 # them through the lazy spec-generator machinery (like JS/PHP) instead of
 # the eager run-to-completion fallback, so `for (v in gen())` with `break`

@@ -313,7 +313,19 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("\"", line);
     chunk.emit_string_const("'", line);
     chunk.emit_call(replace_all, 3, line);
-    // Tuple (tagged array): rewrite the just-built `[a, b]` into `(a, b)` via
+    // Named tuple (has `__typename`) → `Name(f=v, ...)`; this repr form is
+    // Python-specific (a C# named tuple stays `(a, b)`), so it lives here.
+    let tn_k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        vybe_emitter::tuples::TYPENAME_TAG,
+    )));
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, tn_k, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line); // 1 when a type name is present
+    chunk.emit_if(line); // [list_string] → [named_string], net-zero height
+    emit_py_named_tuple_repr(chunk, scratch, line);
+    chunk.emit_end(line);
+    // Plain tuple (tagged array, no type name): rewrite `[a, b]` → `(a, b)` via
     // the shared tuple emitter — element formatting stays Python's, the
     // structural transform is cross-language.
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
@@ -322,7 +334,11 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     )));
     chunk.emit_op_u16(Op::STRUCT_GET, tag_k, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line); // 1 when tag present
+    chunk.emit_op(Op::I32_EQZ, line); // 1 when tuple tag present
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, tn_k, line);
+    chunk.emit_op(Op::REF_IS_NULL, line); // 1 when NO type name (plain tuple)
+    chunk.emit_op(Op::I32_AND, line); // tuple tag present AND not a named tuple
     chunk.emit_if(line); // [list_string] → [tuple_string], net-zero height
     vybe_emitter::tuples::emit_list_string_to_tuple(chunk, line);
     chunk.emit_end(line);
@@ -395,6 +411,111 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_end(line); // close the __str__-dispatch branch
+}
+
+/// Rewrite an already-formatted list string `"[1, 9]"` for a named tuple into
+/// its Python repr `"P(x=1, y=9)"`, interleaving `scratch.__fields` with the
+/// (already element-repr'd) values and prefixing `scratch.__typename`. The
+/// values keep the formatting the list path produced; only the structure is
+/// rebuilt here. Stack: `[list_string] -> [named_string]`.
+fn emit_py_named_tuple_repr(chunk: &mut Chunk, scratch: u16, line: u32) {
+    use vybe_bytecode::Value;
+    use vybe_emitter::strings::emit_str_concat;
+    let js_len = chunk.add_import("wasm:js-string", "length");
+    let slice = chunk.add_import("ecma:array", "slice");
+    let split = chunk.add_import("ecma:string", "split");
+
+    let b = chunk.alloc_scratch(7);
+    let (s, inner, parts, fields, result, i, n) =
+        (b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6);
+    chunk.emit_op_u16(Op::LOCAL_SET, s, line); // consume the list string
+
+    // inner = s.slice(1, s.length - 1) — strip the `[` `]`.
+    chunk.emit_op_u16(Op::LOCAL_GET, s, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, s, line);
+    chunk.emit_call(js_len, 1, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_call(slice, 3, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, inner, line);
+
+    // parts = inner.split(", ") — the element strings (flat-value assumption).
+    chunk.emit_op_u16(Op::LOCAL_GET, inner, line);
+    chunk.emit_string_const(", ", line);
+    chunk.emit_call(split, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, parts, line);
+
+    // fields = scratch.__fields ; n = fields.length
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    let fk = chunk.add_constant(Value::String(std::sync::Arc::from(
+        vybe_emitter::tuples::FIELDS_TAG,
+    )));
+    chunk.emit_op_u16(Op::STRUCT_GET, fk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, fields, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fields, line);
+    let len_k = chunk.add_constant(Value::String(std::sync::Arc::from("length")));
+    chunk.emit_op_u16(Op::STRUCT_GET, len_k, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n, line);
+
+    // result = scratch.__typename + "("
+    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+    let tk = chunk.add_constant(Value::String(std::sync::Arc::from(
+        vybe_emitter::tuples::TYPENAME_TAG,
+    )));
+    chunk.emit_op_u16(Op::STRUCT_GET, tk, line);
+    chunk.emit_string_const("(", line);
+    emit_str_concat(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // i = 0
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let state = vybe_emitter::loops::emit_loop_start(std::slice::from_mut(chunk), 0, line);
+    // while i < n
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+
+    // if i > 0 { result += ", " }
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_string_const(", ", line);
+    emit_str_concat(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+    chunk.emit_end(line);
+
+    // result += fields[i] + "=" + parts[i]
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fields, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    emit_str_concat(chunk, line);
+    chunk.emit_string_const("=", line);
+    emit_str_concat(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, parts, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    emit_str_concat(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // i += 1
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_emitter::loops::emit_loop_end(std::slice::from_mut(chunk), 0, state, line);
+
+    // result + ")"
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_string_const(")", line);
+    emit_str_concat(chunk, line);
 }
 
 /// Python `bytes.decode([encoding])` — UTF-8 decode a Uint8Array to a `str`.

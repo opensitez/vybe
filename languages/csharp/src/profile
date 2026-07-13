@@ -8,6 +8,7 @@ name = "csharp"
 extensions = ["cs"]
 
 [compiler]
+field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
 # namespaceplan.md (dotnet phase): qualified System.* chains resolve through
 # the common resolver over the dotnet.* tree; legacy cascade is the fallback
@@ -37,6 +38,10 @@ uses_normalize_class = true
 # When/if tuple-deconstruction lands in the grammar, the existing
 # `detect_multi_value_receive` path will light up automatically.
 multi_value_tuple_returns = true
+# A C# tuple `(1, 2)` is the same runtime value as a tuple from any other
+# language: an array carrying the hidden `__tuple` tag so repr/type can tell
+# tuple from list. Shared lowering in vybe_emitter::tuples (emit_tag).
+tuple_literals_tagged = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls and dotted static calls

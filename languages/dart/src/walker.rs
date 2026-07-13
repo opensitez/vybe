@@ -1724,6 +1724,13 @@ fn is_dart_zero_arg_getter(name: &str) -> bool {
     matches!(name, "isEmpty" | "isNotEmpty" | "first" | "last" | "length")
 }
 
+/// Dart record positional field name `$1`/`$2`/… → its 0-based index. Records
+/// are array-backed, so `rec.$1` lowers to `rec[0]`.
+fn dart_positional_field_index(name: &str) -> Option<i64> {
+    let n: i64 = name.strip_prefix('$')?.parse().ok()?;
+    (n >= 1).then_some(n - 1)
+}
+
 /// Lower a list comprehension `[for (...) elem]` / `[if (...) elem]` to
 /// an IIFE that builds the array imperatively. Walker-only normalization;
 /// the compiler sees a regular Call(Lambda, []) on the way out.
@@ -2696,6 +2703,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // ── Paren / record expression ───────────────────────────────────
         Rule::record_or_paren => {
+            // A lone trailing comma is what makes `(99,)` a one-field record
+            // rather than the grouping `(99)`; the comma is dropped by the
+            // grammar, so read it off the source.
+            let single_field_record = pair.as_str().trim_end().trim_end_matches(')').trim_end().ends_with(',');
             let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.is_empty() {
                 // () — empty tuple/record
@@ -2714,16 +2725,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     let field_children: Vec<Pair<Rule>> =
                         fields.into_iter().next().unwrap().into_inner().collect();
                     if field_children.len() == 1 {
-                        // Simple parenthesized expression
-                        return walk_expr_kind(field_children.into_iter().next().unwrap());
+                        let value = walk_expression(field_children.into_iter().next().unwrap())?;
+                        // `(x,)` is a one-element record; `(x)` is just grouping.
+                        return Ok(if single_field_record {
+                            ExprKind::Tuple(vec![value])
+                        } else {
+                            value.kind
+                        });
                     } else if field_children.len() == 2 {
-                        // Named field — could be record or paren with named arg
+                        // Single named field record `(name: value)` — the shared
+                        // canonical named-tuple shape (array-backed + by-name key).
                         let name = field_children[0].as_str().to_string();
                         let value = walk_expression(field_children.into_iter().nth(1).unwrap())?;
-                        return Ok(ExprKind::Object(vec![ObjectProperty::KeyValue {
-                            key: Expression::string(&name),
+                        return Ok(vybe_emitter::tuples::build_named_tuple(vec![(
+                            Some(name),
                             value,
-                        }]));
+                        )]));
                     }
                     // Fallthrough — treat as empty
                     return Ok(ExprKind::Lit(Literal::Null));
@@ -2732,27 +2749,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // Multiple fields — could be record or tuple
                 let has_named = fields.iter().any(|f| f.clone().into_inner().count() > 1);
                 if has_named {
-                    let mut props = Vec::new();
+                    // Mixed/named record → the shared canonical named-tuple shape:
+                    // array-backed (so `.$1`/`.$2` index positionally) with a
+                    // by-name key per labelled field (`.host`, `.port`). One value
+                    // across languages (Python namedtuple / C# ValueTuple).
+                    let mut record_fields: Vec<(Option<String>, Expression)> = Vec::new();
                     for f in fields {
                         let mut fi = f.into_inner();
                         let first = fi.next().unwrap();
                         if let Some(second) = fi.next() {
-                            // named: value
                             let key = first.as_str().to_string();
-                            let value = walk_expression(second)?;
-                            props.push(ObjectProperty::KeyValue {
-                                key: Expression::string(&key),
-                                value,
-                            });
+                            record_fields.push((Some(key), walk_expression(second)?));
                         } else {
-                            let value = walk_expression(first)?;
-                            props.push(ObjectProperty::KeyValue {
-                                key: Expression::null(),
-                                value,
-                            });
+                            record_fields.push((None, walk_expression(first)?));
                         }
                     }
-                    Ok(ExprKind::Object(props))
+                    Ok(vybe_emitter::tuples::build_named_tuple(record_fields))
                 } else {
                     let exprs: Vec<Expression> = fields
                         .into_iter()
@@ -3113,23 +3125,35 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // kicks in. Wrap the bare property access in a Call(0)
                 // for known property names.
                 let force_call = !has_call && call_args.is_none() && is_dart_zero_arg_getter(&name);
-                expr = Expression::new(ExprKind::Member {
-                    object: Box::new(expr),
-                    field: name,
-                    null_safe: false,
-                });
-                if let Some(args) = call_args {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(expr),
-                        args,
-                        optional: false,
+                // Dart record positional field `.$1`/`.$2` → indexed read (records
+                // are array-backed). Only a bare getter, never a call.
+                if let Some(idx) =
+                    (call_args.is_none() && !has_call).then(|| dart_positional_field_index(&name)).flatten()
+                {
+                    expr = Expression::new(ExprKind::Index {
+                        object: Box::new(expr),
+                        index: Box::new(Expression::int(idx)),
+                        null_safe: false,
                     });
-                } else if has_call || force_call {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(expr),
-                        args: Vec::new(),
-                        optional: false,
+                } else {
+                    expr = Expression::new(ExprKind::Member {
+                        object: Box::new(expr),
+                        field: name,
+                        null_safe: false,
                     });
+                    if let Some(args) = call_args {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(expr),
+                            args,
+                            optional: false,
+                        });
+                    } else if has_call || force_call {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(expr),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                    }
                 }
             }
             Rule::call_args => {

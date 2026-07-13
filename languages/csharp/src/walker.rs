@@ -723,6 +723,11 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 rewrite_explicit_interface_accesses_in_expr(item, conflicted);
             }
         }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -3627,6 +3632,11 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(item, aliases, static_paths);
             }
         }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_using_imports_in_expr(value, aliases, static_paths);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -4299,6 +4309,11 @@ fn rewrite_extension_calls_in_expr(
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 rewrite_extension_calls_in_expr(item, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
             }
         }
         ExprKind::Object(props) => {
@@ -8113,21 +8128,19 @@ fn build_named_tuple_object_expr(
     tuple_names: &[Option<String>],
     elems: &[Expression],
 ) -> Expression {
-    let mut props = Vec::new();
-    for (index, value) in elems.iter().enumerate() {
-        let item_key = format!("Item{}", index + 1);
-        props.push(ObjectProperty::KeyValue {
-            key: Expression::string(&item_key),
-            value: value.clone(),
-        });
-        if let Some(name) = tuple_names.get(index).and_then(|name| name.as_ref()) {
-            props.push(ObjectProperty::KeyValue {
-                key: Expression::string(name),
-                value: value.clone(),
-            });
-        }
-    }
-    Expression::with_span(ExprKind::Object(props), span)
+    // Same canonical shape as a named-tuple literal: route through the shared
+    // builder so a `return (x: 1, y: 2)` value is identical to `(x: 1, y: 2)`.
+    let fields = elems
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            (
+                tuple_names.get(index).and_then(|name| name.clone()),
+                value.clone(),
+            )
+        })
+        .collect();
+    Expression::with_span(vybe_emitter::tuples::build_named_tuple(fields), span)
 }
 
 fn parse_csharp_named_tuple_return_slots(raw_type: &str) -> Option<Vec<Option<String>>> {

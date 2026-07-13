@@ -1323,6 +1323,11 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 rewrite_vb_aliases_in_expr(item, aliases);
             }
         }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_vb_aliases_in_expr(value, aliases);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -1618,6 +1623,13 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             let mut used = false;
             for item in items {
                 used |= rewrite_vb_err_expr(item);
+            }
+            used
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            let mut used = false;
+            for (_, value) in fields {
+                used |= rewrite_vb_err_expr(value);
             }
             used
         }

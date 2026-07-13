@@ -28,6 +28,15 @@ pub fn register() {
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: Some(tree_register::register_namespace_tree),
     });
+    // Dart records compare by value while Lists compare by reference, so the
+    // equality fallback deep-compares only tagged tuples (see vybe_emitter).
+    vybe_plugin::registry::register_hooks(
+        "dart",
+        vybe_plugin::registry::LanguageHooks {
+            value_eq: Some(vybe_emitter::tuples::emit_tuple_value_eq),
+            ..Default::default()
+        },
+    );
 }
 
 /// This crate as a [`vybe_plugin::Plugin`] — its `init` registers the
