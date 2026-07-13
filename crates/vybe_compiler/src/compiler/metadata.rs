@@ -784,22 +784,64 @@ impl Compiler {
         self.js_member_storage_name(field)
     }
 
-    pub(super) fn php_property_storage_name_for_class(&self, class_name: &str, field: &str) -> Option<String> {
-        if !self.is_php_profile() {
-            return None;
+    /// Whether an instance field named `field_canon` is already declared by
+    /// some ancestor (walking `parent` up the already-compiled
+    /// `pending_classes` chain) — i.e. this declaration HIDES it. Used only
+    /// under `profile.field_hiding`.
+    pub(super) fn field_hides_ancestor(&self, parent: Option<&str>, field_canon: &str) -> bool {
+        let mut current = parent.map(|p| self.canon(p));
+        let mut guard = 0;
+        while let Some(class_key) = current {
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            let Some(pending) = self.pending_classes.get(&class_key) else {
+                break;
+            };
+            if pending.fields.iter().any(|f| f == field_canon)
+                || pending
+                    .field_storage_names
+                    .keys()
+                    .any(|orig| orig == field_canon)
+            {
+                return true;
+            }
+            current = pending.parent.as_ref().map(|p| self.canon(p));
         }
+        false
+    }
+
+    /// The storage-slot name a class uses for `field`, when it differs from
+    /// the plain field name. Data-driven via `PendingClass.field_storage_names`
+    /// — a class with no remapped fields returns `None` (so this is a no-op
+    /// for the common case, no language gate needed). Populated for PHP
+    /// private properties and for statically-typed field hiding
+    /// (java/C#/VB: `Parent.value` and a hiding `Child.value` occupy distinct
+    /// slots, resolved by the reference's declared type).
+    pub(super) fn field_storage_name_for_class(
+        &self,
+        class_name: &str,
+        field: &str,
+    ) -> Option<String> {
         let class_key = self.canon(class_name);
         self.pending_classes
             .get(&class_key)
             .and_then(|pending| pending.field_storage_names.get(&self.canon(field)).cloned())
     }
 
-    pub(super) fn php_property_storage_name_for_receiver(
+    /// Resolve `receiver.field`'s storage slot by the receiver's STATIC type:
+    /// `this` / `self` → the current class; `super` → its parent; a typed
+    /// local → its declared type; otherwise the inferred type. This is what
+    /// makes field hiding pick the declared-type field rather than the
+    /// runtime one.
+    pub(super) fn field_storage_name_for_receiver(
         &self,
         receiver: &Expression,
         field: &str,
     ) -> Option<String> {
-        if !self.is_php_profile() {
+        // JS `#private` fields have their own receiver-storage path.
+        if field.starts_with('#') {
             return None;
         }
         let self_kw = self.profile.self_keyword.as_str();
@@ -807,26 +849,28 @@ impl Compiler {
             ExprKind::This => self
                 .current_class
                 .as_deref()
-                .and_then(|class_name| self.php_property_storage_name_for_class(class_name, field)),
+                .and_then(|class_name| self.field_storage_name_for_class(class_name, field)),
+            ExprKind::Super => self
+                .current_class
+                .as_deref()
+                .and_then(|class_name| self.pending_classes.get(&self.canon(class_name)))
+                .and_then(|pending| pending.parent.clone())
+                .and_then(|parent| self.field_storage_name_for_class(&parent, field)),
             ExprKind::Ident(name)
                 if name == self_kw || name == "$this" || name.eq_ignore_ascii_case(self_kw) =>
             {
-                self.current_class.as_deref().and_then(|class_name| {
-                    self.php_property_storage_name_for_class(class_name, field)
-                })
+                self.current_class
+                    .as_deref()
+                    .and_then(|class_name| self.field_storage_name_for_class(class_name, field))
             }
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                .and_then(|class_name| {
-                    self.php_property_storage_name_for_class(&class_name, field)
-                }),
+                .and_then(|class_name| self.field_storage_name_for_class(&class_name, field)),
             _ => self
                 .infer_expr_type_hint(receiver)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(&type_hint))
-                .and_then(|class_name| {
-                    self.php_property_storage_name_for_class(&class_name, field)
-                }),
+                .and_then(|class_name| self.field_storage_name_for_class(&class_name, field)),
         }
     }
 

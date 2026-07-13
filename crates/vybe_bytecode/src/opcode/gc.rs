@@ -75,14 +75,14 @@ opcode_category! {
     // Other variants (new_default, fill, copy, get/set, len) use `None`
     // here because callers emit them with no operand — the emitter adds
     // the spec-required typeidx when lowering to the WASM binary.
-    [0x06] array_new          => None,    "array.new";
-    [0x07] array_new_default  => None,    "array.new_default";
+    [0x06] array_new          => U16,     "array.new";         // typeidx (VM reads it)
+    [0x07] array_new_default  => U16,     "array.new_default"; // typeidx (VM reads it)
     [0x08] array_new_fixed    => U16,     "array.new_fixed";
     [0x09] array_new_data     => U16_U16, "array.new_data";
     [0x0A] array_new_elem     => U16_U16, "array.new_elem";
     [0x0B] array_get          => None,    "array.get";
-    [0x0C] array_get_s        => None,    "array.get_s";
-    [0x0D] array_get_u        => None,    "array.get_u";
+    [0x0C] array_get_s        => U16,     "array.get_s"; // typeidx (VM + codec read it)
+    [0x0D] array_get_u        => U16,     "array.get_u"; // typeidx (VM + codec read it)
     [0x0E] array_set          => None,    "array.set";
     [0x0F] array_length       => None,    "array.len";
     [0x10] array_fill         => None,    "array.fill";

@@ -14,6 +14,16 @@ fn expr_const_u8(expr: Option<&Expression>) -> u8 {
     }
 }
 
+/// Compile-time `u16` from a literal instruction argument (a GC type index).
+/// A symbolic type name (`$T`) yields 0 — the VM's array ops carry the typeidx
+/// only for binary-format parity and don't dispatch on it.
+fn expr_const_u16(expr: Option<&Expression>) -> u16 {
+    match expr.map(|e| &e.kind) {
+        Some(ExprKind::Lit(Literal::Int(n))) => *n as u16,
+        _ => 0,
+    }
+}
+
 /// Encode a `v128.const` immediate: a shape token (`i32x4`, `f64x2`, …) followed
 /// by the per-lane values, laid out little-endian into the 16-byte vector — the
 /// exact layout the VM's `V128_CONST` opcode reads back.
@@ -1746,6 +1756,15 @@ impl Compiler {
                         for b in bytes {
                             self.chunk().emit(b, l);
                         }
+                    }
+                    // Type/index immediate (array.new $t / array.get_s $t / …):
+                    // fold puts the immediate first, then the stack operands.
+                    OperandFormat::U16 => {
+                        for a in &args[1..] {
+                            self.compile_expr(a)?;
+                        }
+                        let imm = expr_const_u16(args.first().copied());
+                        self.chunk().emit_op_u16(op, imm, l);
                     }
                     // Lane ops (extract_lane / replace_lane / load_lane / …):
                     // fold puts the immediate first, then the stack operands.

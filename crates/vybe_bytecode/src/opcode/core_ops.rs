@@ -310,7 +310,7 @@ opcode_category! {
     [0x3E] i64_store32 => None, "i64.store32";
     // Memory
     [0x3F] memory_size => None, "memory.size";
-    [0x40] memory_grow => U16, "memory.grow";
+    [0x40] memory_grow => None, "memory.grow"; // memidx is an OPTIONAL immediate (read_optional_memidx), not a fixed u16
     // Numeric constants
     [0x41] i32_const => SlI32, "i32.const";
     [0x42] i64_const => SlI64, "i64.const";

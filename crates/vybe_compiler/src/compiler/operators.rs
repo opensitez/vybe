@@ -430,11 +430,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
-                    let eq_fallback = if self.is_python_profile() {
-                        vybe_plugin::registry::hooks(&self.profile.name).value_eq.unwrap()
-                    } else {
-                        crate::emitter::ops::emit_dyn_eq
-                    };
+                    // Structural-equality fallback is the language's registered
+                    // `value_eq` hook (present iff the language wants deep value
+                    // equality — Python tuples/dicts, Dart records), else plain
+                    // reference/primitive equality. Hook presence is the property;
+                    // never a profile-name check.
+                    let eq_fallback = vybe_plugin::registry::hooks(&self.profile.name)
+                        .value_eq
+                        .unwrap_or(crate::emitter::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
                         self.chunk(),
                         left_slot,
@@ -467,11 +470,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
-                    let eq_fallback = if self.is_python_profile() {
-                        vybe_plugin::registry::hooks(&self.profile.name).value_eq.unwrap()
-                    } else {
-                        crate::emitter::ops::emit_dyn_eq
-                    };
+                    // Structural-equality fallback is the language's registered
+                    // `value_eq` hook (present iff the language wants deep value
+                    // equality — Python tuples/dicts, Dart records), else plain
+                    // reference/primitive equality. Hook presence is the property;
+                    // never a profile-name check.
+                    let eq_fallback = vybe_plugin::registry::hooks(&self.profile.name)
+                        .value_eq
+                        .unwrap_or(crate::emitter::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
                         self.chunk(),
                         left_slot,

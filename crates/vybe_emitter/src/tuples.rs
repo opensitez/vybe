@@ -6,20 +6,23 @@
 //!       ↓  calls                        Python `namedtuple` / `NamedTuple`
 //!   build_named_tuple  ← THIS MODULE    (…future languages…)
 //!       ↓  produces
-//!   ExprKind::Object  ← canonical shape, reuses the existing object runtime
+//!   ExprKind::NamedTuple  ← canonical node, lowered by the shared compiler
 //!
-//! The canonical shape is a plain object (`ExprKind::Object`) carrying:
-//!   - positional keys `Item1..ItemN` (1-based, matching .NET `ValueTuple`),
-//!   - each field's by-name key when the field is named.
+//! The canonical runtime shape is the *same tagged array* a plain tuple lowers
+//! to (so it indexes / iterates / `len`s / slices / unpacks for free), plus:
+//!   - a by-name property per named field (`arr.X == arr[0]`),
+//!   - `__fields`: the ordered field-name list (for `_asdict`/`_replace`/repr),
+//!   - `__typename`: the type name (Python `namedtuple`) that selects the
+//!     `Name(f=v)` repr; absent for anonymous C# named tuples, whose repr stays
+//!     the positional `(a, b)` form.
 //!
-//! This reuses the object runtime with no new `ObjectKind`, bytecode op, or
-//! host support — exactly like anonymous types reuse `ExprKind::Object`.
-//! Positional access / deconstruction reads `Item1..ItemN`; by-name access
-//! reads the named key. Both work through LINQ / comprehension lambdas without
-//! any element-type inference, because the names live on the value itself.
+//! One shape means a named tuple built by any front-end is the same value:
+//! C#'s `.Item1` → `t[0]` and Python's `p[0]`/`list(p)`/`len(p)`/unpack all read
+//! the array backing, while `.Field` / `.x` read the by-name key. See
+//! [`emit_named_tuple`].
 
 use std::sync::Arc;
-use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
+use vybe_ast::{ExprKind, Expression};
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
@@ -57,6 +60,42 @@ pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op_u16(Op::STRUCT_GET, k, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_op(Op::I32_EQZ, line); // 1 when tag present (non-null)
+}
+
+/// Tuple-aware value equality, for a language whose tuples compare by value but
+/// whose *other* collections compare by reference (Dart: `(1,2) == (1,2)` is
+/// true, `[1,2] == [1,2]` is false). Stack: `[a, b] -> [i32]`. When both sides
+/// are tagged tuples it compares them structurally (positional values via
+/// `JSON.stringify`, which ignores the hidden tag / by-name keys); otherwise it
+/// falls back to plain reference/primitive equality. Register as a language's
+/// `value_eq` hook.
+pub fn emit_tuple_value_eq(chunk: &mut Chunk, line: u32) {
+    let json = chunk.add_import("ecma:json", "stringify");
+    let str_eq = chunk.add_import("wasm:js-string", "equals");
+    let s = chunk.alloc_scratch(2);
+    let (a, b) = (s, s + 1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+
+    // isTuple(a) && isTuple(b)
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    emit_is_tuple(std::slice::from_mut(chunk), 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    emit_is_tuple(std::slice::from_mut(chunk), 0, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    // structural: JSON.stringify(a) == JSON.stringify(b)
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_call(json, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_call(json, 1, line);
+    chunk.emit_call(str_eq, 2, line);
+    chunk.emit_else(line);
+    // reference / primitive equality
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    crate::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_end(line);
 }
 
 /// Given `[result, source]`, stamp `result` as a tuple **iff** `source` was a
@@ -161,55 +200,101 @@ pub fn emit_list_string_to_tuple(chunk: &mut Chunk, line: u32) {
     crate::strings::emit_str_concat(chunk, line);
 }
 
-/// Build the canonical named-tuple object from ordered `(name, value)` fields.
-/// `name` is `None` for a positional-only element. The result always carries
-/// `Item1..ItemN`; named elements additionally get their by-name key.
+/// Build the canonical named tuple from ordered `(name, value)` fields.
+/// `name` is `None` for a positional-only element. `type_name` is the tuple's
+/// type (Python `namedtuple`), or `None` for an anonymous named tuple (C#
+/// `ValueTuple`). The shared compiler lowers this to a tagged array carrying
+/// by-name field keys and hidden `__fields`/`__typename` (see
+/// [`emit_named_tuple`]).
 pub fn build_named_tuple(fields: Vec<(Option<String>, Expression)>) -> ExprKind {
-    let mut props = Vec::with_capacity(fields.len() * 2);
-    for (i, (name, value)) in fields.into_iter().enumerate() {
-        props.push(ObjectProperty::KeyValue {
-            key: Expression::string(&format!("Item{}", i + 1)),
-            value: value.clone(),
-        });
-        if let Some(n) = name {
-            props.push(ObjectProperty::KeyValue {
-                key: Expression::string(&n),
-                value,
-            });
-        }
+    ExprKind::NamedTuple {
+        fields,
+        type_name: None,
     }
-    ExprKind::Object(props)
 }
 
-/// Positional arity of a canonical named-tuple object (the count of contiguous
-/// `Item1..ItemN` keys), or `None` if `expr` is not such an object.
+/// Positional arity of a named-tuple literal (the field count), or `None` if
+/// `expr` is not a named-tuple node.
 pub fn named_tuple_arity(expr: &Expression) -> Option<usize> {
-    let ExprKind::Object(props) = &expr.kind else {
-        return None;
-    };
-    let has_item = |k: usize| {
-        let want = format!("Item{}", k);
-        props.iter().any(|p| {
-            matches!(p, ObjectProperty::KeyValue { key, .. }
-                if matches!(&key.kind, ExprKind::Lit(Literal::Str(s)) if *s == want))
-        })
-    };
-    if !has_item(1) {
-        return None;
+    match &expr.kind {
+        ExprKind::NamedTuple { fields, .. } => Some(fields.len()),
+        _ => None,
     }
-    let mut n = 1;
-    while has_item(n + 1) {
-        n += 1;
-    }
-    Some(n)
 }
 
-/// The `Item{index+1}` positional read off a named-tuple value, used to lower
-/// positional deconstruction back onto the shared array-destructure path.
+/// The positional read off a named-tuple value: `object[index]`. The canonical
+/// shape is array-backed, so deconstruction rejoins the shared array-destructure
+/// path directly.
 pub fn positional_read(object: Expression, index: usize) -> Expression {
-    Expression::new(ExprKind::Member {
+    Expression::new(ExprKind::Index {
         object: Box::new(object),
-        field: format!("Item{}", index + 1),
+        index: Box::new(Expression::int(index as i64)),
         null_safe: false,
     })
+}
+
+// ── Named-tuple runtime metadata ────────────────────────────────────────
+//
+// The canonical named tuple is the positional tuple's tagged array plus:
+//   - a by-name property per named field (`arr.x == arr[0]`),
+//   - `__fields`: the ordered field-name list, for `_asdict`/`_replace`/repr,
+//   - `__typename`: the type name (Python `namedtuple`) driving the
+//     `Name(f=v)` repr; absent for anonymous (C#) named tuples, whose repr
+//     stays the positional `(a, b)` form.
+
+/// Hidden ordered field-name list stamped on a named tuple's array.
+pub const FIELDS_TAG: &str = "__fields";
+/// Hidden type name stamped on a named tuple's array (Python `namedtuple`).
+pub const TYPENAME_TAG: &str = "__typename";
+
+/// Stamp named-tuple metadata onto the array on TOS — already the packed
+/// positional values (as for a plain tuple). Adds the `__tuple` tag, a by-name
+/// key for each named field (`arr.name = arr[i]`), the ordered `__fields` name
+/// list, and `__typename` when `type_name` is set. Stack: `[arr] -> [arr]`.
+pub fn emit_named_tuple(
+    chunks: &mut [Chunk],
+    current: usize,
+    field_names: &[Option<String>],
+    type_name: Option<&str>,
+    line: u32,
+) {
+    // 1. Tuple tag — the value behaves / repr's / slices as a tuple.
+    emit_tag(chunks, current, line);
+
+    // 2. By-name key per named field: `arr.<name> = arr[i]` (re-read the value
+    //    from the array so field-value expressions are never re-evaluated).
+    for (i, name) in field_names.iter().enumerate() {
+        let Some(name) = name else { continue };
+        let c = &mut chunks[current];
+        c.emit_dup(line); // [arr, arr]
+        c.emit_dup(line); // [arr, arr, arr]
+        core_wasm::i32_const(c, line, i as i32); // [arr, arr, arr, i]
+        c.emit_op(Op::ARRAY_GET, line); // [arr, arr, arr[i]]
+        let k = c.add_constant(Value::String(Arc::from(name.as_str())));
+        c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, arr[i]]
+        c.emit_op(Op::DROP, line); // [arr]
+    }
+
+    // 3. Ordered field-name list.
+    {
+        let c = &mut chunks[current];
+        c.emit_dup(line); // [arr, arr]
+        for name in field_names {
+            core_wasm::string_const(c, line, name.as_deref().unwrap_or(""));
+        }
+        c.emit_op_u16(Op::ARRAY_NEW_FIXED, field_names.len() as u16, line); // [arr, fields]
+        let k = c.add_constant(Value::String(Arc::from(FIELDS_TAG)));
+        c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, fields]
+        c.emit_op(Op::DROP, line); // [arr]
+    }
+
+    // 4. Type name (Python `namedtuple`) → drives the `Name(f=v)` repr.
+    if let Some(tn) = type_name {
+        let c = &mut chunks[current];
+        c.emit_dup(line);
+        core_wasm::string_const(c, line, tn);
+        let k = c.add_constant(Value::String(Arc::from(TYPENAME_TAG)));
+        c.emit_op_u16(Op::STRUCT_SET, k, line);
+        c.emit_op(Op::DROP, line);
+    }
 }

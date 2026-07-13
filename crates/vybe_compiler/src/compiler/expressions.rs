@@ -2435,7 +2435,7 @@ impl Compiler {
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     let field_name = self
-                        .php_property_storage_name_for_receiver(object, field)
+                        .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_GET, idx);
@@ -2459,7 +2459,7 @@ impl Compiler {
                     self.chunk().emit_end(line);
                 } else {
                     let field_name = self
-                        .php_property_storage_name_for_receiver(object, field)
+                        .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
                     if matches!(self.profile.name.as_str(), "csharp" | "vb")
                         && self.profile.namespaces.use_dotnet
@@ -4036,6 +4036,45 @@ impl Compiler {
                 if self.profile.tuple_literals_tagged {
                     common::tuples::emit_tag(&mut self.chunks, self.current, line);
                 }
+            }
+
+            // ── Named tuple (C# `(x: 1, y: 2)`, Python `namedtuple`) ─────
+            // Same tagged-array backing as a plain tuple, then the shared
+            // emitter stamps by-name field keys + `__fields`/`__typename`.
+            ExprKind::NamedTuple { fields, type_name } => {
+                let line = self.line;
+                let n = fields.len();
+                for (_, value) in fields {
+                    self.compile_expr(value)?;
+                }
+                let base = if n == 0 {
+                    0
+                } else {
+                    let mut first = 0u16;
+                    for i in 0..n {
+                        let s = self.define_local("__pack");
+                        if i == 0 {
+                            first = s;
+                        }
+                    }
+                    first
+                };
+                common::collections::emit_pack_n(
+                    &mut self.chunks,
+                    self.current,
+                    n as u16,
+                    base,
+                    line,
+                );
+                let names: Vec<Option<String>> =
+                    fields.iter().map(|(name, _)| name.clone()).collect();
+                common::tuples::emit_named_tuple(
+                    &mut self.chunks,
+                    self.current,
+                    &names,
+                    type_name.as_deref(),
+                    line,
+                );
             }
 
             // ── Set (Python) ────────────────────────────────────────────

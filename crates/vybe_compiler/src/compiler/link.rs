@@ -167,7 +167,9 @@ impl Compiler {
                     ..
                 } => {
                     let field_name = self.canon(name);
-                    if modifiers.is_shared {
+                    // `is_shared` (VB) and `is_static` (java/C#/…) both mean
+                    // "static member" — either flag registers it as static.
+                    if modifiers.is_shared || modifiers.is_static {
                         static_fields.push(field_name.clone());
                         if let Some(type_hint) = type_hint.as_ref() {
                             static_field_types
@@ -190,7 +192,7 @@ impl Compiler {
                     } = &stmt.kind
                     {
                         let canonical = self.canon(method_name);
-                        if modifiers.is_shared {
+                        if modifiers.is_shared || modifiers.is_static {
                             static_method_names.push(canonical);
                         } else {
                             if params

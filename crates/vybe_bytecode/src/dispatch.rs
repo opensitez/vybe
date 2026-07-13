@@ -1464,7 +1464,7 @@ impl VM {
                 // Reference-types `table.get tbl` — pop i32 index, push
                 // the table slot as a value. Table 0 is `func_table`
                 // (the function-reference table). Tables 1+ live in
-                // `extra_tables` for the multi-table proposal.
+                // `wasm_tables`, indexed directly by tableidx.
                 _ if op == Op::TABLE_GET => {
                     let table_idx = self.read_byte() as usize;
                     let idx = self.pop().as_i32() as usize;
@@ -3690,7 +3690,7 @@ impl VM {
                 // Each op reads a `u8 table_idx` operand per spec. Tables
                 // route through `table_ref`/`table_mut` so the multi-table
                 // proposal works: index 0 maps to `func_table`, indexes
-                // 1+ map to lazily-created `extra_tables`.
+                // indexed directly in `wasm_tables`.
                 _ if op == Op::TABLE_SIZE => {
                     let tidx = self.read_byte() as usize;
                     let table = self
@@ -4906,7 +4906,7 @@ impl VM {
                         let child_globals = self.globals.clone();
                         let child_type_registry = self.type_registry.clone();
                         let child_func_table = self.func_table.clone();
-                        let child_extra_tables = self.extra_tables.clone();
+                        let child_wasm_tables = self.wasm_tables.clone();
                         let child_case_aliases = self.case_aliases.clone();
                         let child_strict_isolation = self.strict_isolation;
                         let child_module_prefix = self.module_prefix.clone();
@@ -4921,7 +4921,7 @@ impl VM {
                             child_vm.globals = child_globals;
                             child_vm.type_registry = child_type_registry;
                             child_vm.func_table = child_func_table;
-                            child_vm.extra_tables = child_extra_tables;
+                            child_vm.wasm_tables = child_wasm_tables;
                             child_vm.case_aliases = child_case_aliases;
                             child_vm.strict_isolation = child_strict_isolation;
                             child_vm.module_prefix = child_module_prefix;

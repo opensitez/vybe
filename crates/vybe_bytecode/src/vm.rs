@@ -575,14 +575,17 @@ pub struct VM {
     pub(crate) elem_segments: Vec<Vec<Value>>,
     /// Currently selected memory index (for load/store ops). Default 0.
     pub(crate) active_memory: usize,
-    /// Function table (WASM MVP) — for call_indirect. Also accessible
-    /// as table index 0 via the reference-types table ops.
+    /// The module's function index space (imports then defined funcs) —
+    /// populated by `ref.func` and host-fn registration, read by call-by-index
+    /// and `return_call_indirect`. This is NOT a WASM table: a `(table …)` is a
+    /// separate funcref array (see `wasm_tables`). Keeping them apart is what
+    /// stops the ~2000 registered host fns from swamping a module's table 0.
     pub func_table: Vec<Value>,
-    /// Additional reference-typed tables for the reference-types /
-    /// multi-table proposal. Index N (N >= 1) lives at
-    /// `extra_tables[N-1]`; index 0 is `func_table`. Tables are lazily
-    /// created: compilers that only use table 0 never allocate here.
-    pub extra_tables: Vec<Vec<Value>>,
+    /// WASM reference tables (reference-types / multi-table proposal), indexed
+    /// directly: table N is `wasm_tables[N]`, table 0 included. Declared by
+    /// `(table …)`, populated by elem segments / `table.set` / `ref.func`
+    /// values, and read by `table.get`/`call_indirect`.
+    pub wasm_tables: Vec<Vec<Value>>,
     /// Optional per-slot value-type recorder. `Some` enables the
     /// LOCAL_SET / LOCAL_GET hooks to tally which `Value` variants
     /// flow through each local, feeding the anyref/ABI migration with
@@ -733,21 +736,13 @@ pub struct BlockTargets {
 
 impl VM {
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
-    /// `func_table`; indexes 1.. map to `extra_tables`.
+    /// WASM tables in `wasm_tables`, indexed directly (table 0 = `wasm_tables[0]`).
     pub(crate) fn table_ref(&self, idx: usize) -> Option<&Vec<Value>> {
-        if idx == 0 {
-            Some(&self.func_table)
-        } else {
-            self.extra_tables.get(idx - 1)
-        }
+        self.wasm_tables.get(idx)
     }
-    /// Mutable borrow of the table at `tableidx`.
+    /// Mutable borrow of the WASM table at `tableidx`.
     pub(crate) fn table_mut(&mut self, idx: usize) -> Option<&mut Vec<Value>> {
-        if idx == 0 {
-            Some(&mut self.func_table)
-        } else {
-            self.extra_tables.get_mut(idx - 1)
-        }
+        self.wasm_tables.get_mut(idx)
     }
 
     /// Turn on per-slot value-type recording for the next `run`.
@@ -801,7 +796,7 @@ impl VM {
             elem_segments: Vec::new(),
             active_memory: 0,
             func_table: Vec::new(),
-            extra_tables: Vec::new(),
+            wasm_tables: Vec::new(),
             type_recorder: None,
             active_continuations: Vec::new(),
             cur_fiber_id: 0,
@@ -998,18 +993,11 @@ impl VM {
         for (idx, size) in min_sizes.iter().copied().enumerate() {
             let size = usize::try_from(size)
                 .map_err(|_| crate::VMError::new("table declaration size out of range"))?;
-            if idx == 0 {
-                if self.func_table.len() < size {
-                    self.func_table.resize(size, Value::Null);
-                }
-            } else {
-                let extra_idx = idx - 1;
-                if self.extra_tables.len() <= extra_idx {
-                    self.extra_tables.resize_with(extra_idx + 1, Vec::new);
-                }
-                if self.extra_tables[extra_idx].len() < size {
-                    self.extra_tables[extra_idx].resize(size, Value::Null);
-                }
+            if self.wasm_tables.len() <= idx {
+                self.wasm_tables.resize_with(idx + 1, Vec::new);
+            }
+            if self.wasm_tables[idx].len() < size {
+                self.wasm_tables[idx].resize(size, Value::Null);
             }
         }
         Ok(())
@@ -1797,24 +1785,27 @@ impl VM {
                     let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
                     if let Some(op) = Op::decode(group, sub) {
                         if op == Op::REF_FUNC {
-                            if ip + 4 < code.len() {
-                                let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
+                            // Operand layout after the 4-byte opcode: func_idx
+                            // (u16) at ip+4, then uv_count (u8) at ip+6, then
+                            // upvalues. Relocate the func_idx by script_idx.
+                            if ip + 6 <= code.len() {
+                                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
                                 let new_idx = old_idx + script_idx as u16;
-                                code[ip + 2] = (new_idx >> 8) as u8;
-                                code[ip + 3] = (new_idx & 0xff) as u8;
+                                code[ip + 4] = (new_idx >> 8) as u8;
+                                code[ip + 5] = (new_idx & 0xff) as u8;
                             }
-                            ip += 4 + 1;
+                            ip += 4 + 2 + 1; // opcode + func_idx + uv_count
                             if ip - 1 < code.len() {
                                 let uv_count = code[ip - 1] as usize;
-                                ip += uv_count * 3; // u8 is_local + u16 index
+                                ip += uv_count * 3; // per upvalue: u8 is_local + u16 index
                             }
                             continue;
                         }
-                        ip += 2; // all opcodes are 2 bytes
+                        ip += 4; // opcodes are 4 bytes
                         let fmt = op.operand_format();
                         ip += fmt.size_in(code, ip);
                     } else {
-                        ip += 2; // skip unknown 2-byte opcode
+                        ip += 4; // skip unknown 4-byte opcode
                     }
                 }
             }

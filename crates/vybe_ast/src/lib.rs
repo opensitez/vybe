@@ -693,6 +693,16 @@ pub enum ExprKind {
     Array(Vec<ArrayElement>),
     /// Python `(1, 2, 3)` — immutable sequence
     Tuple(Vec<Expression>),
+    /// A named tuple — array-backed like `Tuple`, but each element may carry a
+    /// field name and the tuple an optional type name (Python `namedtuple`,
+    /// C# named `ValueTuple` `(x: 1, y: 2)`). Lowered by the shared compiler to
+    /// a tagged array plus field-name keys and hidden `__fields`/`__typename`,
+    /// so a named tuple is one runtime value across languages.
+    /// See `vybe_emitter::tuples`.
+    NamedTuple {
+        fields: Vec<(Option<String>, Expression)>,
+        type_name: Option<String>,
+    },
     /// Python `{1, 2, 3}` — unordered unique collection
     Set(Vec<Expression>),
     Object(Vec<ObjectProperty>),
@@ -1486,6 +1496,9 @@ fn expr_has_yield(expr: &Expression) -> bool {
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             items.iter().any(expr_has_yield)
         }
+        ExprKind::NamedTuple { fields, .. } => {
+            fields.iter().any(|(_, value)| expr_has_yield(value))
+        }
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
             ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
                 expr_has_yield(key) || expr_has_yield(value)
@@ -1856,6 +1869,11 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
                 collect_rest_in_expr(item, out);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                collect_rest_in_expr(value, out);
             }
         }
         ExprKind::Object(props) => {

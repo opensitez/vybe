@@ -1181,6 +1181,104 @@ impl Compiler {
     // Class compilation
     // ════════════════════════════════════════════════════════════════════════
 
+    /// Recursively register a minimal member surface for every nested
+    /// class/struct in `members`, keyed by its (already-qualified) name, so
+    /// a reference to it from a sibling method compiled earlier resolves as
+    /// a user type instead of falling through to a builtin value-method. The
+    /// full registration replaces this when the nested type is compiled.
+    fn predeclare_nested_type_surfaces(&mut self, members: &[ClassMember], enclosing: &str) {
+        for m in members {
+            let ClassMember::NestedType(stmt) = m else {
+                continue;
+            };
+            let (nested_name, nested_members, nested_parent): (
+                &str,
+                &[ClassMember],
+                Option<String>,
+            ) = match &stmt.kind {
+                StmtKind::ClassDecl {
+                    name: nn,
+                    members: nm,
+                    parents,
+                    ..
+                } => (nn, nm, parents.first().map(|p| self.canon(p))),
+                StmtKind::StructDecl {
+                    name: nn,
+                    members: nm,
+                    ..
+                } => (nn, nm, None),
+                _ => continue,
+            };
+            let nested_canon = self.canon(nested_name);
+            if !self.pending_classes.contains_key(&nested_canon) {
+                let mut static_method_names: Vec<String> = Vec::new();
+                let mut static_fields: Vec<String> = Vec::new();
+                let mut instance_member_names: Vec<String> = Vec::new();
+                let mut fields: Vec<String> = Vec::new();
+                // (method-return-type key, return type) — registered so a
+                // chained call `outer.first().next()` compiled in a sibling
+                // method (before this nested type is compiled) can infer the
+                // intermediate result's type.
+                let mut return_types: Vec<(String, String)> = Vec::new();
+                for mem in nested_members {
+                    match mem {
+                        ClassMember::Method(ms) => {
+                            if let StmtKind::FunctionDecl {
+                                name: mname,
+                                modifiers,
+                                return_type,
+                                ..
+                            } = &ms.kind
+                            {
+                                if modifiers.is_static || modifiers.is_shared {
+                                    static_method_names.push(self.canon(mname));
+                                } else {
+                                    instance_member_names.push(self.canon(mname));
+                                }
+                                if let Some(rt) = return_type {
+                                    return_types.push((
+                                        self.canon(&format!("{nested_canon}.{mname}")),
+                                        rt.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                        ClassMember::Property { name: pname, .. } => {
+                            instance_member_names.push(self.canon(pname));
+                        }
+                        ClassMember::Field {
+                            name: fname,
+                            modifiers,
+                            ..
+                        } => {
+                            if modifiers.is_static || modifiers.is_shared {
+                                static_fields.push(self.canon(fname));
+                            } else {
+                                fields.push(self.canon(fname));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.defined_globals.insert(nested_canon.clone());
+                self.defined_classes.insert(nested_canon.clone());
+                self.note_pending_class(&nested_canon, nested_parent);
+                if let Some(pc) = self.pending_classes.get_mut(&nested_canon) {
+                    pc.enclosing_class = Some(enclosing.to_string());
+                    pc.static_method_names = static_method_names;
+                    pc.static_fields = static_fields;
+                    pc.instance_member_names = instance_member_names;
+                    pc.fields = fields;
+                }
+                for (key, rt) in return_types {
+                    self.function_return_types.entry(key).or_insert(rt);
+                }
+            }
+            // Recurse: register deeper nested types (`Outer.Inner.Deep`).
+            self.predeclare_nested_type_surfaces(nested_members, &nested_canon);
+        }
+    }
+
     pub(crate) fn compile_class(
         &mut self,
         class: &crate::compiler::class_normalize::NormalClass,
@@ -1203,23 +1301,29 @@ impl Compiler {
         // from instance_fields / static_fields, then add backing fields
         // for auto-properties. Reads NormalClass directly; no longer
         // iterates the reconstructed member list.
-        let php_method_names: std::collections::HashSet<String> = if self.is_php_profile() {
-            class
-                .instance_methods
-                .iter()
-                .map(|method| self.canon(&method.source_name))
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
+        // When properties and methods share the object namespace only in
+        // some languages, a property whose name collides with a method needs
+        // a distinct slot (see `separate_property_method_namespace`).
+        let colliding_method_names: std::collections::HashSet<String> =
+            if self.profile.separate_property_method_namespace {
+                class
+                    .instance_methods
+                    .iter()
+                    .map(|method| self.canon(&method.source_name))
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            };
         let mut field_storage_names: HashMap<String, String> = HashMap::new();
-        let php_field_storage_name = |compiler: &Self,
-                                      field_name: &str,
-                                      method_names: &std::collections::HashSet<String>|
+        let field_storage_slot_name = |compiler: &Self,
+                                       field_name: &str,
+                                       method_names: &std::collections::HashSet<String>|
          -> String {
             let canon = compiler.canon(field_name);
-            if compiler.is_php_profile() && method_names.contains(&canon) {
-                format!("__php_prop_{}", canon)
+            if compiler.profile.separate_property_method_namespace
+                && method_names.contains(&canon)
+            {
+                format!("__prop${}", canon)
             } else {
                 compiler.js_member_storage_name_for_class(&class.name, field_name)
             }
@@ -1239,9 +1343,19 @@ impl Compiler {
             Option<Vec<Expression>>,
         )> = Vec::new();
         for f in &class.instance_fields {
-            let fname = php_field_storage_name(self, &f.name, &php_method_names);
-            if fname != self.canon(&f.name) {
-                field_storage_names.insert(self.canon(&f.name), fname.clone());
+            let field_canon = self.canon(&f.name);
+            // Field hiding (java/C#/VB): a field that shadows an ancestor's
+            // gets a declaring-class-qualified slot so both survive on the
+            // object and access resolves by the reference's declared type.
+            let fname = if self.profile.field_hiding
+                && self.field_hides_ancestor(class.parent.as_deref(), &field_canon)
+            {
+                format!("__hide_{}${}", self.canon(&class.name), field_canon)
+            } else {
+                field_storage_slot_name(self, &f.name, &colliding_method_names)
+            };
+            if fname != field_canon {
+                field_storage_names.insert(field_canon.clone(), fname.clone());
             }
             fields.push(fname.clone());
             field_inits.push((
@@ -1265,7 +1379,7 @@ impl Compiler {
             // the runtime reads/writes through auto-emitted __get_/__set_
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon = php_field_storage_name(self, auto_field_name, &php_method_names);
+                let pname_canon = field_storage_slot_name(self, auto_field_name, &colliding_method_names);
                 if pname_canon != self.canon(auto_field_name) {
                     field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
                 }
@@ -1417,6 +1531,21 @@ impl Compiler {
                 statics: Vec::new(), // filled after methods are compiled
             },
         );
+
+        // Predeclare nested class/struct member surfaces before compiling
+        // this class's methods. The real nested-type compilation happens
+        // later (with the rest of `raw_extra_members`, after methods, so
+        // chunk indices stay byte-identical), which means a call to a nested
+        // class's method from a sibling method — e.g. `Inner.add(...)` or
+        // `innerInstance.get()` inside `main` — would otherwise not see
+        // `Inner` in `pending_classes` yet and fall through to a builtin
+        // value-method of the same name (`get`, `add`, …). Top-level classes
+        // avoid this via `predeclare_type_names`; nested classes (java/C#/VB)
+        // had no equivalent. Recurses the whole nested tree so a deeply
+        // qualified reference (`Outer.Inner`) is registered too. Each
+        // placeholder is replaced by the full registration when the nested
+        // type is actually compiled below.
+        self.predeclare_nested_type_surfaces(&class.raw_extra_members, name);
 
         // Compile methods (including constructor body)
         // (name, chunk_idx, is_ctor, is_static)

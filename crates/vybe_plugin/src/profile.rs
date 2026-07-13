@@ -288,6 +288,20 @@ pub struct LanguageProfile {
     /// `Exception` is the root and `catch (Exception)` catches everything.
     pub throwable_is_root: bool,
 
+    /// Fields are resolved by the reference's DECLARED (static) type, so a
+    /// subclass field of the same name HIDES the parent's rather than
+    /// overriding it — both occupy distinct storage slots (java/C#/VB, C++).
+    /// When false (JS/Python/PHP/Ruby: dynamic single-slot objects), a
+    /// same-named subclass field OVERRIDES the parent's one slot.
+    pub field_hiding: bool,
+
+    /// Properties and methods occupy SEPARATE member namespaces (PHP:
+    /// `$o->foo` the property and `$o->foo()` the method coexist). A property
+    /// whose name collides with a method is stored under a mangled slot so
+    /// the two don't clobber each other in the shared object model. When
+    /// false (JS/…: one member namespace), no mangling.
+    pub separate_property_method_namespace: bool,
+
     /// How reflection/runtime type identity names are formed. Each language
     /// owns its type namespace — this must NOT be hardcoded to one language's
     /// scheme. `Native` (default) keeps a type's own name (`Throwable`,
@@ -866,6 +880,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("throwable_is_root")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let field_hiding = compiler
+        .get("field_hiding")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let separate_property_method_namespace = compiler
+        .get("separate_property_method_namespace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let reflection_type_naming = match compiler
         .get("reflection_type_naming")
         .and_then(|v| v.as_str())
@@ -1418,6 +1440,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         linq_queries,
         switch_fallthrough,
         throwable_is_root,
+        field_hiding,
+        separate_property_method_namespace,
         reflection_type_naming,
         supports_private_fields,
         has_function_prototype_bind,
