@@ -7,10 +7,10 @@
 //! - `strings::emit_*(chunk, line)` for string helpers (single chunk)
 //! - `core_wasm::*(&mut chunk, line, ...)` for raw WASM ops
 
-use vybe_emitter::instructions::{core_wasm, host};
-use vybe_emitter::{collections, strings};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::{core_wasm, host};
+use vybe_emitter::{collections, strings};
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
@@ -24,7 +24,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit(1, line);
             let text_slot = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
-            host::emit(&mut chunks[current], "wasi:cli/stdout", "get-stdout", 0, line);
+            host::emit(
+                &mut chunks[current],
+                "wasi:cli/stdout",
+                "get-stdout",
+                0,
+                line,
+            );
             chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
             host::emit(
                 &mut chunks[current],
@@ -138,9 +144,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.to_char_array" => {
             super::string_adapter::emit_to_char_array(chunks, current, line);
-        }
-        "java.str_lines" => {
-            host::emit(&mut chunks[current], "ecma:string", "lines", 1, line);
         }
         "java.compare_to" => {
             super::string_adapter::emit_compare_to(chunks, current, line);
@@ -1303,6 +1306,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── StringBuilder helpers ──────────────────────────────────────────
+        "java.stringbuilder_new" => {
+            vybe_platform_dotnet::emitter::dispatch::dispatch(
+                "dotnet.string_builder_new",
+                chunks,
+                current,
+                argc,
+                line,
+            );
+        }
         "java.sb_append" => {
             vybe_platform_dotnet::emitter::dispatch::dispatch(
                 "dotnet.sb_append",

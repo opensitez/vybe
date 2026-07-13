@@ -1,11 +1,11 @@
 //! Java EnumSet backed by an array of enum display names.
 
+use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 use vybe_emitter::{
     collections,
     instructions::{core_wasm, host},
 };
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
 
 const NAMES_KEY: &str = "__java_enum_names";
 const CLASS_KEY: &str = "__java_class_name";

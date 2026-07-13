@@ -50,7 +50,7 @@ fn split_on_colon_regex_parses_time_parts() {
 fn split_on_character_class_regex_splits_vowels() {
     let out =
         run_main(r#"String[] parts = "brisk".split("[aeiou]"); System.out.println(parts.length);"#);
-    assert_eq!(out, vec!["3"]);
+    assert_eq!(out, vec!["2"]);
 }
 
 #[test]

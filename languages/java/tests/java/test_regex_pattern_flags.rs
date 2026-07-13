@@ -173,7 +173,7 @@ fn pattern_multiline_replace_all_on_each_line() {
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("^x", java.util.regex.Pattern.MULTILINE); java.util.regex.Matcher m = p.matcher("x\nx\ny"); System.out.println(m.replaceAll("z"));"#,
     );
-    assert_eq!(out, vec!["z\nz\ny"]);
+    assert_eq!(out, vec!["z", "z", "y"]);
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn pattern_dotall_find_spans_newline() {
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("start.*end", java.util.regex.Pattern.DOTALL); java.util.regex.Matcher m = p.matcher("start\nmiddle\nend"); m.find(); System.out.println(m.group(0));"#,
     );
-    assert_eq!(out, vec!["start\nmiddle\nend"]);
+    assert_eq!(out, vec!["start", "middle", "end"]);
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn pattern_case_insensitive_and_literal_is_literal() {
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("ABC", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.LITERAL); java.util.regex.Matcher m = p.matcher("abc"); System.out.println(m.matches());"#,
     );
-    assert_eq!(out, vec!["false"]);
+    assert_eq!(out, vec!["true"]);
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn pattern_dotall_replace_first_only() {
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("a.b", java.util.regex.Pattern.DOTALL); java.util.regex.Matcher m = p.matcher("a\nb a\nb"); System.out.println(m.replaceFirst("X"));"#,
     );
-    assert_eq!(out, vec!["X a\nb"]);
+    assert_eq!(out, vec!["X a", "b"]);
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn pattern_case_insensitive_and_multiline_replace_first() {
     let out = run_main(
         r#"java.util.regex.Pattern p = java.util.regex.Pattern.compile("^x", java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.MULTILINE); java.util.regex.Matcher m = p.matcher("x\nX"); System.out.println(m.replaceFirst("y"));"#,
     );
-    assert_eq!(out, vec!["y\nX"]);
+    assert_eq!(out, vec!["y", "X"]);
 }
 
 #[test]

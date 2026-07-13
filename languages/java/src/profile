@@ -40,6 +40,8 @@ print               = { emit = "common:java.print_no_newline",   min_args = 0, m
 printf              = { emit = "common:java.printf",             min_args = 1, max_args = 255 }
 __java_field_set    = { emit = "common:java.field_set",           min_args = 3, max_args = 3 }
 __java_field_inc    = { emit = "common:java.field_inc",           min_args = 3, max_args = 3 }
+__j_btoa            = { emit = "host:ecma:string:btoa",           min_args = 1, max_args = 1 }
+__j_atob            = { emit = "host:ecma:string:atob",           min_args = 1, max_args = 1 }
 
 # ── Type parsing / conversion ─────────────────────────────────────────────────
 
@@ -272,6 +274,7 @@ __j_url_parse      = { emit = "host:web:url:new",           min_args = 1, max_ar
 __j_re_exec        = { emit = "host:ecma:regexp:exec",       min_args = 2, max_args = 2 }
 __j_re_split       = { emit = "host:ecma:regexp:split",      min_args = 2, max_args = 3 }
 __j_re_replace_all = { emit = "host:ecma:regexp:replaceAll", min_args = 3, max_args = 3 }
+__j_normalize      = { emit = "host:ecma:string:normalize",  min_args = 2, max_args = 2 }
 
 "Integer.bitCount"               = { emit = "common:java.int_bit_count",       min_args = 1, max_args = 1 }
 "Integer.numberOfLeadingZeros"   = { emit = "common:java.int_leading_zeros",   min_args = 1, max_args = 1 }
@@ -480,7 +483,6 @@ toCharArray   = { emit = "common:java.to_char_array",    min_args = 0, max_args 
 getBytes      = { emit = "common:java.to_char_array",    min_args = 0, max_args = 1 }
 formatted     = { emit = "common:sprintf.format",        min_args = 0, max_args = 255 }
 indent        = { emit = "noop",                         min_args = 1, max_args = 1 }
-lines         = { emit = "common:java.str_lines",        min_args = 0, max_args = 0 }
 
 # String → number
 "Integer.parseInt" = { emit = "common:java.parse_int",  min_args = 1, max_args = 2 }
@@ -570,7 +572,6 @@ variant       = { emit = "common:java.uuid_variant",     min_args = 0, max_args 
 getMostSignificantBits = { emit = "common:java.uuid_most_bits", min_args = 0, max_args = 0 }
 getLeastSignificantBits = { emit = "common:java.uuid_least_bits", min_args = 0, max_args = 0 }
 cardinality   = { emit = "common:java.bitset_cardinality", min_args = 0, max_args = 0 }
-ordinal       = { emit = "noop",                         min_args = 0, max_args = 0 }
 intValue      = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
 longValue     = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
 doubleValue   = { emit = "noop",                         min_args = 0, max_args = 0 }
@@ -747,6 +748,22 @@ tostring  = [["to_string"]]
 "DateTimeFormatter.ISO_ZONED_DATE_TIME" = "ISO_ZONED_DATE_TIME"
 "java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME" = "ISO_OFFSET_DATE_TIME"
 "java.time.format.DateTimeFormatter.ISO_ZONED_DATE_TIME" = "ISO_ZONED_DATE_TIME"
+"Locale.FRANCE" = "FR"
+"Locale.GERMANY" = "DE"
+"Locale.ITALY" = "IT"
+"Locale.US" = "US"
+"Locale.UK" = "UK"
+"Locale.JAPAN" = "JP"
+"Locale.CANADA" = "CA"
+"Locale.CANADA_FRENCH" = "FR_CA"
+"java.util.Locale.FRANCE" = "FR"
+"java.util.Locale.GERMANY" = "DE"
+"java.util.Locale.ITALY" = "IT"
+"java.util.Locale.US" = "US"
+"java.util.Locale.UK" = "UK"
+"java.util.Locale.JAPAN" = "JP"
+"java.util.Locale.CANADA" = "CA"
+"java.util.Locale.CANADA_FRENCH" = "FR_CA"
 "Double.NEGATIVE_INFINITY" = "-Infinity"
 "Boolean.TRUE" = true
 "Boolean.FALSE" = false
@@ -758,9 +775,9 @@ tostring  = [["to_string"]]
 
 [known_types]
 # Common Java collections are constructed as plain JS arrays/objects
-# StringBuilder: mutable string — backed by dotnet stringbuilder_adapter
-StringBuilder = ["common", "dotnet.stringbuilder_new"]
-StringBuffer  = ["common", "dotnet.stringbuilder_new"]
+# StringBuilder/StringBuffer: mutable string backed by the Java prelude runtime.
+StringBuilder = ["common", "java.stringbuilder_new"]
+StringBuffer  = ["common", "java.stringbuilder_new"]
 Object        = ["common", "java.hash_map_new"]
 String        = ["ecma:string", "new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
@@ -778,12 +795,14 @@ IdentityHashMap = ["common", "java.identity_hash_map_new"]
 LinkedHashMap = ["common", "java.linked_hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]
+Properties    = ["common", "java.hash_map_new"]
 "java.util.TreeMap"       = ["common", "java.sorted_map_new"]
 "java.util.HashMap"       = ["common", "java.hash_map_new"]
 "java.util.IdentityHashMap" = ["common", "java.identity_hash_map_new"]
 "java.util.LinkedHashMap" = ["common", "java.linked_hash_map_new"]
 "java.util.WeakHashMap"   = ["common", "java.hash_map_new"]
 "java.util.Hashtable"     = ["common", "java.hash_map_new"]
+"java.util.Properties"    = ["common", "java.hash_map_new"]
 Boolean       = ["ecma:boolean", "new"]
 OutOfMemoryError = ["common", "java.hash_map_new"]
 UUID          = ["common", "java.uuid_new"]

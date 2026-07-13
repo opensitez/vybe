@@ -1,8 +1,8 @@
 //! Java `BigInteger` adapters backed by the existing ECMA BigInt runtime.
 
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::host;
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "toString", 1, line);

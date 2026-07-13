@@ -175,7 +175,7 @@ fn replace_leaves_string_when_no_match() {
 #[test]
 fn replace_all_substitutes_every_regex_match() {
     let out = run_main(r#"String s = "a1b22c"; System.out.println(s.replaceAll("\\d+", "X"));"#);
-    assert_eq!(out, vec!["aXc"]);
+    assert_eq!(out, vec!["aXbXc"]);
 }
 
 #[test]

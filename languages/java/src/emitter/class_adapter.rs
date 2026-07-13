@@ -1,11 +1,11 @@
 //! Java class-literal helpers for ECMA-backed values.
 
+use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 use vybe_emitter::{
     collections,
     instructions::{core_wasm, host},
 };
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

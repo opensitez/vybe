@@ -3,9 +3,9 @@
 //! The shared host has no `ecma:optional` module, so Java lowers Optional to a
 //! tiny pair array: `[present: bool, value]`.
 
-use vybe_emitter::collections;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::collections;
 
 pub fn emit_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_bool_const(false, line);

@@ -20,11 +20,11 @@
 //!   forms reduced to bare name params.
 
 use super::{JavaParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use vybe_ast::*;
 
 thread_local! {
     static JAVA_INTERFACE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -39,6 +39,7 @@ thread_local! {
     static JAVA_SB_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_SCANNER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_CHAR_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     // Locals declared as java.util.regex Pattern / Matcher — routed
     // through the __j_pat_*/__j_m_* runtime.
@@ -61,6 +62,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_SB_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
@@ -634,6 +636,17 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
         inject_implicit_super(&mut members);
     }
 
+    // Custom exception classes (`class X extends RuntimeException`): the
+    // parent is a built-in with no real class behind it — stamp the
+    // canonical exception shape in every ctor and turn `super(msg[,cause])`
+    // into message/cause stores.
+    if let Some(parent) = parents.first() {
+        let parent_simple = java_type_simple_name(parent).to_string();
+        if let Some(chain) = java_exception_supertypes(&parent_simple) {
+            inject_java_exception_stamps(&name, &chain, &mut members);
+        }
+    }
+
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -642,6 +655,87 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers: class_modifiers,
         decorators: vec![],
     })
+}
+
+fn inject_java_exception_stamps(class_name: &str, chain: &[String], members: &mut Vec<ClassMember>) {
+    let this_field = |f: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: f.to_string(),
+            null_safe: false,
+        })
+    };
+    let assign_stmt = |target: Expression, value: Expression| {
+        Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value,
+        })
+    };
+    let mut types_elems = vec![ArrayElement {
+        key: None,
+        value: Expression::string(class_name),
+        spread: false,
+        by_ref: false,
+    }];
+    types_elems.extend(chain.iter().map(|t| ArrayElement {
+        key: None,
+        value: Expression::string(t),
+        spread: false,
+        by_ref: false,
+    }));
+
+    let mut has_ctor = false;
+    for member in members.iter_mut() {
+        if let ClassMember::Constructor {
+            body, base_args, ..
+        } = member
+        {
+            has_ctor = true;
+            let mut prelude: Vec<Statement> = vec![
+                assign_stmt(
+                    this_field("__exception_type"),
+                    Expression::string(class_name),
+                ),
+                assign_stmt(this_field("name"), Expression::string(class_name)),
+                assign_stmt(
+                    this_field("__types"),
+                    Expression::new(ExprKind::Array(types_elems.clone())),
+                ),
+                assign_stmt(this_field("message"), Expression::null()),
+            ];
+            if let Some(args) = base_args.take() {
+                if let Some(msg) = args.first() {
+                    prelude.push(assign_stmt(this_field("message"), msg.clone()));
+                }
+                if let Some(cause) = args.get(1) {
+                    prelude.push(assign_stmt(this_field("cause"), cause.clone()));
+                }
+            }
+            *base_args = None;
+            prelude.append(body);
+            *body = prelude;
+        }
+    }
+    if !has_ctor {
+        members.push(ClassMember::Constructor {
+            params: vec![],
+            body: vec![
+                assign_stmt(
+                    this_field("__exception_type"),
+                    Expression::string(class_name),
+                ),
+                assign_stmt(this_field("name"), Expression::string(class_name)),
+                assign_stmt(
+                    this_field("__types"),
+                    Expression::new(ExprKind::Array(types_elems)),
+                ),
+                assign_stmt(this_field("message"), Expression::null()),
+            ],
+            base_args: None,
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: ParsedModifiers::default().visibility,
+        });
+    }
 }
 
 fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -947,25 +1041,55 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .to_string();
 
     let mut enum_members: Vec<EnumMember> = Vec::new();
+    let mut member_ctor_args: Vec<Vec<Argument>> = Vec::new();
+    let mut interfaces: Vec<String> = Vec::new();
+    let mut body_members: Vec<ClassMember> = Vec::new();
 
     for p in inner {
-        if p.as_rule() == Rule::enum_values {
-            for ev in p.into_inner() {
-                if ev.as_rule() == Rule::enum_value {
-                    let val_name = ev
-                        .into_inner()
-                        .find(|x| x.as_rule() == Rule::ident_name)
-                        .map(|x| x.as_str().to_string())
-                        .unwrap_or_default();
-                    if !val_name.is_empty() {
-                        enum_members.push(EnumMember {
-                            name: val_name,
-                            value: None,
-                            constructor_args: vec![],
-                        });
+        match p.as_rule() {
+            Rule::type_ref_list => {
+                for tr in p.into_inner() {
+                    if tr.as_rule() == Rule::type_ref {
+                        interfaces.push(extract_ref_name(&tr));
                     }
                 }
             }
+            Rule::enum_values => {
+                for ev in p.into_inner() {
+                    if ev.as_rule() == Rule::enum_value {
+                        let mut val_name = String::new();
+                        let mut args: Vec<Argument> = Vec::new();
+                        for x in ev.into_inner() {
+                            match x.as_rule() {
+                                Rule::ident_name => val_name = x.as_str().to_string(),
+                                Rule::argument_list => args = walk_arguments(x)?,
+                                _ => {}
+                            }
+                        }
+                        if !val_name.is_empty() {
+                            enum_members.push(EnumMember {
+                                name: val_name,
+                                value: None,
+                                constructor_args: args.iter().map(|a| a.value.clone()).collect(),
+                            });
+                            member_ctor_args.push(args);
+                        }
+                    }
+                }
+            }
+            // Members after the `;` — `class_member` is a silent rule, so the
+            // declarations appear directly here.
+            Rule::constructor_declaration => body_members.push(walk_constructor(p)?),
+            Rule::method_declaration | Rule::default_method_declaration => {
+                body_members.push(walk_method(p)?)
+            }
+            Rule::field_declaration => body_members.extend(walk_field(p)?),
+            Rule::class_declaration => {
+                body_members.push(ClassMember::NestedType(Box::new(Statement::new(
+                    walk_class(p)?,
+                ))));
+            }
+            _ => {}
         }
     }
 
@@ -979,14 +1103,191 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         );
     });
 
-    Ok(StmtKind::EnumDecl {
+    // JLS §8.9: each constant is an instance of the enum class. Constants
+    // become static instances (`Season.SPRING = new Season("SPRING", 0, …)`);
+    // name()/ordinal()/toString()/values()/valueOf() are synthesized unless
+    // the body declares them.
+    let simple_param = |n: &str| Param {
+        name: n.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let this_field = |f: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: f.to_string(),
+            null_safe: false,
+        })
+    };
+    let stamp = |field: &str, param: &str| {
+        Statement::new(StmtKind::Assign {
+            targets: vec![this_field(field)],
+            value: Expression::ident(param),
+        })
+    };
+
+    let mut has_ctor = false;
+    for member in body_members.iter_mut() {
+        if let ClassMember::Constructor { params, body, .. } = member {
+            has_ctor = true;
+            params.insert(0, simple_param("__ordinal"));
+            params.insert(0, simple_param("__name"));
+            body.insert(0, stamp("__ordinal", "__ordinal"));
+            body.insert(0, stamp("__name", "__name"));
+        }
+    }
+    if !has_ctor {
+        body_members.push(ClassMember::Constructor {
+            params: vec![simple_param("__name"), simple_param("__ordinal")],
+            body: vec![stamp("__name", "__name"), stamp("__ordinal", "__ordinal")],
+            base_args: None,
+            initializer_target: ConstructorInitializerTarget::Base,
+            visibility: ParsedModifiers::default().visibility,
+        });
+    }
+
+    let user_method_names: Vec<String> = body_members
+        .iter()
+        .filter_map(|m| match m {
+            ClassMember::Method(s) => match &s.kind {
+                StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    let make_method = |mname: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool| {
+        let mut modifiers = Modifiers::default();
+        modifiers.is_static = is_static;
+        ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: mname.to_string(),
+            params,
+            return_type: None,
+            body,
+            modifiers,
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        })))
+    };
+    for (mname, field) in [("name", "__name"), ("ordinal", "__ordinal"), ("toString", "__name")] {
+        if !user_method_names.iter().any(|n| n == mname) {
+            body_members.push(make_method(
+                mname,
+                vec![],
+                vec![Statement::new(StmtKind::Return(Some(this_field(field))))],
+                false,
+            ));
+        }
+    }
+
+    let member_access = |m: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&name)),
+            field: m.to_string(),
+            null_safe: false,
+        })
+    };
+    if !user_method_names.iter().any(|n| n == "values") {
+        let values_array = Expression::new(ExprKind::Array(
+            enum_members
+                .iter()
+                .map(|m| ArrayElement {
+                    key: None,
+                    value: member_access(&m.name),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ));
+        body_members.push(make_method(
+            "values",
+            vec![],
+            vec![Statement::new(StmtKind::Return(Some(values_array)))],
+            true,
+        ));
+    }
+    if !user_method_names.iter().any(|n| n == "valueOf") {
+        let mut body: Vec<Statement> = enum_members
+            .iter()
+            .map(|m| {
+                Statement::new(StmtKind::If {
+                    cond: java_binary(
+                        BinOp::Eq,
+                        Expression::ident("__s"),
+                        Expression::string(&m.name),
+                    ),
+                    then_body: vec![Statement::new(StmtKind::Return(Some(member_access(
+                        &m.name,
+                    ))))],
+                    elifs: vec![],
+                    else_body: None,
+                })
+            })
+            .collect();
+        body.push(Statement::new(StmtKind::Throw {
+            expr: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("IllegalArgumentException")),
+                args: vec![Argument::positional(java_binary(
+                    BinOp::Add,
+                    Expression::string(&format!("No enum constant {name}.")),
+                    Expression::ident("__s"),
+                ))],
+            })),
+            cause: None,
+        }));
+        // Not named `valueOf` — that name is intercepted by shared compiler
+        // paths before the user-class static dispatch. The tostring post-pass
+        // rewrites `EnumType.valueOf(x)` calls to this name.
+        body_members.push(make_method(
+            "__j_enum_value_of",
+            vec![simple_param("__s")],
+            body,
+            true,
+        ));
+    }
+
+    // Constants as static instance fields: `Mode.ON = new Mode("ON", 0, …)`.
+    // Emitted as a plain ClassDecl — NOT StmtKind::EnumDecl — because the
+    // shared EnumDecl path registers ordinal tables that constant-fold
+    // `Mode.ON` member reads to F64 ordinals, breaking instance identity.
+    for (i, m) in enum_members.iter().enumerate() {
+        let mut args = vec![
+            Argument::positional(Expression::string(&m.name)),
+            Argument::positional(Expression::int(i as i64)),
+        ];
+        args.extend(member_ctor_args[i].clone());
+        let mut modifiers = Modifiers::default();
+        modifiers.is_static = true;
+        body_members.push(ClassMember::Field {
+            name: m.name.clone(),
+            type_hint: Some(name.clone()),
+            init: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(&name)),
+                args,
+            })),
+            modifiers,
+            with_events: false,
+            array_bounds: None,
+        });
+    }
+
+    // JLS §8.9: nested enum types are implicitly static — never capture an
+    // outer instance (no `__java_outer` ctor param).
+    let mut modifiers = into_class_modifiers(pm);
+    modifiers.is_static = true;
+    Ok(StmtKind::ClassDecl {
         name,
-        members: enum_members,
-        visibility: pm.visibility,
-        is_flags: false,
-        backing_type: None,
-        interfaces: vec![],
-        body_members: vec![],
+        parents: vec![],
+        interfaces,
+        members: body_members,
+        modifiers,
         decorators: vec![],
     })
 }
@@ -1443,6 +1744,12 @@ fn walk_var_declarator(
     }
     if type_hint
         .as_deref()
+        .is_some_and(|hint| hint.contains("Scanner"))
+    {
+        JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
         .is_some_and(|hint| hint.replace(' ', "").contains("char[]"))
     {
         JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
@@ -1490,9 +1797,30 @@ fn walk_var_declarator(
         }
     }
 
+    if let (Some(hint), Some(value)) = (type_hint.as_deref(), init.take()) {
+        init = if let Some(callee) = java_numeric_width_fn(hint) {
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(callee)),
+                args: vec![Argument::positional(value)],
+                optional: false,
+            }))
+        } else {
+            Some(value)
+        };
+    }
+
+    let emitted_type_hint = if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_numeric_width_fn(hint).is_some())
+    {
+        None
+    } else {
+        type_hint
+    };
+
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint,
+        type_hint: emitted_type_hint,
         init,
         array_bounds: None,
         with_events: false,
@@ -1886,7 +2214,21 @@ fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
                     }
                     value = Some(expr);
                 } else {
-                    value = Some(Expression::ident(text));
+                    // Bare enum constant labels (`case ON:`) qualify to
+                    // `Mode.ON` — class-shaped enums have no compile-time
+                    // member table to resolve bare names against.
+                    let qualified = JAVA_ENUM_VALUES.with(|values| {
+                        values.borrow().iter().find_map(|(enum_name, members)| {
+                            members.iter().any(|m| m == text).then(|| {
+                                Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::ident(enum_name)),
+                                    field: text.to_string(),
+                                    null_safe: false,
+                                })
+                            })
+                        })
+                    });
+                    value = Some(qualified.unwrap_or_else(|| Expression::ident(text)));
                 }
             }
             _ => {}
@@ -2461,9 +2803,9 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             if let (Some(cast_type), Some(operand)) = (cast_type, ci.next()) {
                 let expr = walk_expression(operand)?;
                 let ty = cast_type.as_str();
-                if matches!(ty, "int" | "long" | "short" | "byte" | "char") {
+                if let Some(callee) = java_numeric_cast_fn(ty) {
                     Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__java_trunc_cast")),
+                        callee: Box::new(Expression::ident(callee)),
                         args: vec![Argument::positional(expr)],
                         optional: false,
                     }))
@@ -2589,11 +2931,30 @@ fn java_binary_with_string_concat(op: BinOp, left: Expression, right: Expression
             optional: false,
         })
     } else {
-        Expression::new(ExprKind::Binary {
-            op,
+        let effective_op = if op == BinOp::Div
+            && is_java_integral_arithmetic_expr(&left)
+            && is_java_integral_arithmetic_expr(&right)
+        {
+            BinOp::IDiv
+        } else {
+            op
+        };
+        let expr = Expression::new(ExprKind::Binary {
+            op: effective_op,
             left: Box::new(left),
             right: Box::new(right),
-        })
+        });
+        if matches!(effective_op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+            && contains_java_integer_bound_constant(&expr)
+        {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_i32")),
+                args: vec![Argument::positional(expr)],
+                optional: false,
+            })
+        } else {
+            expr
+        }
     }
 }
 
@@ -2604,6 +2965,126 @@ fn is_java_string_concat_operand(expr: &Expression) -> bool {
             matches!(callee.kind, ExprKind::Ident(ref name) if name == "__java_string_concat")
         }
         _ => false,
+    }
+}
+
+fn is_java_integral_arithmetic_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => true,
+        ExprKind::Lit(Literal::Float(_)) => false,
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "Integer" || name == "Long")
+                && matches!(field.as_str(), "MAX_VALUE" | "MIN_VALUE" | "SIZE" | "BYTES")
+        }
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(name.as_str(), "__j_i32" | "__java_trunc_cast")
+        ),
+        ExprKind::Unary { expr, .. } => is_java_integral_arithmetic_expr(expr),
+        ExprKind::Binary {
+            op, left, right, ..
+        } => {
+            !matches!(op, BinOp::Div)
+                && is_java_integral_arithmetic_expr(left)
+                && is_java_integral_arithmetic_expr(right)
+        }
+        _ => false,
+    }
+}
+
+fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "Integer")
+                && matches!(field.as_str(), "MAX_VALUE" | "MIN_VALUE")
+        }
+        ExprKind::Unary { expr, .. } => contains_java_integer_bound_constant(expr),
+        ExprKind::Binary { left, right, .. } => {
+            contains_java_integer_bound_constant(left)
+                || contains_java_integer_bound_constant(right)
+        }
+        ExprKind::Call { args, .. } => args
+            .iter()
+            .any(|arg| contains_java_integer_bound_constant(&arg.value)),
+        _ => false,
+    }
+}
+
+fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Member { object, field, .. } => {
+            matches!(
+                java_expr_dotted_name(object).as_deref(),
+                Some("Double") | Some("java.lang.Double") | Some("Long") | Some("java.lang.Long")
+            ) && matches!(field.as_str(), "MAX_VALUE" | "MIN_VALUE")
+        }
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "Double.parseDouble" | "Double.valueOf" | "Float.parseFloat" | "Float.valueOf"
+                )
+        ),
+        ExprKind::Binary {
+            op, left, right, ..
+        } if matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::IDiv | BinOp::Mod
+        ) =>
+        {
+            is_java_double_arithmetic_expr(left) || is_java_double_arithmetic_expr(right)
+        }
+        ExprKind::Unary { expr, .. } => is_java_double_arithmetic_expr(expr),
+        _ => false,
+    }
+}
+
+fn java_print_arg(arg: Argument) -> Argument {
+    if let Some(value) = java_wrapper_constant_print_string(&arg.value) {
+        return Argument::positional(value);
+    }
+    if is_java_double_arithmetic_expr(&arg.value) {
+        Argument::positional(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_double_to_string")),
+            args: vec![Argument::positional(arg.value)],
+            optional: false,
+        }))
+    } else {
+        arg
+    }
+}
+
+fn java_wrapper_constant_print_string(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return None;
+    };
+    let type_name = java_expr_dotted_name(object)?;
+    let text = match (type_name.as_str(), field.as_str()) {
+        ("Long", "MAX_VALUE") | ("java.lang.Long", "MAX_VALUE") => "9.223372036854776E18",
+        ("Long", "MIN_VALUE") | ("java.lang.Long", "MIN_VALUE") => "-9.223372036854776E18",
+        ("Double", "MAX_VALUE") | ("java.lang.Double", "MAX_VALUE") => "1.7976931348623157E308",
+        _ => return None,
+    };
+    Some(Expression::string(text))
+}
+
+fn java_numeric_cast_fn(ty: &str) -> Option<&'static str> {
+    match ty {
+        "byte" | "Byte" => Some("__j_byte"),
+        "short" | "Short" => Some("__j_short"),
+        "int" | "long" | "Integer" | "Long" | "char" | "Character" => Some("__java_trunc_cast"),
+        _ => None,
+    }
+}
+
+fn java_numeric_width_fn(ty: &str) -> Option<&'static str> {
+    match java_type_simple_name(ty) {
+        "byte" | "Byte" => Some("__j_byte"),
+        "short" | "Short" => Some("__j_short"),
+        _ => None,
     }
 }
 
@@ -2714,11 +3195,15 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                     .ok_or("member: empty")?
                     .as_str()
                     .to_string();
-                current = Expression::new(ExprKind::Member {
-                    object: Box::new(current),
-                    field,
-                    null_safe: false,
-                });
+                if let Some(constant) = java_double_constant_expr(&current, &field) {
+                    current = constant;
+                } else {
+                    current = Expression::new(ExprKind::Member {
+                        object: Box::new(current),
+                        field,
+                        null_safe: false,
+                    });
+                }
             }
             Rule::index_suffix => {
                 let idx = walk_expression(chain.into_inner().next().ok_or("index: empty")?)?;
@@ -2764,6 +3249,27 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(current)
 }
 
+fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
+    let type_name = java_expr_dotted_name(object)?;
+    let f64_lit = |value: f64| Expression::new(ExprKind::Lit(Literal::Float(value)));
+    if type_name != "Double" && type_name != "java.lang.Double" {
+        return None;
+    }
+    let div = |left: Expression, right: Expression| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Div,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    };
+    match field {
+        "NaN" => Some(div(f64_lit(0.0), f64_lit(0.0))),
+        "POSITIVE_INFINITY" => Some(div(f64_lit(1.0), f64_lit(0.0))),
+        "NEGATIVE_INFINITY" => Some(div(f64_lit(-1.0), f64_lit(0.0))),
+        _ => None,
+    }
+}
+
 /// Build the `__j_*` runtime call for one PrintStream write
 /// (`emitter/format_runtime.rs`). Every runtime fn returns the
 /// `__j_out` sentinel, so these calls chain like real `PrintStream`.
@@ -2781,7 +3287,7 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
             .unwrap_or_else(|| Argument::positional(Expression::string("")))
     };
     match method {
-        "println" => build("__j_println", vec![first_or_empty(args)]),
+        "println" => build("__j_println", vec![java_print_arg(first_or_empty(args))]),
         "append" if args.len() == 3 => {
             // append(csq, start, end) → write csq.substring(start, end)
             let mut it = args.into_iter();
@@ -2799,7 +3305,7 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
             });
             build("__j_print", vec![Argument::positional(sub)])
         }
-        "print" | "append" => build("__j_print", vec![first_or_empty(args)]),
+        "print" | "append" => build("__j_print", vec![java_print_arg(first_or_empty(args))]),
         // printf | format
         _ => {
             let mut it = args.into_iter();
@@ -3080,6 +3586,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     let string_prelude_fn = match method.as_str() {
         "split" if args.len() == 2 => Some("__j_string_split_n"),
         "split" => Some("__j_string_split"),
+        "lines" if args.is_empty() => Some("__j_str_lines"),
         "codePointBefore" => Some("__j_string_code_point_before"),
         "codePointCount" => Some("__j_string_code_point_count"),
         "offsetByCodePoints" => Some("__j_string_offset_by_code_points"),
@@ -3139,7 +3646,16 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Ident(name) => is_java_type_or_util(name),
         _ => java_qualified_static_type(&receiver).is_some(),
     };
-    if !receiver_is_static_type {
+    // Pattern.split is java.util.regex semantics, not String.split — leave
+    // it for the Pattern-receiver arm below.
+    let receiver_is_pattern = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_PATTERN_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_compile")
+        }
+        _ => false,
+    };
+    if !receiver_is_static_type && !receiver_is_pattern {
         if let Some(prelude_fn) = string_prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
@@ -3207,6 +3723,44 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    let scanner_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_SCANNER_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_sc_new" | "__j_sc_use_delim" | "__j_sc_use_locale" | "__j_sc_use_radix"))
+        }
+        _ => false,
+    };
+    if scanner_receiver {
+        let prelude_fn = match method.as_str() {
+            "next" => Some("__j_sc_next"),
+            "nextInt" => Some("__j_sc_next_int"),
+            "nextLong" => Some("__j_sc_next_long"),
+            "nextDouble" | "nextFloat" | "nextBigDecimal" => Some("__j_sc_next_double"),
+            "nextBoolean" => Some("__j_sc_next_bool"),
+            "nextLine" => Some("__j_sc_next_line"),
+            "hasNext" => Some("__j_sc_has_next"),
+            "hasNextInt" | "hasNextLong" => Some("__j_sc_has_next_int"),
+            "hasNextDouble" | "hasNextBigDecimal" => Some("__j_sc_has_next_double"),
+            "hasNextLine" => Some("__j_sc_has_next_line"),
+            "useDelimiter" => Some("__j_sc_use_delim"),
+            "useLocale" => Some("__j_sc_use_locale"),
+            "useRadix" => Some("__j_sc_use_radix"),
+            "skip" => Some("__j_sc_skip"),
+            "findInLine" | "findWithinHorizon" => Some("__j_sc_find"),
+            "close" => Some("__j_sc_close"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
     // java.util.regex — Pattern.compile plus Pattern/Matcher instance
     // methods route through the __j_pat_*/__j_m_* prelude runtime.
     {
@@ -3216,7 +3770,16 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             Some("Pattern") | Some("java.util.regex.Pattern")
         );
         if is_pattern_type && method == "compile" && !args.is_empty() {
-            // Flags argument (rare) is dropped — patterns are plain strings.
+            if args.len() >= 2 {
+                let mut it = args.into_iter();
+                let re = it.next().expect("regex");
+                let flags = it.next().expect("flags");
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_pat_compile_flags")),
+                    args: vec![re, flags],
+                    optional: false,
+                });
+            }
             let re = args.into_iter().next().expect("regex");
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_pat_compile")),
@@ -3237,6 +3800,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "split" if args.len() == 2 => Some("__j_pat_split_n"),
                 "split" => Some("__j_pat_split"),
                 "pattern" | "toString" => Some("__j_pat_pattern"),
+                "flags" => Some("__j_pat_flags"),
                 _ => None,
             };
             if let Some(prelude_fn) = prelude_fn {
@@ -3263,6 +3827,10 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "lookingAt" => Some("__j_m_looking_at"),
                 "group" => Some("__j_m_group"),
                 "replaceAll" => Some("__j_m_replace_all"),
+                "replaceFirst" => Some("__j_m_replace_first"),
+                "appendReplacement" => Some("__j_m_append_replacement"),
+                "appendTail" => Some("__j_m_append_tail"),
+                "reset" => Some("__j_m_reset"),
                 _ => None,
             };
             if let Some(prelude_fn) = prelude_fn {
@@ -3328,6 +3896,104 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    // java.util.Base64 encoder/decoder objects — small Java prelude over
+    // ECMA btoa/atob.
+    {
+        let b64_recv = match &receiver.kind {
+            ExprKind::Call { callee, .. } => matches!(
+                &callee.kind,
+                ExprKind::Ident(n) if matches!(
+                    n.as_str(),
+                    "__j_b64_encoder"
+                        | "__j_b64_url_encoder"
+                        | "__j_b64_mime_encoder"
+                        | "__j_b64_decoder"
+                        | "__j_b64_url_decoder"
+                        | "__j_b64_mime_decoder"
+                        | "__j_b64_without_padding"
+                )
+            ),
+            _ => false,
+        };
+        if b64_recv {
+            let prelude_fn = match method.as_str() {
+                "withoutPadding" => Some("__j_b64_without_padding"),
+                "encodeToString" => Some("__j_b64_encode_to_string"),
+                "encode" => Some("__j_b64_encode"),
+                "decode" => Some("__j_b64_decode"),
+                _ => None,
+            };
+            if let Some(prelude_fn) = prelude_fn {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(prelude_fn)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+    }
+
+    {
+        let prelude_fn = match &receiver.kind {
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_props_enum")
+                    && matches!(method.as_str(), "hasMoreElements" | "hasMoreTokens") =>
+            {
+                Some("__j_enum_has_more")
+            }
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_props_class")
+                    && method == "getName" =>
+            {
+                Some("__j_class_get_name")
+            }
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_system_get_properties")
+                    && method == "getClass" =>
+            {
+                Some("__j_props_class")
+            }
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    // Throwable accessors: the canonical exception object carries the
+    // ECMA Error shape — `message` is a property, not a method.
+    if matches!(method.as_str(), "getMessage" | "getLocalizedMessage") && args.is_empty() {
+        return Expression::new(ExprKind::Member {
+            object: Box::new(receiver),
+            field: "message".to_string(),
+            null_safe: false,
+        });
+    }
+    if method == "getCause" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_get_cause")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+    if method == "initCause" && args.len() == 1 {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_init_cause")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
     // System.arraycopy(src, srcPos, dest, destPos, len) →
     // __j_arraycopy prelude fn (JLS in-place, overlap-safe).
     if method == "arraycopy" && matches!(&receiver.kind, ExprKind::Ident(n) if n == "System") {
@@ -3381,6 +4047,31 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
                 return expr;
             }
+        }
+        if type_name == "Double" {
+            if let Some(callee) = java_double_static_prelude_fn(&method) {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(callee)),
+                    args,
+                    optional: false,
+                });
+            }
+        }
+        if type_name == "Base64" {
+            if let Some(expr) = java_base64_static_call(&method, args.clone()) {
+                return expr;
+            }
+        }
+        if type_name == "System" {
+            if let Some(expr) = java_system_static_call(&method, args.clone()) {
+                return expr;
+            }
+        }
+        if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
+            return java_boolean_parse_call(args);
+        }
+        if type_name == "Integer" && method == "toString" && !args.is_empty() {
+            return java_integer_to_string_call(args);
         }
         if type_name == "String" && method == "valueOf" {
             let callee = if args.len() == 3 {
@@ -3460,6 +4151,31 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
                     return expr;
                 }
+            }
+            if type_name == "Double" {
+                if let Some(callee) = java_double_static_prelude_fn(&method) {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
+                        args,
+                        optional: false,
+                    });
+                }
+            }
+            if type_name == "Base64" {
+                if let Some(expr) = java_base64_static_call(&method, args.clone()) {
+                    return expr;
+                }
+            }
+            if type_name == "System" {
+                if let Some(expr) = java_system_static_call(&method, args.clone()) {
+                    return expr;
+                }
+            }
+            if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
+                return java_boolean_parse_call(args);
+            }
+            if type_name == "Integer" && method == "toString" && !args.is_empty() {
+                return java_integer_to_string_call(args);
             }
             if type_name == "String" && method == "valueOf" {
                 let callee = if args.len() == 3 {
@@ -3581,6 +4297,81 @@ fn java_expr_dotted_name(expr: &Expression) -> Option<String> {
             Some(prefix)
         }
         _ => None,
+    }
+}
+
+fn java_double_static_prelude_fn(method: &str) -> Option<&'static str> {
+    match method {
+        "compare" => Some("__j_double_compare"),
+        "isInfinite" => Some("__j_double_is_infinite"),
+        "isFinite" => Some("__j_double_is_finite"),
+        _ => None,
+    }
+}
+
+fn java_base64_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    let callee = match method {
+        "getEncoder" => "__j_b64_encoder",
+        "getUrlEncoder" => "__j_b64_url_encoder",
+        "getMimeEncoder" => "__j_b64_mime_encoder",
+        "getDecoder" => "__j_b64_decoder",
+        "getUrlDecoder" => "__j_b64_url_decoder",
+        "getMimeDecoder" => "__j_b64_mime_decoder",
+        _ => return None,
+    };
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(callee)),
+        args,
+        optional: false,
+    }))
+}
+
+fn java_system_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    let callee = match method {
+        "getProperty" => "__j_system_get_property",
+        "setProperty" => "__j_system_set_property",
+        "clearProperty" => "__j_system_clear_property",
+        "getProperties" => "__j_system_get_properties",
+        "getenv" => "__j_system_getenv",
+        _ => return None,
+    };
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(callee)),
+        args,
+        optional: false,
+    }))
+}
+
+fn java_boolean_parse_call(args: Vec<Argument>) -> Expression {
+    let value = args
+        .into_iter()
+        .next()
+        .map(|arg| arg.value)
+        .unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(value),
+        right: Box::new(Expression::string("true")),
+    })
+}
+
+fn java_integer_to_string_call(args: Vec<Argument>) -> Expression {
+    let mut args = args.into_iter();
+    let value = args
+        .next()
+        .unwrap_or_else(|| Argument::positional(Expression::int(0)));
+    if let Some(radix) = args.next() {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_to_radix")),
+            args: vec![value, radix],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_string_value_of")),
+            args: vec![value],
+            optional: false,
+        })
     }
 }
 
@@ -3742,6 +4533,11 @@ fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> O
 
 fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
     match method {
+        "isDigit" => Some("__j_char_is_digit"),
+        "isLetter" => Some("__j_char_is_letter"),
+        "isLetterOrDigit" => Some("__j_char_is_alnum"),
+        "isWhitespace" => Some("__j_char_is_space"),
+        "getNumericValue" => Some("__j_char_numeric"),
         "toChars" => Some("__j_char_to_chars"),
         "toCodePoint" => Some("__j_char_to_code_point"),
         "isSurrogate" => Some("__j_char_is_surrogate"),
@@ -3804,6 +4600,7 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "Runtime"
             | "Class"
             | "Comparator"
+            | "Base64"
             | "Instant"
             | "Duration"
             | "ZoneId"
@@ -3901,6 +4698,26 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
+                if matches!(class_name.as_str(), "Properties" | "java.util.Properties") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_props_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(
+                    class_name.as_str(),
+                    "StringBuilder"
+                        | "StringBuffer"
+                        | "java.lang.StringBuilder"
+                        | "java.lang.StringBuffer"
+                ) {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_sb_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
                 if class_name == "String" && args.len() == 3 {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_code_points_to_string")),
@@ -3941,6 +4758,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     };
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(class_name.as_str(), "Scanner" | "java.util.Scanner") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_sc_new")),
                         args,
                         optional: false,
                     }));
@@ -4700,11 +5524,8 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         Rule::text_block => {
             let s = inner.as_str();
-            let content = s
-                .trim_start_matches("\"\"\"")
-                .trim_end_matches("\"\"\"")
-                .trim_start_matches('\n');
-            Ok(Expression::string(content))
+            let raw = s.trim_start_matches("\"\"\"").trim_end_matches("\"\"\"");
+            Ok(Expression::string(&java_text_block_content(raw)))
         }
         _ => Ok(Expression::null()),
     }
@@ -5201,7 +6022,11 @@ fn java_static_receiver_param() -> Param {
 fn add_java_nested_static_receiver_params(stmts: &mut [Statement], nested: bool) {
     for stmt in stmts {
         match &mut stmt.kind {
-            StmtKind::ClassDecl { members, .. } => {
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::EnumDecl {
+                body_members: members,
+                ..
+            } => {
                 for member in members {
                     match member {
                         ClassMember::Method(method) if nested => {
@@ -5609,6 +6434,15 @@ fn rewrite_java_user_tostring_calls(body: &mut [Statement]) {
     collect_java_tostring_classes(body, &mut tostring_classes);
     let mut enum_values = HashMap::new();
     collect_java_enum_values(body, &mut enum_values);
+    // Enums now walk to ClassDecl — the authoritative member map is the
+    // walker's own registry.
+    JAVA_ENUM_VALUES.with(|values| {
+        for (enum_name, members) in values.borrow().iter() {
+            enum_values
+                .entry(enum_name.clone())
+                .or_insert_with(|| members.clone());
+        }
+    });
     let mut double_fields = HashSet::new();
     collect_java_double_fields(body, &mut double_fields);
     let mut double_methods = HashSet::new();
@@ -5743,16 +6577,29 @@ fn rewrite_java_double_method_print_tree(
 
 fn collect_java_tostring_classes(body: &[Statement], out: &mut HashSet<String>) {
     for stmt in body {
-        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
-            if members.iter().any(|member| {
-                matches!(
-                    member,
-                    ClassMember::Method(method)
-                        if matches!(&method.kind, StmtKind::FunctionDecl { name, .. } if name == "toString")
-                )
-            }) {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. } => {
+                if members.iter().any(|member| {
+                    matches!(
+                        member,
+                        ClassMember::Method(method)
+                            if matches!(&method.kind, StmtKind::FunctionDecl { name, .. } if name == "toString")
+                    )
+                }) {
+                    out.insert(name.clone());
+                }
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_tostring_classes(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
+            // Every enum has toString (JLS §8.9.3): user-declared or the
+            // walker-synthesized `return this.__name`.
+            StmtKind::EnumDecl { name, .. } => {
                 out.insert(name.clone());
             }
+            _ => {}
         }
     }
 }
@@ -5889,7 +6736,11 @@ fn rewrite_java_tostring_stmts(
                     locals,
                 );
             }
-            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Return(Some(expr))
+            | StmtKind::Throw {
+                expr: Some(expr), ..
+            } => {
                 rewrite_java_tostring_expr(
                     expr,
                     tostring_classes,
@@ -6007,6 +6858,92 @@ fn rewrite_java_tostring_stmts(
                     enum_values,
                     current_class,
                     &mut locals.clone(),
+                );
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                rewrite_java_tostring_stmts(
+                    body,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
+                );
+                for c in catches {
+                    let mut catch_locals = locals.clone();
+                    if let (Some(var_name), Some(ty)) = (&c.var_name, c.types.first()) {
+                        catch_locals.insert(var_name.clone(), ty.clone());
+                    }
+                    rewrite_java_tostring_stmts(
+                        &mut c.body,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        &mut catch_locals,
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    rewrite_java_tostring_stmts(
+                        else_body,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
+                }
+                if let Some(finally) = finally {
+                    rewrite_java_tostring_stmts(
+                        finally,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
+                }
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    rewrite_java_tostring_stmts(
+                        std::slice::from_mut(init),
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
+                }
+                if let Some(cond) = cond {
+                    rewrite_java_tostring_expr(
+                        cond,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
+                }
+                if let Some(update) = update {
+                    rewrite_java_tostring_expr(
+                        update,
+                        tostring_classes,
+                        enum_values,
+                        current_class,
+                        locals,
+                    );
+                }
+                rewrite_java_tostring_stmts(
+                    body,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    locals,
                 );
             }
             _ => {}
@@ -6361,6 +7298,44 @@ fn rewrite_java_tostring_expr(
                 *expr = rewritten;
                 return;
             }
+            // `EnumType.valueOf(x)` → the walker-synthesized static (the
+            // `valueOf` name is intercepted before user-class static dispatch).
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if field == "valueOf" {
+                    if let ExprKind::Ident(type_name) = &object.kind {
+                        if enum_values.contains_key(type_name) {
+                            *field = "__j_enum_value_of".to_string();
+                        }
+                    }
+                }
+            }
+            // println(Object) prints String.valueOf(x) → x.toString()
+            // (java.io.PrintStream). Wrap args whose static type is a user
+            // class with toString or an enum constant (JLS §8.9.3 toString).
+            if let ExprKind::Ident(fn_name) = &callee.kind {
+                if matches!(fn_name.as_str(), "__j_println" | "__j_print") {
+                    for arg in &mut *args {
+                        if java_print_arg_needs_tostring(
+                            &arg.value,
+                            tostring_classes,
+                            enum_values,
+                            current_class,
+                            locals,
+                        ) {
+                            let receiver = arg.value.clone();
+                            arg.value = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(receiver),
+                                    field: "tostring".to_string(),
+                                    null_safe: false,
+                                })),
+                                args: vec![],
+                                optional: false,
+                            });
+                        }
+                    }
+                }
+            }
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
                 if args.is_empty() {
                     if let ExprKind::Ident(ref name) = object.kind {
@@ -6453,12 +7428,37 @@ fn rewrite_java_tostring_expr(
                     current_class,
                     locals,
                 );
+                if matches!(field.as_str(), "hasMoreElements" | "hasMoreTokens") {
+                    if let ExprKind::Call { callee, .. } = &object.kind {
+                        if matches!(
+                            &callee.kind,
+                            ExprKind::Ident(n)
+                                if matches!(n.as_str(), "__j_props_keys" | "__j_props_elements" | "__j_props_enum")
+                        ) {
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__j_enum_has_more")),
+                                args: vec![Argument::positional((**object).clone())],
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                }
                 if let ExprKind::Ident(ref name) = object.kind {
                     if java_type_is_enum_set(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_enum_set_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
-                            new_args.extend(args.iter().cloned());
+                            new_args.extend(args.iter().cloned().map(|mut arg| {
+                                if matches!(field.as_str(), "add" | "contains" | "remove") {
+                                    if let Some(name_expr) =
+                                        java_enum_member_arg_to_name(&arg.value, enum_values)
+                                    {
+                                        arg.value = name_expr;
+                                    }
+                                }
+                                arg
+                            }));
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
@@ -6546,6 +7546,22 @@ fn rewrite_java_tostring_expr(
                         }
                     }
                     if java_type_is_map(locals.get(name).map(String::as_str)) {
+                        if java_type_simple_name(
+                            locals.get(name).map(String::as_str).unwrap_or_default(),
+                        ) == "Properties"
+                        {
+                            if let Some(internal) = java_properties_method_name(field) {
+                                let mut new_args = Vec::with_capacity(args.len() + 1);
+                                new_args.push(Argument::positional((**object).clone()));
+                                new_args.extend(args.iter().cloned());
+                                *expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident(internal)),
+                                    args: new_args,
+                                    optional: false,
+                                });
+                                return;
+                            }
+                        }
                         if field == "keySet"
                             && matches!(
                                 locals.get(name).map(String::as_str),
@@ -6633,6 +7649,25 @@ fn rewrite_java_tostring_expr(
                 }
                 if field == "FALSE" {
                     *expr = Expression::bool(false);
+                    return;
+                }
+            }
+            // java.util.regex.Pattern flag constants (JLS values).
+            if java_member_chain_ends_with(object, "Pattern") {
+                let flag = match field.as_str() {
+                    "UNIX_LINES" => Some(1),
+                    "CASE_INSENSITIVE" => Some(2),
+                    "COMMENTS" => Some(4),
+                    "MULTILINE" => Some(8),
+                    "LITERAL" => Some(16),
+                    "DOTALL" => Some(32),
+                    "UNICODE_CASE" => Some(64),
+                    "CANON_EQ" => Some(128),
+                    "UNICODE_CHARACTER_CLASS" => Some(256),
+                    _ => None,
+                };
+                if let Some(value) = flag {
+                    *expr = Expression::int(value);
                     return;
                 }
             }
@@ -6730,9 +7765,117 @@ fn rewrite_java_tostring_expr(
                     locals,
                 );
             }
+            // Built-in java exceptions the shared emitter doesn't know:
+            // build the canonical exception object with the JLS supertype
+            // chain in __types (parents pre-canonicalized) so catch-clause
+            // REF_TEST subtype matching works.
+            if let ExprKind::New { class, args } = &expr.kind {
+                if let ExprKind::Ident(class_name) = &class.kind {
+                    let simple = java_type_simple_name(class_name);
+                    // Reroute java-only types always; shared-known types only
+                    // for the `(message, cause)` ctor the shared path drops.
+                    let chain: Option<&'static [&'static str]> =
+                        java_builtin_exception_chain(simple).or_else(|| {
+                            if args.len() >= 2 {
+                                java_known_exception_chain(simple)
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(chain) = chain {
+                        let mut chain_elems = vec![ArrayElement {
+                            key: None,
+                            value: Expression::string(simple),
+                            spread: false,
+                            by_ref: false,
+                        }];
+                        chain_elems.extend(chain.iter().map(|parent| ArrayElement {
+                            key: None,
+                            value: Expression::string(parent),
+                            spread: false,
+                            by_ref: false,
+                        }));
+                        let mut call_args = vec![
+                            Argument::positional(Expression::string(simple)),
+                            Argument::positional(Expression::new(ExprKind::Array(chain_elems))),
+                        ];
+                        call_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__j_exc")),
+                            args: call_args,
+                            optional: false,
+                        });
+                    }
+                }
+            }
         }
         _ => {}
     }
+}
+
+/// JLS supertype chains for built-in exceptions the shared emitter's
+/// `is_exception_type` doesn't recognize. Parents use the CANONICAL names
+/// the catch-clause compiler compares against (`RuntimeException` →
+/// "RuntimeError", `IOException` → "IOError").
+fn java_builtin_exception_chain(name: &str) -> Option<&'static [&'static str]> {
+    const RT: &[&str] = &["RuntimeError", "Exception", "Throwable"];
+    const IOOB: &[&str] = &[
+        "IndexOutOfBoundsException",
+        "RuntimeError",
+        "Exception",
+        "Throwable",
+    ];
+    const CHECKED: &[&str] = &["Exception", "Throwable"];
+    Some(match name {
+        "IllegalArgumentException"
+        | "IllegalStateException"
+        | "ClassCastException"
+        | "UnsupportedOperationException"
+        | "NullPointerException"
+        | "IndexOutOfBoundsException"
+        | "ArithmeticException"
+        | "NegativeArraySizeException"
+        | "SecurityException"
+        | "NoSuchElementException"
+        | "ConcurrentModificationException"
+        | "ArrayStoreException" => RT,
+        "NumberFormatException" => &[
+            "IllegalArgumentException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "ArrayIndexOutOfBoundsException" | "StringIndexOutOfBoundsException" => IOOB,
+        "InterruptedException" | "CloneNotSupportedException" | "NoSuchMethodException"
+        | "NoSuchFieldException" | "ClassNotFoundException" => CHECKED,
+        _ => return None,
+    })
+}
+
+/// Canonical chains for exception types the shared emitter DOES recognize
+/// (their catch clauses compare canonical names).
+fn java_known_exception_chain(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "RuntimeException" => &["RuntimeError", "Exception", "Throwable"],
+        "Exception" => &["Exception", "Throwable"],
+        "Throwable" => &["Throwable"],
+        "IOException" => &["IOError", "Exception", "Throwable"],
+        "FileNotFoundException" => &["FileNotFoundError", "IOError", "Exception", "Throwable"],
+        _ => return None,
+    })
+}
+
+/// Full supertype list (excluding self) for a built-in exception name,
+/// canonicalized where the shared emitter has a canonical form.
+fn java_exception_supertypes(name: &str) -> Option<Vec<String>> {
+    if let Some(chain) = java_known_exception_chain(name) {
+        return Some(chain.iter().map(|s| s.to_string()).collect());
+    }
+    java_builtin_exception_chain(name).map(|chain| {
+        std::iter::once(name.to_string())
+            .chain(chain.iter().map(|s| s.to_string()))
+            .collect()
+    })
 }
 
 fn rewrite_java_switch_enum_label(
@@ -6807,7 +7950,12 @@ fn rewrite_java_enum_set_static_call(
         "copyOf" | "complementOf" => new_args.extend(args.iter().cloned()),
         "of" | "range" => {
             new_args.push(Argument::positional(names));
-            new_args.extend(args.iter().cloned());
+            new_args.extend(args.iter().cloned().map(|mut arg| {
+                if let Some(name_expr) = java_enum_member_arg_to_name(&arg.value, enum_values) {
+                    arg.value = name_expr;
+                }
+                arg
+            }));
         }
         _ => new_args.push(Argument::positional(names)),
     }
@@ -6835,6 +7983,28 @@ fn java_enum_type_from_member_expr(expr: &Expression) -> Option<&str> {
     if let ExprKind::Member { object, .. } = &expr.kind {
         if let ExprKind::Ident(name) = &object.kind {
             return Some(name.as_str());
+        }
+    }
+    None
+}
+
+/// EnumSet internals take ordinal indices at value boundaries
+/// (`names[value]` lookups). Convert an enum-constant expression
+/// (`Color.GREEN`) to its declaration index, and an enum-typed variable
+/// to an `.ordinal()` call.
+fn java_enum_member_arg_to_name(
+    arg: &Expression,
+    enum_values: &HashMap<String, Vec<String>>,
+) -> Option<Expression> {
+    if let ExprKind::Member { object, field, .. } = &arg.kind {
+        if let ExprKind::Ident(type_name) = &object.kind {
+            let base = type_name.rsplit('.').next().unwrap_or(type_name);
+            if let Some(index) = enum_values
+                .get(base)
+                .and_then(|members| members.iter().position(|m| m == field))
+            {
+                return Some(Expression::int(index as i64));
+            }
         }
     }
     None
@@ -6912,7 +8082,20 @@ fn java_type_is_map(type_name: Option<&str>) -> bool {
             | "SortedMap"
             | "NavigableMap"
             | "Hashtable"
+            | "Properties"
     )
+}
+
+fn java_properties_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "getProperty" => "__j_props_get",
+        "setProperty" => "__j_props_set",
+        "stringPropertyNames" => "__j_props_names",
+        "keys" => "__j_props_keys",
+        "elements" => "__j_props_elements",
+        "getClass" => "__j_props_class",
+        _ => return None,
+    })
 }
 
 fn java_map_method_name(method: &str) -> Option<&'static str> {
@@ -7247,6 +8430,37 @@ fn java_type_simple_name(type_name: &str) -> &str {
     type_name.rsplit('.').next().unwrap_or(type_name)
 }
 
+fn java_print_arg_needs_tostring(
+    arg: &Expression,
+    tostring_classes: &std::collections::HashSet<String>,
+    enum_values: &std::collections::HashMap<String, Vec<String>>,
+    current_class: Option<&str>,
+    locals: &std::collections::HashMap<String, String>,
+) -> bool {
+    if java_expr_has_user_tostring(arg, tostring_classes, current_class, locals) {
+        return true;
+    }
+    // Enum constant access: `Season.SPRING`
+    if let ExprKind::Member { object, field, .. } = &arg.kind {
+        if let ExprKind::Ident(type_name) = &object.kind {
+            if let Some(members) = enum_values.get(type_name) {
+                return members.iter().any(|m| m == field);
+            }
+        }
+    }
+    // `EnumType.valueOf(x)` result (already renamed to the synthesized static).
+    if let ExprKind::Call { callee, .. } = &arg.kind {
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if field == "__j_enum_value_of" {
+                if let ExprKind::Ident(type_name) = &object.kind {
+                    return enum_values.contains_key(type_name);
+                }
+            }
+        }
+    }
+    false
+}
+
 fn java_expr_has_user_tostring(
     expr: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
@@ -7291,6 +8505,18 @@ fn collect_java_class_member_names(
                     }
                 }
             }
+            // Enums are class-shaped (JLS §8.9): their body members get the
+            // same bare field/method qualification as class members.
+            StmtKind::EnumDecl {
+                name, body_members, ..
+            } => {
+                out.insert(name.clone(), JavaClassMemberNames::from_members(body_members));
+                for member in body_members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_class_member_names(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
             StmtKind::Block(stmts) => collect_java_class_member_names(stmts, out),
             _ => {}
         }
@@ -7318,6 +8544,20 @@ fn normalize_java_class_tree_with_members(
                 }
                 normalize_java_class_members(members, &names);
                 for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        normalize_java_class_tree_with_members(
+                            std::slice::from_mut(nested),
+                            class_members,
+                        );
+                    }
+                }
+            }
+            StmtKind::EnumDecl {
+                name, body_members, ..
+            } => {
+                let names = class_members.get(name).cloned().unwrap_or_default();
+                normalize_java_class_members(body_members, &names);
+                for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
                         normalize_java_class_tree_with_members(
                             std::slice::from_mut(nested),
@@ -8961,6 +10201,55 @@ fn compound_op_to_binop(s: &str) -> BinOp {
         ">>>" => BinOp::UShr,
         _ => BinOp::Add,
     }
+}
+
+/// JLS §3.10.6 text-block content: strip the opening line, remove incidental
+/// leading whitespace (minimum over non-blank lines plus the closing
+/// delimiter's own line), strip incidental trailing whitespace per line,
+/// keep the final newline when the closing delimiter sits on its own line,
+/// then process escape sequences.
+fn java_text_block_content(raw: &str) -> String {
+    // The opening line holds only optional whitespace before its terminator.
+    let raw = match raw.find('\n') {
+        Some(pos) => &raw[pos + 1..],
+        None => raw,
+    };
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let last_index = lines.len().saturating_sub(1);
+    let closing_on_own_line = lines
+        .last()
+        .is_some_and(|line| line.trim_start_matches([' ', '\t']).is_empty());
+
+    let mut min_indent = usize::MAX;
+    for (i, line) in lines.iter().enumerate() {
+        let content = line.trim_start_matches([' ', '\t']);
+        if i == last_index && closing_on_own_line {
+            // Whitespace before the closing delimiter counts as indentation.
+            min_indent = min_indent.min(line.len());
+        } else if !content.is_empty() {
+            min_indent = min_indent.min(line.len() - content.len());
+        }
+    }
+    if min_indent == usize::MAX {
+        min_indent = 0;
+    }
+
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i == last_index && closing_on_own_line {
+            break;
+        }
+        let stripped = if line.len() >= min_indent {
+            &line[min_indent..]
+        } else {
+            line.trim_start_matches([' ', '\t'])
+        };
+        out.push_str(stripped.trim_end_matches([' ', '\t']));
+        if i < last_index {
+            out.push('\n');
+        }
+    }
+    unescape_java_string(&out)
 }
 
 fn unescape_java_string(s: &str) -> String {

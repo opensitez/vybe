@@ -139,7 +139,7 @@ fn enum_field_assigns_distinct_constructor_values() {
 fn enum_instance_method_returns_custom_label() {
     let types = r#"
         enum Shape { CIRCLE, SQUARE;
-            String label() { return \"shape\"; }
+            String label() { return "shape"; }
         }
     "#;
     let out = run_in_main("System.out.println(Shape.CIRCLE.label());", types);
@@ -252,7 +252,7 @@ fn enum_two_member_type_supports_both_ordinals() {
 #[test]
 fn enum_string_field_exposes_payload() {
     let types = r#"
-        enum Lang { JAVA(\"java\"), RUST(\"rust\");
+        enum Lang { JAVA("java"), RUST("rust");
             final String id;
             Lang(String id) { this.id = id; }
         }

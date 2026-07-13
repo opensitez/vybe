@@ -209,7 +209,7 @@ fn throw_skips_statements_after_throw_in_same_try() {
 #[test]
 fn throw_inside_nested_try_reaches_outer_catch_when_inner_mismatches() {
     let out = run_main(
-        "try { try { throw new IllegalArgumentException(\"x\"); } catch (RuntimeException e) { System.out.println(\"wrong\"); } } catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }",
+        "try { try { throw new IllegalArgumentException(\"x\"); } catch (NullPointerException e) { System.out.println(\"wrong\"); } } catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }",
     );
     assert_eq!(out, vec!["x"]);
 }

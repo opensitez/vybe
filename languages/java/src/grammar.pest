@@ -372,7 +372,7 @@ binop_expression = {
     instanceof_expression ~ (binop ~ instanceof_expression)*
 }
 
-binop = {
+binop = @{
     "||" | "&&"
   | "|" ~ !("|" | "=") | "^" ~ !"=" | "&" ~ !("&" | "=")
   | "==" | "!="
@@ -396,7 +396,7 @@ unary_expression = {
     | postfix_expression
 }
 
-unary_op = {
+unary_op = @{
     "++" | "--"
     | "+" ~ !"+"
     | "-" ~ !"-"
@@ -539,9 +539,11 @@ ref_type = {
 
 type_ref_list = { type_ref ~ ("," ~ type_ref)* }
 
-primitive_type = {
-    "boolean" | "byte" | "char" | "double" | "float"
-    | "int" | "long" | "short" | "void"
+// Atomic + word boundary: `byte` must not prefix-match `bytes = b;`
+// (which otherwise parses as `byte s = b;`).
+primitive_type = @{
+    ("boolean" | "byte" | "char" | "double" | "float"
+    | "int" | "long" | "short" | "void") ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 type_args  = { "<" ~ type_arg ~ ("," ~ type_arg)* ~ ">" }
@@ -596,8 +598,10 @@ string_literal = @{
     "\"" ~ (string_escape | (!"\"" ~ ANY))* ~ "\""
 }
 
+// JLS §3.10.6: opening delimiter may be followed by whitespace before the
+// mandatory line terminator.
 text_block = @{
-    "\"\"\"" ~ "\n" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
+    "\"\"\"" ~ (" " | "\t")* ~ "\n" ~ (!"\"\"\"" ~ ANY)* ~ "\"\"\""
 }
 
 string_escape = _{ "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4} | ANY) }

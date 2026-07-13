@@ -3,32 +3,32 @@ use crate::helpers::{run_in_main, run_main};
 #[test]
 fn text_block_two_line_content_preserves_internal_newline() {
     let out = run_main("String s = \"\"\"\nline1\nline2\n\"\"\"; System.out.println(s.length());");
-    assert_eq!(out, vec!["11"]);
+    assert_eq!(out, vec!["12"]);
 }
 
 #[test]
 fn text_block_single_line_without_leading_indent() {
     let out = run_main("String s = \"\"\"\nhello\n\"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["hello"]);
+    assert_eq!(out, vec!["hello", ""]);
 }
 
 #[test]
 fn text_block_indentation_stripping_on_marked_lines() {
     let out =
         run_main("String s = \"\"\"\n    alpha\n    beta\n    \"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["alpha\nbeta"]);
+    assert_eq!(out, vec!["alpha", "beta", ""]);
 }
 
 #[test]
 fn text_block_embedded_double_quotes_preserved() {
     let out = run_main("String s = \"\"\"\n\"quoted\"\n\"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["\"quoted\""]);
+    assert_eq!(out, vec!["\"quoted\"", ""]);
 }
 
 #[test]
 fn text_block_embedded_single_quotes_preserved() {
     let out = run_main("String s = \"\"\"\nit's fine\n\"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["it's fine"]);
+    assert_eq!(out, vec!["it's fine", ""]);
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn text_block_empty_body_between_delimiters() {
 #[test]
 fn text_block_concatenation_with_regular_string() {
     let out = run_main("String s = \"pre-\" + \"\"\"\nfix\n\"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["pre-fix"]);
+    assert_eq!(out, vec!["pre-fix", ""]);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn text_block_multiline_joined_by_plus() {
     let out = run_main(
         "String s = \"\"\"\npart1\n\"\"\" + \"\"\"\npart2\n\"\"\"; System.out.println(s);",
     );
-    assert_eq!(out, vec!["part1\npart2"]);
+    assert_eq!(out, vec!["part1", "part2", ""]);
 }
 
 #[test]
@@ -109,13 +109,13 @@ fn text_block_numeric_characters_parse_as_string() {
 #[test]
 fn text_block_assign_to_final_local() {
     let out = run_main("final String s = \"\"\"\nfixed\n\"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["fixed"]);
+    assert_eq!(out, vec!["fixed", ""]);
 }
 
 #[test]
 fn text_block_in_array_initializer() {
     let out = run_main("String[] arr = {\"a\", \"\"\"\nb\n\"\"\"}; System.out.println(arr[1]);");
-    assert_eq!(out, vec!["b"]);
+    assert_eq!(out, vec!["b", ""]);
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn text_block_returned_from_helper_method() {
         }
     "#;
     let out = run_in_main("System.out.println(blob());", types);
-    assert_eq!(out, vec!["inner"]);
+    assert_eq!(out, vec!["inner", ""]);
 }
 
 #[test]
@@ -156,14 +156,14 @@ fn text_block_is_not_empty_for_nonempty_body() {
 #[test]
 fn text_block_uppercase_via_bound_call() {
     let out = run_main("String s = \"\"\"\nup\n\"\"\"; System.out.println(s.toUpperCase());");
-    assert_eq!(out, vec!["UP"]);
+    assert_eq!(out, vec!["UP", ""]);
 }
 
 #[test]
 fn text_block_replace_internal_newline_with_dash() {
     let out =
         run_main("String s = \"\"\"\na\nb\n\"\"\"; System.out.println(s.replace(\"\\n\", \"-\"));");
-    assert_eq!(out, vec!["a-b"]);
+    assert_eq!(out, vec!["a-b-"]);
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn text_block_stored_in_field_via_constructor() {
         "Holder h = new Holder(); System.out.println(h.text);",
         types,
     );
-    assert_eq!(out, vec!["held"]);
+    assert_eq!(out, vec!["held", ""]);
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn text_block_embedded_quotes_and_text_mixed() {
 #[test]
 fn text_block_passed_to_println_directly() {
     let out = run_main("System.out.println(\"\"\"\nraw\n\"\"\");");
-    assert_eq!(out, vec!["raw"]);
+    assert_eq!(out, vec!["raw", ""]);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn text_block_multiple_adjacent_words() {
 #[test]
 fn text_block_indentation_stripping_on_closing_delimiter_line() {
     let out = run_main("String s = \"\"\"\n        deep\n    \"\"\"; System.out.println(s);");
-    assert_eq!(out, vec!["    deep"]);
+    assert_eq!(out, vec!["    deep", ""]);
 }
 
 #[test]

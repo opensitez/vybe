@@ -4,10 +4,10 @@
 //! operations naturally return another array-backed stream; terminal optional
 //! operations reuse the Java Optional pair representation.
 
-use vybe_emitter::collections;
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::collections;
+use vybe_emitter::instructions::host;
 
 const STREAM_GENERATED_LIMIT: i32 = 128;
 

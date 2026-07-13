@@ -75,7 +75,7 @@ fn first_matching_catch_arm_handles_runtime_exception() {
 #[test]
 fn second_catch_arm_handles_when_first_type_mismatches() {
     let out = run_main(
-        "try { throw new IllegalArgumentException(); } catch (RuntimeException e) { System.out.println(\"runtime\"); } catch (IllegalArgumentException e) { System.out.println(\"illegal\"); }",
+        "try { throw new IllegalArgumentException(); } catch (NullPointerException e) { System.out.println(\"npe\"); } catch (IllegalArgumentException e) { System.out.println(\"illegal\"); }",
     );
     assert_eq!(out, vec!["illegal"]);
 }

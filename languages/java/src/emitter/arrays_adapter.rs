@@ -4,9 +4,9 @@
 //! always match the lower-level ECMA array helpers, so keep those translations
 //! in the Java frontend.
 
-use vybe_emitter::collections;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::collections;
 
 pub fn emit_fill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
