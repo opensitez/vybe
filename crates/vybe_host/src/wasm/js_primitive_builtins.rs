@@ -33,7 +33,8 @@ fn register_number(vm: &mut VM) {
         "test",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::I32(match args.first() {
-                Some(Value::F64(_)) | Some(Value::I32(_)) | Some(Value::I64(_)) => 1,
+                Some(Value::F64(_)) | Some(Value::F32(_)) | Some(Value::I32(_))
+                | Some(Value::I64(_)) => 1,
                 _ => 0,
             })
         }),
@@ -51,6 +52,13 @@ fn register_number(vm: &mut VM) {
                         return Value::I32(0);
                     }
                     if (*n as i32) as f64 == *n { 1 } else { 0 }
+                }
+                Some(Value::F32(n)) => {
+                    let n = *n as f64;
+                    if is_neg_zero(n) {
+                        return Value::I32(0);
+                    }
+                    if (n as i32) as f64 == n { 1 } else { 0 }
                 }
                 _ => 0,
             })
@@ -75,6 +83,13 @@ fn register_number(vm: &mut VM) {
                         return Value::I32(0);
                     }
                     if (*n as u32) as f64 == *n { 1 } else { 0 }
+                }
+                Some(Value::F32(n)) => {
+                    let n = *n as f64;
+                    if is_neg_zero(n) {
+                        return Value::I32(0);
+                    }
+                    if (n as u32) as f64 == n { 1 } else { 0 }
                 }
                 _ => 0,
             })
@@ -114,6 +129,7 @@ fn register_number(vm: &mut VM) {
         "toF64",
         Box::new(|ctx: &mut HostContext, args: &[Value]| match args.first() {
             Some(Value::F64(n)) => Value::F64(*n),
+            Some(Value::F32(n)) => Value::F64(*n as f64),
             Some(Value::I32(n)) => Value::F64(*n as f64),
             Some(Value::I64(n)) => Value::F64(*n as f64),
             _ => {
@@ -133,6 +149,7 @@ fn register_number(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::I32(n)) => return Value::I32(*n),
                 Some(Value::F64(n)) => *n,
+                Some(Value::F32(n)) => *n as f64,
                 Some(Value::I64(n)) => *n as f64,
                 _ => {
                     ctx.throw_value(Value::String(Arc::from(

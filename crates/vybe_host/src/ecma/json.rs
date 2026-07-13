@@ -232,6 +232,7 @@ fn serialize_json_value(
         Value::I32(n) => Some(n.to_string()),
         Value::I64(n) => Some(n.to_string()),
         Value::F64(n) => Some(json_number_string(*n)),
+        Value::F32(n) => Some(json_number_string(*n as f64)),
         Value::String(s) => Some(quote_string(s)),
         Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
         // ECMA-262 §25.5.2: BigInt values must throw TypeError.

@@ -3069,6 +3069,35 @@ impl Compiler {
                                         );
                                         self.emit(Op::DROP);
                                         continue;
+                                    } else {
+                                        // `del a[i:j:k]` — strided deletion via
+                                        // the shared slices emitter.
+                                        self.compile_expr(object)?;
+                                        if let Some(lower) = lower {
+                                            self.compile_expr(lower)?;
+                                        } else {
+                                            self.emit(Op::NULL);
+                                        }
+                                        if let Some(upper) = upper {
+                                            self.compile_expr(upper)?;
+                                        } else {
+                                            self.emit(Op::NULL);
+                                        }
+                                        if let Some(step) = step {
+                                            self.compile_expr(step)?;
+                                        } else {
+                                            self.emit(Op::NULL);
+                                        }
+                                        let opts = common::slices::Options::new(
+                                            self.profile.slice_step_zero_raises,
+                                        );
+                                        common::slices::emit_strided_del(
+                                            &mut self.chunks,
+                                            self.current,
+                                            line,
+                                            opts,
+                                        );
+                                        continue;
                                     }
                                 }
                             }
@@ -3212,6 +3241,44 @@ impl Compiler {
                     }
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
+                }
+            }
+
+            // ── WASM linear memory / data segments ──────────────────────
+            // Module-global: these belong to the script chunk (chunk 0), which
+            // the VM instantiates from — it allocates the declared pages and
+            // writes active data into linear memory before `_start` runs.
+            StmtKind::MemoryDecl {
+                min_pages,
+                max_pages,
+            } => {
+                self.chunks[0].memory_min_pages.push(*min_pages);
+                self.chunks[0].memory_max_pages.push(*max_pages);
+            }
+            StmtKind::TableDecl { min_size, .. } => {
+                self.chunks[0].table_min_sizes.push(*min_size);
+            }
+            StmtKind::DataSegment {
+                memory_index,
+                offset,
+                bytes,
+            } => {
+                let data_index = self.chunks[0].data_segments.len() as u32;
+                self.chunks[0].data_segments.push(bytes.clone());
+                // Active segment (has a constant offset) → recorded for the VM's
+                // instantiation-time copy. Passive segments (offset None) stay in
+                // `data_segments` for `memory.init`.
+                if let Some(off) = offset {
+                    let offset_val = const_eval_u64(off).ok_or_else(|| {
+                        "data segment offset must be a constant integer expression".to_string()
+                    })?;
+                    self.chunks[0].active_data_segments.push(
+                        vybe_bytecode::chunk::ActiveDataSegment {
+                            memory_index: *memory_index,
+                            offset: offset_val,
+                            data_index,
+                        },
+                    );
                 }
             }
 
@@ -4652,60 +4719,47 @@ impl Compiler {
                 }
                 if self.is_python_profile() {
                     if let ExprKind::Slice { lower, upper, step } = &index.kind {
-                        if step.is_none() {
-                            let line = self.line;
-                            let value_tmp = self.define_local("__py_slice_value");
-                            let obj_tmp = self.define_local("__py_slice_obj");
-                            let start_tmp = self.define_local("__py_slice_start");
-                            let end_tmp = self.define_local("__py_slice_end");
-                            let count_tmp = self.define_local("__py_slice_count");
-
-                            self.emit_u16(Op::LOCAL_SET, value_tmp);
-
-                            self.compile_expr(object)?;
-                            self.emit_u16(Op::LOCAL_SET, obj_tmp);
-
-                            if let Some(lower) = lower {
-                                self.compile_expr(lower)?;
-                            } else {
-                                inst!(self, core_wasm::i32_const, 0);
-                            }
-                            self.emit_u16(Op::LOCAL_SET, start_tmp);
-
-                            if let Some(upper) = upper {
-                                self.compile_expr(upper)?;
-                            } else {
-                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                common::collections::emit_len(&mut self.chunks, self.current, line);
-                            }
-                            self.emit_u16(Op::LOCAL_SET, end_tmp);
-
-                            self.emit_u16(Op::LOCAL_GET, end_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_tmp);
-                            self.emit(Op::I32_SUB);
-                            self.emit_u16(Op::LOCAL_SET, count_tmp);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_tmp);
-                            self.emit_u16(Op::LOCAL_GET, count_tmp);
-                            common::collections::emit_remove_range(
-                                &mut self.chunks,
-                                self.current,
-                                line,
-                            );
-                            self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_tmp);
-                            self.emit_u16(Op::LOCAL_GET, value_tmp);
-                            common::collections::emit_insert_range(
-                                &mut self.chunks,
-                                self.current,
-                                line,
-                            );
-                            self.emit(Op::DROP);
-                            return Ok(());
+                        // Slice assignment via the shared slices emitter: no-step
+                        // splices (variable length, negative-aware), step does a
+                        // positional (equal-length) assignment. Value is on TOS.
+                        let line = self.line;
+                        let value_tmp = self.define_local("__py_slice_value");
+                        self.emit_u16(Op::LOCAL_SET, value_tmp);
+                        self.compile_expr(object)?;
+                        if let Some(lower) = lower {
+                            self.compile_expr(lower)?;
+                        } else {
+                            self.emit(Op::NULL);
                         }
+                        if let Some(upper) = upper {
+                            self.compile_expr(upper)?;
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        if step.is_none() {
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            common::slices::emit_splice_assign(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
+                        } else {
+                            if let Some(step) = step {
+                                self.compile_expr(step)?;
+                            } else {
+                                self.emit(Op::NULL);
+                            }
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            let opts =
+                                common::slices::Options::new(self.profile.slice_step_zero_raises);
+                            common::slices::emit_strided_assign(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                                opts,
+                            );
+                        }
+                        return Ok(());
                     }
                 }
 
@@ -5351,4 +5405,15 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
     // Binary operator emission
     // ════════════════════════════════════════════════════════════════════════
+}
+
+/// Evaluate a constant integer expression (a WASM data-segment offset is a
+/// constant expression, in practice `i32.const N` → `Lit(Int)`). Returns `None`
+/// for anything non-constant so the caller can report it rather than guess.
+fn const_eval_u64(expr: &Expression) -> Option<u64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) => Some(*n as u64),
+        ExprKind::Lit(Literal::Float(f)) => Some(*f as u64),
+        _ => None,
+    }
 }

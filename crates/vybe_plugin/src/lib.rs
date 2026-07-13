@@ -13,4 +13,4 @@ pub mod framework;
 pub mod profile;
 pub mod registry;
 
-pub use framework::{init_all, Framework, Plugin};
+pub use framework::{init_all, init_all_on_vm, Framework, Plugin};

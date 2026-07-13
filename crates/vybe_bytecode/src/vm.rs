@@ -2360,6 +2360,7 @@ pub(crate) fn dyn_truthy(v: &Value) -> bool {
         Value::Null | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
+        Value::F32(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,
         Value::String(s) => !s.is_empty(),

@@ -6,6 +6,73 @@
 
 use super::*;
 
+/// Compile-time `u8` from a literal instruction argument (a SIMD lane index).
+fn expr_const_u8(expr: Option<&Expression>) -> u8 {
+    match expr.map(|e| &e.kind) {
+        Some(ExprKind::Lit(Literal::Int(n))) => *n as u8,
+        _ => 0,
+    }
+}
+
+/// Encode a `v128.const` immediate: a shape token (`i32x4`, `f64x2`, …) followed
+/// by the per-lane values, laid out little-endian into the 16-byte vector — the
+/// exact layout the VM's `V128_CONST` opcode reads back.
+fn encode_v128_const(args: &[&Expression]) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    let shape = match args.first().map(|e| &e.kind) {
+        Some(ExprKind::Lit(Literal::Str(s))) => s.as_str(),
+        _ => "i32x4",
+    };
+    let vals = &args[1..];
+    let int_at = |i: usize| -> i64 {
+        match vals.get(i).map(|e| &e.kind) {
+            Some(ExprKind::Lit(Literal::Int(n))) => *n,
+            _ => 0,
+        }
+    };
+    let float_at = |i: usize| -> f64 {
+        match vals.get(i).map(|e| &e.kind) {
+            Some(ExprKind::Lit(Literal::Float(f))) => *f,
+            Some(ExprKind::Lit(Literal::Int(n))) => *n as f64,
+            _ => 0.0,
+        }
+    };
+    match shape {
+        "i8x16" => {
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = int_at(i) as u8;
+            }
+        }
+        "i16x8" => {
+            for i in 0..8 {
+                bytes[i * 2..i * 2 + 2].copy_from_slice(&(int_at(i) as u16).to_le_bytes());
+            }
+        }
+        "i32x4" => {
+            for i in 0..4 {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&(int_at(i) as u32).to_le_bytes());
+            }
+        }
+        "i64x2" => {
+            for i in 0..2 {
+                bytes[i * 8..i * 8 + 8].copy_from_slice(&(int_at(i) as u64).to_le_bytes());
+            }
+        }
+        "f32x4" => {
+            for i in 0..4 {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&(float_at(i) as f32).to_le_bytes());
+            }
+        }
+        "f64x2" => {
+            for i in 0..2 {
+                bytes[i * 8..i * 8 + 8].copy_from_slice(&float_at(i).to_le_bytes());
+            }
+        }
+        _ => {}
+    }
+    bytes
+}
+
 impl Compiler {
     // Builtins (profile-driven)
     // ════════════════════════════════════════════════════════════════════════
@@ -965,6 +1032,25 @@ impl Compiler {
             return Ok(true);
         }
 
+        // Generic 1:1 opcode route (WAT/WAST only): the wast profile lowers every
+        // instruction it doesn't special-case to `Call(instr_name_underscored)`,
+        // so a call whose name is a WASM instruction with no higher-level builtin
+        // (e.g. every SIMD lane op) emits that opcode directly. The single opcode
+        // list lives in the VM — `Op::from_wasm_name` resolves it; there is no
+        // per-op list in the profile or the emitter. Scoped to wast so bare
+        // opcode-shaped identifiers (`select`, `drop`, …) in other languages are
+        // never mistaken for instructions.
+        if self.profile.name == "wast" {
+            let dotted = name.replacen('_', ".", 1);
+            if Op::from_wasm_name(name)
+                .or_else(|| Op::from_wasm_name(&dotted))
+                .is_some()
+            {
+                self.emit_builtin_opcode(name, args)?;
+                return Ok(true);
+            }
+        }
+
         Ok(false)
     }
 
@@ -1020,14 +1106,12 @@ impl Compiler {
     pub(super) fn emit_named_opcode(&mut self, op_name: &str) {
         let _line = self.line;
         match op_name {
-            "f64_abs" => self.emit(Op::F64_ABS),
-            "f64_floor" => self.emit(Op::F64_FLOOR),
-            "f64_ceil" => self.emit(Op::F64_CEIL),
-            "f64_sqrt" => self.emit(Op::F64_SQRT),
-            "f64_trunc" => self.emit(Op::F64_TRUNC),
-            "f64_nearest" => self.emit(Op::F64_NEAREST),
-            "f64_min" => self.emit(Op::F64_MIN),
-            "f64_max" => self.emit(Op::F64_MAX),
+            // NOTE: bare WASM opcodes (f64.abs, ref.is_null, all SIMD lane ops, …)
+            // are NOT listed here. They resolve through the single VM opcode table
+            // via `Op::from_wasm_name` in the `_ =>` fallback below. Only non-opcode
+            // recipes (host calls, multi-op sequences) and the two VM-internal
+            // conversions (I32_FROM_F64 / F64_FROM_I32, which have no WASM mnemonic)
+            // live in this match.
             "i32_from_f64" => self.emit(Op::I32_FROM_F64),
             "f64_from_i32" => self.emit(Op::F64_FROM_I32),
             "dyn_eq" => {
@@ -1046,7 +1130,6 @@ impl Compiler {
                 let line = self.line;
                 crate::emitter::ops::emit_dyn_not(self.chunk(), line);
             }
-            "ref_is_null" => self.emit(Op::REF_IS_NULL),
             "ref_is_array" => fn_call!(self, "ecma:array", "isArray", 1),
             "ref_typeof" => fn_call!(self, "ecma:value", "typeof", 1),
             "str_length" => fn_call!(self, "wasm:js-string", "length", 1),
@@ -1142,8 +1225,19 @@ impl Compiler {
                 common::collections::emit_index_of(&mut self.chunks, self.current, l);
             }
             _ => {
-                let c = self.str_const(op_name);
-                self.emit_u16(Op::GLOBAL_GET, c);
+                // Single source of truth: resolve any remaining opcode straight
+                // from the VM's opcode table rather than maintaining a second
+                // hardcoded list. Profile names are underscore-form
+                // (`i32_clz`); WASM mnemonics dot the type prefix (`i32.clz`).
+                let dotted = op_name.replacen('_', ".", 1);
+                if let Some(op) =
+                    Op::from_wasm_name(op_name).or_else(|| Op::from_wasm_name(&dotted))
+                {
+                    self.emit(op);
+                } else {
+                    let c = self.str_const(op_name);
+                    self.emit_u16(Op::GLOBAL_GET, c);
+                }
             }
         }
     }
@@ -1373,57 +1467,10 @@ impl Compiler {
                 }
                 self.emit(Op::NULL);
             }
-            // Direct WASM opcode names.
-            // Args may be absent in plain WAT form (operands already on stack);
-            // compile whatever is provided, then emit the opcode unconditionally.
-            "f64_abs" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_ABS);
-            }
-            "f64_floor" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_FLOOR);
-            }
-            "f64_ceil" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_CEIL);
-            }
-            "f64_sqrt" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_SQRT);
-            }
-            "f64_trunc" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_TRUNC);
-            }
-            "f64_nearest" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_NEAREST);
-            }
-            "f64_min" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_MIN);
-            }
-            "f64_max" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64_MAX);
-            }
+            // NOTE: bare WASM opcodes (f64.*, ref.is_null, ALL SIMD lane ops, …)
+            // are NOT enumerated here — they emit through the one VM opcode table
+            // via `Op::from_wasm_name` in the `_ =>` fallback. Only genuine recipes
+            // (host calls, multi-op sequences) and VM-internal conversions stay.
             "i32_from_f64" | "to_int" => {
                 for a in args {
                     self.compile_expr(a)?;
@@ -1449,12 +1496,6 @@ impl Compiler {
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     }
                 }
-            }
-            "ref_is_null" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::REF_IS_NULL);
             }
             "ref_is_array" => {
                 for a in args {
@@ -1512,217 +1553,6 @@ impl Compiler {
                     let l = self.line;
                     crate::emitter::strings::emit_str_reverse(self.chunk(), l)
                 };
-            }
-            // SIMD v128 ops — args may be absent in plain WAT form
-            "i8x16_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I8X16_SPLAT);
-            }
-            "i16x8_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I16X8_SPLAT);
-            }
-            "i32x4_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I32X4_SPLAT);
-            }
-            "i64x2_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I64X2_SPLAT);
-            }
-            "f32x4_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_SPLAT);
-            }
-            "f64x2_splat" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_SPLAT);
-            }
-            "v128_not" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_NOT);
-            }
-            "v128_and" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_AND);
-            }
-            "v128_andnot" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_ANDNOT);
-            }
-            "v128_or" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_OR);
-            }
-            "v128_xor" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_XOR);
-            }
-            "v128_bitselect" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_BITSELECT);
-            }
-            "v128_any_true" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::V128_ANY_TRUE);
-            }
-            "i8x16_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I8X16_ADD);
-            }
-            "i16x8_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I16X8_ADD);
-            }
-            "i32x4_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I32X4_ADD);
-            }
-            "i64x2_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I64X2_ADD);
-            }
-            "i8x16_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I8X16_SUB);
-            }
-            "i16x8_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I16X8_SUB);
-            }
-            "i32x4_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I32X4_SUB);
-            }
-            "i64x2_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I64X2_SUB);
-            }
-            "i32x4_mul" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I32X4_MUL);
-            }
-            "i64x2_mul" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I64X2_MUL);
-            }
-            "f32x4_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_ADD);
-            }
-            "f64x2_add" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_ADD);
-            }
-            "f32x4_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_SUB);
-            }
-            "f64x2_sub" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_SUB);
-            }
-            "f32x4_mul" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_MUL);
-            }
-            "f64x2_mul" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_MUL);
-            }
-            "f32x4_div" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_DIV);
-            }
-            "f64x2_div" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_DIV);
-            }
-            "f32x4_sqrt" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F32X4_SQRT);
-            }
-            "f64x2_sqrt" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::F64X2_SQRT);
-            }
-            "i8x16_shuffle" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I8X16_SHUFFLE);
-            }
-            "i8x16_swizzle" => {
-                for a in args {
-                    self.compile_expr(a)?;
-                }
-                self.emit(Op::I8X16_SWIZZLE);
             }
             "str_last_index_of" => {
                 if args.len() >= 2 {
@@ -1895,7 +1725,56 @@ impl Compiler {
                 }
             }
             _ => {
-                self.emit(Op::NULL);
+                // Single source of truth: resolve any remaining opcode straight
+                // from the VM's opcode table. The VM's `operand_format` (same
+                // table) tells us how to encode any immediates — lane index,
+                // v128.const value, shuffle mask — so there is no second list.
+                let dotted = op_name.replacen('_', ".", 1);
+                let resolved = Op::from_wasm_name(op_name).or_else(|| Op::from_wasm_name(&dotted));
+                let Some(op) = resolved else {
+                    self.emit(Op::NULL);
+                    return Ok(());
+                };
+                use vybe_bytecode::opcode::OperandFormat;
+                let l = self.line;
+                match op.operand_format() {
+                    // v128.const: args are all immediates — a shape token then
+                    // the lane values — encoded to the 16-byte vector.
+                    OperandFormat::V128Const => {
+                        let bytes = encode_v128_const(args);
+                        self.chunk().emit_op(Op::V128_CONST, l);
+                        for b in bytes {
+                            self.chunk().emit(b, l);
+                        }
+                    }
+                    // Lane ops (extract_lane / replace_lane / load_lane / …):
+                    // fold puts the immediate first, then the stack operands.
+                    OperandFormat::U8 => {
+                        for a in &args[1..] {
+                            self.compile_expr(a)?;
+                        }
+                        let lane = expr_const_u8(args.first().copied());
+                        self.chunk().emit_op(op, l);
+                        self.chunk().emit(lane, l);
+                    }
+                    // i8x16.shuffle: 16 lane-index immediates, then two vectors.
+                    OperandFormat::Shuffle => {
+                        for a in args.iter().skip(16) {
+                            self.compile_expr(a)?;
+                        }
+                        self.chunk().emit_op(op, l);
+                        for i in 0..16 {
+                            self.chunk().emit(expr_const_u8(args.get(i).copied()), l);
+                        }
+                    }
+                    // Plain opcode: operands on the stack, no immediate.
+                    _ => {
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
+                        self.emit(op);
+                    }
+                }
             }
         }
         Ok(())

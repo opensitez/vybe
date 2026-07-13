@@ -41,6 +41,7 @@ pub mod promises;
 pub mod prototypes;
 pub mod random;
 pub mod references;
+pub mod slices;
 pub mod sprintf;
 pub mod strings;
 pub mod target;

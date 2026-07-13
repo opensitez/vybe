@@ -42,7 +42,9 @@ fn deep_clone(
     match v {
         // Primitives — pass through; they're Copy or immutable.
         Value::Null | Value::Undefined => Ok(v.clone()),
-        Value::Bool(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => Ok(v.clone()),
+        Value::Bool(_) | Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => {
+            Ok(v.clone())
+        }
         Value::BigInt(_) | Value::V128(_) => Ok(v.clone()),
 
         // Strings: Arc<str> is already cheap to clone; structured

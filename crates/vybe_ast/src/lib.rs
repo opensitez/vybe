@@ -428,6 +428,45 @@ pub enum StmtKind {
         subject: Expression,
         cases: Vec<MatchCase>,
     },
+
+    // ── WASM module structure (linear memory / data segments) ────────────
+    //
+    // WAT is the raw WASM module format, so it is the one frontend that
+    // declares these directly. Higher-level languages reach linear memory
+    // only indirectly — heap allocation lowers to it — so they never emit
+    // these nodes. The compiler lowers them into the script chunk's memory /
+    // data tables, which the VM instantiates (allocates pages, writes active
+    // data) before `_start` runs, per the WASM spec.
+    /// `(memory $id? min max?)` — a linear-memory declaration. Declaration
+    /// order is the memory index.
+    MemoryDecl {
+        /// Minimum size in 64 KiB pages.
+        min_pages: u64,
+        /// Maximum size in pages; `None` = unbounded.
+        max_pages: Option<u64>,
+    },
+
+    /// `(table $id? min max? funcref)` — a reference-table declaration.
+    /// Declaration order is the table index.
+    TableDecl {
+        /// Minimum element count.
+        min_size: u64,
+        /// Maximum element count; `None` = unbounded.
+        max_size: Option<u64>,
+    },
+
+    /// `(data (offset) "bytes")` (active) or `(data "bytes")` (passive). Active
+    /// segments are copied into linear memory at instantiation; passive ones
+    /// are held for `memory.init`.
+    DataSegment {
+        /// Target memory index for active segments (0 by default).
+        memory_index: u32,
+        /// Constant offset expression (e.g. `i32.const N`) for active segments;
+        /// `None` marks a passive segment.
+        offset: Option<Expression>,
+        /// Initializer bytes, with WAT string escapes already decoded.
+        bytes: Vec<u8>,
+    },
 }
 
 // ════════════════════════════════════════════════════════════════════════════

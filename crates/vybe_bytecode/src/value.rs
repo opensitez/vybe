@@ -14,6 +14,10 @@ pub enum Value {
     Bool(bool),
     I32(i32),
     I64(i64),
+    /// WASM f32 — a genuine 32-bit single-precision float, kept distinct from
+    /// F64 so it rounds and prints at f32 precision (spec-faithful 1-to-1 with
+    /// the four WASM numeric types). Only produced by the f32.* opcodes.
+    F32(f32),
     F64(f64),
     String(Arc<str>),
     Object(Arc<Mutex<Object>>),
@@ -51,10 +55,11 @@ pub enum ValueTag {
     V128 = 9,
     Symbol = 10,
     BigInt = 11,
+    F32 = 12,
 }
 
 impl ValueTag {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
     pub fn as_usize(self) -> usize {
         self as usize
     }
@@ -72,6 +77,7 @@ impl ValueTag {
             ValueTag::V128 => "V128",
             ValueTag::Symbol => "Symbol",
             ValueTag::BigInt => "BigInt",
+            ValueTag::F32 => "F32",
         }
     }
 }
@@ -87,6 +93,7 @@ impl Value {
             Value::Bool(_) => ValueTag::Bool,
             Value::I32(_) => ValueTag::I32,
             Value::I64(_) => ValueTag::I64,
+            Value::F32(_) => ValueTag::F32,
             Value::F64(_) => ValueTag::F64,
             Value::String(_) => ValueTag::String,
             Value::Object(_) => ValueTag::Object,
@@ -104,6 +111,7 @@ impl Value {
     pub fn as_f64(&self) -> f64 {
         match self {
             Value::F64(n) => *n,
+            Value::F32(n) => *n as f64,
             Value::I32(n) => *n as f64,
             Value::I64(n) => *n as f64,
             Value::Bool(b) => {
@@ -119,11 +127,20 @@ impl Value {
         }
     }
 
+    /// Extract as f32 (rounding through single precision).
+    pub fn as_f32(&self) -> f32 {
+        match self {
+            Value::F32(n) => *n,
+            _ => self.as_f64() as f32,
+        }
+    }
+
     pub fn as_i32(&self) -> i32 {
         match self {
             Value::I32(n) => *n,
             Value::I64(n) => *n as i32,
             Value::F64(n) => *n as i32,
+            Value::F32(n) => *n as i32,
             Value::Bool(b) => {
                 if *b {
                     1
@@ -174,6 +191,7 @@ impl Value {
             Value::BigInt(n) => n.to_i64_wrapping(),
             Value::I32(n) => *n as i64,
             Value::F64(n) => *n as i64,
+            Value::F32(n) => *n as i64,
             Value::Bool(b) => {
                 if *b {
                     1
@@ -205,6 +223,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::I32(_) => "i32",
             Value::I64(_) => "i64",
+            Value::F32(_) => "f32",
             Value::F64(_) => "f64",
             Value::String(_) => "string",
             Value::Object(o) => {
@@ -376,6 +395,22 @@ impl Value {
             (Value::I64(x), Value::F64(y)) => !y.is_nan() && (*x as f64) == *y,
             (Value::F64(x), Value::I64(y)) => !x.is_nan() && *x == (*y as f64),
 
+            // f32 compares numerically against every other number type via its
+            // f64 value (its exact widening), with NaN==NaN under SameValueZero.
+            (Value::F32(x), Value::F32(y)) => {
+                if x.is_nan() && y.is_nan() {
+                    true
+                } else {
+                    x == y
+                }
+            }
+            (Value::F32(x), Value::F64(_) | Value::I32(_) | Value::I64(_)) => {
+                !x.is_nan() && !b.as_f64().is_nan() && (*x as f64) == b.as_f64()
+            }
+            (Value::F64(_) | Value::I32(_) | Value::I64(_), Value::F32(y)) => {
+                !y.is_nan() && !a.as_f64().is_nan() && a.as_f64() == (*y as f64)
+            }
+
             (Value::String(x), Value::String(y)) => x == y,
             (Value::BigInt(x), Value::BigInt(y)) => x == y,
             (Value::V128(x), Value::V128(y)) => x == y,
@@ -430,6 +465,23 @@ impl Hash for Value {
                     // keyed by the raw bit pattern. A non-integral
                     // f64 can never equal an i32/i64, so no
                     // cross-bucket collision risk.
+                    u8::MAX.hash(state);
+                    n.to_bits().hash(state);
+                }
+            }
+            // f32 hashes by its exact f64 widening through the same scheme as
+            // F64, so F32(3.0) shares a bucket with I32(3)/F64(3.0) and a
+            // fractional f32 lands in the bit-pattern subspace of its widening.
+            Value::F32(n) => {
+                let n = *n as f64;
+                3u8.hash(state);
+                if n.is_nan() {
+                    i64::MIN.hash(state);
+                } else if n == 0.0 {
+                    0i64.hash(state);
+                } else if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+                    (n as i64).hash(state);
+                } else {
                     u8::MAX.hash(state);
                     n.to_bits().hash(state);
                 }
@@ -489,6 +541,25 @@ impl fmt::Display for Value {
                     // Node's console shows "-0" via its inspector, which
                     // would need a console-path formatter, never Display.
                     write!(f, "{}", *n as i64)
+                } else {
+                    write!(f, "{}", n)
+                }
+            }
+            // f32 is exclusively a WASM value (only the wast frontend produces
+            // it), so its Display IS the WAT float text: `nan`/`inf`/`-inf`, a
+            // trailing `.0` on whole values, and otherwise Rust's shortest f32
+            // decimal (the shortest string that round-trips to the same f32).
+            Value::F32(n) => {
+                if n.is_nan() {
+                    write!(f, "nan")
+                } else if n.is_infinite() {
+                    if n.is_sign_negative() {
+                        write!(f, "-inf")
+                    } else {
+                        write!(f, "inf")
+                    }
+                } else if *n == (*n as i64) as f32 && n.abs() < 1e15 {
+                    write!(f, "{}.0", *n as i64)
                 } else {
                     write!(f, "{}", n)
                 }

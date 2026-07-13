@@ -2623,13 +2623,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::collections::emit_runtime_helper_call(
-                                &mut self.chunks,
-                                self.current,
-                                "__vybe_slice",
-                                3,
-                                line,
-                            );
+                            common::slices::emit_contiguous(&mut self.chunks, self.current, line);
                         } else {
                             let obj_slot = self.define_local("__py_index_slice_obj");
                             self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -2646,13 +2640,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::collections::emit_runtime_helper_call(
-                                &mut self.chunks,
-                                self.current,
-                                "__vybe_slice",
-                                3,
-                                line,
-                            );
+                            common::slices::emit_contiguous(&mut self.chunks, self.current, line);
                         }
                     } else {
                         let step_const = step.as_ref().and_then(|expr| match &expr.kind {
@@ -2685,13 +2673,17 @@ impl Compiler {
                                 } else {
                                     self.emit(Op::NULL);
                                 }
-                                common::collections::emit_runtime_helper_call(
-                                    &mut self.chunks,
-                                    self.current,
-                                    "__vybe_slicestep",
-                                    4,
-                                    line,
-                                );
+                                {
+                                    let opts = common::slices::Options::new(
+                                        self.profile.slice_step_zero_raises,
+                                    );
+                                    common::slices::emit_stepped(
+                                        &mut self.chunks,
+                                        self.current,
+                                        line,
+                                        opts,
+                                    );
+                                }
                                 self.chunk().emit_end(line);
                                 return Ok(());
                             }
@@ -2757,13 +2749,17 @@ impl Compiler {
                                 } else {
                                     self.emit(Op::NULL);
                                 }
-                                common::collections::emit_runtime_helper_call(
-                                    &mut self.chunks,
-                                    self.current,
-                                    "__vybe_slicestep",
-                                    4,
-                                    line,
-                                );
+                                {
+                                    let opts = common::slices::Options::new(
+                                        self.profile.slice_step_zero_raises,
+                                    );
+                                    common::slices::emit_stepped(
+                                        &mut self.chunks,
+                                        self.current,
+                                        line,
+                                        opts,
+                                    );
+                                }
                                 self.chunk().emit_end(line);
                                 return Ok(());
                             }
@@ -2784,13 +2780,16 @@ impl Compiler {
                         } else {
                             self.emit(Op::NULL);
                         }
-                        common::collections::emit_runtime_helper_call(
-                            &mut self.chunks,
-                            self.current,
-                            "__vybe_slicestep",
-                            4,
-                            line,
-                        );
+                        {
+                            let opts =
+                                common::slices::Options::new(self.profile.slice_step_zero_raises);
+                            common::slices::emit_stepped(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                                opts,
+                            );
+                        }
                     }
                 } else if self.profile.name == "pascal"
                     && self.expr_is_known_string_receiver(object)
@@ -4031,6 +4030,12 @@ impl Compiler {
                     base,
                     line,
                 );
+                // A tuple keeps the array as its underlying value but is tagged
+                // so repr/type()/slicing distinguish it from a list. Shared,
+                // cross-language: opt in via the `tuple_literals_tagged` profile.
+                if self.profile.tuple_literals_tagged {
+                    common::tuples::emit_tag(&mut self.chunks, self.current, line);
+                }
             }
 
             // ── Set (Python) ────────────────────────────────────────────
@@ -5633,16 +5638,15 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         common::collections::emit_len(&mut self.chunks, self.current, line);
                     }
-                    common::collections::emit_runtime_helper_call(
-                        &mut self.chunks,
-                        self.current,
-                        "__vybe_slice",
-                        3,
-                        line,
-                    );
+                    // Contiguous slice via ecma:array.slice (string→substring /
+                    // array→array, negative-wrap + clamp). Home: vybe_emitter::slices.
+                    common::slices::emit_contiguous(&mut self.chunks, self.current, line);
                 } else {
-                    // Emit slice parts → [obj, lower, upper, step] then call the
-                    // bundled `__vybe_slicestep` polyfill via GLOBAL_GET + CALL_REF.
+                    // Strided slice → [obj, lower, upper, step] (NULL = absent);
+                    // obj is already on the stack from the Index parent.
+                    // vybe_emitter::slices emits the CPython normalization +
+                    // strided copy inline; the step==0 quirk comes from the
+                    // `slice_step_zero_raises` profile property.
                     if let Some(l) = lower {
                         self.compile_expr(l)?;
                     } else {
@@ -5658,13 +5662,8 @@ impl Compiler {
                     } else {
                         self.emit(Op::NULL);
                     }
-                    common::collections::emit_runtime_helper_call(
-                        &mut self.chunks,
-                        self.current,
-                        "__vybe_slicestep",
-                        4,
-                        line,
-                    );
+                    let opts = common::slices::Options::new(self.profile.slice_step_zero_raises);
+                    common::slices::emit_stepped(&mut self.chunks, self.current, line, opts);
                 }
             }
 

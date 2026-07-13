@@ -433,7 +433,7 @@ impl VM {
                 target_name.eq_ignore_ascii_case("object")
             }
             Value::String(_) => target_name == "string",
-            Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+            Value::F64(_) | Value::F32(_) | Value::I32(_) | Value::I64(_) => {
                 target_name == "integer" || target_name == "double" || target_name == "number"
             }
             Value::Bool(_) => target_name == "boolean",

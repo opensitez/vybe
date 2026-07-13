@@ -114,6 +114,36 @@ impl Op {
         }
     }
 
+    /// Resolve a WASM mnemonic (e.g. `"i32.clz"`) to its opcode. The inverse of
+    /// [`Op::wasm_name_opt`], sourced from the same per-category tables so callers
+    /// (like the compiler's `opcode:` emit strategy) never maintain a second list.
+    /// Categories are probed core → GC → misc → SIMD → threads → canon; mnemonics
+    /// are unique across them.
+    pub fn from_wasm_name(wasm_name: &str) -> Option<Op> {
+        if let Some(sub) = core_ops::from_name(wasm_name) {
+            return Some(Op::new(0x00, sub));
+        }
+        if let Some(sub) = gc::from_name(wasm_name) {
+            return Some(Op::new(0xFB, sub));
+        }
+        if let Some(sub) = misc::from_name(wasm_name) {
+            return Some(Op::new(0xFC, sub));
+        }
+        if let Some(sub) = simd::from_name(wasm_name) {
+            return Some(Op::new(0xFD, sub));
+        }
+        if let Some(sub) = relaxed_simd::from_name(wasm_name) {
+            return Some(Op::new(0xFD, sub));
+        }
+        if let Some(sub) = threads::from_name(wasm_name) {
+            return Some(Op::new(0xFE, sub));
+        }
+        if let Some(sub) = canon::from_name(wasm_name) {
+            return Some(Op::new(0xF0, sub));
+        }
+        None
+    }
+
     /// WASM disassembly name, or "unknown" if not valid.
     pub fn wasm_name(self) -> &'static str {
         self.wasm_name_opt().unwrap_or("unknown")
@@ -405,6 +435,15 @@ macro_rules! opcode_category {
             match sub {
                 $( $sub => super::OperandFormat::$fmt, )*
                 _ => super::OperandFormat::None,
+            }
+        }
+
+        /// Reverse of `name`: the WASM mnemonic → sub-opcode. Generated from the
+        /// same table so there is exactly one opcode list to maintain.
+        pub(super) fn from_name(wasm_name: &str) -> Option<u16> {
+            match wasm_name {
+                $( $wasm_name => Some($sub), )*
+                _ => None,
             }
         }
     };

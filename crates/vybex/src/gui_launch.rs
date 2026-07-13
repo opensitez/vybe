@@ -1008,7 +1008,7 @@ mod tests {
     use vybe_bytecode::value::ObjectKind;
     use vybe_bytecode::{HostContext, VM, Value};
     use vybe_compiler::compiler::Compiler;
-    use vybe_compiler::languages::vb;
+    use vybe_language_vb as vb;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
     use vybe_host::gui_state::GuiState;

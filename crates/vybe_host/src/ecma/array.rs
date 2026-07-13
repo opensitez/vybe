@@ -2607,6 +2607,7 @@ fn is_truthy(v: &Value) -> bool {
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
+        Value::F32(n) => *n != 0.0 && !n.is_nan(),
         Value::String(s) => !s.is_empty(),
         Value::Object(_)
         | Value::Symbol(_)

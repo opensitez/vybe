@@ -72,6 +72,17 @@ pub struct LanguageProfile {
     /// is the JS-conformant default.
     pub negative_index_wraps: bool,
 
+    /// A zero slice step raises the language value-error (Python
+    /// `ValueError: slice step cannot be zero`). Languages with lenient
+    /// slicing (or without strided slices) keep this `false` → empty result.
+    pub slice_step_zero_raises: bool,
+
+    /// Tuple literals produce a distinct tuple value (array-backed, but tagged
+    /// via `vybe_emitter::tuples::TUPLE_TAG`) rather than a plain list, so
+    /// `repr`/`type()`/slicing tell a tuple from a list. Python opts in;
+    /// languages whose `(a, b)` is just grouping/an array keep this `false`.
+    pub tuple_literals_tagged: bool,
+
     /// Whether parens are used for both calls and indexing (VB: arr(i)).
     pub parens_for_index: bool,
 
@@ -795,6 +806,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("negative_index_wraps")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let slice_step_zero_raises = compiler
+        .get("slice_step_zero_raises")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let tuple_literals_tagged = compiler
+        .get("tuple_literals_tagged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let parens_for_index = compiler
         .get("parens_for_index")
         .and_then(|v| v.as_bool())
@@ -1384,6 +1403,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         string_indexing,
         array_upper_bound_inclusive,
         negative_index_wraps,
+        slice_step_zero_raises,
+        tuple_literals_tagged,
         parens_for_index,
         entry_point,
         hoist_var,

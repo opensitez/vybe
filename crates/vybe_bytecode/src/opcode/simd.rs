@@ -393,9 +393,9 @@ opcode_category! {
     [0x69] f32x4_trunc => None, "f32x4.trunc";
     [0x6A] f32x4_nearest => None, "f32x4.nearest";
     // i8x16 shifts + arithmetic
-    [0x6B] i8x16_shl => U8, "i8x16.shl";
-    [0x6C] i8x16_shr_s => U8, "i8x16.shr_s";
-    [0x6D] i8x16_shr_u => U8, "i8x16.shr_u";
+    [0x6B] i8x16_shl => None, "i8x16.shl";
+    [0x6C] i8x16_shr_s => None, "i8x16.shr_s";
+    [0x6D] i8x16_shr_u => None, "i8x16.shr_u";
     [0x6E] i8x16_add => None, "i8x16.add";
     [0x6F] i8x16_add_sat_s => None, "i8x16.add_sat_s";
     [0x70] i8x16_add_sat_u => None, "i8x16.add_sat_u";
@@ -427,9 +427,9 @@ opcode_category! {
     [0x88] i16x8_extend_high_i8x16_s => None, "i16x8.extend_high_i8x16_s";
     [0x89] i16x8_extend_low_i8x16_u => None, "i16x8.extend_low_i8x16_u";
     [0x8A] i16x8_extend_high_i8x16_u => None, "i16x8.extend_high_i8x16_u";
-    [0x8B] i16x8_shl => U8, "i16x8.shl";
-    [0x8C] i16x8_shr_s => U8, "i16x8.shr_s";
-    [0x8D] i16x8_shr_u => U8, "i16x8.shr_u";
+    [0x8B] i16x8_shl => None, "i16x8.shl";
+    [0x8C] i16x8_shr_s => None, "i16x8.shr_s";
+    [0x8D] i16x8_shr_u => None, "i16x8.shr_u";
     [0x8E] i16x8_add => None, "i16x8.add";
     [0x8F] i16x8_add_sat_s => None, "i16x8.add_sat_s";
     [0x90] i16x8_add_sat_u => None, "i16x8.add_sat_u";
@@ -456,9 +456,9 @@ opcode_category! {
     [0xA8] i32x4_extend_high_i16x8_s => None, "i32x4.extend_high_i16x8_s";
     [0xA9] i32x4_extend_low_i16x8_u => None, "i32x4.extend_low_i16x8_u";
     [0xAA] i32x4_extend_high_i16x8_u => None, "i32x4.extend_high_i16x8_u";
-    [0xAB] i32x4_shl => U8, "i32x4.shl";
-    [0xAC] i32x4_shr_s => U8, "i32x4.shr_s";
-    [0xAD] i32x4_shr_u => U8, "i32x4.shr_u";
+    [0xAB] i32x4_shl => None, "i32x4.shl";
+    [0xAC] i32x4_shr_s => None, "i32x4.shr_s";
+    [0xAD] i32x4_shr_u => None, "i32x4.shr_u";
     [0xAE] i32x4_add => None, "i32x4.add";
     [0xB1] i32x4_sub => None, "i32x4.sub";
     [0xB5] i32x4_mul => None, "i32x4.mul";
@@ -480,9 +480,9 @@ opcode_category! {
     [0xC8] i64x2_extend_high_i32x4_s => None, "i64x2.extend_high_i32x4_s";
     [0xC9] i64x2_extend_low_i32x4_u => None, "i64x2.extend_low_i32x4_u";
     [0xCA] i64x2_extend_high_i32x4_u => None, "i64x2.extend_high_i32x4_u";
-    [0xCB] i64x2_shl => U8, "i64x2.shl";
-    [0xCC] i64x2_shr_s => U8, "i64x2.shr_s";
-    [0xCD] i64x2_shr_u => U8, "i64x2.shr_u";
+    [0xCB] i64x2_shl => None, "i64x2.shl";
+    [0xCC] i64x2_shr_s => None, "i64x2.shr_s";
+    [0xCD] i64x2_shr_u => None, "i64x2.shr_u";
     [0xCE] i64x2_add => None, "i64x2.add";
     [0xD1] i64x2_sub => None, "i64x2.sub";
     [0xD5] i64x2_mul => None, "i64x2.mul";

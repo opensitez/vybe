@@ -1139,24 +1139,24 @@ impl VM {
 
                 // -- F32 arithmetic (f32 precision, stored as F64) --
                 _ if op == Op::F32_ADD => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64((a + b) as f64))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a + b))?;
                 }
                 _ if op == Op::F32_SUB => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64((a - b) as f64))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a - b))?;
                 }
                 _ if op == Op::F32_MUL => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64((a * b) as f64))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a * b))?;
                 }
                 _ if op == Op::F32_DIV => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64((a / b) as f64))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a / b))?;
                 }
                 // -- Float arithmetic --
                 _ if op == Op::F64_ADD => {
@@ -1392,59 +1392,55 @@ impl VM {
 
                 // -- f32 (promoted to f64) --
                 _ if op == Op::F32_ABS => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).abs() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.abs()))?;
                 }
                 _ if op == Op::F32_NEG => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64(-(a as f32) as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(-a))?;
                 }
                 _ if op == Op::F32_CEIL => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).ceil() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.ceil()))?;
                 }
                 _ if op == Op::F32_FLOOR => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).floor() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.floor()))?;
                 }
                 _ if op == Op::F32_TRUNC => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).trunc() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.trunc()))?;
                 }
                 _ if op == Op::F32_NEAREST => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).round_ties_even() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.round_ties_even()))?;
                 }
                 _ if op == Op::F32_SQRT => {
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).sqrt() as f64))?;
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.sqrt()))?;
                 }
                 _ if op == Op::F32_MIN => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64(
-                        (if a.is_nan() || b.is_nan() {
-                            f32::NAN
-                        } else {
-                            a.min(b)
-                        }) as f64,
-                    ))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(if a.is_nan() || b.is_nan() {
+                        f32::NAN
+                    } else {
+                        a.min(b)
+                    }))?;
                 }
                 _ if op == Op::F32_MAX => {
-                    let b = self.pop().as_f64() as f32;
-                    let a = self.pop().as_f64() as f32;
-                    self.push(Value::F64(
-                        (if a.is_nan() || b.is_nan() {
-                            f32::NAN
-                        } else {
-                            a.max(b)
-                        }) as f64,
-                    ))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(if a.is_nan() || b.is_nan() {
+                        f32::NAN
+                    } else {
+                        a.max(b)
+                    }))?;
                 }
                 _ if op == Op::F32_COPYSIGN => {
-                    let b = self.pop().as_f64();
-                    let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32).copysign(b as f32) as f64))?;
+                    let b = self.pop().as_f32();
+                    let a = self.pop().as_f32();
+                    self.push(Value::F32(a.copysign(b)))?;
                 }
 
                 // -- WASM select --
@@ -2646,7 +2642,7 @@ impl VM {
                 }
                 _ if op == Op::F32_CONST => {
                     let v = self.read_f32();
-                    self.push(Value::F64(v as f64))?;
+                    self.push(Value::F32(v))?;
                 }
                 _ if op == Op::F64_CONST => {
                     let v = self.read_f64();
@@ -2798,19 +2794,19 @@ impl VM {
                 }
                 _ if op == Op::F32_CONVERT_I32_S => {
                     let a = self.pop().as_i32();
-                    self.push(Value::F64((a as f32) as f64))?;
+                    self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::F32_CONVERT_I32_U => {
                     let a = self.pop().as_i32() as u32;
-                    self.push(Value::F64((a as f32) as f64))?;
+                    self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::F32_CONVERT_I64_S => {
                     let a = self.pop().as_i64();
-                    self.push(Value::F64((a as f32) as f64))?;
+                    self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::F32_CONVERT_I64_U => {
                     let a = self.pop().as_i64() as u64;
-                    self.push(Value::F64((a as f32) as f64))?;
+                    self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::I32_FROM_F64 => {
                     let v = self.pop().as_f64();
@@ -3147,8 +3143,8 @@ impl VM {
                     let (offset, memidx) = self.read_optional_memarg();
                     let addr = (self.pop().as_i32() as u32 as usize).saturating_add(offset);
                     let bytes = self.read_memory_bytes(memidx, addr, 4)?;
-                    let val = f32::from_le_bytes(read_le(&bytes)) as f64;
-                    self.push(Value::F64(val))?;
+                    let val = f32::from_le_bytes(read_le(&bytes));
+                    self.push(Value::F32(val))?;
                 }
                 _ if op == Op::F32_STORE => {
                     let (offset, memidx) = self.read_optional_memarg();
@@ -3275,7 +3271,7 @@ impl VM {
                 }
                 _ if op == Op::F32_DEMOTE_F64 => {
                     let a = self.pop().as_f64();
-                    self.push(Value::F64((a as f32) as f64))?;
+                    self.push(Value::F32(a as f32))?;
                 }
                 _ if op == Op::I32_REINTERPRET_F32 => {
                     let a = self.pop().as_f64() as f32;
@@ -3287,7 +3283,7 @@ impl VM {
                 }
                 _ if op == Op::F32_REINTERPRET_I32 => {
                     let a = self.pop().as_i32();
-                    self.push(Value::F64(f32::from_bits(a as u32) as f64))?;
+                    self.push(Value::F32(f32::from_bits(a as u32)))?;
                 }
                 _ if op == Op::F64_REINTERPRET_I64 => {
                     let a = self.pop().as_i64();
@@ -4220,7 +4216,7 @@ impl VM {
                         Value::Undefined => "undefined",
                         Value::Null => "object", // JS spec: typeof null === "object"
                         Value::Bool(_) => "boolean",
-                        Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
+                        Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => "number",
                         Value::String(_) => "string",
                         Value::Symbol(_) => "symbol",
                         Value::BigInt(_) => "bigint",
@@ -5573,11 +5569,13 @@ impl VM {
                 _ if op == Op::F32X4_EXTRACT_LANE => {
                     let l = self.read_byte() as usize & 3;
                     if let Value::V128(a) = self.pop() {
-                        self.push(Value::F64(f32::from_le_bytes(
+                        // Result type is `f32` (spec): push a Value::F32 so it
+                        // displays as WAT float text and feeds later f32 ops.
+                        self.push(Value::F32(f32::from_le_bytes(
                             a[l * 4..l * 4 + 4].try_into().unwrap(),
-                        ) as f64))?;
+                        )))?;
                     } else {
-                        self.push(Value::F64(0.0))?;
+                        self.push(Value::F32(0.0))?;
                     }
                 }
                 _ if op == Op::F32X4_REPLACE_LANE => {

@@ -780,6 +780,189 @@ impl JsDynamicRuntime {
         result
     }
 
+    /// The universal `vybe:eval:eval` service — the compiler-as-a-service that
+    /// PHP `eval`/Python `eval`/`exec` bind to (JS has its own `ecma:global:eval`
+    /// via [`Self::handle_eval`]). The walker injects the source language as the
+    /// 2nd argument, so this is language-generic: compile `code` as `language`
+    /// in a mini-VM seeded with the caller's globals, run it, then write the
+    /// globals back so definitions/assignments escape to the caller's scope.
+    ///
+    /// Args: `[code: String, language: String, ...extra]`. `extra` (Python's
+    /// `{completion_value, namespace}` attrs) is currently advisory — the run
+    /// result is returned as the completion value.
+    fn handle_universal_eval(&mut self, ctx: &mut HostContext, args: &[Value]) -> Value {
+        let source = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            Some(other) => return other.clone(),
+            None => return Value::Undefined,
+        };
+        let language_name = match args.get(1) {
+            Some(Value::String(s)) => s.to_string(),
+            _ => return throw_eval_error(ctx, "EvalError", "eval: missing source language"),
+        };
+
+        if !self.can_dynamic_compile() || self.vm.is_null() {
+            return Value::Undefined;
+        }
+
+        let Some(language) = languages::find_by_name(&language_name) else {
+            return throw_eval_error(
+                ctx,
+                "EvalError",
+                &format!("eval: no registered language {language_name:?}"),
+            );
+        };
+
+        // Per-language eval quirks:
+        //  - PHP: the string is evaluated in `<?php` context (bare text is
+        //    literal output, not code); its top-level `return` is the result.
+        //  - Python: `eval` (attrs.completion_value == true) yields the value of
+        //    the expression; `exec` yields None. Capture the expression value by
+        //    binding it to a temp we read back after the run.
+        let mut completion_capture: Option<&'static str> = None;
+        let eval_source = match language_name.as_str() {
+            "php" => {
+                if source.trim_start().starts_with("<?") {
+                    source.clone()
+                } else {
+                    format!("<?php {source}")
+                }
+            }
+            "python" => {
+                let wants_value = args
+                    .get(2)
+                    .map(|a| object_bool_prop(a, "completion_value"))
+                    .unwrap_or(false);
+                if wants_value {
+                    completion_capture = Some("__vybe_eval_result__");
+                    format!("__vybe_eval_result__ = ({})", source.trim())
+                } else {
+                    source.clone()
+                }
+            }
+            _ => source.clone(),
+        };
+
+        let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
+
+        let mut eval_vm = VM::new();
+        vybe_host::register_all(&mut eval_vm);
+        vybe_host::setup_namespaces(&mut eval_vm);
+
+        // Python's explicit namespace dict: `eval(code, globals[, locals])` /
+        // `exec(code, ns)`. The walker forwards it as `attrs.namespace` (a
+        // `dict` → `ObjectKind::Map`). When present, names bind FROM this dict
+        // (not the caller's globals) and updates are written back INTO it.
+        let namespace: Option<Arc<Mutex<Object>>> = args
+            .get(2)
+            .and_then(|a| object_get_prop(a, "namespace"))
+            .and_then(|v| match v {
+                Value::Object(ns) => Some(ns),
+                _ => None,
+            });
+        // Original keys of the namespace dict — used at write-back to tell the
+        // caller's bindings apart from host builtins seeded by register_all.
+        let ns_keys: HashSet<String> = namespace
+            .as_ref()
+            .map(|ns| {
+                ns_string_entries(&ns.lock().unwrap())
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Seed the mini-VM's scope. With an explicit namespace, bind only its
+        // entries (host builtins are already present from register_all);
+        // otherwise share the caller's scalar/object globals. Function values
+        // are excluded — their chunk_index refs belong to another chunk table.
+        if let Some(ns) = &namespace {
+            for (name, v) in ns_string_entries(&ns.lock().unwrap()) {
+                eval_vm.globals.insert(name, v);
+            }
+        } else {
+            let outer_vm = unsafe { &*self.vm };
+            for (k, v) in &outer_vm.globals {
+                let copy = match v {
+                    Value::Object(obj) => {
+                        let o = obj.lock().unwrap();
+                        !matches!(o.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+                    }
+                    _ => true,
+                };
+                if copy {
+                    eval_vm.globals.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        // Pre-run keys (host builtins + seeded scope) — anything NOT here after
+        // the run is a binding the eval'd code created.
+        let base_keys: HashSet<String> = eval_vm.globals.keys().cloned().collect();
+
+        let run_result = {
+            let mut service =
+                RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
+            match service.compile_and_run_bundle(&bundle) {
+                Ok(value) => value,
+                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
+            }
+        };
+
+        // Propagate an uncaught throw from eval'd code to the caller.
+        if let Some(exc) = eval_vm.last_exception.take() {
+            ctx.throw_value(exc);
+            return Value::Undefined;
+        }
+
+        // Completion value: Python `eval` reads the captured temp; PHP (and any
+        // language whose eval'd code uses an explicit top-level `return`) uses
+        // the script's return value; `exec`/others return that value too.
+        let result = match completion_capture {
+            Some(name) => eval_vm.globals.get(name).cloned().unwrap_or(Value::Undefined),
+            None => run_result,
+        };
+
+        // Definitions/assignments escape: into the explicit namespace dict if
+        // one was given, otherwise the caller's globals. (Skip the completion
+        // temp; skip function values.) For the namespace, only write updates to
+        // its own keys plus brand-new bindings — never the host builtins that
+        // seeding left in `base_keys`.
+        match &namespace {
+            Some(ns) => {
+                let mut guard = ns.lock().unwrap();
+                for (k, v) in &eval_vm.globals {
+                    if Some(k.as_str()) == completion_capture {
+                        continue;
+                    }
+                    let is_function = matches!(v, Value::Object(obj)
+                        if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
+                    if is_function {
+                        continue;
+                    }
+                    if ns_keys.contains(k) || !base_keys.contains(k) {
+                        ns_string_insert(&mut guard, k, v.clone());
+                    }
+                }
+            }
+            None => {
+                let outer_vm = unsafe { &mut *self.vm };
+                for (k, v) in &eval_vm.globals {
+                    if Some(k.as_str()) == completion_capture {
+                        continue;
+                    }
+                    let is_function = matches!(v, Value::Object(obj)
+                        if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
+                    if !is_function {
+                        outer_vm.globals.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     fn handle_function_constructor(&mut self, args: &[Value]) -> Result<Value, String> {
         if !self.can_dynamic_compile() {
             return Err("Dynamic compilation is disabled by the current capability set (missing Capability::DynamicCompile)".to_string());
@@ -943,6 +1126,64 @@ fn throw_dynamic_compile_error(ctx: &mut HostContext, message: String) -> Value 
     Value::Null
 }
 
+/// Read a boolean property off a `Value::Object` (used for the Python eval
+/// attrs object `{completion_value, namespace}` the walker injects). Handles
+/// both object shapes: `Ordinary` (properties) and `Map` (dict).
+fn object_bool_prop(v: &Value, key: &str) -> bool {
+    if let Value::Object(obj) = v {
+        let o = obj.lock().unwrap();
+        let found = match &o.kind {
+            ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
+            _ => o.properties.get(key).cloned(),
+        };
+        return matches!(found, Some(Value::Bool(true)));
+    }
+    false
+}
+
+/// Read a property off a `Value::Object` regardless of `Map`/`Ordinary` shape.
+fn object_get_prop(v: &Value, key: &str) -> Option<Value> {
+    if let Value::Object(obj) = v {
+        let o = obj.lock().unwrap();
+        return match &o.kind {
+            ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
+            _ => o.properties.get(key).cloned(),
+        };
+    }
+    None
+}
+
+/// String-keyed entries of a namespace object (Python `dict`), reading both the
+/// `Map` and `Ordinary` shapes.
+fn ns_string_entries(obj: &Object) -> Vec<(String, Value)> {
+    match &obj.kind {
+        ObjectKind::Map(m) => m
+            .iter()
+            .filter_map(|(k, v)| match k {
+                Value::String(s) => Some((s.to_string(), v.clone())),
+                _ => None,
+            })
+            .collect(),
+        _ => obj
+            .properties
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    }
+}
+
+/// Insert a string-keyed binding into a namespace object, matching its shape.
+fn ns_string_insert(obj: &mut Object, key: &str, val: Value) {
+    match &mut obj.kind {
+        ObjectKind::Map(m) => {
+            m.insert(Value::String(key.into()), val);
+        }
+        _ => {
+            obj.properties.insert(key.to_string(), val);
+        }
+    }
+}
+
 /// Throw a JS-shaped error object (same stamp `vybe_host`'s error machinery
 /// uses) so `catch (e) { e instanceof SyntaxError }` works on eval failures.
 fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
@@ -1078,6 +1319,26 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
                 };
                 let runtime = unsafe { &mut *runtime_ptr };
                 runtime.handle_eval(ctx, args)
+            })
+        }),
+    );
+
+    // The universal `vybe:eval:eval` compiler-as-a-service — what PHP `eval`
+    // and Python `eval`/`exec` bind to (language injected as arg 1). Routed
+    // through the always-active JS runtime, which carries the outer VM + caps.
+    vm.register_host_fn(
+        "vybe:eval",
+        "eval",
+        Box::new(|ctx, args| {
+            ACTIVE_JS_RUNTIME.with(|slot| {
+                let Some(runtime_ptr) = *slot.borrow() else {
+                    return throw_dynamic_compile_error(
+                        ctx,
+                        "eval service is not active (no dynamic runtime)".to_string(),
+                    );
+                };
+                let runtime = unsafe { &mut *runtime_ptr };
+                runtime.handle_universal_eval(ctx, args)
             })
         }),
     );

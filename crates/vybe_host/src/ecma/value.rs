@@ -206,7 +206,7 @@ pub fn register(vm: &mut VM) {
                 Value::Undefined => "undefined",
                 Value::Null => "object",
                 Value::Bool(_) => "boolean",
-                Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
+                Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => "number",
                 Value::String(_) => "string",
                 Value::Symbol(_) => "symbol",
                 Value::BigInt(_) => "bigint",

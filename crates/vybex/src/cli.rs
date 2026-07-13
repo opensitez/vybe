@@ -157,25 +157,32 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
     }
 }
 
-/// Register every bundled language into the shared plugin registry. Each is its
-/// own crate (`languages/<lang>`); this is where the aggregator wires them in.
-/// When languages become dylibs, this becomes `dlopen` + call their entry point.
+/// Every bundled language, as a `vybe_plugin::Plugin`. This is the plugin list
+/// the aggregator drives through the framework. When languages become dylibs,
+/// each entry becomes a `dlopen` + the module's exported `Plugin` factory.
+const LANGUAGE_PLUGINS: &[&dyn vybe_plugin::Plugin] = &[
+    &vybe_language_c::Plugin,
+    &vybe_language_cobol::Plugin,
+    &vybe_language_csharp::Plugin,
+    &vybe_language_dart::Plugin,
+    &vybe_language_fortran::Plugin,
+    &vybe_language_go::Plugin,
+    &vybe_language_java::Plugin,
+    &vybe_language_js::Plugin,
+    &vybe_language_lua::Plugin,
+    &vybe_language_pascal::Plugin,
+    &vybe_language_php::Plugin,
+    &vybe_language_python::Plugin,
+    &vybe_language_ruby::Plugin,
+    &vybe_language_vb::Plugin,
+    &vybe_language_wast::Plugin,
+];
+
+/// Register every bundled language into the shared plugin registry by running
+/// each language plugin's `init` through the framework (`vybe_plugin::init_all`).
+/// Global/compile-time registration — no VM needed.
 pub fn register_languages() {
-    vybe_language_c::register();
-    vybe_language_cobol::register();
-    vybe_language_csharp::register();
-    vybe_language_dart::register();
-    vybe_language_fortran::register();
-    vybe_language_go::register();
-    vybe_language_java::register();
-    vybe_language_js::register();
-    vybe_language_lua::register();
-    vybe_language_pascal::register();
-    vybe_language_php::register();
-    vybe_language_python::register();
-    vybe_language_ruby::register();
-    vybe_language_vb::register();
-    vybe_language_wast::register();
+    vybe_plugin::init_all(LANGUAGE_PLUGINS);
 }
 
 pub fn run() {
