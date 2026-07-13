@@ -894,6 +894,11 @@ fn rewrite_expression_keys(
                 rewrite_expression_keys(item, consts);
             }
         }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields.iter_mut() {
+                rewrite_expression_keys(value, consts);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props.iter_mut() {
                 match prop {
@@ -1532,6 +1537,7 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             ExprKind::Tuple(es) | ExprKind::Set(es) | ExprKind::Sequence(es) => {
                 es.iter().any(|x| ey(x))
             }
+            ExprKind::NamedTuple { fields, .. } => fields.iter().any(|(_, v)| ey(v)),
             ExprKind::Object(props) => props.iter().any(|p| match p {
                 ObjectProperty::KeyValue { key, value }
                 | ObjectProperty::Computed { key, value } => ey(key) || ey(value),
