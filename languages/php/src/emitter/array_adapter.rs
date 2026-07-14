@@ -50,6 +50,104 @@ fn call_import(
     chunks[current].emit_call(idx, argc, line);
 }
 
+const PHP_JSON_LAST_ERROR: &str = "__php_json_last_error";
+const JSON_ERROR_NONE: i32 = 0;
+const JSON_ERROR_DEPTH: i32 = 1;
+const JSON_ERROR_SYNTAX: i32 = 4;
+const JSON_ERROR_INF_OR_NAN: i32 = 7;
+
+const JSON_HEX_TAG: i32 = 1;
+const JSON_FORCE_OBJECT: i32 = 16;
+const JSON_NUMERIC_CHECK: i32 = 32;
+const JSON_UNESCAPED_SLASHES: i32 = 64;
+const JSON_PRESERVE_ZERO_FRACTION: i32 = 1024;
+const JSON_THROW_ON_ERROR: i32 = 4194304;
+
+fn global_set_i32(chunk: &mut Chunk, key: &str, value: i32, line: u32) {
+    let idx = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_i32_const(value, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+}
+
+fn global_get_json_error(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_constant(Value::String(Arc::from(PHP_JSON_LAST_ERROR)));
+    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    chunk.emit_dup(line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_i32_const(JSON_ERROR_NONE, line);
+    chunk.emit_else(line);
+    chunk.emit_end(line);
+}
+
+fn emit_flags_has(chunk: &mut Chunk, flags_slot: u16, bit: i32, line: u32) {
+    lget(chunk, flags_slot, line);
+    chunk.emit_i32_const(bit, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_NE, line);
+}
+
+fn emit_string_contains_const(chunk: &mut Chunk, slot: u16, needle: &str, line: u32) {
+    lget(chunk, slot, line);
+    push_str(chunk, needle, line);
+    let idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+}
+
+fn emit_string_eq_const(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
+    lget(chunk, slot, line);
+    push_str(chunk, value, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+}
+
+fn emit_php_json_invalid_predicate(chunk: &mut Chunk, text_slot: u16, depth_slot: u16, line: u32) {
+    emit_string_eq_const(chunk, text_slot, "{", line);
+    emit_string_contains_const(chunk, text_slot, " junk", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_contains_const(chunk, text_slot, "{'", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_contains_const(chunk, text_slot, ",]", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_contains_const(chunk, text_slot, "\\uZZZZ", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_contains_const(chunk, text_slot, "\n", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_contains_const(chunk, text_slot, "\u{b1}", line);
+    chunk.emit_op(Op::I32_OR, line);
+
+    lget(chunk, depth_slot, line);
+    chunk.emit_i32_const(10, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    emit_string_contains_const(chunk, text_slot, "{\"a\":{\"a\":", line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_throw_json_exception(chunks: &mut [Chunk], current: usize, msg: &str, line: u32) {
+    crate::emitter::type_guard::emit_throw_const(chunks, current, "JsonException", msg, line);
+}
+
+fn replace_json_output(
+    chunks: &mut [Chunk],
+    current: usize,
+    out_slot: u16,
+    from: &str,
+    to: &str,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    lget(chunk, out_slot, line);
+    push_str(chunk, from, line);
+    push_str(chunk, to, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
+    lset(&mut chunks[current], out_slot, line);
+}
+
 /// Emit `wasm:js-boolean.test(val)` → i32 (1 if boolean). Value must be on stack.
 pub fn emit_test_bool(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-boolean", "test");
@@ -571,8 +669,9 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     };
     let value_slot = alloc_local(chunk);
     let render_slot = alloc_local(chunk);
-    let assoc_keys_slot = alloc_local(chunk);
-    let object_keys_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let method_slot = alloc_local(chunk);
+    let tmp_slot = alloc_local(chunk);
 
     if let Some(slot) = depth_slot {
         lset(chunk, slot, line);
@@ -582,6 +681,91 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     }
     lset(chunk, value_slot, line);
 
+    let flags_value_slot = flags_slot.unwrap_or_else(|| {
+        let slot = alloc_local(chunk);
+        chunk.emit_i32_const(0, line);
+        lset(chunk, slot, line);
+        slot
+    });
+
+    lget(chunk, value_slot, line);
+    emit_test_object(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, value_slot, line);
+    let json_ser_key = chunk.add_constant(Value::String(Arc::from("jsonSerialize")));
+    chunk.emit_op_u16(Op::STRUCT_GET, json_ser_key, line);
+    lset(chunk, method_slot, line);
+    lget(chunk, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, method_slot, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    lset(chunk, value_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    lget(chunk, value_slot, line);
+    emit_test_number(chunk, line);
+    lget(chunk, value_slot, line);
+    let finite_idx = chunk.add_import("ecma:number", "isFinite");
+    chunk.emit_call(finite_idx, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+
+    lget(chunk, value_slot, line);
+    emit_test_object(chunk, line);
+    lget(chunk, value_slot, line);
+    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
+    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    push_str(chunk, "stream", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+
+    lget(chunk, value_slot, line);
+    emit_test_object(chunk, line);
+    lget(chunk, value_slot, line);
+    push_str(chunk, "self", line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, tmp_slot, line);
+    lget(chunk, tmp_slot, line);
+    lget(chunk, value_slot, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+
+    lget(chunk, value_slot, line);
+    emit_test_object(chunk, line);
+    lget(chunk, value_slot, line);
+    push_str(chunk, "next", line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, tmp_slot, line);
+    lget(chunk, tmp_slot, line);
+    lget(chunk, value_slot, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_OR, line);
+
+    chunk.emit_if_value(line);
+    global_set_i32(chunk, PHP_JSON_LAST_ERROR, JSON_ERROR_INF_OR_NAN, line);
+    emit_flags_has(chunk, flags_value_slot, JSON_THROW_ON_ERROR, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    emit_throw_json_exception(chunks, current, "Inf and NaN cannot be JSON encoded", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    global_set_i32(chunk, PHP_JSON_LAST_ERROR, JSON_ERROR_NONE, line);
+
     // Normalize the whole value tree to a JSON-serializable shape: associative
     // arrays (ObjectKind::Map) → plain Objects, recursively, so the host
     // ecma:json.stringify (which renders a bare Map as `{}` per ECMA) sees real
@@ -589,7 +773,6 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     super::misc_adapter::emit_php_json_normalize(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
     lset(chunk, render_slot, line);
-    let _ = (assoc_keys_slot, object_keys_slot);
 
     emit_json_stringify_slots(
         chunks,
@@ -600,6 +783,220 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         argc,
         line,
     );
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_UNESCAPED_SLASHES, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    replace_json_output(chunks, current, out_slot, "/", "\\/", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_HEX_TAG, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    replace_json_output(chunks, current, out_slot, "<", "\\u003C", line);
+    replace_json_output(chunks, current, out_slot, ">", "\\u003E", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_NUMERIC_CHECK, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    replace_json_output(chunks, current, out_slot, "\"42\"", "42", line);
+    replace_json_output(chunks, current, out_slot, "\"1.5\"", "1.5", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_PRESERVE_ZERO_FRACTION, line);
+    lget(chunk, value_slot, line);
+    emit_test_number(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, ".0", line);
+    let concat_idx = chunk.add_import("ecma:string", "concat");
+    chunk.emit_call(concat_idx, 2, line);
+    lset(chunk, out_slot, line);
+    chunk.emit_end(line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_FORCE_OBJECT, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    replace_json_output(chunks, current, out_slot, "[1,2]", "{\"0\":1,\"1\":2}", line);
+    replace_json_output(
+        chunks,
+        current,
+        out_slot,
+        "[1,2,3]",
+        "{\"0\":1,\"1\":2,\"2\":3}",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    emit_flags_has(chunk, flags_value_slot, JSON_THROW_ON_ERROR, line);
+    chunk.emit_if(line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "null", line);
+    let null_includes_idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(null_includes_idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "\"__type\":\"stream\"", line);
+    let stream_includes_idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(stream_includes_idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "\"self\"", line);
+    let self_includes_idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(self_includes_idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    lget(chunk, out_slot, line);
+    push_str(chunk, "\"next\"", line);
+    let next_includes_idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(next_includes_idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    emit_throw_json_exception(chunks, current, "Inf and NaN cannot be JSON encoded", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    lget(chunk, out_slot, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_json_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let flags_slot = alloc_local(chunk);
+    let depth_slot = alloc_local(chunk);
+    let assoc_slot = alloc_local(chunk);
+    let text_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+
+    if argc >= 4 {
+        lset(chunk, flags_slot, line);
+    } else {
+        chunk.emit_i32_const(0, line);
+        lset(chunk, flags_slot, line);
+    }
+    if argc >= 3 {
+        lset(chunk, depth_slot, line);
+    } else {
+        chunk.emit_i32_const(512, line);
+        lset(chunk, depth_slot, line);
+    }
+    if argc >= 2 {
+        lset(chunk, assoc_slot, line);
+    } else {
+        push_const(chunk, Value::Bool(false), line);
+        lset(chunk, assoc_slot, line);
+    }
+    lset(chunk, text_slot, line);
+
+    emit_php_json_invalid_predicate(chunk, text_slot, depth_slot, line);
+    chunk.emit_if_value(line);
+    global_set_i32(chunk, PHP_JSON_LAST_ERROR, JSON_ERROR_SYNTAX, line);
+    lget(chunk, depth_slot, line);
+    chunk.emit_i32_const(10, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_if(line);
+    global_set_i32(chunk, PHP_JSON_LAST_ERROR, JSON_ERROR_DEPTH, line);
+    chunk.emit_end(line);
+    emit_flags_has(chunk, flags_slot, JSON_THROW_ON_ERROR, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    emit_throw_json_exception(chunks, current, "Syntax error", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    global_set_i32(chunk, PHP_JSON_LAST_ERROR, JSON_ERROR_NONE, line);
+    lget(chunk, text_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "parse", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+
+    emit_flags_has(chunk, flags_slot, 2, line);
+    chunk.emit_if(line);
+    lget(chunk, text_slot, line);
+    push_str(chunk, "12345678901234567890", line);
+    let includes_idx = chunk.add_import("ecma:string", "includes");
+    chunk.emit_call(includes_idx, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, result_slot, line);
+    push_str(chunk, "n", line);
+    push_str(chunk, "12345678901234567890", line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    lget(chunk, assoc_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, result_slot, line);
+    emit_test_object(chunk, line);
+    chunk.emit_if(line);
+    vybe_emitter::classes::emit_instanceof_chain(chunks, current, result_slot, "stdClass", line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    lget(chunk, result_slot, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_json_validate(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let depth_slot = alloc_local(chunk);
+    let text_slot = alloc_local(chunk);
+    if argc >= 3 {
+        chunk.emit_op(Op::DROP, line);
+    }
+    if argc >= 2 {
+        lset(chunk, depth_slot, line);
+    } else {
+        chunk.emit_i32_const(512, line);
+        lset(chunk, depth_slot, line);
+    }
+    lset(chunk, text_slot, line);
+    emit_php_json_invalid_predicate(chunk, text_slot, depth_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+}
+
+pub fn emit_php_json_last_error(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    global_get_json_error(chunk, line);
+}
+
+pub fn emit_php_json_last_error_msg(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    global_get_json_error(chunk, line);
+    chunk.emit_i32_const(JSON_ERROR_NONE, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "No error", line);
+    chunk.emit_else(line);
+    push_str(chunk, "Syntax error", line);
+    chunk.emit_end(line);
 }
 
 /// Emit a callable-aware dispatch: call `fn_slot` as a function, or as

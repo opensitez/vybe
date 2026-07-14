@@ -170,6 +170,12 @@ pub fn assert_php_prints(src: &str, expected: &[&str]) {
 }
 
 pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
+    // Register the PHP language plugin so `find_by_name` can resolve it —
+    // languages live in their own crates (plugin registry) post-migration.
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_php::register);
+    }
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     vybe_host::register_all(&mut vm);

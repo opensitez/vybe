@@ -482,8 +482,11 @@ uksort              = { emit = "common:php.uksort",               min_args = 2, 
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
-json_encode         = { emit = "common:php.json_encode",     min_args = 1, max_args = 3 }
-json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_args = 4 }
+json_encode         = { emit = "common:php.json_encode",         min_args = 1, max_args = 3 }
+json_decode         = { emit = "common:php.json_decode",         min_args = 1, max_args = 4 }
+json_last_error     = { emit = "common:php.json_last_error",     min_args = 0, max_args = 0 }
+json_last_error_msg = { emit = "common:php.json_last_error_msg", min_args = 0, max_args = 0 }
+json_validate       = { emit = "common:php.json_validate",       min_args = 1, max_args = 3 }
 
 # ── DOM / XML (DOMDocument) — adapter over the ECMA `web:dom-parser` host.
 # The walker rewrites `new DOMDocument()` and `$node->method(...)` onto these

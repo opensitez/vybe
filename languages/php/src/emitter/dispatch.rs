@@ -208,6 +208,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.json_encode" => {
             super::array_adapter::emit_php_json_encode(chunks, current, argc, line)
         }
+        "php.json_decode" => {
+            super::array_adapter::emit_php_json_decode(chunks, current, argc, line)
+        }
+        "php.json_last_error" => {
+            super::array_adapter::emit_php_json_last_error(chunks, current, argc, line)
+        }
+        "php.json_last_error_msg" => {
+            super::array_adapter::emit_php_json_last_error_msg(chunks, current, argc, line)
+        }
+        "php.json_validate" => {
+            super::array_adapter::emit_php_json_validate(chunks, current, argc, line)
+        }
         "php.simplexml_load_string" => {
             super::xml_adapter::emit_simplexml_load_string(chunks, current, argc, line)
         }
