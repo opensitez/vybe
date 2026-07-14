@@ -205,7 +205,7 @@ fn priorityqueue_custom_comparator_modulo_priority() {
     let out = run_main(
         "java.util.PriorityQueue<Integer> pq = new java.util.PriorityQueue<Integer>((a, b) -> Integer.compare(a % 10, b % 10)); pq.offer(17); pq.offer(4); pq.offer(23); System.out.println(pq.poll()); System.out.println(pq.poll());",
     );
-    assert_eq!(out, vec!["4", "17"]);
+    assert_eq!(out, vec!["23", "4"]);
 }
 
 #[test]

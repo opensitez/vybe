@@ -175,7 +175,7 @@ fn base64_encode_unicode_ascii() {
     let out = run_main(
         r#"System.out.println(java.util.Base64.getEncoder().encodeToString("caf\u00e9".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)));"#,
     );
-    assert_eq!(out, vec!["Y2Fmw6k="]);
+    assert_eq!(out, vec!["Y2Fm6Q=="]);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn base64_encode_all_zeros() {
     let out = run_main(
         r#"System.out.println(java.util.Base64.getEncoder().encodeToString(new byte[]{0, 0, 0}));"#,
     );
-    assert_eq!(out, vec!["AAAAAA=="]);
+    assert_eq!(out, vec!["AAAA"]);
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn base64_encode_tab_char() {
     let out = run_main(
         r#"System.out.println(java.util.Base64.getEncoder().encodeToString("\t".getBytes()));"#,
     );
-    assert_eq!(out, vec!["HQ=="]);
+    assert_eq!(out, vec!["CQ=="]);
 }
 
 #[test]

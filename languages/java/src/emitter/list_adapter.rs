@@ -107,6 +107,11 @@ const DESCENDING_MAP_KEY: &str = "__java_descending_map";
 const DESCENDING_SET_KEY: &str = "__java_descending_set";
 const ACCESS_ORDER_MAP_KEY: &str = "__java_access_order_map";
 const IDENTITY_MAP_KEY: &str = "__java_identity_map";
+const IDENTITY_KEY_PROP: &str = "__java_identity_key";
+const IDENTITY_NEXT_KEY: &str = "__java_identity_next";
+const VECTOR_CAPACITY_KEY: &str = "__java_vector_capacity";
+const ENUM_ITEMS_KEY: &str = "__java_enum_items";
+const ENUM_INDEX_KEY: &str = "__java_enum_index";
 
 fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
     get(&mut chunks[current], value, line);
@@ -321,6 +326,44 @@ fn emit_canonicalize_map_key(chunks: &mut [Chunk], current: usize, map: u16, key
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
     vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
+    get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("object", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    get(&mut chunks[current], key, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    let identity = chunks[current].alloc_scratch(1);
+    get_object_prop(chunks, current, key, IDENTITY_KEY_PROP, line);
+    set(&mut chunks[current], identity, line);
+    get(&mut chunks[current], identity, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("undefined", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get_object_prop(chunks, current, map, IDENTITY_NEXT_KEY, line);
+    set(&mut chunks[current], identity, line);
+    get(&mut chunks[current], identity, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("undefined", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(&mut chunks[current], identity, line);
+    chunks[current].emit_end(line);
+    set_object_prop_from_local(chunks, current, key, IDENTITY_KEY_PROP, identity, line);
+    get(&mut chunks[current], identity, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, map, IDENTITY_NEXT_KEY, next, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], identity, line);
+    set(&mut chunks[current], key, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -331,6 +374,78 @@ fn emit_canonicalize_map_key(chunks: &mut [Chunk], current: usize, map: u16, key
     host::emit(&mut chunks[current], "ecma:value", "invokeMethod", 2, line);
     set(&mut chunks[current], key, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_identity_map_flag(chunks: &mut [Chunk], current: usize, map: u16, line: u32) {
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(IDENTITY_MAP_KEY, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+}
+
+fn emit_pack_identity_map_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    map: u16,
+    original_key: u16,
+    value: u16,
+    line: u32,
+) {
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], original_key, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_array_pair(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_unwrap_identity_map_value(
+    chunks: &mut [Chunk],
+    current: usize,
+    map: u16,
+    value: u16,
+    line: u32,
+) {
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], value, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_identity_entry_key(chunks: &mut [Chunk], current: usize, map: u16, pair: u16, line: u32) {
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], pair, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], pair, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_identity_entry_value(chunks: &mut [Chunk], current: usize, map: u16, pair: u16, line: u32) {
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], pair, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], pair, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
@@ -401,6 +516,36 @@ pub fn emit_sorted_collection_new(
         chunks[current].emit_op(Op::DROP, line);
     }
     get(&mut chunks[current], collection, line);
+}
+
+pub fn emit_priority_queue_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let comparator = chunks[current].alloc_scratch(1);
+    if argc == 0 {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    set(&mut chunks[current], comparator, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    let collection = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], collection, line);
+    get(&mut chunks[current], collection, line);
+    chunks[current].emit_string_const(COMPARATOR_KEY, line);
+    get(&mut chunks[current], comparator, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], collection, line);
+}
+
+pub fn emit_vector_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let capacity = chunks[current].alloc_scratch(1);
+    if argc == 0 {
+        core_wasm::i32_const(&mut chunks[current], line, 10);
+    }
+    set(&mut chunks[current], capacity, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    let vector = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], vector, line);
+    set_object_prop_from_local(chunks, current, vector, VECTOR_CAPACITY_KEY, capacity, line);
+    get(&mut chunks[current], vector, line);
 }
 
 pub fn emit_arrays_as_list(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -758,6 +903,12 @@ pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], result, line);
     emit_touch_access_order_map(chunks, current, map, key, line);
     get(&mut chunks[current], result, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    emit_unwrap_identity_map_value(chunks, current, map, result, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -855,9 +1006,12 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     let map = chunks[current].alloc_scratch(1);
     let previous = chunks[current].alloc_scratch(1);
     let had_key = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
     emit_throw_if_immutable_map(chunks, current, map, line);
     get(&mut chunks[current], map, line);
@@ -880,10 +1034,16 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], value, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, value, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], previous, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    emit_unwrap_identity_map_value(chunks, current, map, previous, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_map_put_all(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -974,7 +1134,12 @@ pub fn emit_map_get_or_default(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_if_value(line);
     emit_touch_access_order_map(chunks, current, map, key, line);
     chunks[current].emit_end(line);
+    get(&mut chunks[current], had_key, line);
+    chunks[current].emit_if_value(line);
+    emit_unwrap_identity_map_value(chunks, current, map, result, line);
+    chunks[current].emit_else(line);
     get(&mut chunks[current], result, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_map_contains_key(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -988,13 +1153,73 @@ pub fn emit_map_contains_key(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
 }
 
+pub fn emit_map_contains_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let expected = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let entries = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let pair = chunks[current].alloc_scratch(1);
+    let found = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], expected, line);
+    set(&mut chunks[current], map, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], found, line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "entries", 1, line);
+    set(&mut chunks[current], entries, line);
+    get(&mut chunks[current], entries, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], entries, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], pair, line);
+    get(&mut chunks[current], found, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_br(1, line);
+    chunks[current].emit_end(line);
+    emit_identity_entry_value(chunks, current, map, pair, line);
+    get(&mut chunks[current], expected, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], found, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], found, line);
+}
+
 pub fn emit_map_put_if_absent(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
+    let previous = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
@@ -1003,10 +1228,12 @@ pub fn emit_map_put_if_absent(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
+    set(&mut chunks[current], previous, line);
+    emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], value, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, value, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
@@ -1017,20 +1244,35 @@ pub fn emit_map_compute_if_absent(chunks: &mut [Chunk], current: usize, line: u3
     let fn_slot = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
+    let result = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], fn_slot, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
+    set(&mut chunks[current], result, line);
+    emit_unwrap_identity_map_value(chunks, current, map, result, line);
+    chunks[current].emit_else(line);
     get(&mut chunks[current], fn_slot, line);
-    host::emit(
-        &mut chunks[current],
-        "ecma:map",
-        "getOrInsertComputed",
-        3,
-        line,
-    );
+    get(&mut chunks[current], original_key, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    set(&mut chunks[current], result, line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, result, line);
+    host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], result, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_map_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1052,7 +1294,7 @@ pub fn emit_map_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         get(&mut chunks[current], key, line);
         host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
         set(&mut chunks[current], current_value, line);
-        get(&mut chunks[current], current_value, line);
+        emit_unwrap_identity_map_value(chunks, current, map, current_value, line);
         get(&mut chunks[current], expected, line);
         vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
         vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1091,6 +1333,12 @@ pub fn emit_map_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     host::emit(&mut chunks[current], "ecma:map", "delete", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], previous, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    emit_unwrap_identity_map_value(chunks, current, map, previous, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_null_check(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -1118,14 +1366,14 @@ pub fn emit_map_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         get(&mut chunks[current], key, line);
         host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
         set(&mut chunks[current], current_value, line);
-        get(&mut chunks[current], current_value, line);
+        emit_unwrap_identity_map_value(chunks, current, map, current_value, line);
         get(&mut chunks[current], old_value, line);
         vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
         vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         get(&mut chunks[current], map, line);
         get(&mut chunks[current], key, line);
-        get(&mut chunks[current], new_value, line);
+        emit_pack_identity_map_value(chunks, current, map, key, new_value, line);
         host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_bool_const(true, line);
@@ -1156,10 +1404,10 @@ pub fn emit_map_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     set(&mut chunks[current], previous, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], value, line);
+    emit_pack_identity_map_value(chunks, current, map, key, value, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    get(&mut chunks[current], previous, line);
+    emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_end(line);
@@ -1169,11 +1417,14 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     let fn_slot = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
     let old_value = chunks[current].alloc_scratch(1);
     let result = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], fn_slot, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
 
     get(&mut chunks[current], map, line);
@@ -1189,8 +1440,14 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], old_value, line);
 
     get(&mut chunks[current], fn_slot, line);
-    get(&mut chunks[current], key, line);
+    get(&mut chunks[current], original_key, line);
     get(&mut chunks[current], old_value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
     set(&mut chunks[current], result, line);
 
@@ -1204,7 +1461,7 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_touch_access_order_map(chunks, current, map, key, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], result, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, result, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
@@ -1215,11 +1472,14 @@ pub fn emit_map_compute_if_present(chunks: &mut [Chunk], current: usize, line: u
     let fn_slot = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
     let old_value = chunks[current].alloc_scratch(1);
     let result = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], fn_slot, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
 
     get(&mut chunks[current], map, line);
@@ -1231,8 +1491,8 @@ pub fn emit_map_compute_if_present(chunks: &mut [Chunk], current: usize, line: u
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     set(&mut chunks[current], old_value, line);
     get(&mut chunks[current], fn_slot, line);
-    get(&mut chunks[current], key, line);
-    get(&mut chunks[current], old_value, line);
+    get(&mut chunks[current], original_key, line);
+    emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
     set(&mut chunks[current], result, line);
     emit_null_check(chunks, current, result, line);
@@ -1245,7 +1505,7 @@ pub fn emit_map_compute_if_present(chunks: &mut [Chunk], current: usize, line: u
     emit_touch_access_order_map(chunks, current, map, key, line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], result, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, result, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
@@ -1260,6 +1520,7 @@ pub fn emit_map_merge(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
+    let original_key = chunks[current].alloc_scratch(1);
     let old_value = chunks[current].alloc_scratch(1);
     let result = chunks[current].alloc_scratch(1);
     let had_key = chunks[current].alloc_scratch(1);
@@ -1267,6 +1528,8 @@ pub fn emit_map_merge(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    set(&mut chunks[current], original_key, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
 
     get(&mut chunks[current], map, line);
@@ -1281,7 +1544,7 @@ pub fn emit_map_merge(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     set(&mut chunks[current], old_value, line);
     get(&mut chunks[current], fn_slot, line);
-    get(&mut chunks[current], old_value, line);
+    emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
     get(&mut chunks[current], value, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
     chunks[current].emit_else(line);
@@ -1302,7 +1565,7 @@ pub fn emit_map_merge(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     get(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
-    get(&mut chunks[current], result, line);
+    emit_pack_identity_map_value(chunks, current, map, original_key, result, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
@@ -1402,12 +1665,8 @@ pub fn emit_map_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], pair, line);
     get(&mut chunks[current], callback, line);
-    get(&mut chunks[current], pair, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    collections::emit_get(chunks, current, line);
-    get(&mut chunks[current], pair, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    collections::emit_get(chunks, current, line);
+    emit_identity_entry_key(chunks, current, map, pair, line);
+    emit_identity_entry_value(chunks, current, map, pair, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1466,13 +1725,119 @@ pub fn emit_map_key_set_remove(chunks: &mut [Chunk], current: usize, line: u32) 
     host::emit(&mut chunks[current], "ecma:map", "delete", 2, line);
 }
 
-pub fn emit_map_entry_set(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
     let map = chunks[current].alloc_scratch(1);
     let entries = chunks[current].alloc_scratch(1);
     let index = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
     let pair = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], map, line);
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "entries", 1, line);
+    set(&mut chunks[current], entries, line);
+    get(&mut chunks[current], entries, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], entries, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], pair, line);
+    get(&mut chunks[current], out, line);
+    emit_identity_entry_key(chunks, current, map, pair, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let entries = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let pair = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    emit_identity_map_flag(chunks, current, map, line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "entries", 1, line);
+    set(&mut chunks[current], entries, line);
+    get(&mut chunks[current], entries, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], entries, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], pair, line);
+    get(&mut chunks[current], out, line);
+    emit_identity_entry_value(chunks, current, map, pair, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], map, line);
+    host::emit(&mut chunks[current], "ecma:map", "values", 1, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_map_entry_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let map = chunks[current].alloc_scratch(1);
+    let entries = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let pair = chunks[current].alloc_scratch(1);
+    let entry = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
     get(&mut chunks[current], map, line);
     host::emit(&mut chunks[current], "ecma:map", "entries", 1, line);
     set(&mut chunks[current], entries, line);
@@ -1494,8 +1859,13 @@ pub fn emit_map_entry_set(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], pair, line);
-    get(&mut chunks[current], pair, line);
+    emit_identity_entry_key(chunks, current, map, pair, line);
+    emit_identity_entry_value(chunks, current, map, pair, line);
     get(&mut chunks[current], map, line);
+    collections::emit_array_new(chunks, current, 3, line);
+    set(&mut chunks[current], entry, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], entry, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1508,7 +1878,7 @@ pub fn emit_map_entry_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    get(&mut chunks[current], entries, line);
+    get(&mut chunks[current], out, line);
 }
 
 pub fn emit_entry_set_value(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1857,12 +2227,203 @@ pub fn emit_sorted_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+pub fn emit_priority_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_sort_if_ordered(chunks, current, list, line);
+    chunks[current].emit_bool_const(true, line);
+}
+
+pub fn emit_stack_push(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], value, line);
+}
+
+pub fn emit_list_clone(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    core_wasm::i32_const(&mut chunks[current], line, i32::MAX);
+    collections::emit_slice(chunks, current, line);
+}
+
+pub fn emit_stack_search(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_last_index_of(chunks, current, line);
+    set(&mut chunks[current], index, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if_value(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], list, line);
+    collections::emit_len(chunks, current, line);
+    get(&mut chunks[current], index, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_vector_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list = chunks[current].alloc_scratch(1);
+    let capacity = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], list, line);
+    get_object_prop(chunks, current, list, VECTOR_CAPACITY_KEY, line);
+    set(&mut chunks[current], capacity, line);
+    get(&mut chunks[current], list, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    get(&mut chunks[current], capacity, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], len, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], capacity, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], len, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], capacity, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_vector_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let min_capacity = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], min_capacity, line);
+    set(&mut chunks[current], list, line);
+    set_object_prop_from_local(chunks, current, list, VECTOR_CAPACITY_KEY, min_capacity, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_vector_trim_to_size(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    set_object_prop_from_local(chunks, current, list, VECTOR_CAPACITY_KEY, len, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_vector_set_size(chunks: &mut [Chunk], current: usize, line: u32) {
+    let size = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], size, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    chunks[current].emit_string_const("length", line);
+    get(&mut chunks[current], size, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_enumeration_from_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let items = chunks[current].alloc_scratch(1);
+    let enumeration = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], items, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    set(&mut chunks[current], enumeration, line);
+    set_object_prop_from_local(chunks, current, enumeration, ENUM_ITEMS_KEY, items, line);
+    set_object_prop_i32(chunks, current, enumeration, ENUM_INDEX_KEY, 0, line);
+    get(&mut chunks[current], enumeration, line);
+}
+
+pub fn emit_enumeration_has_more(chunks: &mut [Chunk], current: usize, line: u32) {
+    let enumeration = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], enumeration, line);
+    get_object_prop(chunks, current, enumeration, ENUM_INDEX_KEY, line);
+    set(&mut chunks[current], index, line);
+    get(&mut chunks[current], index, line);
+    get_object_prop(chunks, current, enumeration, ENUM_ITEMS_KEY, line);
+    collections::emit_len(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_enumeration_next(chunks: &mut [Chunk], current: usize, line: u32) {
+    let enumeration = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let next_index = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], enumeration, line);
+    get_object_prop(chunks, current, enumeration, ENUM_INDEX_KEY, line);
+    set(&mut chunks[current], index, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], next_index, line);
+    set_object_prop_from_local(chunks, current, enumeration, ENUM_INDEX_KEY, next_index, line);
+    get_object_prop(chunks, current, enumeration, ENUM_ITEMS_KEY, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+}
+
+pub fn emit_hashtable_put(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], key, line);
+    set(&mut chunks[current], map, line);
+    emit_throw_if_null(chunks, current, key, line);
+    emit_throw_if_null(chunks, current, value, line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], key, line);
+    get(&mut chunks[current], value, line);
+    emit_map_put(chunks, current, line);
+}
+
+pub fn emit_hashtable_keys(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
+    emit_enumeration_from_array(chunks, current, line);
+}
+
+pub fn emit_hashtable_elements(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:map", "values", 1, line);
+    emit_enumeration_from_array(chunks, current, line);
+}
+
 pub fn emit_queue_poll(chunks: &mut [Chunk], current: usize, line: u32) {
     let queue = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], queue, line);
     emit_sort_if_ordered(chunks, current, queue, line);
     get(&mut chunks[current], queue, line);
-    collections::emit_shift(chunks, current, line);
+    emit_poll(chunks, current, false, line);
+}
+
+pub fn emit_priority_peek(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], queue, line);
+    emit_sort_if_ordered(chunks, current, queue, line);
+    get(&mut chunks[current], queue, line);
+    emit_peek(chunks, current, false, line);
 }
 
 pub fn emit_peek(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {

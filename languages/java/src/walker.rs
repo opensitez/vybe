@@ -52,6 +52,7 @@ thread_local! {
     static JAVA_OPTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_TLR_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_CHAR_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_BYTE_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_BIGINT_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_BIGDECIMAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_DECIMAL_FORMAT_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -96,6 +97,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_OPTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_TLR_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_BYTE_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_BIGINT_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_BIGDECIMAL_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow_mut().clear());
@@ -1871,6 +1873,12 @@ fn walk_var_declarator(
         .is_some_and(|hint| hint.replace(' ', "").contains("char[]"))
     {
         JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| hint.replace(' ', "").contains("byte[]"))
+    {
+        JAVA_BYTE_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
     if type_hint
         .as_deref()
@@ -5688,6 +5696,34 @@ fn java_arg_is_char_array(arg: &Argument) -> bool {
     )
 }
 
+fn java_arg_is_byte_array(arg: &Argument) -> bool {
+    matches!(
+        &arg.value.kind,
+        ExprKind::Ident(name) if JAVA_BYTE_ARRAY_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+    )
+}
+
+fn java_string_ctor_arg_is_array_source(arg: &Argument) -> bool {
+    if java_arg_is_char_array(arg) || java_arg_is_byte_array(arg) {
+        return true;
+    }
+    match &arg.value.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__j_char_to_chars"
+                        | "__j_string_get_bytes"
+                        | "__j_b64_encode"
+                        | "__j_b64_decode"
+                )
+        ),
+        _ => false,
+    }
+}
+
 fn is_java_type_or_util(name: &str) -> bool {
     matches!(
         name,
@@ -5910,18 +5946,24 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
-                if class_name == "String" && args.len() == 3 {
+                if matches!(java_type_simple_name(&class_name), "String") && args.len() == 3 {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_code_points_to_string")),
                         args,
                         optional: false,
                     }));
                 }
-                if class_name == "String" && args.len() == 1 {
-                    return Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__j_string_from_array")),
+                if matches!(java_type_simple_name(&class_name), "String") && args.len() == 1 {
+                    if java_string_ctor_arg_is_array_source(&args[0]) {
+                        return Ok(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__j_string_from_array")),
+                            args,
+                            optional: false,
+                        }));
+                    }
+                    return Ok(Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("String")),
                         args,
-                        optional: false,
                     }));
                 }
                 if matches!(
@@ -9592,7 +9634,140 @@ fn rewrite_java_tostring_expr(
                             });
                             return;
                         }
+                        if java_type_is_hashtable(locals.get(name).map(String::as_str)) {
+                            let internal = match field.as_str() {
+                                "put" => Some("__java_hashtable_put"),
+                                "keys" => Some("__java_hashtable_keys"),
+                                "elements" => Some("__java_hashtable_elements"),
+                                _ => None,
+                            };
+                            if let Some(internal) = internal {
+                                let mut new_args = Vec::with_capacity(args.len() + 1);
+                                new_args.push(Argument::positional((**object).clone()));
+                                new_args.extend(args.iter().cloned());
+                                *expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident(internal)),
+                                    args: new_args,
+                                    optional: false,
+                                });
+                                return;
+                            }
+                        }
                         if let Some(internal) = java_map_method_name(field) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_priority_queue(locals.get(name).map(String::as_str)) {
+                        let internal = match field.as_str() {
+                            "add" | "offer" => Some("__java_priority_add"),
+                            "poll" => Some("__java_sorted_poll"),
+                            "peek" | "element" => Some("__java_priority_peek"),
+                            "remove" if args.len() == 1 => Some("__java_set_remove"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_stack(locals.get(name).map(String::as_str)) {
+                        let internal = match field.as_str() {
+                            "push" => Some("__java_stack_push"),
+                            "pop" => Some("__java_stack_pop"),
+                            "peek" => Some("__java_stack_peek"),
+                            "elementAt" => Some("__java_stack_element_at"),
+                            "firstElement" => Some("__java_stack_first_element"),
+                            "lastElement" => Some("__java_stack_last_element"),
+                            "search" => Some("__java_stack_search"),
+                            "set" => Some("__java_stack_set"),
+                            "clone" => Some("__java_stack_clone"),
+                            "remove" if args.len() == 1 => Some("__java_list_remove"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_vector(locals.get(name).map(String::as_str)) {
+                        let internal = match field.as_str() {
+                            "elementAt" => Some("__java_stack_element_at"),
+                            "firstElement" => Some("__java_stack_first_element"),
+                            "lastElement" => Some("__java_stack_last_element"),
+                            "clone" => Some("__java_stack_clone"),
+                            "indexOf" => Some("__java_list_index_of"),
+                            "capacity" => Some("__java_vector_capacity"),
+                            "ensureCapacity" => Some("__java_vector_ensure_capacity"),
+                            "trimToSize" => Some("__java_vector_trim_to_size"),
+                            "setSize" => Some("__java_vector_set_size"),
+                            "elements" => Some("__java_vector_elements"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_enumeration(locals.get(name).map(String::as_str)) {
+                        let internal = match field.as_str() {
+                            "hasMoreElements" | "hasMoreTokens" => {
+                                Some("__java_enumeration_has_more")
+                            }
+                            "nextElement" | "nextToken" => Some("__java_enumeration_next"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
+                    if java_type_is_queue_or_deque(locals.get(name).map(String::as_str)) {
+                        let internal = match field.as_str() {
+                            "add" | "offer" => Some("__java_queue_add"),
+                            "poll" | "remove" if args.is_empty() => Some("__java_queue_poll"),
+                            "peek" | "element" => Some("__java_queue_peek"),
+                            "push" => Some("__java_deque_push"),
+                            "pop" => Some("__java_deque_pop"),
+                            "remove" if args.len() == 1 => Some("__java_set_remove"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
                             new_args.extend(args.iter().cloned());
@@ -9611,7 +9786,7 @@ fn rewrite_java_tostring_expr(
                             .map(java_type_simple_name)
                             .unwrap_or_default();
                         let internal = match field.as_str() {
-                            "add" if matches!(simple_type, "TreeSet" | "PriorityQueue") => {
+                            "add" if matches!(simple_type, "TreeSet") => {
                                 Some("__java_sorted_add")
                             }
                             "add" => Some("__java_set_add"),
@@ -9639,8 +9814,6 @@ fn rewrite_java_tostring_expr(
                                 locals.get(name).map(String::as_str),
                                 Some("TreeSet")
                                     | Some("java.util.TreeSet")
-                                    | Some("PriorityQueue")
-                                    | Some("java.util.PriorityQueue")
                             )
                     )
                 {
@@ -10164,6 +10337,51 @@ fn java_type_is_set(type_name: Option<&str>) -> bool {
     matches!(
         base,
         "Set" | "HashSet" | "LinkedHashSet" | "TreeSet" | "SortedSet" | "NavigableSet"
+    )
+}
+
+fn java_type_is_priority_queue(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "PriorityQueue"
+}
+
+fn java_type_is_stack(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "Stack"
+}
+
+fn java_type_is_vector(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "Vector"
+}
+
+fn java_type_is_enumeration(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "Enumeration"
+}
+
+fn java_type_is_hashtable(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "Hashtable"
+}
+
+fn java_type_is_queue_or_deque(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    matches!(
+        java_type_simple_name(type_name),
+        "Queue" | "Deque" | "ArrayDeque" | "LinkedList"
     )
 }
 

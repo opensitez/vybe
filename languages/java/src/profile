@@ -202,9 +202,37 @@ __java_bigint_is_probable_prime = { emit = "common:java.bigint_is_probable_prime
 __java_bigint_next_probable_prime = { emit = "common:java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
 __java_set_add = { emit = "common:java.add", min_args = 2, max_args = 2 }
 __java_set_remove = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
+__java_queue_add = { emit = "common:java.add", min_args = 2, max_args = 2 }
+__java_queue_peek = { emit = "common:java.peek_first", min_args = 1, max_args = 1 }
+__java_queue_poll = { emit = "common:java.queue_poll", min_args = 1, max_args = 1 }
+__java_deque_push = { emit = "common:java.add_first", min_args = 2, max_args = 2 }
+__java_deque_pop = { emit = "common:java.poll_first", min_args = 1, max_args = 1 }
+__java_stack_push = { emit = "common:java.stack_push", min_args = 2, max_args = 2 }
+__java_stack_pop = { emit = "common:java.poll_last", min_args = 1, max_args = 1 }
+__java_stack_peek = { emit = "common:java.peek_last", min_args = 1, max_args = 1 }
+__java_stack_element_at = { emit = "common:java.list_get", min_args = 2, max_args = 2 }
+__java_stack_first_element = { emit = "common:java.peek_first", min_args = 1, max_args = 1 }
+__java_stack_last_element = { emit = "common:java.peek_last", min_args = 1, max_args = 1 }
+__java_stack_search = { emit = "common:java.stack_search", min_args = 2, max_args = 2 }
+__java_stack_set = { emit = "common:java.list_set", min_args = 3, max_args = 3 }
+__java_stack_clone = { emit = "common:java.list_clone", min_args = 1, max_args = 1 }
+__java_list_remove = { emit = "common:java.list_remove", min_args = 2, max_args = 2 }
 __java_list_remove_value = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
+__java_list_index_of = { emit = "common:java.list_index_of", min_args = 2, max_args = 2 }
+__java_vector_capacity = { emit = "common:java.vector_capacity", min_args = 1, max_args = 1 }
+__java_vector_ensure_capacity = { emit = "common:java.vector_ensure_capacity", min_args = 2, max_args = 2 }
+__java_vector_trim_to_size = { emit = "common:java.vector_trim_to_size", min_args = 1, max_args = 1 }
+__java_vector_set_size = { emit = "common:java.vector_set_size", min_args = 2, max_args = 2 }
+__java_vector_elements = { emit = "common:java.enumeration_from_array", min_args = 1, max_args = 1 }
+__java_enumeration_has_more = { emit = "common:java.enumeration_has_more", min_args = 1, max_args = 1 }
+__java_enumeration_next = { emit = "common:java.enumeration_next", min_args = 1, max_args = 1 }
+__java_hashtable_put = { emit = "common:java.hashtable_put", min_args = 3, max_args = 3 }
+__java_hashtable_keys = { emit = "common:java.hashtable_keys", min_args = 1, max_args = 1 }
+__java_hashtable_elements = { emit = "common:java.hashtable_elements", min_args = 1, max_args = 1 }
 __java_sorted_add = { emit = "common:java.sorted_add", min_args = 2, max_args = 2 }
+__java_priority_add = { emit = "common:java.priority_add", min_args = 2, max_args = 2 }
 __java_sorted_poll = { emit = "common:java.sorted_poll", min_args = 1, max_args = 1 }
+__java_priority_peek = { emit = "common:java.priority_peek", min_args = 1, max_args = 1 }
 __java_sorted_ceiling = { emit = "common:java.sorted_ceiling", min_args = 2, max_args = 2 }
 __java_sorted_floor = { emit = "common:java.sorted_floor", min_args = 2, max_args = 2 }
 __java_sorted_higher = { emit = "common:java.sorted_higher", min_args = 2, max_args = 2 }
@@ -803,7 +831,7 @@ getAverage    = { emit = "common:java.stream_average_value", min_args = 0, max_a
 forEach       = { emit = "common:java.stream_for_each",  min_args = 1, max_args = 1 }
 
 # Stack
-push          = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+push          = { emit = "common:java.stack_push",       min_args = 1, max_args = 1 }
 pop           = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
 empty         = { emit = "common:java.is_empty",         min_args = 0, max_args = 0 }
 
@@ -933,6 +961,7 @@ StringBuilder = ["common", "java.stringbuilder_new"]
 StringBuffer  = ["common", "java.stringbuilder_new"]
 Object        = ["common", "java.hash_map_new"]
 String        = ["ecma:string", "new"]
+"java.lang.String" = ["ecma:string", "new"]
 Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
 Integer       = ["ecma:number", "new"]
 BigInteger    = ["ecma:bigint", "BigInt"]
@@ -940,17 +969,20 @@ BigInteger    = ["ecma:bigint", "BigInt"]
 ArrayList     = ["common", "java.mutable_list_of"]
 LinkedList    = ["common", "java.mutable_list_of"]
 ArrayDeque    = ["common", "java.mutable_list_of"]
-Vector        = ["common", "java.mutable_list_of"]
+Vector        = ["common", "java.vector_new"]
+Stack         = ["common", "java.mutable_list_of"]
 HashSet       = ["common", "java.hash_set_new"]
 LinkedHashSet = ["common", "java.hash_set_new"]
 TreeSet       = ["common", "java.sorted_set_new"]
-PriorityQueue = ["common", "java.sorted_set_new"]
+PriorityQueue = ["common", "java.priority_queue_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
 IdentityHashMap = ["common", "java.identity_hash_map_new"]
 "java.util.TreeSet"       = ["common", "java.sorted_set_new"]
 "java.util.ArrayDeque"    = ["common", "java.mutable_list_of"]
-"java.util.PriorityQueue" = ["common", "java.sorted_set_new"]
+"java.util.Vector"        = ["common", "java.vector_new"]
+"java.util.Stack"         = ["common", "java.mutable_list_of"]
+"java.util.PriorityQueue" = ["common", "java.priority_queue_new"]
 "java.util.HashSet"       = ["common", "java.hash_set_new"]
 "java.util.LinkedHashSet" = ["common", "java.hash_set_new"]
 LinkedHashMap = ["common", "java.linked_hash_map_new"]

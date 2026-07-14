@@ -1104,6 +1104,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.mutable_list_of" => {
             collections::emit_array_new(chunks, current, argc as u16, line);
         }
+        "java.vector_new" => {
+            super::list_adapter::emit_vector_new(chunks, current, argc, line);
+        }
         "java.hash_set_new" => {
             collections::emit_array_new(chunks, current, argc as u16, line);
             super::list_adapter::emit_mark_set_collection(chunks, current, line);
@@ -1147,11 +1150,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.list_get" => {
             collections::emit_get(chunks, current, line);
         }
+        "java.list_clone" => {
+            super::list_adapter::emit_list_clone(chunks, current, line);
+        }
+        "java.list_index_of" => {
+            collections::emit_index_of(chunks, current, line);
+        }
         "java.add" => {
             super::list_adapter::emit_add(chunks, current, argc, line);
         }
         "java.sorted_add" => {
             super::list_adapter::emit_sorted_add(chunks, current, line);
+        }
+        "java.priority_add" => {
+            super::list_adapter::emit_priority_add(chunks, current, line);
         }
         "java.sorted_poll" => {
             super::list_adapter::emit_queue_poll(chunks, current, line);
@@ -1161,6 +1173,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.sorted_set_new" => {
             super::list_adapter::emit_sorted_collection_new(chunks, current, argc, false, line);
+        }
+        "java.priority_queue_new" => {
+            super::list_adapter::emit_priority_queue_new(chunks, current, argc, line);
         }
         "java.sorted_map_new" => {
             super::list_adapter::emit_sorted_collection_new(chunks, current, argc, true, line);
@@ -1229,6 +1244,45 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.queue_poll" => {
             super::list_adapter::emit_poll(chunks, current, false, line);
+        }
+        "java.priority_peek" => {
+            super::list_adapter::emit_priority_peek(chunks, current, line);
+        }
+        "java.stack_push" => {
+            super::list_adapter::emit_stack_push(chunks, current, line);
+        }
+        "java.stack_search" => {
+            super::list_adapter::emit_stack_search(chunks, current, line);
+        }
+        "java.vector_capacity" => {
+            super::list_adapter::emit_vector_capacity(chunks, current, line);
+        }
+        "java.vector_ensure_capacity" => {
+            super::list_adapter::emit_vector_ensure_capacity(chunks, current, line);
+        }
+        "java.vector_trim_to_size" => {
+            super::list_adapter::emit_vector_trim_to_size(chunks, current, line);
+        }
+        "java.vector_set_size" => {
+            super::list_adapter::emit_vector_set_size(chunks, current, line);
+        }
+        "java.enumeration_from_array" => {
+            super::list_adapter::emit_enumeration_from_array(chunks, current, line);
+        }
+        "java.enumeration_has_more" => {
+            super::list_adapter::emit_enumeration_has_more(chunks, current, line);
+        }
+        "java.enumeration_next" => {
+            super::list_adapter::emit_enumeration_next(chunks, current, line);
+        }
+        "java.hashtable_put" => {
+            super::list_adapter::emit_hashtable_put(chunks, current, line);
+        }
+        "java.hashtable_keys" => {
+            super::list_adapter::emit_hashtable_keys(chunks, current, line);
+        }
+        "java.hashtable_elements" => {
+            super::list_adapter::emit_hashtable_elements(chunks, current, line);
         }
         "java.sorted_first" => {
             super::list_adapter::emit_sorted_end(chunks, current, false, line);
@@ -1299,13 +1353,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::list_adapter::emit_map_contains_key(chunks, current, line);
         }
         "java.map_contains_value" => {
-            host::emit(&mut chunks[current], "ecma:map", "containsValue", 2, line);
+            super::list_adapter::emit_map_contains_value(chunks, current, line);
         }
         "java.map_key_set" => {
-            host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
+            super::list_adapter::emit_map_key_set(chunks, current, line);
         }
         "java.map_values" => {
-            host::emit(&mut chunks[current], "ecma:map", "values", 1, line);
+            super::list_adapter::emit_map_values(chunks, current, line);
         }
         "java.entry_set" => {
             super::list_adapter::emit_map_entry_set(chunks, current, line);
