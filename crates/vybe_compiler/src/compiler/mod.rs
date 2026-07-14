@@ -497,6 +497,14 @@ pub struct Compiler {
     /// inside a catch arm inlines exactly these — the runtime can no longer
     /// run them — and leaves live-handler finallys to the runtime.
     fired_finally_indices: Vec<usize>,
+    /// Stack of enclosing `try`-with-`finally` join points. A `break` /
+    /// `continue` / `return` inside a protected body cannot run its `finally`
+    /// under the `try_table` handler (a throwing finally would be self-caught
+    /// — non-spec). Instead it sets the top join's completion code and `br`s
+    /// to the join, which runs `finally` OUTSIDE the handler, then dispatches
+    /// the pending exit onward. This is the whole reason `finally` needs no VM
+    /// opcode: it is lowered here into standard wasm. Innermost is last.
+    finally_joins: Vec<FinallyJoin>,
     /// Nesting depth of the catch body currently being compiled.
     catch_depth: usize,
     /// JS async-function wrapper try depth currently active for the
@@ -522,6 +530,28 @@ enum FinallyAction {
         method: String,
         line: u32,
     },
+}
+
+/// Completion codes stored in a join's completion local. Written before the
+/// `br` to the join; read by the dispatch emitted after the `finally` body.
+/// `NORMAL` is the zero value (fall through after `finally`).
+mod completion {
+    pub const NORMAL: f64 = 0.0;
+    pub const BREAK: f64 = 1.0;
+    pub const CONTINUE: f64 = 2.0;
+    pub const RETURN: f64 = 3.0;
+}
+
+/// A `try`-with-`finally` join point (see [`Compiler::finally_joins`]).
+struct FinallyJoin {
+    /// `self.label_depth` captured where the try's wrapping block is the
+    /// innermost label, so `label_depth - join_label_depth` is the `br` depth
+    /// to the join from any point inside the protected body.
+    join_label_depth: u32,
+    /// Local holding the completion code (see [`completion`]).
+    completion_slot: u16,
+    /// Local holding the pending `return` value while `finally` runs.
+    ret_slot: u16,
 }
 
 /// §16.2.1 named — `import { name as local } from "module"`.
@@ -2065,6 +2095,7 @@ impl Compiler {
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
+            finally_joins: Vec::new(),
             fired_finally_indices: Vec::new(),
             catch_depth: 0,
             active_async_try_depth: 0,

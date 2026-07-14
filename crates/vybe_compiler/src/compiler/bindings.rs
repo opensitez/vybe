@@ -92,7 +92,13 @@ impl Compiler {
         // would fall through to global_get and read null.
         if self.current_class_implicit_self && self.is_class_field(name) {
             if self.emit_self_ref() {
-                let cname = self.canon(name);
+                let cname = self
+                    .current_class
+                    .as_deref()
+                    .and_then(|class_name| {
+                        self.visible_instance_field_storage_name_for_class(class_name, name)
+                    })
+                    .unwrap_or_else(|| self.canon(name));
                 let idx = self.str_const(&cname);
                 self.emit_u16(Op::STRUCT_GET, idx);
                 return;
@@ -467,7 +473,13 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, value_slot);
             if self.emit_self_ref() {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let cname = self.canon(name);
+                let cname = self
+                    .current_class
+                    .as_deref()
+                    .and_then(|class_name| {
+                        self.visible_instance_field_storage_name_for_class(class_name, name)
+                    })
+                    .unwrap_or_else(|| self.canon(name));
                 let idx = self.str_const(&cname);
                 self.emit_u16(Op::STRUCT_SET, idx);
                 self.emit(Op::DROP);

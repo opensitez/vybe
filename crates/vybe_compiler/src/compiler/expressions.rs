@@ -2213,6 +2213,16 @@ impl Compiler {
                     return Ok(());
                 }
 
+                if !*null_safe && matches!(&object.kind, ExprKind::Super) {
+                    if let Some(field_name) = self.field_storage_name_for_receiver(object, field) {
+                        if self.emit_self_ref() {
+                            let idx = self.str_const(&field_name);
+                            self.emit_u16(Op::STRUCT_GET, idx);
+                            return Ok(());
+                        }
+                    }
+                }
+
                 if *null_safe && is_csharp_len_accessor {
                     self.compile_expr(object)?;
                     inst!(self, core_wasm::dup);
@@ -3543,6 +3553,25 @@ impl Compiler {
                             line,
                         );
                         return Ok(());
+                    }
+                    if self.profile.name == "java" {
+                        if let Some((module, func)) = self
+                            .profile
+                            .lookup_known_type(type_name)
+                            .map(|(m, f)| (m.to_string(), f.to_string()))
+                        {
+                            for a in args {
+                                self.compile_expr(&a.value)?;
+                            }
+                            if module == "common" {
+                                let line = self.line;
+                                self.emit_common(&func, args.len() as u8, line);
+                            } else {
+                                let idx = self.import(&module, &func);
+                                self.emit_host_call(idx, args.len() as u8);
+                            }
+                            return Ok(());
+                        }
                     }
                     // Dotnet component descriptor constructors — fallback after
                     // GUI so .NET-only types like Dictionary still work.

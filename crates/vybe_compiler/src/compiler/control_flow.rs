@@ -844,6 +844,23 @@ impl Compiler {
     }
 
     pub(super) fn emit_return_through_finally(&mut self, result_count: usize) -> Result<(), String> {
+        // Preferred path: a single-value return that must cross only
+        // `try_table` joins (no `using`/dispose, no ref-out packing) routes
+        // through the innermost join — `finally` runs OUTSIDE the handler, then
+        // the join dispatch re-issues this return, chaining out to the real
+        // frame exit. Same spec-correct lowering as break/continue.
+        let ref_out_slots = self.current_ref_out_params.clone().unwrap_or_default();
+        if result_count == 1
+            && ref_out_slots.is_empty()
+            && !self.finally_joins.is_empty()
+            && self.finally_joins.len() == self.active_finally_blocks.len()
+        {
+            let val_slot = self.define_local("__return_val_0");
+            self.emit_u16(Op::LOCAL_SET, val_slot);
+            self.emit_completion_br(completion::RETURN, Some(val_slot));
+            return Ok(());
+        }
+
         let slots: Vec<u16> = (0..result_count)
             .map(|idx| self.define_local(&format!("__return_val_{}", idx)))
             .collect();
@@ -880,11 +897,8 @@ impl Compiler {
                 self.line,
             );
         }
-        if self.current_chunk_is_js_async() {
-            for _ in 0..self.active_async_try_depth {
-                self.emit(Op::TRY_END);
-            }
-        }
+        // The JS async-wrapper `try_table` handlers are popped by the VM's
+        // `RETURN` (frame-scoped handler cleanup) — no explicit opcode needed.
         self.emit_return();
         Ok(())
     }
@@ -906,9 +920,21 @@ impl Compiler {
                 .len()
                 .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
-                for _ in 0..nested_finally_count {
-                    self.emit(Op::TRY_END);
+                // Preferred path: if EVERY enclosing finally between here and
+                // the target loop is a `try_table` join, route to the innermost
+                // one. It runs its `finally` OUTSIDE the handler, then re-issues
+                // this break — chaining out through the remaining joins. This is
+                // the spec-correct lowering (a throwing finally propagates
+                // rather than being self-caught). See `finally_joins`.
+                if label.is_none()
+                    && self.finally_join_route(ctx.break_label_depth, nested_finally_count)
+                {
+                    self.emit_completion_br(completion::BREAK, None);
+                    return Ok(());
                 }
+                // Fallback (labeled exit, or a `using`/mixed finally without a
+                // join): inline the finally bodies. The exited `try_table`
+                // handlers are popped structurally by the `br` below.
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
                     self.active_finally_blocks = original[..idx].to_vec();
@@ -923,6 +949,38 @@ impl Compiler {
             self.chunk().emit_br(depth.into(), line);
         }
         Ok(())
+    }
+
+    /// True if all `nested_finally_count` finallys between the current point
+    /// and a loop whose exit is at `break_label_depth` are `try_table` joins
+    /// (so the completion-code route can chain through them). False if any is a
+    /// `using`/dispose without a registered join — then the caller inlines.
+    fn finally_join_route(&self, break_label_depth: u32, nested_finally_count: usize) -> bool {
+        let joins_between = self
+            .finally_joins
+            .iter()
+            .filter(|j| j.join_label_depth > break_label_depth)
+            .count();
+        joins_between == nested_finally_count && !self.finally_joins.is_empty()
+    }
+
+    /// Store `code` in the innermost join's completion slot (plus save the
+    /// return value into its `ret_slot` when `ret` is given) and `br` to that
+    /// join, where `finally` runs outside the handler and dispatches onward.
+    fn emit_completion_br(&mut self, code: f64, ret: Option<u16>) {
+        let join = self.finally_joins.last().expect("join present");
+        let completion_slot = join.completion_slot;
+        let ret_slot = join.ret_slot;
+        let join_label_depth = join.join_label_depth;
+        if let Some(ret_local) = ret {
+            self.emit_u16(Op::LOCAL_GET, ret_local);
+            self.emit_u16(Op::LOCAL_SET, ret_slot);
+        }
+        self.emit_const(Value::F64(code));
+        self.emit_u16(Op::LOCAL_SET, completion_slot);
+        let depth = self.label_depth.saturating_sub(join_label_depth);
+        let line = self.line;
+        self.chunk().emit_br(depth, line);
     }
 
     pub(super) fn emit_continue_through_finally(&mut self, label: Option<&str>) -> Result<(), String> {
@@ -942,9 +1000,13 @@ impl Compiler {
                 .len()
                 .saturating_sub(target_finally_depth);
             if nested_finally_count > 0 {
-                for _ in 0..nested_finally_count {
-                    self.emit(Op::TRY_END);
+                if label.is_none()
+                    && self.finally_join_route(ctx.continue_label_depth, nested_finally_count)
+                {
+                    self.emit_completion_br(completion::CONTINUE, None);
+                    return Ok(());
                 }
+                // Fallback: inline finally bodies (labeled / using / mixed).
                 let original = self.active_finally_blocks.clone();
                 for idx in (target_finally_depth..original.len()).rev() {
                     self.active_finally_blocks = original[..idx].to_vec();

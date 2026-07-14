@@ -1215,6 +1215,17 @@ impl Compiler {
                 let mut static_fields: Vec<String> = Vec::new();
                 let mut instance_member_names: Vec<String> = Vec::new();
                 let mut fields: Vec<String> = Vec::new();
+                let mut field_storage_names: HashMap<String, String> = HashMap::new();
+                let field_storage_slot_name = |compiler: &Self, owner_class: &str, field_name: &str| {
+                    let field_canon = compiler.canon(field_name);
+                    if compiler.profile.field_hiding
+                        && compiler.field_hides_ancestor(nested_parent.as_deref(), &field_canon)
+                    {
+                        format!("__hide_{}${}", compiler.canon(owner_class), field_canon)
+                    } else {
+                        compiler.js_member_storage_name_for_class(owner_class, field_name)
+                    }
+                };
                 // (method-return-type key, return type) — registered so a
                 // chained call `outer.first().next()` compiled in a sibling
                 // method (before this nested type is compiled) can infer the
@@ -1230,6 +1241,9 @@ impl Compiler {
                                 ..
                             } = &ms.kind
                             {
+                                if modifiers.is_abstract {
+                                    continue;
+                                }
                                 if modifiers.is_static || modifiers.is_shared {
                                     static_method_names.push(self.canon(mname));
                                 } else {
@@ -1254,7 +1268,14 @@ impl Compiler {
                             if modifiers.is_static || modifiers.is_shared {
                                 static_fields.push(self.canon(fname));
                             } else {
-                                fields.push(self.canon(fname));
+                                let field_canon = self.canon(fname);
+                                let storage_name =
+                                    field_storage_slot_name(self, &nested_canon, fname);
+                                if storage_name != field_canon {
+                                    field_storage_names
+                                        .insert(field_canon.clone(), storage_name.clone());
+                                }
+                                fields.push(storage_name);
                             }
                         }
                         _ => {}
@@ -1269,6 +1290,7 @@ impl Compiler {
                     pc.static_fields = static_fields;
                     pc.instance_member_names = instance_member_names;
                     pc.fields = fields;
+                    pc.field_storage_names = field_storage_names;
                 }
                 for (key, rt) in return_types {
                     self.function_return_types.entry(key).or_insert(rt);

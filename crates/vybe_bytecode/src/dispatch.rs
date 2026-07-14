@@ -51,6 +51,14 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
         if op == Op::BLOCK || op == Op::LOOP || op == Op::IF {
             ip += 1; // skip result_count byte
             stack.push(opcode_start);
+        } else if op == Op::TRY_TABLE {
+            // Spec `try_table` IS a block instruction: it opens a
+            // handler-scoped block closed by a matching `end`. Skip its
+            // variable immediate, then treat it as a nesting level so the
+            // block table pairs it with its `end` (whose `is_try` label pop
+            // removes the exception handler — replacing the old TRY_END).
+            ip += op.operand_format().size_in(code, ip);
+            stack.push(opcode_start);
         } else if op == Op::ELSE {
             // Associate ELSE with the top-of-stack IF entry.
             if let Some(&if_start) = stack.last() {
@@ -1848,6 +1856,19 @@ impl VM {
                     self.close_upvalues(base);
                     self.label_stack.truncate(frame_label_base);
                     self.frames.pop();
+                    // A returning frame's exception handlers die with the frame:
+                    // a JS async-wrapper `try_table`, or a `return` from inside a
+                    // `try`, leaves handlers that nothing else pops (a `return`
+                    // is a frame exit, not a structural `br`). Drop them here,
+                    // frame-scoped — matching how `save_fiber` partitions
+                    // handlers by frame depth. This replaces the async-wrapper
+                    // `TRY_END` the frontend used to emit before RETURN. The
+                    // empty-frames continuation-completion case below is owned by
+                    // the fiber/cont machinery, so leave its handlers alone.
+                    if !self.frames.is_empty() {
+                        let live = self.frames.len();
+                        self.exception_handlers.retain(|h| h.frame_depth <= live);
+                    }
                     // Continuation completion: per the WASM stack-switching
                     // proposal a continuation owns its stack; `save_fiber` drains
                     // the caller's frames when the continuation is resumed, so
@@ -2820,29 +2841,6 @@ impl VM {
                 // r#await: removed (duplicate of promise_suspend, use JSPI proposal name)
 
                 // -- Exceptions (WASM exception-handling proposal, final) --
-                _ if op == Op::TRY_START => {
-                    // Legacy region form: behaves as a one-clause
-                    // `try_table (catch $vybe:exception ...)` — the payload
-                    // (exception object) is delivered to the handler.
-                    let catch_offset = self.read_u16() as i16;
-                    let _finally_offset = self.read_u16(); // reserved for finally
-                    let (frame_ip, frame_chunk) = {
-                        let f = self.frame();
-                        (f.ip, f.chunk_index)
-                    };
-                    let catch_ip = (frame_ip as i64 + catch_offset as i64) as usize;
-                    self.try_group_counter += 1;
-                    self.exception_handlers.push(ExceptionHandler {
-                        catch_ip,
-                        _chunk_index: frame_chunk,
-                        stack_depth: self.stack.len(),
-                        frame_depth: self.frames.len(),
-                        label_depth: self.label_stack.len(),
-                        kind: crate::vm::CATCH_KIND_CATCH,
-                        tag_entity: 0,
-                        group: self.try_group_counter,
-                    });
-                }
                 _ if op == Op::TRY_END => {
                     // Normal exit from the try block — remove the WHOLE
                     // clause group of the innermost try_table.
@@ -2940,6 +2938,25 @@ impl VM {
                     for h in handlers.into_iter().rev() {
                         self.exception_handlers.push(h);
                     }
+                    // try_table is a block: push its structural label so the
+                    // matching `end` closes the handler scope. `is_try` tells
+                    // END / branch_to_label to also pop the handler group. The
+                    // handlers above recorded `label_depth` BEFORE this push,
+                    // so it names the OUTER level — a thrown exception unwinds
+                    // to there (catch code lives past this block's `end`).
+                    let ci = self.frame().chunk_index;
+                    self.ensure_block_table(ci);
+                    let end_ip = self.block_tables[&ci]
+                        .get(&opcode_start)
+                        .map(|t| t.end_ip)
+                        .unwrap_or(self.frame().ip);
+                    self.label_stack.push(LabelEntry {
+                        target: end_ip,
+                        is_loop: false,
+                        is_try: true,
+                        result_arity: 0,
+                        stack_height: self.stack.len(),
+                    });
                 }
 
                 // -- Tail call --
@@ -3341,7 +3358,28 @@ impl VM {
                     self.frame_mut().ip = end_ip;
                 }
                 _ if op == Op::END => {
-                    self.label_stack.pop();
+                    // Closing a block. If it is a try_table block (`is_try`),
+                    // also remove its exception-handler group — the structural
+                    // end of the protected region, replacing the retired
+                    // TRY_END opcode. Reached ONLY on normal completion: a
+                    // caught exception jumps past this `end` to the catch code
+                    // (raise_exception already truncated the group), and a `br`
+                    // out is handled by branch_to_label — so the group is
+                    // popped exactly once, on whichever path fires.
+                    if let Some(label) = self.label_stack.pop() {
+                        if label.is_try {
+                            if let Some(top) = self.exception_handlers.last() {
+                                let group = top.group;
+                                while self
+                                    .exception_handlers
+                                    .last()
+                                    .is_some_and(|h| h.group == group)
+                                {
+                                    self.exception_handlers.pop();
+                                }
+                            }
+                        }
+                    }
                 }
                 _ if op == Op::BR_TABLE => {
                     let ci = self.frame().chunk_index;

@@ -1221,10 +1221,41 @@ impl Compiler {
                 } else {
                     None
                 };
+                // For a try-WITH-finally, allocate the completion state so a
+                // `break`/`continue`/`return` inside the body can run `finally`
+                // OUTSIDE the handler (see `finally_joins`): it stores a code
+                // here and `br`s to the join instead of inlining `finally`
+                // under the `try_table`. Default NORMAL (fall through).
+                let completion = if finally.is_some() {
+                    let completion_slot = self.define_local("__try_completion");
+                    let ret_slot = self.define_local("__try_ret");
+                    self.emit_const(Value::F64(completion::NORMAL));
+                    self.emit_u16(Op::LOCAL_SET, completion_slot);
+                    Some((completion_slot, ret_slot))
+                } else {
+                    None
+                };
                 let after_try_block = self.chunk().emit_block(line);
                 self.label_depth += 1;
+                // Register the join NOW: its `br` target is `after_try_block`,
+                // whose `end` lands exactly on the `finally` emission below,
+                // outside every handler. `label_depth - join_label_depth` from
+                // any point in the body is the `br` depth to reach it.
+                if let Some((completion_slot, ret_slot)) = completion {
+                    self.finally_joins.push(FinallyJoin {
+                        join_label_depth: self.label_depth,
+                        completion_slot,
+                        ret_slot,
+                    });
+                }
                 let catch_jump =
                     common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                // `try_table` is now a structural block (spec): it pushes its
+                // own label at runtime, so the body sits one level deeper.
+                // Scope this +1 to the body only — catch arms / else / finally
+                // are emitted AFTER the `end` below and must see the original
+                // depth.
+                self.label_depth += 1;
                 if let Some(fin) = finally.clone() {
                     self.active_finally_blocks
                         .push(FinallyAction::Statements(fin));
@@ -1233,6 +1264,7 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
                 // Python else: runs if no exception
                 if let Some(else_stmts) = else_body {
                     for s in else_stmts {
@@ -1425,10 +1457,45 @@ impl Compiler {
                 if finally.is_some() {
                     self.active_finally_blocks.pop();
                 }
+                // Pop the join BEFORE emitting the `finally` body: a
+                // `break`/`continue`/`return` inside `finally` itself belongs
+                // to the ENCLOSING try/loop, not this one (whose finally is
+                // now running).
+                if finally.is_some() {
+                    self.finally_joins.pop();
+                }
                 if let Some(fin) = finally {
                     for s in fin {
                         self.compile_stmt(s)?;
                     }
+                }
+                // Completion dispatch — runs AFTER `finally`, OUTSIDE the
+                // handler. A non-local exit that jumped here re-issues itself,
+                // now chaining to the enclosing join (or the real loop/return
+                // target) since this try's join + finally are already popped.
+                if let Some((completion_slot, ret_slot)) = completion {
+                    let emit_eq_branch = |c: &mut Self, code: f64| {
+                        c.emit_u16(Op::LOCAL_GET, completion_slot);
+                        c.emit_const(Value::F64(code));
+                        let ln = c.line;
+                        crate::emitter::ops::emit_dyn_eq(c.chunk(), ln);
+                        crate::emitter::ops::emit_dyn_to_bool(c.chunk(), ln);
+                        c.chunk().emit_if(ln);
+                        c.label_depth += 1;
+                    };
+                    emit_eq_branch(self, completion::BREAK);
+                    self.emit_break_through_finally(None)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
+                    emit_eq_branch(self, completion::CONTINUE);
+                    self.emit_continue_through_finally(None)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
+                    emit_eq_branch(self, completion::RETURN);
+                    self.emit_u16(Op::LOCAL_GET, ret_slot);
+                    self.emit_return_through_finally(1)?;
+                    self.label_depth -= 1;
+                    self.chunk().emit_end(line);
                 }
                 if let Some(exc_slot) = finally_exc_slot {
                     if self.catch_depth > 0 {
@@ -1996,6 +2063,9 @@ impl Compiler {
                 let after_using_try = self.chunk().emit_block(line);
                 let catch_jump =
                     common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                // `try_table` is a structural block — count it while compiling
+                // the protected body (see the main `try` site above).
+                self.label_depth += 1;
                 self.active_finally_blocks
                     .push(FinallyAction::ResourceDispose {
                         slot,
@@ -2007,6 +2077,7 @@ impl Compiler {
                 }
                 self.active_finally_blocks.pop();
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
                 self.chunk().emit_br(0, line);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
                 // Catch arm: dispose, then rethrow the exception

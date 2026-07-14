@@ -830,6 +830,37 @@ impl Compiler {
             .and_then(|pending| pending.field_storage_names.get(&self.canon(field)).cloned())
     }
 
+    /// Resolve the storage slot for a source-level instance field visible
+    /// through `class_name`'s static type. Unlike
+    /// `field_storage_name_for_class`, this also walks ancestors and returns
+    /// the plain field name for non-remapped fields.
+    pub(super) fn visible_instance_field_storage_name_for_class(
+        &self,
+        class_name: &str,
+        field: &str,
+    ) -> Option<String> {
+        let field_canon = self.canon(field);
+        let mut current = Some(self.canon(class_name));
+        let mut guard = 0;
+        while let Some(class_key) = current {
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            let Some(pending) = self.pending_classes.get(&class_key) else {
+                break;
+            };
+            if let Some(storage) = pending.field_storage_names.get(&field_canon) {
+                return Some(storage.clone());
+            }
+            if pending.fields.iter().any(|stored| stored == &field_canon) {
+                return Some(field_canon);
+            }
+            current = pending.parent.as_ref().map(|p| self.canon(p));
+        }
+        None
+    }
+
     /// Resolve `receiver.field`'s storage slot by the receiver's STATIC type:
     /// `this` / `self` → the current class; `super` → its parent; a typed
     /// local → its declared type; otherwise the inferred type. This is what
@@ -849,28 +880,36 @@ impl Compiler {
             ExprKind::This => self
                 .current_class
                 .as_deref()
-                .and_then(|class_name| self.field_storage_name_for_class(class_name, field)),
+                .and_then(|class_name| {
+                    self.visible_instance_field_storage_name_for_class(class_name, field)
+                }),
             ExprKind::Super => self
                 .current_class
                 .as_deref()
                 .and_then(|class_name| self.pending_classes.get(&self.canon(class_name)))
                 .and_then(|pending| pending.parent.clone())
-                .and_then(|parent| self.field_storage_name_for_class(&parent, field)),
+                .and_then(|parent| self.visible_instance_field_storage_name_for_class(&parent, field)),
             ExprKind::Ident(name)
                 if name == self_kw || name == "$this" || name.eq_ignore_ascii_case(self_kw) =>
             {
                 self.current_class
                     .as_deref()
-                    .and_then(|class_name| self.field_storage_name_for_class(class_name, field))
+                    .and_then(|class_name| {
+                        self.visible_instance_field_storage_name_for_class(class_name, field)
+                    })
             }
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                .and_then(|class_name| self.field_storage_name_for_class(&class_name, field)),
+                .and_then(|class_name| {
+                    self.visible_instance_field_storage_name_for_class(&class_name, field)
+                }),
             _ => self
                 .infer_expr_type_hint(receiver)
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(&type_hint))
-                .and_then(|class_name| self.field_storage_name_for_class(&class_name, field)),
+                .and_then(|class_name| {
+                    self.visible_instance_field_storage_name_for_class(&class_name, field)
+                }),
         }
     }
 

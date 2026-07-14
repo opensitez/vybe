@@ -36,6 +36,7 @@ pub mod io;
 pub mod loops;
 pub mod math;
 pub mod namespaces;
+pub mod object;
 pub mod ops;
 pub mod promises;
 pub mod prototypes;

@@ -679,15 +679,19 @@ impl Compiler {
             .and_then(|inner| inner.strip_suffix(')'))
             .map(str::trim)
             .unwrap_or(type_hint.trim());
-        let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
+        let resolved_receiver_type = self.resolve_source_type_alias(receiver_type);
+        let receiver_canon = self.canon(strip_generic_suffix(&resolved_receiver_type));
         if self.pending_classes.contains_key(&receiver_canon) {
             return Some(receiver_canon);
         }
         self.pending_classes
             .keys()
             .find(|name| {
+                let simple_name = name.rsplit('.').next().unwrap_or(name);
                 name.eq_ignore_ascii_case(receiver_type)
+                    || name.eq_ignore_ascii_case(&resolved_receiver_type)
                     || name.eq_ignore_ascii_case(&receiver_canon)
+                    || simple_name.eq_ignore_ascii_case(&receiver_canon)
             })
             .cloned()
     }
@@ -4584,8 +4588,16 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let receiver_is_java_member_apply =
+                self.profile.name == "java"
+                    && field == "apply"
+                    && matches!(
+                        object.kind,
+                        ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
+                    );
             if self.profile.has_function_prototype_bind
                 && !self.direct_receiver_has_own_pending_method(object, field)
+                && !receiver_is_java_member_apply
                 && (field == "call" || field == "apply" || field == "bind")
             {
                 // §20.2.3.{1,2,3}: call/apply/bind live on
@@ -4602,6 +4614,7 @@ impl Compiler {
                 return Ok(());
             }
             if !self.direct_receiver_has_own_pending_method(object, field)
+                && !receiver_is_java_member_apply
                 && (field == "call" || field == "apply")
             {
                 self.compile_expr(object)?;
@@ -4871,14 +4884,22 @@ impl Compiler {
                                 .map(Self::normalize_type_hint)
                                 .is_some_and(|type_hint| type_hint == "url")
                 );
+            let java_direct_user_typed_receiver = self.profile.name == "java"
+                && receiver_is_direct
+                && receiver_is_user_type
+                && field != "toString";
             let user_method_shadow = self.direct_receiver_has_own_pending_method(object, field)
                 || receiver_has_pending_user_method
+                || java_direct_user_typed_receiver
                 || (receiver_is_direct
                     && !receiver_is_known_builtin_value
                     && self.defined_class_methods.contains(&canon_field))
                 || (receiver_is_direct
                     && receiver_is_user_type
                     && self.defined_class_methods.contains(&canon_field));
+            let java_member_apply = self.profile.name == "java"
+                && receiver_is_direct
+                && field == "apply";
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -4892,7 +4913,7 @@ impl Compiler {
                 .profile
                 .lookup_array_method(&field_lower_check)
                 .is_some();
-            if user_method_shadow || is_array_method {
+            if user_method_shadow || java_member_apply || is_array_method {
                 // Fall through — let the HOF dispatch or generic call path handle it
             } else if array_only_value_method_for_non_array {
                 // Array-only value methods like `.entries()` must not steal
@@ -6364,6 +6385,38 @@ impl Compiler {
                 let line = self.line;
                 self.chunk().emit_if(line);
 
+                let receiver_is_pending_class = self
+                    .infer_expr_type_hint(object)
+                    .as_deref()
+                    .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                    .is_some();
+                if receiver_is_pending_class {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    let class_fn_slot = self.define_local("__js_class_dispatch_fn");
+                    self.emit_u16(Op::LOCAL_SET, class_fn_slot);
+                    if args.iter().any(|arg| arg.spread) {
+                        let (args_slot, known_len) =
+                            self.compile_call_args_array(args, "js_class_dispatch_spread")?;
+                        self.emit_call_ref_with_args_array(
+                            class_fn_slot,
+                            Some(obj_tmp),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot =
+                                self.define_local(&format!("__js_class_dispatch_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            arg_slots.push(arg_slot);
+                        }
+                        self.emit_call_ref_with_arg_slots(class_fn_slot, Some(obj_tmp), &arg_slots);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                } else {
                 let lookup = self.import("ecma:value", "getMethodForCall");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::String(Arc::from(method_name.as_str())));
@@ -6446,6 +6499,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
+                }
                 self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_GET, js_result_slot);
                 return Ok(());
@@ -7419,21 +7473,23 @@ impl Compiler {
                             || self.infer_expr_type_hint(object).as_deref().is_some_and(
                                 |type_hint| {
                                     self.pending_class_has_method_name_for_type(type_hint, field)
+                                        || self
+                                            .resolve_pending_class_name_for_type_hint(type_hint)
+                                            .is_some()
                                 },
                             );
                     if js_user_defined_member {
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit(Op::REF_IS_NULL);
-                        let line = self.line;
-                        self.chunk().emit_if(line);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        fn_call!(self, "wasm:js-undefined", "test", 1);
-                        let line = self.line;
-                        self.chunk().emit_if(line);
-                        self.chunk().emit_else(line);
-
                         if args.iter().any(|arg| arg.spread) {
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            self.emit(Op::REF_IS_NULL);
+                            let line = self.line;
+                            self.chunk().emit_if(line);
+                            self.chunk().emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
+                            let line = self.line;
+                            self.chunk().emit_if(line);
+                            self.chunk().emit_else(line);
                             let (args_slot, known_len) =
                                 self.compile_call_args_array(args, "js_member_call_spread")?;
                             self.emit_call_ref_with_args_array(
@@ -7442,6 +7498,11 @@ impl Compiler {
                                 args_slot,
                                 known_len,
                             );
+                            self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                            self.emit_const(Value::I32(1));
+                            self.emit_u16(Op::LOCAL_SET, js_handled_slot);
+                            self.chunk().emit_end(line);
+                            self.chunk().emit_end(line);
                         } else {
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -7451,15 +7512,35 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                                 arg_slots.push(arg_slot);
                             }
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            self.emit(Op::REF_IS_NULL);
+                            let line = self.line;
+                            self.chunk().emit_if(line);
+                            self.emit_js_lookup_or_invoke_method_call(
+                                obj_tmp,
+                                field,
+                                &arg_slots,
+                            )?;
+                            self.chunk().emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
+                            let line = self.line;
+                            self.chunk().emit_if(line);
+                            self.emit_js_lookup_or_invoke_method_call(
+                                obj_tmp,
+                                field,
+                                &arg_slots,
+                            )?;
+                            self.chunk().emit_else(line);
                             self.emit_call_ref_with_bound_js_this_arg_slots(
                                 fn_tmp, obj_tmp, &arg_slots,
                             );
+                            self.chunk().emit_end(line);
+                            self.chunk().emit_end(line);
+                            self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                            self.emit_const(Value::I32(1));
+                            self.emit_u16(Op::LOCAL_SET, js_handled_slot);
                         }
-                        self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                        self.emit_const(Value::I32(1));
-                        self.emit_u16(Op::LOCAL_SET, js_handled_slot);
-                        self.chunk().emit_end(line);
-                        self.chunk().emit_end(line);
                     }
 
                     self.emit_u16(Op::LOCAL_GET, js_handled_slot);

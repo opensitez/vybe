@@ -14,7 +14,6 @@ impl Op {
     // Type checks
     // 0xFF 0x15–0x1E: retired (DYN_* opcodes removed; replaced by wasm:js-* emitter sequences)
     // Exception handling
-    pub const TRY_START: Op = Op::new(0xFF, 0x1F);
     pub const TRY_END: Op = Op::new(0xFF, 0x20);
     // Timers & spread
     // VM control
@@ -84,7 +83,6 @@ opcode_category! {
     // 0x15–0x1E: RETIRED — DYN_* opcodes removed. Slots vacant so legacy
     // bytecode carrying them fails loudly instead of silently aliasing.
     // Exception handling
-    [0x1F] try_start => U16_U16, "try_start";
     [0x20] try_end => None, "try_end";
     // Timers & spread
     // VM control

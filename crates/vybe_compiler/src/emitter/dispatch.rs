@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{channels, collections, dict, ops, strings, threading};
+use crate::emitter::{channels, collections, dict, object, ops, strings, threading};
 use vybe_emitter::threading as thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
@@ -91,6 +91,22 @@ pub fn emit_common(
             // js-string.concat in nested function-expression contexts).
             let idx = chunks[current].add_import("ecma:object", "new");
             chunks[current].emit_call(idx, 0, line);
+        }
+        "object.equals" => object::emit_equals(&mut chunks[current], line),
+        "object.is_null" => object::emit_is_null(&mut chunks[current], line),
+        "object.non_null" => object::emit_non_null(&mut chunks[current], line),
+        "object.hash_code" => object::emit_hash_code(&mut chunks[current], line),
+        "object.hash" => {
+            collections::emit_array_new(chunks, current, argc as u16, line);
+            object::emit_hash_array(&mut chunks[current], line);
+        }
+        "object.hash_array" => object::emit_hash_array(&mut chunks[current], line),
+        "object.compare" => object::emit_compare(&mut chunks[current], line),
+        "object.to_string_or" => {
+            if argc < 2 {
+                chunks[current].emit_op(Op::NULL, line);
+            }
+            object::emit_to_string_or(&mut chunks[current], line);
         }
 
         // ── Collection ops (route through ecma:array imports;
@@ -201,6 +217,9 @@ pub fn emit_common(
         "threading.thread_start" => threading::emit_thread_start(&mut chunks[current], line),
         "threading.thread_join" => threading::emit_thread_join(&mut chunks[current], line),
         "threading.thread_spawn" => threading::emit_thread_spawn(chunks, current, line),
+        "threading.monitor_notify" | "threading.monitor_notify_all" => {
+            object::emit_monitor_notify(&mut chunks[current], line)
+        }
 
         // ── VB Choose / Switch — variadic 1-indexed selector ────────
         // `Choose(idx, v1, v2, ..., vN)` returns `vidx`. Variadic so it

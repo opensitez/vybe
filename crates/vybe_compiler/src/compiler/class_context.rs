@@ -129,26 +129,10 @@ impl Compiler {
         if !self.current_class_implicit_self {
             return false;
         }
-        if let Some(ref class_name) = self.current_class {
-            let mut current = Some(class_name.as_str());
-            while let Some(cn) = current {
-                if let Some(pc) = self.pending_classes.get(cn) {
-                    if pc.fields.iter().any(|f| {
-                        if self.case_sensitive {
-                            f == name
-                        } else {
-                            f.eq_ignore_ascii_case(name)
-                        }
-                    }) {
-                        return true;
-                    }
-                    current = pc.parent.as_deref();
-                } else {
-                    break;
-                }
-            }
-        }
-        false
+        self.current_class
+            .as_deref()
+            .and_then(|class_name| self.visible_instance_field_storage_name_for_class(class_name, name))
+            .is_some()
     }
 
     pub(super) fn emit_self_ref(&mut self) -> bool {

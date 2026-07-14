@@ -392,21 +392,24 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // IsCallable(v) → i32 (1 if v is a callable function object, else 0).
-    // ECMA-262 §7.2.3. Replaces the retired VM-internal `REF_IS_FUNC` opcode;
-    // callers emit `call ecma:reflect.isCallable` instead of a custom op.
+    // Replaces the retired VM-internal `REF_IS_FUNC` opcode — matches its
+    // EXACT semantics: true only for a user-defined `ObjectKind::Function`,
+    // NOT host functions. The sole caller (the for-of custom-iterator gate)
+    // relies on this narrow test: a built-in Map/Set `[Symbol.iterator]` is a
+    // HostFunction and must fall through to native iteration, not the custom
+    // lazy-iterator path. (Deliberately narrower than ECMA IsCallable §7.2.3.)
     vm.register_host_fn(
         "ecma:reflect",
         "isCallable",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let callable = matches!(
+            let is_fn = matches!(
                 args.first(),
                 Some(Value::Object(o)) if matches!(
                     o.lock().unwrap().kind,
-                    ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                    ObjectKind::Function(_)
                 )
             );
-            Value::I32(i32::from(callable))
+            Value::I32(i32::from(is_fn))
         }),
     );
 
