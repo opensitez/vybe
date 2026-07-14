@@ -129,7 +129,7 @@ fn unsigned_shift_right_large_positive_value() {
 #[test]
 fn bitwise_and_or_xor_combined_expression() {
     let out = run_main("System.out.println((6 & 3) | (5 ^ 1));");
-    assert_eq!(out, vec!["4"]);
+    assert_eq!(out, vec!["6"]);
 }
 
 #[test]

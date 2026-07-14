@@ -213,13 +213,13 @@ fn formatter_france_general_format_small_decimal() {
     let out = run_main(
         r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.FRANCE); fmt.format("%g", 1.5); System.out.println(fmt.toString());"#,
     );
-    assert_eq!(out, vec!["1,500000"]);
+    assert_eq!(out, vec!["1,50000"]);
 }
 
 #[test]
 fn formatter_us_width_and_precision_with_grouping() {
     let out = run_main(
-        r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.US); fmt.format("%12,.2f", 1234.5); System.out.println(fmt.toString());"#,
+        r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.US); fmt.format("%,12.2f", 1234.5); System.out.println(fmt.toString());"#,
     );
     assert_eq!(out, vec!["    1,234.50"]);
 }
@@ -227,7 +227,7 @@ fn formatter_us_width_and_precision_with_grouping() {
 #[test]
 fn formatter_germany_width_and_precision_with_grouping() {
     let out = run_main(
-        r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.GERMANY); fmt.format("%12,.2f", 1234.5); System.out.println(fmt.toString());"#,
+        r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.GERMANY); fmt.format("%,12.2f", 1234.5); System.out.println(fmt.toString());"#,
     );
     assert_eq!(out, vec!["    1.234,50"]);
 }
@@ -365,7 +365,7 @@ fn formatter_france_newline_flag_with_locale() {
     let out = run_main(
         r#"java.util.Formatter fmt = new java.util.Formatter(java.util.Locale.FRANCE); fmt.format("a%nb"); System.out.println(fmt.toString());"#,
     );
-    assert_eq!(out, vec!["a\nb"]);
+    assert_eq!(out, vec!["a", "b"]);
 }
 
 #[test]

@@ -332,7 +332,7 @@ fn super_wildcard_list_accepts_integer_add() {
 fn generic_method_with_explicit_class_context() {
     let types = r#"
         static class Convert {
-            static <T> String asString(T value) { return \"\" + value; }
+            static <T> String asString(T value) { return "" + value; }
         }
     "#;
     let out = run_in_main("System.out.println(Convert.asString(12));", types);

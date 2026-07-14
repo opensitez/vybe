@@ -39,7 +39,7 @@ fn string_format_multiple_placeholders_in_order() {
 #[test]
 fn string_format_percent_n_inserts_platform_newline() {
     let out = run_main(r#"System.out.println(String.format("a%nb"));"#);
-    assert_eq!(out, vec!["a\nb"]);
+    assert_eq!(out, vec!["a", "b"]);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn formatter_format_percent_n_newline() {
     let out = run_main(
         r#"java.util.Formatter fmt = new java.util.Formatter(); fmt.format("x%ny"); System.out.println(fmt.toString());"#,
     );
-    assert_eq!(out, vec!["x\ny"]);
+    assert_eq!(out, vec!["x", "y"]);
 }
 
 #[test]

@@ -43,6 +43,16 @@ __java_field_set    = { emit = "common:java.field_set",           min_args = 3, 
 __java_field_inc    = { emit = "common:java.field_inc",           min_args = 3, max_args = 3 }
 __j_btoa            = { emit = "host:ecma:string:btoa",           min_args = 1, max_args = 1 }
 __j_atob            = { emit = "host:ecma:string:atob",           min_args = 1, max_args = 1 }
+__j_str_length      = { emit = "common:strings.length",           min_args = 1, max_args = 1 }
+__j_objects_equals  = { emit = "common:object.equals",            min_args = 2, max_args = 2 }
+__j_objects_is_null = { emit = "common:object.is_null",           min_args = 1, max_args = 1 }
+__j_objects_non_null = { emit = "common:object.non_null",         min_args = 1, max_args = 1 }
+__j_objects_hash_code = { emit = "common:object.hash_code",       min_args = 1, max_args = 1 }
+__j_objects_hash   = { emit = "common:object.hash",               min_args = 0, max_args = 255 }
+__j_objects_compare = { emit = "common:object.compare",           min_args = 3, max_args = 3 }
+__j_objects_to_string = { emit = "common:object.to_string_or",    min_args = 1, max_args = 2 }
+__j_object_notify   = { emit = "common:threading.monitor_notify", min_args = 1, max_args = 1 }
+__j_object_notify_all = { emit = "common:threading.monitor_notify_all", min_args = 1, max_args = 1 }
 
 # ── Type parsing / conversion ─────────────────────────────────────────────────
 
@@ -60,6 +70,13 @@ __j_atob            = { emit = "host:ecma:string:atob",           min_args = 1, 
 "Boolean.parseBoolean"   = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
 "Boolean.valueOf"        = { emit = "intrinsic:cbool",           min_args = 1, max_args = 1 }
 "String.valueOf"         = { emit = "intrinsic:tostring",        min_args = 1, max_args = 1 }
+"java.util.Objects.equals" = { emit = "common:object.equals",     min_args = 2, max_args = 2 }
+"java.util.Objects.hash" = { emit = "common:object.hash",         min_args = 0, max_args = 255 }
+"java.util.Objects.hashCode" = { emit = "common:object.hash_code", min_args = 1, max_args = 1 }
+"java.util.Objects.isNull" = { emit = "common:object.is_null",    min_args = 1, max_args = 1 }
+"java.util.Objects.nonNull" = { emit = "common:object.non_null",  min_args = 1, max_args = 1 }
+"java.util.Objects.compare" = { emit = "common:object.compare",   min_args = 3, max_args = 3 }
+"java.util.Objects.toString" = { emit = "common:object.to_string_or", min_args = 1, max_args = 2 }
 "UUID.fromString"        = { emit = "common:java.uuid_from_string", min_args = 1, max_args = 1 }
 "UUID.randomUUID"        = { emit = "host:web:crypto:randomUUID", min_args = 0, max_args = 0 }
 "UUID.nameUUIDFromBytes" = { emit = "common:java.uuid_name_from_bytes", min_args = 1, max_args = 1 }
@@ -183,9 +200,19 @@ __java_bigint_test_bit   = { emit = "common:java.bigint_test_bit", min_args = 2,
 __java_bigint_gcd        = { emit = "common:java.bigint_gcd",      min_args = 2, max_args = 2 }
 __java_bigint_is_probable_prime = { emit = "common:java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
 __java_bigint_next_probable_prime = { emit = "common:java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
+__java_set_add = { emit = "common:java.add", min_args = 2, max_args = 2 }
+__java_set_remove = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
 __java_list_remove_value = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
 __java_sorted_add = { emit = "common:java.sorted_add", min_args = 2, max_args = 2 }
 __java_sorted_poll = { emit = "common:java.sorted_poll", min_args = 1, max_args = 1 }
+__java_sorted_ceiling = { emit = "common:java.sorted_ceiling", min_args = 2, max_args = 2 }
+__java_sorted_floor = { emit = "common:java.sorted_floor", min_args = 2, max_args = 2 }
+__java_sorted_higher = { emit = "common:java.sorted_higher", min_args = 2, max_args = 2 }
+__java_sorted_lower = { emit = "common:java.sorted_lower", min_args = 2, max_args = 2 }
+__java_sorted_descending_set = { emit = "common:java.sorted_descending_set", min_args = 1, max_args = 1 }
+__java_sorted_sub_set = { emit = "common:java.sorted_sub_set", min_args = 3, max_args = 3 }
+__java_sorted_head_set = { emit = "common:java.sorted_head_set", min_args = 2, max_args = 2 }
+__java_sorted_tail_set = { emit = "common:java.sorted_tail_set", min_args = 2, max_args = 2 }
 __java_double_to_string = { emit = "common:java.double_to_string", min_args = 1, max_args = 1 }
 __j_stream_builder_add = { emit = "common:java.stream_builder_add", min_args = 2, max_args = 2 }
 __java_map_get = { emit = "common:java.map_get", min_args = 2, max_args = 2 }
@@ -239,6 +266,7 @@ __java_bitset_clear = { emit = "common:java.bitset_clear", min_args = 1, max_arg
 __java_bitset_flip = { emit = "common:java.bitset_flip", min_args = 2, max_args = 3 }
 __java_bitset_cardinality = { emit = "common:java.bitset_cardinality", min_args = 1, max_args = 1 }
 __java_bitset_length = { emit = "common:java.bitset_length", min_args = 1, max_args = 1 }
+__java_stream_optional_get = { emit = "common:java.stream_optional_get", min_args = 1, max_args = 1 }
 __java_bitset_size = { emit = "common:java.bitset_size", min_args = 1, max_args = 1 }
 __java_bitset_is_empty = { emit = "common:java.bitset_is_empty", min_args = 1, max_args = 1 }
 __java_bitset_next_set_bit = { emit = "common:java.bitset_next_set_bit", min_args = 2, max_args = 2 }
@@ -287,6 +315,8 @@ __j_normalize      = { emit = "host:ecma:string:normalize",  min_args = 2, max_a
 "Integer.lowestOneBit"           = { emit = "common:java.int_lowest_one_bit",  min_args = 1, max_args = 1 }
 "Integer.highestOneBit"          = { emit = "common:java.int_highest_one_bit", min_args = 1, max_args = 1 }
 "Integer.toOctalString"  = { emit = "common:java.to_octal_string",   min_args = 1, max_args = 1 }
+"Integer.min"            = { emit = "opcode:f64_min",          min_args = 2, max_args = 2 }
+"Integer.max"            = { emit = "opcode:f64_max",          min_args = 2, max_args = 2 }
 "Integer.MAX_VALUE"      = { emit = "intrinsic:int_max",         min_args = 0, max_args = 0 }
 "Integer.MIN_VALUE"      = { emit = "intrinsic:int_min",         min_args = 0, max_args = 0 }
 "Double.MAX_VALUE"       = { emit = "intrinsic:dbl_max",         min_args = 0, max_args = 0 }
@@ -400,31 +430,50 @@ __j_normalize      = { emit = "host:ecma:string:normalize",  min_args = 2, max_a
 "Collections.sort"        = { emit = "common:java.collections_sort",    min_args = 1, max_args = 2 }
 "Collections.reverse"     = { emit = "common:java.collections_reverse", min_args = 1, max_args = 1 }
 "Collections.shuffle"     = { emit = "common:java.collections_shuffle", min_args = 1, max_args = 2 }
+"Collections.fill"        = { emit = "common:java.collections_fill",    min_args = 2, max_args = 2 }
+"Collections.copy"        = { emit = "common:java.collections_copy",    min_args = 2, max_args = 2 }
 "Collections.min"         = { emit = "common:java.collections_min",     min_args = 1, max_args = 2 }
 "Collections.max"         = { emit = "common:java.collections_max",     min_args = 1, max_args = 2 }
 "Collections.frequency"   = { emit = "common:java.collections_frequency", min_args = 2, max_args = 2 }
-"Collections.unmodifiableList" = { emit = "noop",                       min_args = 1, max_args = 1 }
+"Collections.disjoint"    = { emit = "common:java.collections_disjoint", min_args = 2, max_args = 2 }
+"Collections.binarySearch" = { emit = "common:java.arrays_binary_search", min_args = 2, max_args = 3 }
+"Collections.unmodifiableList" = { emit = "common:java.identity",       min_args = 1, max_args = 1 }
+"Collections.synchronizedList" = { emit = "common:java.identity",       min_args = 1, max_args = 1 }
+"Collections.singleton"       = { emit = "common:java.singleton_list",   min_args = 1, max_args = 1 }
+"Collections.singletonMap"    = { emit = "common:java.map_of",           min_args = 2, max_args = 2 }
 "Collections.singletonList"   = { emit = "common:java.singleton_list", min_args = 1, max_args = 1 }
 "Collections.emptyList"       = { emit = "common:java.empty_list",      min_args = 0, max_args = 0 }
+"Collections.emptyMap"        = { emit = "common:java.map_of",          min_args = 0, max_args = 0 }
 "Collections.nCopies"         = { emit = "common:java.n_copies",        min_args = 2, max_args = 2 }
 
 # ── Arrays utility ────────────────────────────────────────────────────────────
 
 "Arrays.sort"          = { emit = "common:java.arrays_sort",     min_args = 1, max_args = 3 }
+"Arrays.parallelSort"  = { emit = "common:java.arrays_sort",     min_args = 1, max_args = 3 }
 "Arrays.fill"          = { emit = "common:java.arrays_fill",     min_args = 2, max_args = 4 }
 "Arrays.copyOf"        = { emit = "common:java.arrays_copy_of",  min_args = 2, max_args = 2 }
 "Arrays.copyOfRange"   = { emit = "common:java.arrays_copy_of_range", min_args = 3, max_args = 3 }
 "Arrays.toString"      = { emit = "common:java.arrays_to_string",min_args = 1, max_args = 1 }
+"Arrays.deepToString"  = { emit = "common:java.arrays_deep_to_string", min_args = 1, max_args = 1 }
 "Arrays.asList"        = { emit = "common:java.arrays_as_list",  min_args = 1, max_args = 255 }
 "Arrays.equals"        = { emit = "common:java.arrays_equals",   min_args = 2, max_args = 2 }
+"Arrays.deepEquals"    = { emit = "common:java.arrays_deep_equals", min_args = 2, max_args = 2 }
+"Arrays.compare"       = { emit = "common:java.arrays_compare",  min_args = 2, max_args = 2 }
+"Arrays.compareUnsigned" = { emit = "common:java.arrays_compare_unsigned", min_args = 2, max_args = 2 }
+"Arrays.mismatch"      = { emit = "common:java.arrays_mismatch", min_args = 2, max_args = 2 }
+"Arrays.setAll"        = { emit = "common:java.arrays_set_all",  min_args = 2, max_args = 2 }
+"Arrays.parallelSetAll" = { emit = "common:java.arrays_set_all", min_args = 2, max_args = 2 }
+"Arrays.parallelPrefix" = { emit = "common:java.arrays_parallel_prefix", min_args = 2, max_args = 3 }
+"Arrays.hashCode"      = { emit = "common:object.hash_array",    min_args = 1, max_args = 1 }
 "Arrays.binarySearch"  = { emit = "common:java.arrays_binary_search", min_args = 2, max_args = 3 }
-"Arrays.stream"        = { emit = "noop",                        min_args = 1, max_args = 1 }
+"Arrays.stream"        = { emit = "common:java.identity",        min_args = 1, max_args = 1 }
 
 # ── List.of / Map.of / Set.of (Java 9+) ─────────────────────────────────────
 
 "List.of"   = { emit = "common:java.list_of",  min_args = 0, max_args = 255 }
 "List.copyOf" = { emit = "common:java.list_copy_of", min_args = 1, max_args = 1 }
 "Set.of"    = { emit = "common:java.set_of",   min_args = 0, max_args = 255 }
+"Set.copyOf" = { emit = "common:java.set_copy_of", min_args = 1, max_args = 1 }
 "Map.of"    = { emit = "common:java.map_of",   min_args = 0, max_args = 255 }
 "Map.entry" = { emit = "common:java.map_entry",min_args = 2, max_args = 2 }
 "Map.ofEntries" = { emit = "common:java.map_of_entries", min_args = 0, max_args = 255 }
@@ -439,9 +488,13 @@ __java_string_join = { emit = "common:java.string_join",   min_args = 2, max_arg
 # ── Object / misc ─────────────────────────────────────────────────────────────
 
 "Objects.requireNonNull" = { emit = "common:java.require_non_null", min_args = 1, max_args = 2 }
-"Objects.equals"         = { emit = "common:java.objects_equals",   min_args = 2, max_args = 2 }
-"Objects.isNull"         = { emit = "common:java.is_null",          min_args = 1, max_args = 1 }
-"Objects.nonNull"        = { emit = "common:java.non_null",         min_args = 1, max_args = 1 }
+"Objects.equals"         = { emit = "common:object.equals",       min_args = 2, max_args = 2 }
+"Objects.hash"           = { emit = "common:object.hash",         min_args = 0, max_args = 255 }
+"Objects.hashCode"       = { emit = "common:object.hash_code",    min_args = 1, max_args = 1 }
+"Objects.isNull"         = { emit = "common:object.is_null",      min_args = 1, max_args = 1 }
+"Objects.nonNull"        = { emit = "common:object.non_null",     min_args = 1, max_args = 1 }
+"Objects.compare"        = { emit = "common:object.compare",      min_args = 3, max_args = 3 }
+"Objects.toString"       = { emit = "common:object.to_string_or", min_args = 1, max_args = 2 }
 
 # ── Optional ─────────────────────────────────────────────────────────────────
 
@@ -489,6 +542,8 @@ __java_string_join = { emit = "common:java.string_join",   min_args = 2, max_arg
 "Collectors.filtering"     = { emit = "common:java.collectors_filtering", min_args = 2, max_args = 2 }
 "Collectors.groupingBy"    = { emit = "common:java.collectors_grouping_by", min_args = 1, max_args = 2 }
 "Collectors.partitioningBy" = { emit = "common:java.collectors_partitioning_by", min_args = 1, max_args = 2 }
+"Collectors.minBy"         = { emit = "common:java.collectors_min_by", min_args = 1, max_args = 1 }
+"Collectors.maxBy"         = { emit = "common:java.collectors_max_by", min_args = 1, max_args = 1 }
 
 # ── Process ───────────────────────────────────────────────────────────────────
 
@@ -640,7 +695,7 @@ getLeastSignificantBits = { emit = "common:java.uuid_least_bits", min_args = 0, 
 cardinality   = { emit = "common:java.bitset_cardinality", min_args = 0, max_args = 0 }
 intValue      = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
 longValue     = { emit = "common:java.trunc_cast",       min_args = 0, max_args = 0 }
-doubleValue   = { emit = "noop",                         min_args = 0, max_args = 0 }
+doubleValue   = { emit = "common:java.double_to_string", min_args = 0, max_args = 0 }
 
 # List / ArrayList methods
 add           = { emit = "common:java.add",              min_args = 1, max_args = 2 }
@@ -653,15 +708,19 @@ removeAll     = { emit = "common:java.remove_all",       min_args = 1, max_args 
 retainAll     = { emit = "common:java.retain_all",       min_args = 1, max_args = 1 }
 removeIf      = { emit = "common:java.list_remove_if",   min_args = 1, max_args = 1 }
 clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
-get           = { emit = "common:java.get",              min_args = 0, max_args = 1 }
-set           = { emit = "common:java.list_set",         min_args = 2, max_args = 2 }
+get           = { emit = "common:java.get",              min_args = 1, max_args = 1 }
+set           = { emit = "common:java.list_set",         min_args = 1, max_args = 2 }
 size          = { emit = "common:java.size",             min_args = 0, max_args = 0 }
 subList       = { emit = "common:java.sub_list",         min_args = 2, max_args = 2 }
 sort          = { emit = "common:java.list_sort",        min_args = 0, max_args = 1 }
-iterator      = { emit = "noop",                         min_args = 0, max_args = 0 }
-listIterator  = { emit = "noop",                         min_args = 0, max_args = 1 }
+iterator      = { emit = "common:java.list_iterator",    min_args = 0, max_args = 0 }
+listIterator  = { emit = "common:java.list_iterator",    min_args = 0, max_args = 1 }
 next          = { emit = "common:java.iterator_next",     min_args = 0, max_args = 0 }
 hasNext       = { emit = "common:java.iterator_has_next", min_args = 0, max_args = 0 }
+previous      = { emit = "common:java.iterator_previous", min_args = 0, max_args = 0 }
+hasPrevious   = { emit = "common:java.iterator_has_previous", min_args = 0, max_args = 0 }
+nextIndex     = { emit = "common:java.iterator_next_index", min_args = 0, max_args = 0 }
+previousIndex = { emit = "common:java.iterator_previous_index", min_args = 0, max_args = 0 }
 stream        = { emit = "noop",                         min_args = 0, max_args = 0 }
 parallelStream = { emit = "noop",                       min_args = 0, max_args = 0 }
 
@@ -753,12 +812,24 @@ offer         = { emit = "common:collections.push",      min_args = 1, max_args 
 poll          = { emit = "common:java.queue_poll",       min_args = 0, max_args = 0 }
 first         = { emit = "common:java.sorted_first",     min_args = 0, max_args = 0 }
 last          = { emit = "common:java.sorted_last",      min_args = 0, max_args = 0 }
+ceiling       = { emit = "common:java.sorted_ceiling",   min_args = 1, max_args = 1 }
+floor         = { emit = "common:java.sorted_floor",     min_args = 1, max_args = 1 }
+higher        = { emit = "common:java.sorted_higher",    min_args = 1, max_args = 1 }
+lower         = { emit = "common:java.sorted_lower",     min_args = 1, max_args = 1 }
+descendingSet = { emit = "common:java.sorted_descending_set", min_args = 0, max_args = 0 }
+subSet        = { emit = "common:java.sorted_sub_set",   min_args = 2, max_args = 2 }
+headSet       = { emit = "common:java.sorted_head_set",  min_args = 1, max_args = 1 }
+tailSet       = { emit = "common:java.sorted_tail_set",  min_args = 1, max_args = 1 }
 firstKey      = { emit = "common:java.sorted_first_key", min_args = 0, max_args = 0 }
 lastKey       = { emit = "common:java.sorted_last_key",  min_args = 0, max_args = 0 }
 addFirst      = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
 addLast       = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+offerFirst    = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
+offerLast     = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 removeFirst   = { emit = "common:java.remove_first",     min_args = 0, max_args = 0 }
 removeLast    = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
+pollFirst     = { emit = "common:java.poll_first",       min_args = 0, max_args = 0 }
+pollLast      = { emit = "common:java.poll_last",        min_args = 0, max_args = 0 }
 peekFirst     = { emit = "common:java.peek_first",       min_args = 0, max_args = 0 }
 peekLast      = { emit = "common:java.peek_last",        min_args = 0, max_args = 0 }
 
@@ -866,17 +937,22 @@ Random        = ["wasi:random/insecure", "get-insecure-random-u64"]
 Integer       = ["ecma:number", "new"]
 BigInteger    = ["ecma:bigint", "BigInt"]
 "java.math.BigInteger" = ["ecma:bigint", "BigInt"]
-ArrayList     = ["common", "java.list_of"]
-LinkedList    = ["common", "java.list_of"]
-Vector        = ["common", "java.list_of"]
-HashSet       = ["common", "java.list_of"]
+ArrayList     = ["common", "java.mutable_list_of"]
+LinkedList    = ["common", "java.mutable_list_of"]
+ArrayDeque    = ["common", "java.mutable_list_of"]
+Vector        = ["common", "java.mutable_list_of"]
+HashSet       = ["common", "java.hash_set_new"]
+LinkedHashSet = ["common", "java.hash_set_new"]
 TreeSet       = ["common", "java.sorted_set_new"]
 PriorityQueue = ["common", "java.sorted_set_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
 IdentityHashMap = ["common", "java.identity_hash_map_new"]
 "java.util.TreeSet"       = ["common", "java.sorted_set_new"]
+"java.util.ArrayDeque"    = ["common", "java.mutable_list_of"]
 "java.util.PriorityQueue" = ["common", "java.sorted_set_new"]
+"java.util.HashSet"       = ["common", "java.hash_set_new"]
+"java.util.LinkedHashSet" = ["common", "java.hash_set_new"]
 LinkedHashMap = ["common", "java.linked_hash_map_new"]
 WeakHashMap   = ["common", "java.hash_map_new"]
 Hashtable     = ["common", "java.hash_map_new"]

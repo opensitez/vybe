@@ -20,7 +20,7 @@
 //! return `this`), so `ps.append("x") == ps` holds.
 
 use vybe_ast::{
-    Argument, ArrayElement, BinOp, BindingPattern, ClassMember, ClassModifiers,
+    Argument, ArrayElement, BinOp, BindingPattern, CatchClause, ClassMember, ClassModifiers,
     ConstructorInitializerTarget, ExprKind, Expression, Literal, Modifiers, ObjectProperty, Param,
     PassBy, Statement, StmtKind, VarDeclKind, VarDeclarator, Visibility,
 };
@@ -705,6 +705,14 @@ pub fn prelude() -> Vec<Statement> {
                 None,
             ),
             if_stmt(
+                binary(BinOp::Eq, ident("p"), str_lit("#,##0.###")),
+                vec![
+                    assign(fld("d", "grouping"), bool_lit(true)),
+                    assign(fld("d", "maxFrac"), int_lit(3)),
+                ],
+                None,
+            ),
+            if_stmt(
                 binary(BinOp::Eq, ident("p"), str_lit("#,##0.00")),
                 vec![assign(fld("d", "grouping"), bool_lit(true))],
                 None,
@@ -784,6 +792,7 @@ pub fn prelude() -> Vec<Statement> {
                 "d",
                 obj_props(vec![
                     ("pattern", str_lit("")),
+                    ("locale", str_lit("US")),
                     ("grouping", bool_lit(false)),
                     ("minInt", int_lit(1)),
                     ("minFrac", int_lit(0)),
@@ -801,6 +810,11 @@ pub fn prelude() -> Vec<Statement> {
                 "__j_df_apply",
                 vec![ident("d"), ident("p")],
             ))),
+            if_stmt(
+                binary(BinOp::NotEq, ident("sym"), undefined_lit()),
+                vec![assign(fld("d", "locale"), fld("sym", "locale"))],
+                None,
+            ),
             ret(ident("d")),
         ],
     ));
@@ -813,6 +827,14 @@ pub fn prelude() -> Vec<Statement> {
                 str_lit("¤#,##0.00"),
                 call("__j_df_symbols", vec![ident("loc")]),
             ],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_df_percent",
+        vec!["loc"],
+        vec![ret(call(
+            "__j_df_new",
+            vec![str_lit("0%"), call("__j_df_symbols", vec![ident("loc")])],
         ))],
     ));
     out.push(function_stmt(
@@ -854,6 +876,91 @@ pub fn prelude() -> Vec<Statement> {
                 ],
             ),
             ret(ident("out")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_replace_all",
+        vec!["s", "from", "to"],
+        vec![
+            assign(ident("s"), to_str(ident("s"))),
+            while_stmt(
+                binary(
+                    BinOp::GtEq,
+                    call_member(ident("s"), "indexOf", vec![ident("from")]),
+                    int_lit(0),
+                ),
+                vec![assign(
+                    ident("s"),
+                    call_member(ident("s"), "replace", vec![ident("from"), ident("to")]),
+                )],
+            ),
+            ret(ident("s")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_locale_number",
+        vec!["s", "loc"],
+        vec![
+            assign(ident("s"), to_str(ident("s"))),
+            if_stmt(
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, ident("loc"), str_lit("FR")),
+                    binary(BinOp::Eq, ident("loc"), str_lit("FR_CA")),
+                ),
+                vec![
+                    assign(
+                        ident("s"),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit(","), str_lit("@@JCOMMA@@")],
+                        ),
+                    ),
+                    assign(
+                        ident("s"),
+                        call("__j_replace_all", vec![ident("s"), str_lit("."), str_lit(",")]),
+                    ),
+                    assign(
+                        ident("s"),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit("@@JCOMMA@@"), str_lit("\u{202f}")],
+                        ),
+                    ),
+                    ret(ident("s")),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, ident("loc"), str_lit("DE")),
+                    binary(BinOp::Eq, ident("loc"), str_lit("IT")),
+                ),
+                vec![
+                    assign(
+                        ident("s"),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit(","), str_lit("@@JCOMMA@@")],
+                        ),
+                    ),
+                    assign(
+                        ident("s"),
+                        call("__j_replace_all", vec![ident("s"), str_lit("."), str_lit(",")]),
+                    ),
+                    assign(
+                        ident("s"),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit("@@JCOMMA@@"), str_lit(".")],
+                        ),
+                    ),
+                    ret(ident("s")),
+                ],
+                None,
+            ),
+            ret(ident("s")),
         ],
     ));
     out.push(function_stmt(
@@ -1054,7 +1161,7 @@ pub fn prelude() -> Vec<Statement> {
                 )],
                 None,
             ),
-            ret(ident("s")),
+            ret(call("__j_locale_number", vec![ident("s"), fld("d", "locale")])),
         ],
     ));
     out.push(function_stmt(
@@ -1248,6 +1355,7 @@ pub fn prelude() -> Vec<Statement> {
         vec!["d"],
         vec![ret(obj_props(vec![
             ("pattern", fld("d", "pattern")),
+            ("locale", fld("d", "locale")),
             ("grouping", fld("d", "grouping")),
             ("minInt", fld("d", "minInt")),
             ("minFrac", fld("d", "minFrac")),
@@ -1336,6 +1444,587 @@ pub fn prelude() -> Vec<Statement> {
                 vec![call("__j_sprintf", vec![ident("fmt"), ident("args")])],
             ))),
             ret(ident(OUT_SENTINEL)),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__j_sprintf_locale",
+        vec!["fmt", "args", "loc"],
+        vec![ret(call(
+            "__j_locale_number",
+            vec![call("__j_sprintf", vec![ident("fmt"), ident("args")]), ident("loc")],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_fmt_new",
+        vec!["a", "b"],
+        vec![
+            var_decl("f", obj_lit()),
+            assign(fld("f", "buf"), str_lit("")),
+            assign(fld("f", "loc"), str_lit("US")),
+            assign(fld("f", "out"), null_lit()),
+            if_stmt(
+                binary(BinOp::Eq, ident("a"), undefined_lit()),
+                vec![ret(ident("f"))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::NotEq, ident("b"), undefined_lit()),
+                vec![
+                    assign(fld("f", "out"), ident("a")),
+                    assign(fld("f", "loc"), ident("b")),
+                    ret(ident("f")),
+                ],
+                None,
+            ),
+            assign(fld("f", "loc"), ident("a")),
+            ret(ident("f")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_fmt_format",
+        vec!["f", "fmt", "args"],
+        vec![
+            var_decl(
+                "s",
+                call(
+                    "__j_sprintf_locale",
+                    vec![ident("fmt"), ident("args"), fld("f", "loc")],
+                ),
+            ),
+            assign(fld("f", "buf"), add(fld("f", "buf"), ident("s"))),
+            if_stmt(
+                binary(BinOp::NotEq, fld("f", "out"), null_lit()),
+                vec![stmt(StmtKind::Expr(call(
+                    "__j_sb_append",
+                    vec![fld("f", "out"), ident("s")],
+                )))],
+                None,
+            ),
+            ret(ident("f")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_fmt_to_string",
+        vec!["f"],
+        vec![ret(fld("f", "buf"))],
+    ));
+    out.push(function_stmt(
+        "__j_fmt_locale",
+        vec!["f"],
+        vec![ret(fld("f", "loc"))],
+    ));
+    out.push(function_stmt(
+        "__j_fmt_out",
+        vec!["f"],
+        vec![ret(ident("f"))],
+    ));
+
+    out.push(function_stmt(
+        "__j_tz_get",
+        vec!["id"],
+        vec![ret(ident("id"))],
+    ));
+    out.push(function_stmt(
+        "__j_cal_new",
+        vec!["tz", "loc"],
+        vec![ret(obj_props(vec![
+            ("y", int_lit(1970)),
+            ("mo", int_lit(0)),
+            ("d", int_lit(1)),
+            ("h", int_lit(0)),
+            ("mi", int_lit(0)),
+            ("s", int_lit(0)),
+            ("ms", int_lit(0)),
+        ]))],
+    ));
+    out.push(function_stmt(
+        "__j_cal_set",
+        vec!["c", "a", "b", "d", "h", "mi", "s"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, ident("d"), undefined_lit()),
+                vec![
+                    if_stmt(
+                        binary(BinOp::Eq, ident("a"), int_lit(14)),
+                        vec![assign(fld("c", "ms"), ident("b"))],
+                        None,
+                    ),
+                    ret(null_lit()),
+                ],
+                None,
+            ),
+            assign(fld("c", "y"), ident("a")),
+            assign(fld("c", "mo"), ident("b")),
+            assign(fld("c", "d"), ident("d")),
+            assign(fld("c", "h"), ident("h")),
+            assign(fld("c", "mi"), ident("mi")),
+            assign(fld("c", "s"), ident("s")),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_cal_get_time",
+        vec!["c"],
+        vec![ret(obj_props(vec![
+            ("y", fld("c", "y")),
+            ("mo", fld("c", "mo")),
+            ("d", fld("c", "d")),
+            ("h", fld("c", "h")),
+            ("mi", fld("c", "mi")),
+            ("s", fld("c", "s")),
+            ("ms", fld("c", "ms")),
+        ]))],
+    ));
+
+    out.push(function_stmt(
+        "__j_mf_new",
+        vec!["pattern", "loc"],
+        vec![
+            var_decl("m", obj_lit()),
+            assign(fld("m", "pattern"), ident("pattern")),
+            assign(fld("m", "loc"), ident("loc")),
+            ret(ident("m")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_static_format",
+        vec!["pattern", "args"],
+        vec![ret(call(
+            "__j_mf_format",
+            vec![call("__j_mf_new", vec![ident("pattern"), str_lit("US")]), ident("args")],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_mf_format",
+        vec!["m", "args"],
+        vec![ret(call(
+            "__j_mf_format_pattern",
+            vec![fld("m", "pattern"), ident("args"), fld("m", "loc")],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_mf_apply_pattern",
+        vec!["m", "pattern"],
+        vec![assign(fld("m", "pattern"), ident("pattern")), ret(null_lit())],
+    ));
+    out.push(function_stmt(
+        "__j_mf_to_pattern",
+        vec!["m"],
+        vec![ret(fld("m", "pattern"))],
+    ));
+    out.push(function_stmt(
+        "__j_mf_set_locale",
+        vec!["m", "loc"],
+        vec![assign(fld("m", "loc"), ident("loc")), ret(null_lit())],
+    ));
+    out.push(function_stmt(
+        "__j_mf_clone",
+        vec!["m"],
+        vec![ret(call("__j_mf_new", vec![fld("m", "pattern"), fld("m", "loc")]))],
+    ));
+    out.push(function_stmt(
+        "__j_mf_equals",
+        vec!["a", "b"],
+        vec![ret(binary(
+            BinOp::Eq,
+            fld("a", "pattern"),
+            fld("b", "pattern"),
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_mf_number",
+        vec!["x", "style", "loc"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("integer")),
+                vec![ret(call(
+                    "__j_df_format",
+                    vec![
+                        call(
+                            "__j_df_new",
+                            vec![str_lit("#,##0"), call("__j_df_symbols", vec![ident("loc")])],
+                        ),
+                        call("__java_trunc_cast", vec![ident("x")]),
+                    ],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("currency")),
+                vec![ret(call(
+                    "__j_df_format",
+                    vec![call("__j_df_currency", vec![ident("loc")]), ident("x")],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("percent")),
+                vec![ret(call(
+                    "__j_df_format",
+                    vec![call("__j_df_percent", vec![ident("loc")]), ident("x")],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("")),
+                vec![assign(ident("style"), str_lit("#,##0.###"))],
+                None,
+            ),
+            ret(call(
+                "__j_df_format",
+                vec![
+                    call(
+                        "__j_df_new",
+                        vec![ident("style"), call("__j_df_symbols", vec![ident("loc")])],
+                    ),
+                    ident("x"),
+                ],
+            )),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_pad2",
+        vec!["x"],
+        vec![
+            var_decl("s", to_str(ident("x"))),
+            if_stmt(
+                binary(BinOp::Lt, member(ident("s"), "length"), int_lit(2)),
+                vec![assign(ident("s"), add(str_lit("0"), ident("s")))],
+                None,
+            ),
+            ret(ident("s")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_day",
+        vec!["y", "m", "d"],
+        vec![
+            if_stmt(
+                binary(BinOp::Lt, ident("m"), int_lit(3)),
+                vec![
+                    assign(ident("m"), add(ident("m"), int_lit(12))),
+                    assign(ident("y"), sub(ident("y"), int_lit(1))),
+                ],
+                None,
+            ),
+            var_decl(
+                "h",
+                binary(
+                    BinOp::Mod,
+                    add(
+                        add(
+                            add(
+                                add(
+                                    add(
+                                        ident("d"),
+                                        call_member(
+                                            ident("Math"),
+                                            "floor",
+                                            vec![div(mul(int_lit(13), add(ident("m"), int_lit(1))), int_lit(5))],
+                                        ),
+                                    ),
+                                    ident("y"),
+                                ),
+                                call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(4))]),
+                            ),
+                            sub(int_lit(0), call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(100))])),
+                        ),
+                        call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(400))]),
+                    ),
+                    int_lit(7),
+                ),
+            ),
+            ret(binary(BinOp::Mod, add(ident("h"), int_lit(6)), int_lit(7))),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_datetime",
+        vec!["x", "kind", "style"],
+        vec![
+            var_decl(
+                "iscal",
+                binary(BinOp::NotEq, typeof_expr(fld("x", "y")), str_lit("undefined")),
+            ),
+            var_decl("y", int_lit(0)),
+            var_decl("mo", int_lit(0)),
+            var_decl("d", int_lit(0)),
+            var_decl("h", int_lit(0)),
+            var_decl("mi", int_lit(0)),
+            var_decl("se", int_lit(0)),
+            if_stmt(
+                ident("iscal"),
+                vec![
+                    assign(ident("y"), fld("x", "y")),
+                    assign(ident("mo"), add(fld("x", "mo"), int_lit(1))),
+                    assign(ident("d"), fld("x", "d")),
+                    assign(ident("h"), fld("x", "h")),
+                    assign(ident("mi"), fld("x", "mi")),
+                    assign(ident("se"), fld("x", "s")),
+                ],
+                Some(vec![
+                    assign(ident("y"), call_member(ident("x"), "getUTCFullYear", vec![])),
+                    assign(
+                        ident("mo"),
+                        add(call_member(ident("x"), "getUTCMonth", vec![]), int_lit(1)),
+                    ),
+                    assign(ident("d"), call_member(ident("x"), "getUTCDate", vec![])),
+                    assign(ident("h"), call_member(ident("x"), "getUTCHours", vec![])),
+                    assign(ident("mi"), call_member(ident("x"), "getUTCMinutes", vec![])),
+                    assign(ident("se"), call_member(ident("x"), "getUTCSeconds", vec![])),
+                ]),
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("kind"), str_lit("date")),
+                vec![if_stmt(
+                    binary(BinOp::Eq, ident("style"), str_lit("yyyy-MM-dd")),
+                    vec![ret(add(
+                        add(add(to_str(ident("y")), str_lit("-")), call("__j_mf_pad2", vec![ident("mo")])),
+                        add(str_lit("-"), call("__j_mf_pad2", vec![ident("d")])),
+                    ))],
+                    Some(vec![if_stmt(
+                        binary(BinOp::Eq, ident("style"), str_lit("full")),
+                        vec![ret(add(
+                            add(
+                                add(
+                                    add(
+                                        index_expr(
+                                            array_lit(vec![
+                                                str_lit("Sunday"),
+                                                str_lit("Monday"),
+                                                str_lit("Tuesday"),
+                                                str_lit("Wednesday"),
+                                                str_lit("Thursday"),
+                                                str_lit("Friday"),
+                                                str_lit("Saturday"),
+                                            ]),
+                                            call("__j_mf_day", vec![ident("y"), ident("mo"), ident("d")]),
+                                        ),
+                                        str_lit(", "),
+                                    ),
+                                    index_expr(
+                                        array_lit(vec![
+                                            str_lit("January"),
+                                            str_lit("February"),
+                                            str_lit("March"),
+                                            str_lit("April"),
+                                            str_lit("May"),
+                                            str_lit("June"),
+                                            str_lit("July"),
+                                            str_lit("August"),
+                                            str_lit("September"),
+                                            str_lit("October"),
+                                            str_lit("November"),
+                                            str_lit("December"),
+                                        ]),
+                                        sub(ident("mo"), int_lit(1)),
+                                    ),
+                                ),
+                                add(str_lit(" "), to_str(ident("d"))),
+                            ),
+                            add(str_lit(", "), to_str(ident("y"))),
+                        ))],
+                        Some(vec![ret(add(
+                            add(add(to_str(ident("mo")), str_lit("/")), to_str(ident("d"))),
+                            add(str_lit("/"), call_member(to_str(ident("y")), "substring", vec![int_lit(2)])),
+                        ))]),
+                    )]),
+                )],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("HH:mm:ss")),
+                vec![ret(add(
+                    add(add(call("__j_mf_pad2", vec![ident("h")]), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                    add(str_lit(":"), call("__j_mf_pad2", vec![ident("se")])),
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("HH:mm")),
+                vec![ret(add(
+                    add(call("__j_mf_pad2", vec![ident("h")]), str_lit(":")),
+                    call("__j_mf_pad2", vec![ident("mi")]),
+                ))],
+                None,
+            ),
+            var_decl("ap", str_lit("AM")),
+            if_stmt(
+                binary(BinOp::GtEq, ident("h"), int_lit(12)),
+                vec![assign(ident("ap"), str_lit("PM"))],
+                None,
+            ),
+            var_decl("hh", binary(BinOp::Mod, ident("h"), int_lit(12))),
+            if_stmt(binary(BinOp::Eq, ident("hh"), int_lit(0)), vec![assign(ident("hh"), int_lit(12))], None),
+            if_stmt(
+                binary(BinOp::Eq, ident("style"), str_lit("medium")),
+                vec![ret(add(
+                    add(
+                        add(add(to_str(ident("hh")), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                        add(str_lit(":"), call("__j_mf_pad2", vec![ident("se")])),
+                    ),
+                    add(str_lit(" "), ident("ap")),
+                ))],
+                Some(vec![ret(add(
+                    add(add(to_str(ident("hh")), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                    add(str_lit(" "), ident("ap")),
+                ))]),
+            ),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_choice",
+        vec!["x", "style", "args", "loc"],
+        vec![
+            var_decl("selected", str_lit("")),
+            var_decl("start", int_lit(0)),
+            var_decl("n", member(ident("style"), "length")),
+            while_stmt(
+                binary(BinOp::LtEq, ident("start"), ident("n")),
+                vec![
+                    var_decl("end", call_member(ident("style"), "indexOf", vec![str_lit("|"), ident("start")])),
+                    if_stmt(binary(BinOp::Lt, ident("end"), int_lit(0)), vec![assign(ident("end"), ident("n"))], None),
+                    var_decl("part", call_member(ident("style"), "substring", vec![ident("start"), ident("end")])),
+                    var_decl("hash", call_member(ident("part"), "indexOf", vec![str_lit("#")])),
+                    var_decl("lt", call_member(ident("part"), "indexOf", vec![str_lit("<")])),
+                    var_decl("op", str_lit("#")),
+                    var_decl("pos", ident("hash")),
+                    if_stmt(
+                        binary(BinOp::Or, binary(BinOp::Lt, ident("pos"), int_lit(0)), binary(BinOp::And, binary(BinOp::GtEq, ident("lt"), int_lit(0)), binary(BinOp::Lt, ident("lt"), ident("pos")))),
+                        vec![assign(ident("op"), str_lit("<")), assign(ident("pos"), ident("lt"))],
+                        None,
+                    ),
+                    var_decl("limit", call_expr(ident("Number"), vec![call_member(ident("part"), "substring", vec![int_lit(0), ident("pos")])])),
+                    var_decl("text", call_member(ident("part"), "substring", vec![add(ident("pos"), int_lit(1))])),
+                    if_stmt(
+                        binary(
+                            BinOp::And,
+                            binary(BinOp::Eq, ident("start"), int_lit(0)),
+                            binary(BinOp::Lt, ident("x"), ident("limit")),
+                        ),
+                        vec![assign(ident("selected"), ident("text"))],
+                        None,
+                    ),
+                    if_stmt(
+                        binary(BinOp::Or, binary(BinOp::And, binary(BinOp::Eq, ident("op"), str_lit("#")), binary(BinOp::Eq, ident("x"), ident("limit"))), binary(BinOp::And, binary(BinOp::Eq, ident("op"), str_lit("<")), binary(BinOp::Gt, ident("x"), ident("limit")))),
+                        vec![assign(ident("selected"), ident("text"))],
+                        None,
+                    ),
+                    assign(ident("start"), add(ident("end"), int_lit(1))),
+                ],
+            ),
+            ret(call("__j_mf_format_pattern", vec![ident("selected"), ident("args"), ident("loc")])),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_piece",
+        vec!["spec", "args", "loc"],
+        vec![
+            var_decl("c1", call_member(ident("spec"), "indexOf", vec![str_lit(",")])),
+            var_decl("idxs", ident("spec")),
+            if_stmt(binary(BinOp::GtEq, ident("c1"), int_lit(0)), vec![assign(ident("idxs"), call_member(ident("spec"), "substring", vec![int_lit(0), ident("c1")]))], None),
+            var_decl("idx", call_member(ident("Integer"), "parseInt", vec![ident("idxs")])),
+            var_decl("x", index_expr(ident("args"), ident("idx"))),
+            if_stmt(binary(BinOp::Lt, ident("c1"), int_lit(0)), vec![ret(to_str(ident("x")))], None),
+            var_decl("rest", call_member(ident("spec"), "substring", vec![add(ident("c1"), int_lit(1))])),
+            var_decl("c2", call_member(ident("rest"), "indexOf", vec![str_lit(",")])),
+            var_decl("typ", ident("rest")),
+            var_decl("style", str_lit("")),
+            if_stmt(
+                binary(BinOp::GtEq, ident("c2"), int_lit(0)),
+                vec![
+                    assign(ident("typ"), call_member(ident("rest"), "substring", vec![int_lit(0), ident("c2")])),
+                    assign(ident("style"), call_member(ident("rest"), "substring", vec![add(ident("c2"), int_lit(1))])),
+                ],
+                None,
+            ),
+            if_stmt(binary(BinOp::Eq, ident("typ"), str_lit("number")), vec![ret(call("__j_mf_number", vec![ident("x"), ident("style"), ident("loc")]))], None),
+            if_stmt(binary(BinOp::Eq, ident("typ"), str_lit("choice")), vec![ret(call("__j_mf_choice", vec![ident("x"), ident("style"), ident("args"), ident("loc")]))], None),
+            if_stmt(binary(BinOp::Or, binary(BinOp::Eq, ident("typ"), str_lit("date")), binary(BinOp::Eq, ident("typ"), str_lit("time"))), vec![ret(call("__j_mf_datetime", vec![ident("x"), ident("typ"), ident("style")]))], None),
+            ret(to_str(ident("x"))),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_format_pattern",
+        vec!["pattern", "args", "loc"],
+        vec![
+            var_decl("out", str_lit("")),
+            var_decl("i", int_lit(0)),
+            var_decl("n", member(ident("pattern"), "length")),
+            while_stmt(
+                binary(BinOp::Lt, ident("i"), ident("n")),
+                vec![
+                    var_decl("c", char_at(ident("pattern"), ident("i"))),
+                    if_stmt(
+                        binary(BinOp::Eq, ident("c"), str_lit("'")),
+                        vec![if_stmt(
+                            binary(BinOp::And, binary(BinOp::Lt, add(ident("i"), int_lit(1)), ident("n")), binary(BinOp::Eq, char_at(ident("pattern"), add(ident("i"), int_lit(1))), str_lit("'"))),
+                            vec![assign(ident("out"), add(ident("out"), str_lit("'"))), assign(ident("i"), add(ident("i"), int_lit(2)))],
+                            Some(vec![
+                                assign(ident("i"), add(ident("i"), int_lit(1))),
+                                while_stmt(binary(BinOp::And, binary(BinOp::Lt, ident("i"), ident("n")), binary(BinOp::NotEq, char_at(ident("pattern"), ident("i")), str_lit("'"))), vec![assign(ident("out"), add(ident("out"), char_at(ident("pattern"), ident("i")))), assign(ident("i"), add(ident("i"), int_lit(1)))]),
+                                assign(ident("i"), add(ident("i"), int_lit(1))),
+                            ]),
+                        )],
+                        Some(vec![if_stmt(
+                            binary(BinOp::Eq, ident("c"), str_lit("{")),
+                            vec![
+                                var_decl("j", add(ident("i"), int_lit(1))),
+                                var_decl("depth", int_lit(1)),
+                                while_stmt(
+                                    binary(BinOp::And, binary(BinOp::Lt, ident("j"), ident("n")), binary(BinOp::Gt, ident("depth"), int_lit(0))),
+                                    vec![
+                                        var_decl("ch", char_at(ident("pattern"), ident("j"))),
+                                        if_stmt(binary(BinOp::Eq, ident("ch"), str_lit("{")), vec![assign(ident("depth"), add(ident("depth"), int_lit(1)))], None),
+                                        if_stmt(binary(BinOp::Eq, ident("ch"), str_lit("}")), vec![assign(ident("depth"), sub(ident("depth"), int_lit(1)))], None),
+                                        if_stmt(binary(BinOp::Gt, ident("depth"), int_lit(0)), vec![assign(ident("j"), add(ident("j"), int_lit(1)))], None),
+                                    ],
+                                ),
+                                var_decl("spec", call_member(ident("pattern"), "substring", vec![add(ident("i"), int_lit(1)), ident("j")])),
+                                assign(ident("out"), add(ident("out"), call("__j_mf_piece", vec![ident("spec"), ident("args"), ident("loc")]))),
+                                assign(ident("i"), add(ident("j"), int_lit(1))),
+                            ],
+                            Some(vec![assign(ident("out"), add(ident("out"), ident("c"))), assign(ident("i"), add(ident("i"), int_lit(1)))]),
+                        )]),
+                    ),
+                ],
+            ),
+            ret(ident("out")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_mf_parse",
+        vec!["m", "text"],
+        vec![
+            var_decl("res", arr_lit()),
+            var_decl("p", fld("m", "pattern")),
+            var_decl("pi", int_lit(0)),
+            var_decl("si", int_lit(0)),
+            var_decl("n", member(ident("p"), "length")),
+            while_stmt(
+                binary(BinOp::Lt, ident("pi"), ident("n")),
+                vec![if_stmt(
+                    binary(BinOp::Eq, char_at(ident("p"), ident("pi")), str_lit("{")),
+                    vec![
+                        var_decl("end", call_member(ident("p"), "indexOf", vec![str_lit("}"), ident("pi")])),
+                        var_decl("spec", call_member(ident("p"), "substring", vec![add(ident("pi"), int_lit(1)), ident("end")])),
+                        var_decl("comma", call_member(ident("spec"), "indexOf", vec![str_lit(",")])),
+                        if_stmt(binary(BinOp::GtEq, ident("comma"), int_lit(0)), vec![assign(ident("spec"), call_member(ident("spec"), "substring", vec![int_lit(0), ident("comma")]))], None),
+                        var_decl("idx", call_member(ident("Integer"), "parseInt", vec![ident("spec")])),
+                        assign(ident("pi"), add(ident("end"), int_lit(1))),
+                        var_decl("next", call_member(ident("p"), "indexOf", vec![str_lit("{"), ident("pi")])),
+                        if_stmt(binary(BinOp::Lt, ident("next"), int_lit(0)), vec![assign(ident("next"), ident("n"))], None),
+                        var_decl("lit", call_member(ident("p"), "substring", vec![ident("pi"), ident("next")])),
+                        var_decl("te", member(ident("text"), "length")),
+                        if_stmt(binary(BinOp::Gt, member(ident("lit"), "length"), int_lit(0)), vec![assign(ident("te"), call_member(ident("text"), "indexOf", vec![ident("lit"), ident("si")]))], None),
+                        assign(index_expr(ident("res"), ident("idx")), call_member(ident("text"), "substring", vec![ident("si"), ident("te")])),
+                        assign(ident("si"), add(ident("te"), member(ident("lit"), "length"))),
+                        assign(ident("pi"), ident("next")),
+                    ],
+                    Some(vec![assign(ident("pi"), add(ident("pi"), int_lit(1))), assign(ident("si"), add(ident("si"), int_lit(1)))]),
+                )],
+            ),
+            ret(ident("res")),
         ],
     ));
 
@@ -1437,6 +2126,30 @@ pub fn prelude() -> Vec<Statement> {
                 None,
             ),
             ret(ident("grouped")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_group_number",
+        vec!["s"],
+        vec![
+            assign(ident("s"), to_str(ident("s"))),
+            var_decl("dot", call_member(ident("s"), "indexOf", vec![str_lit(".")])),
+            if_stmt(
+                binary(BinOp::Lt, ident("dot"), int_lit(0)),
+                vec![ret(call("__j_group", vec![ident("s")]))],
+                None,
+            ),
+            ret(add(
+                call(
+                    "__j_group",
+                    vec![call_member(
+                        ident("s"),
+                        "substring",
+                        vec![int_lit(0), ident("dot")],
+                    )],
+                ),
+                call_member(ident("s"), "substring", vec![ident("dot")]),
+            )),
         ],
     ));
 
@@ -1760,6 +2473,8 @@ pub fn prelude() -> Vec<Statement> {
         ],
     ));
 
+    out.append(&mut monitor_fns());
+    out.append(&mut objects_fns());
     out.append(&mut properties_fns());
     out.append(&mut base64_fns());
     out.append(&mut stringbuilder_fns());
@@ -1769,6 +2484,73 @@ pub fn prelude() -> Vec<Statement> {
     out.append(&mut regex_fns());
     out.append(&mut url_fns());
     out.push(sprintf_fn());
+    out
+}
+
+fn monitor_fns() -> Vec<Statement> {
+    let mut out = Vec::new();
+
+    out.push(function_stmt(
+        "__j_object_wait",
+        vec!["obj", "timeout"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, fld("obj", "__j_notified"), bool_lit(true)),
+                vec![
+                    assign(fld("obj", "__j_notified"), bool_lit(false)),
+                    ret(null_lit()),
+                ],
+                None,
+            ),
+            stmt(StmtKind::Throw {
+                expr: Some(call(
+                    "__j_exc",
+                    vec![
+                        str_lit("__JavaWaitYield"),
+                        array_lit(vec![str_lit("__JavaWaitYield")]),
+                        str_lit("wait"),
+                        undefined_lit(),
+                    ],
+                )),
+                cause: None,
+            }),
+        ],
+    ));
+    out
+}
+
+fn objects_fns() -> Vec<Statement> {
+    let mut out = Vec::new();
+
+    out.push(function_stmt(
+        "__j_objects_require_non_null",
+        vec!["x", "message"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, ident("x"), null_lit()),
+                vec![stmt(StmtKind::Throw {
+                    expr: Some(call(
+                        "__j_exc",
+                        vec![
+                            str_lit("NullPointerException"),
+                            array_lit(vec![
+                                str_lit("java.lang.NullPointerException"),
+                                str_lit("NullPointerException"),
+                                str_lit("RuntimeException"),
+                                str_lit("Exception"),
+                                str_lit("Throwable"),
+                            ]),
+                            ident("message"),
+                            undefined_lit(),
+                        ],
+                    )),
+                    cause: None,
+                })],
+                None,
+            ),
+            ret(ident("x")),
+        ],
+    ));
     out
 }
 
@@ -4427,22 +5209,33 @@ fn thread_fns() -> Vec<Statement> {
             assign(fld("t", "__slept"), bool_lit(false)),
             var_decl("prev", ident("__j_current_thread")),
             assign(ident("__j_current_thread"), ident("t")),
-            if_stmt(
-                binary(
-                    BinOp::And,
-                    binary(BinOp::NotEq, ident("target"), null_lit()),
-                    binary(BinOp::NotEq, ident("target"), undefined_lit()),
-                ),
-                vec![stmt(StmtKind::Expr(call(
-                    "__j_runnable_run",
-                    vec![ident("target")],
-                )))],
-                Some(vec![stmt(StmtKind::Expr(call_member(
-                    ident("t"),
-                    "run",
-                    vec![],
-                )))]),
-            ),
+            stmt(StmtKind::Try {
+                body: vec![if_stmt(
+                    binary(
+                        BinOp::And,
+                        binary(BinOp::NotEq, ident("target"), null_lit()),
+                        binary(BinOp::NotEq, ident("target"), undefined_lit()),
+                    ),
+                    vec![stmt(StmtKind::Expr(call(
+                        "__j_runnable_run",
+                        vec![ident("target")],
+                    )))],
+                    Some(vec![stmt(StmtKind::Expr(call_member(
+                        ident("t"),
+                        "run",
+                        vec![],
+                    )))]),
+                )],
+                catches: vec![CatchClause {
+                    types: vec!["__JavaWaitYield".to_string()],
+                    var_name: None,
+                    stack_var: None,
+                    body: vec![assign(fld("t", "__slept"), bool_lit(true))],
+                    when_clause: None,
+                }],
+                else_body: None,
+                finally: None,
+            }),
             assign(ident("__j_current_thread"), ident("prev")),
             if_stmt(
                 binary(BinOp::NotEq, fld("t", "__slept"), bool_lit(true)),
@@ -4455,7 +5248,18 @@ fn thread_fns() -> Vec<Statement> {
     out.push(function_stmt(
         "__j_thread_join",
         vec!["t"],
-        vec![assign(fld("t", "alive"), bool_lit(false)), ret(null_lit())],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, fld("t", "alive"), bool_lit(true)),
+                vec![stmt(StmtKind::Expr(call(
+                    "__j_thread_start_with",
+                    vec![ident("t"), fld("t", "__target")],
+                )))],
+                None,
+            ),
+            assign(fld("t", "alive"), bool_lit(false)),
+            ret(null_lit()),
+        ],
     ));
     out.push(function_stmt(
         "__j_thread_sleep",
@@ -6027,21 +6831,71 @@ fn sprintf_fn() -> Statement {
             Some(vec![if_stmt(
                 binary(
                     BinOp::Or,
-                    binary(BinOp::Eq, ident("conv"), str_lit("e")),
-                    binary(BinOp::Eq, ident("conv"), str_lit("E")),
+                    binary(BinOp::Eq, ident("conv"), str_lit("f")),
+                    binary(BinOp::Eq, ident("conv"), str_lit("F")),
                 ),
-                vec![assign(
-                    ident("piece"),
-                    call("__j_expad", vec![delegate.clone()]),
-                )],
+                vec![
+                    var_decl("prf", int_lit(6)),
+                    if_stmt(
+                        binary(BinOp::NotEq, ident("prec"), str_lit("")),
+                        vec![assign(
+                            ident("prf"),
+                            call_member(
+                                ident("Integer"),
+                                "parseInt",
+                                vec![call_member(ident("prec"), "substring", vec![int_lit(1)])],
+                            ),
+                        )],
+                        None,
+                    ),
+                    assign(
+                        ident("piece"),
+                        call(
+                            "tofixed",
+                            vec![
+                                call(
+                                    "__j_bd_round_half_up",
+                                    vec![call_expr(ident("Number"), vec![ident("a")]), ident("prf")],
+                                ),
+                                ident("prf"),
+                            ],
+                        ),
+                    ),
+                    if_stmt(
+                        binary(BinOp::Eq, ident("grouped"), int_lit(1)),
+                        vec![assign(
+                            ident("piece"),
+                            call("__j_group_number", vec![ident("piece")]),
+                        )],
+                        None,
+                    ),
+                    assign(
+                        ident("piece"),
+                        call(
+                            "__j_padw",
+                            vec![ident("piece"), ident("width"), ident("left")],
+                        ),
+                    ),
+                ],
                 Some(vec![if_stmt(
                     binary(
                         BinOp::Or,
-                        binary(BinOp::Eq, ident("conv"), str_lit("g")),
-                        binary(BinOp::Eq, ident("conv"), str_lit("G")),
+                        binary(BinOp::Eq, ident("conv"), str_lit("e")),
+                        binary(BinOp::Eq, ident("conv"), str_lit("E")),
                     ),
-                    g_body,
-                    Some(vec![assign(ident("piece"), delegate)]),
+                    vec![assign(
+                        ident("piece"),
+                        call("__j_expad", vec![delegate.clone()]),
+                    )],
+                    Some(vec![if_stmt(
+                        binary(
+                            BinOp::Or,
+                            binary(BinOp::Eq, ident("conv"), str_lit("g")),
+                            binary(BinOp::Eq, ident("conv"), str_lit("G")),
+                        ),
+                        g_body,
+                        Some(vec![assign(ident("piece"), delegate)]),
+                    )]),
                 )]),
             )]),
         )]),

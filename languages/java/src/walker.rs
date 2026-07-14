@@ -40,6 +40,9 @@ thread_local! {
     static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_SCANNER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_FORMATTER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_MESSAGE_FORMAT_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_CALENDAR_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_THREAD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_THREAD_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_THREAD_TARGETS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
@@ -81,6 +84,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_FORMATTER_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_MESSAGE_FORMAT_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_CALENDAR_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_THREAD_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_THREAD_TYPES.with(|vars| vars.borrow_mut().clear());
     JAVA_THREAD_TARGETS.with(|targets| targets.borrow_mut().clear());
@@ -865,6 +871,12 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
     };
     let visibility = pm.visibility;
 
+    // Java generic constructors write type params before the constructor name:
+    // `<T> Box(T value)`. Type information is erased in this frontend.
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
+        inner.next();
+    }
+
     // constructor name — same as class, skip
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::ident_name) {
         inner.next();
@@ -910,6 +922,12 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
         ParsedModifiers::default()
     };
     let modifiers = into_modifiers(pm);
+
+    // Java generic methods write type params before the return type:
+    // `static <T> T identity(T x)`. The AST does not need the erased params.
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
+        inner.next();
+    }
 
     // Return type (type_ref)
     let return_type = if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref) {
@@ -1611,14 +1629,21 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         }
 
         Rule::labeled_statement => {
-            // Strip label; walk inner statement
-            let inner = pair
-                .into_inner()
-                .find(|p| !matches!(p.as_rule(), Rule::ident_name));
-            if let Some(s) = inner {
-                return walk_statement(s);
+            let mut inner = pair.into_inner();
+            let label = inner
+                .next()
+                .ok_or("labeled statement: missing label")?
+                .as_str()
+                .to_string();
+            let body_pair = inner.next().ok_or("labeled statement: missing body")?;
+            if let Some(body) = walk_statement(body_pair)? {
+                StmtKind::Labeled {
+                    label,
+                    body: Box::new(body),
+                }
+            } else {
+                return Ok(None);
             }
-            return Ok(None);
         }
 
         Rule::synchronized_statement => {
@@ -1861,9 +1886,29 @@ fn walk_var_declarator(
     }
     if type_hint
         .as_deref()
-        .is_some_and(|hint| java_type_simple_name(hint) == "DecimalFormat")
+        .is_some_and(|hint| matches!(java_type_simple_name(hint), "DecimalFormat" | "NumberFormat"))
     {
         JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "Formatter")
+    {
+        JAVA_FORMATTER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "MessageFormat")
+    {
+        JAVA_MESSAGE_FORMAT_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint.as_deref().is_some_and(|hint| {
+        matches!(
+            java_type_simple_name(hint),
+            "Calendar" | "GregorianCalendar"
+        )
+    }) {
+        JAVA_CALENDAR_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
     if type_hint
         .as_deref()
@@ -3313,6 +3358,9 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
     if first.as_rule() == Rule::unary_op {
         let op_str = first.as_str();
         let operand = walk_expression(inner.next().ok_or("unary: missing operand")?)?;
+        if op_str == "--" && matches!(operand.kind, ExprKind::Lit(_)) {
+            return Ok(operand);
+        }
         let op = match op_str {
             "++" => UnaryOp::PreInc,
             "--" => UnaryOp::PreDec,
@@ -3390,6 +3438,10 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                     .to_string();
                 if let Some(constant) = java_double_constant_expr(&current, &field) {
                     current = constant;
+                } else if let Some(constant) = java_locale_constant_expr(&current, &field) {
+                    current = constant;
+                } else if let Some(constant) = java_calendar_constant_expr(&current, &field) {
+                    current = constant;
                 } else {
                     current = Expression::new(ExprKind::Member {
                         object: Box::new(current),
@@ -3430,6 +3482,13 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                     current = normalise_method_call(*object, field, args);
                     continue;
                 }
+                if let ExprKind::Ident(name) = &current.kind {
+                    if matches!(name.as_str(), "wait" | "notify" | "notifyAll") {
+                        current =
+                            normalise_method_call(Expression::new(ExprKind::This), name.clone(), args);
+                        continue;
+                    }
+                }
                 current = Expression::new(ExprKind::Call {
                     callee: Box::new(current),
                     args,
@@ -3469,6 +3528,36 @@ fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Express
         "NaN" => Some(div(f64_lit(0.0), f64_lit(0.0))),
         "POSITIVE_INFINITY" => Some(div(f64_lit(1.0), f64_lit(0.0))),
         "NEGATIVE_INFINITY" => Some(div(f64_lit(-1.0), f64_lit(0.0))),
+        _ => None,
+    }
+}
+
+fn java_locale_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
+    let owner = java_expr_dotted_name(object)?;
+    if !matches!(owner.as_str(), "Locale" | "java.util.Locale") {
+        return None;
+    }
+    let value = match field {
+        "FRANCE" => "FR",
+        "GERMANY" => "DE",
+        "ITALY" => "IT",
+        "US" => "US",
+        "UK" => "UK",
+        "JAPAN" => "JP",
+        "CANADA" => "CA",
+        "CANADA_FRENCH" => "FR_CA",
+        _ => return None,
+    };
+    Some(Expression::string(value))
+}
+
+fn java_calendar_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
+    let owner = java_expr_dotted_name(object)?;
+    if !matches!(owner.as_str(), "Calendar" | "java.util.Calendar") {
+        return None;
+    }
+    match field {
+        "MILLISECOND" => Some(Expression::int(14)),
         _ => None,
     }
 }
@@ -3617,6 +3706,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
+    if method == "get" && args.is_empty() && java_optional_receiver(&receiver) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_stream_optional_get")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
     if java_functional_receiver(&receiver) {
         if let Some(expr) = java_functional_default_method(&receiver, method.as_str(), &args) {
             return expr;
@@ -3625,16 +3722,28 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 
     let functional_call_result_receiver = matches!(receiver.kind, ExprKind::Call { .. })
         && java_functional_result_method(method.as_str());
-    let functional_unknown_ident_receiver = matches!(receiver.kind, ExprKind::Ident(_))
-        && java_functional_result_method(method.as_str());
     if (java_functional_receiver(&receiver)
-        || functional_call_result_receiver
-        || functional_unknown_ident_receiver)
+        || functional_call_result_receiver)
         && java_functional_method(method.as_str())
     {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Sequence(vec![receiver]))),
             args,
+            optional: false,
+        });
+    }
+
+    if matches!(method.as_str(), "wait" | "notify" | "notifyAll") {
+        let prelude_fn = match method.as_str() {
+            "wait" => "__j_object_wait",
+            "notify" => "__j_object_notify",
+            _ => "__j_object_notify_all",
+        };
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(prelude_fn)),
+            args: call_args,
             optional: false,
         });
     }
@@ -3969,7 +4078,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
-            ExprKind::Ident(n) if matches!(n.as_str(), "__j_df_new" | "__j_df_currency" | "__j_df_clone")
+            ExprKind::Ident(n) if matches!(n.as_str(), "__j_df_new" | "__j_df_currency" | "__j_df_percent" | "__j_df_clone")
         ),
         _ => false,
     };
@@ -4069,6 +4178,11 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 }
             }
         }
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_str_length")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
     }
     let receiver_is_static_type = match &receiver.kind {
         ExprKind::Ident(name) => is_java_type_or_util(name),
@@ -4176,6 +4290,102 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "skip" => Some("__j_sc_skip"),
             "findInLine" | "findWithinHorizon" => Some("__j_sc_find"),
             "close" => Some("__j_sc_close"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let formatter_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_FORMATTER_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_fmt_new" | "__j_fmt_format"))
+        }
+        _ => false,
+    };
+    if formatter_receiver {
+        let prelude_fn = match method.as_str() {
+            "format" => Some("__j_fmt_format"),
+            "toString" => Some("__j_fmt_to_string"),
+            "locale" => Some("__j_fmt_locale"),
+            "out" => Some("__j_fmt_out"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            if method == "format" && !args.is_empty() {
+                let mut it = args.into_iter();
+                let fmt = it.next().expect("fmt");
+                let rest: Vec<ArrayElement> = it
+                    .map(|arg| ArrayElement {
+                        key: None,
+                        value: arg.value,
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect();
+                call_args.push(fmt);
+                call_args.push(Argument::positional(Expression::new(ExprKind::Array(rest))));
+            } else {
+                call_args.extend(args);
+            }
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let message_format_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => {
+            JAVA_MESSAGE_FORMAT_VARS.with(|vars| vars.borrow().contains(n.as_str()))
+        }
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_mf_new" | "__j_mf_clone"))
+        }
+        _ => false,
+    };
+    if message_format_receiver {
+        let prelude_fn = match method.as_str() {
+            "format" => Some("__j_mf_format"),
+            "applyPattern" => Some("__j_mf_apply_pattern"),
+            "toPattern" => Some("__j_mf_to_pattern"),
+            "setLocale" => Some("__j_mf_set_locale"),
+            "parse" => Some("__j_mf_parse"),
+            "clone" => Some("__j_mf_clone"),
+            "equals" => Some("__j_mf_equals"),
+            _ => None,
+        };
+        if let Some(prelude_fn) = prelude_fn {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(prelude_fn)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    let calendar_receiver = match &receiver.kind {
+        ExprKind::Ident(n) => JAVA_CALENDAR_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_cal_new")
+        }
+        _ => false,
+    };
+    if calendar_receiver {
+        let prelude_fn = match method.as_str() {
+            "set" => Some("__j_cal_set"),
+            "getTime" => Some("__j_cal_get_time"),
             _ => None,
         };
         if let Some(prelude_fn) = prelude_fn {
@@ -4488,6 +4698,32 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 optional: false,
             });
         }
+        if java_type_simple_name(&type_name) == "NumberFormat" && method == "getPercentInstance" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_df_percent")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "MessageFormat" && method == "format" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_mf_static_format")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "TimeZone" && method == "getTimeZone" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_tz_get")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "Objects" {
+            if let Some(expr) = java_objects_static_call(method.as_str(), args.clone()) {
+                return expr;
+            }
+        }
         if type_name == "StrictMath" && method == "copySign" {
             if java_args_are_copy_sign_negative_zero(&args) {
                 return Expression::string("-0.0");
@@ -4680,6 +4916,32 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     args,
                     optional: false,
                 });
+            }
+            if type_name == "NumberFormat" && method == "getPercentInstance" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_df_percent")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_simple_name(&type_name) == "MessageFormat" && method == "format" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_mf_static_format")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_simple_name(&type_name) == "TimeZone" && method == "getTimeZone" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_tz_get")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_simple_name(&type_name) == "Objects" {
+                if let Some(expr) = java_objects_static_call(method.as_str(), args.clone()) {
+                    return expr;
+                }
             }
             if type_name == "StrictMath" && method == "copySign" {
                 if java_args_are_copy_sign_negative_zero(&args) {
@@ -4981,10 +5243,29 @@ fn java_sequence(items: Vec<Expression>) -> Expression {
 
 fn java_objects_equals(left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("Objects.equals")),
+        callee: Box::new(Expression::ident("__j_objects_equals")),
         args: vec![Argument::positional(left), Argument::positional(right)],
         optional: false,
     })
+}
+
+fn java_objects_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    let callee = match method {
+        "equals" => "__j_objects_equals",
+        "hash" => "__j_objects_hash",
+        "hashCode" => "__j_objects_hash_code",
+        "requireNonNull" => "__j_objects_require_non_null",
+        "isNull" => "__j_objects_is_null",
+        "nonNull" => "__j_objects_non_null",
+        "compare" => "__j_objects_compare",
+        "toString" => "__j_objects_to_string",
+        _ => return None,
+    };
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(callee)),
+        args,
+        optional: false,
+    }))
 }
 
 fn java_ternary(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
@@ -5357,7 +5638,7 @@ fn java_functional_static_call(
     args: &[Argument],
 ) -> Option<Expression> {
     match (java_type_simple_name(type_name), method) {
-        ("Function", "identity") if args.is_empty() => {
+        ("Function", "identity") | ("UnaryOperator", "identity") if args.is_empty() => {
             Some(java_one_arg_lambda(Expression::ident("__value__")))
         }
         ("Predicate", "isEqual") if args.len() == 1 => Some(java_one_arg_lambda(
@@ -5427,6 +5708,11 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "DecimalFormat"
             | "DecimalFormatSymbols"
             | "NumberFormat"
+            | "MessageFormat"
+            | "Locale"
+            | "TimeZone"
+            | "Calendar"
+            | "GregorianCalendar"
             | "Arrays"
             | "List"
             | "Set"
@@ -5582,6 +5868,31 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_df_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_simple_name(&class_name), "Formatter") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_fmt_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_simple_name(&class_name), "MessageFormat") {
+                    let mut args = args;
+                    if args.len() == 1 {
+                        args.push(Argument::positional(Expression::string("US")));
+                    }
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_mf_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_simple_name(&class_name), "GregorianCalendar" | "Calendar") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_cal_new")),
                         args,
                         optional: false,
                     }));
@@ -5742,6 +6053,14 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             _ => {}
         }
+    }
+
+    if matches!(java_type_simple_name(&class_name), "Formatter") {
+        return Ok(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_fmt_new")),
+            args: vec![],
+            optional: false,
+        }));
     }
 
     Ok(Expression::new(ExprKind::New {
@@ -6140,7 +6459,31 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         }));
     }
 
-    if obj_name == "Math" {
+    if matches!(
+        (obj_name.as_str(), method.as_str()),
+        ("Integer", "max")
+            | ("Integer", "min")
+            | ("Long", "max")
+            | ("Long", "min")
+            | ("Double", "max")
+            | ("Double", "min")
+            | ("Math", "max")
+            | ("Math", "min")
+            | ("StrictMath", "max")
+            | ("StrictMath", "min")
+    ) {
+        let callee = format!("{}.{}", obj_name, method);
+        return Ok(java_two_arg_lambda(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(&callee)),
+            args: vec![
+                Argument::positional(Expression::ident("__a__")),
+                Argument::positional(Expression::ident("__b__")),
+            ],
+            optional: false,
+        })));
+    }
+
+    if obj_name == "Math" || obj_name == "StrictMath" {
         let callee = format!("{}.{}", obj_name, method);
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -6239,8 +6582,26 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
 
     if matches!(
         (obj_name.as_str(), method.as_str()),
+        ("Integer", "compareTo")
+            | ("Long", "compareTo")
+            | ("Double", "compareTo")
+            | ("Float", "compareTo")
+            | ("Short", "compareTo")
+            | ("Byte", "compareTo")
+    ) {
+        return Ok(java_two_arg_lambda(java_compare_expr(
+            Expression::ident("__a__"),
+            Expression::ident("__b__"),
+            false,
+        )));
+    }
+
+    if matches!(
+        (obj_name.as_str(), method.as_str()),
         ("String", "length")
             | ("String", "toString")
+            | ("String", "strip")
+            | ("String", "trim")
             | ("String", "toUpperCase")
             | ("String", "toLowerCase")
             | ("String", "isEmpty")
@@ -9243,6 +9604,32 @@ fn rewrite_java_tostring_expr(
                             return;
                         }
                     }
+                    if java_type_is_set(locals.get(name).map(String::as_str)) {
+                        let simple_type = locals
+                            .get(name)
+                            .map(String::as_str)
+                            .map(java_type_simple_name)
+                            .unwrap_or_default();
+                        let internal = match field.as_str() {
+                            "add" if matches!(simple_type, "TreeSet" | "PriorityQueue") => {
+                                Some("__java_sorted_add")
+                            }
+                            "add" => Some("__java_set_add"),
+                            "remove" => Some("__java_set_remove"),
+                            _ => None,
+                        };
+                        if let Some(internal) = internal {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Argument::positional((**object).clone()));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
                 }
                 if matches!(field.as_str(), "add" | "offer" | "poll")
                     && matches!(
@@ -9759,6 +10146,24 @@ fn java_type_is_map(type_name: Option<&str>) -> bool {
             | "NavigableMap"
             | "Hashtable"
             | "Properties"
+    )
+}
+
+fn java_type_is_set(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let base = type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim();
+    matches!(
+        base,
+        "Set" | "HashSet" | "LinkedHashSet" | "TreeSet" | "SortedSet" | "NavigableSet"
     )
 }
 
@@ -10319,8 +10724,9 @@ fn normalize_java_class_tree(body: &mut [Statement]) {
     use std::collections::HashMap;
 
     let mut class_members = HashMap::new();
-    collect_java_class_member_names(body, &mut class_members);
-    normalize_java_class_tree_with_members(body, &class_members);
+    let mut class_parents = HashMap::new();
+    collect_java_class_member_names(body, &mut class_members, &mut class_parents);
+    normalize_java_class_tree_with_members(body, &class_members, &class_parents);
     let mut locals = std::collections::HashSet::new();
     lower_java_anonymous_class_captures_tree(body, &mut locals);
     normalize_java_anonymous_class_tree(body, &class_members);
@@ -10329,14 +10735,25 @@ fn normalize_java_class_tree(body: &mut [Statement]) {
 fn collect_java_class_member_names(
     body: &[Statement],
     out: &mut std::collections::HashMap<String, JavaClassMemberNames>,
+    parents_out: &mut std::collections::HashMap<String, Vec<String>>,
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::ClassDecl { name, members, .. } => {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                ..
+            } => {
                 out.insert(name.clone(), JavaClassMemberNames::from_members(members));
+                parents_out.insert(name.clone(), parents.clone());
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
-                        collect_java_class_member_names(std::slice::from_ref(nested), out);
+                        collect_java_class_member_names(
+                            std::slice::from_ref(nested),
+                            out,
+                            parents_out,
+                        );
                     }
                 }
             }
@@ -10351,11 +10768,15 @@ fn collect_java_class_member_names(
                 );
                 for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
-                        collect_java_class_member_names(std::slice::from_ref(nested), out);
+                        collect_java_class_member_names(
+                            std::slice::from_ref(nested),
+                            out,
+                            parents_out,
+                        );
                     }
                 }
             }
-            StmtKind::Block(stmts) => collect_java_class_member_names(stmts, out),
+            StmtKind::Block(stmts) => collect_java_class_member_names(stmts, out, parents_out),
             _ => {}
         }
     }
@@ -10364,6 +10785,7 @@ fn collect_java_class_member_names(
 fn normalize_java_class_tree_with_members(
     body: &mut [Statement],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    class_parents: &std::collections::HashMap<String, Vec<String>>,
 ) {
     for stmt in body {
         match &mut stmt.kind {
@@ -10374,18 +10796,14 @@ fn normalize_java_class_tree_with_members(
                 ..
             } => {
                 let mut names = class_members.get(name).cloned().unwrap_or_default();
-                for parent in parents {
-                    if let Some(parent_names) = class_members.get(parent) {
-                        names.fields.extend(parent_names.fields.iter().cloned());
-                        names.methods.extend(parent_names.methods.iter().cloned());
-                    }
-                }
+                merge_java_inherited_member_names(&mut names, parents, class_members, class_parents);
                 normalize_java_class_members(members, &names);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
                         normalize_java_class_tree_with_members(
                             std::slice::from_mut(nested),
                             class_members,
+                            class_parents,
                         );
                     }
                 }
@@ -10400,12 +10818,37 @@ fn normalize_java_class_tree_with_members(
                         normalize_java_class_tree_with_members(
                             std::slice::from_mut(nested),
                             class_members,
+                            class_parents,
                         );
                     }
                 }
             }
-            StmtKind::Block(stmts) => normalize_java_class_tree_with_members(stmts, class_members),
+            StmtKind::Block(stmts) => {
+                normalize_java_class_tree_with_members(stmts, class_members, class_parents)
+            }
             _ => {}
+        }
+    }
+}
+
+fn merge_java_inherited_member_names(
+    names: &mut JavaClassMemberNames,
+    parents: &[String],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    class_parents: &std::collections::HashMap<String, Vec<String>>,
+) {
+    let mut stack: Vec<String> = parents.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(parent) = stack.pop() {
+        if !seen.insert(parent.clone()) {
+            continue;
+        }
+        if let Some(parent_names) = class_members.get(&parent) {
+            names.fields.extend(parent_names.fields.iter().cloned());
+            names.methods.extend(parent_names.methods.iter().cloned());
+        }
+        if let Some(parent_parents) = class_parents.get(&parent) {
+            stack.extend(parent_parents.iter().cloned());
         }
     }
 }

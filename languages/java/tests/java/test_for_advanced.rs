@@ -3,7 +3,7 @@ use crate::helpers::run_main;
 #[test]
 fn for_with_two_init_declarators_counts_jointly() {
     let out = run_main("for (int i = 0, j = 10; i < 3; i++, j--) { System.out.println(i + j); }");
-    assert_eq!(out, vec!["10", "9", "8"]);
+    assert_eq!(out, vec!["10", "10", "10"]);
 }
 
 #[test]
@@ -11,7 +11,7 @@ fn for_with_three_init_declarators_prints_sum() {
     let out = run_main(
         "for (int a = 1, b = 2, c = 3; a < 3; a++, b++, c++) { System.out.println(a + b + c); }",
     );
-    assert_eq!(out, vec!["6", "9", "12"]);
+    assert_eq!(out, vec!["6", "9"]);
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn labeled_continue_skips_inner_body_advances_outer() {
     let out = run_main(
         "outer: for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) { if (j == 0) continue outer; System.out.println(i * 10 + j); } }",
     );
-    assert_eq!(out, vec!["1", "2", "11", "12", "21", "22"]);
+    assert_eq!(out, Vec::<String>::new());
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn for_with_comma_init_zero_and_ten_offset() {
     let out = run_main(
         "for (int low = 0, high = 10; low < 3; low++, high--) { System.out.println(high - low); }",
     );
-    assert_eq!(out, vec!["10", "9", "8"]);
+    assert_eq!(out, vec!["10", "8", "6"]);
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn for_nested_labeled_break_after_first_match() {
     let out = run_main(
         "found: for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) { if (i == 1 && j == 1) break found; System.out.println(i * 10 + j); } }",
     );
-    assert_eq!(out, vec!["0", "1", "2", "10", "11"]);
+    assert_eq!(out, vec!["0", "1", "2", "10"]);
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn for_labeled_continue_skips_inner_remainder() {
     let out = run_main(
         "row: for (int r = 0; r < 2; r++) { for (int c = 0; c < 3; c++) { if (c == 1) continue row; System.out.println(r * 10 + c); } }",
     );
-    assert_eq!(out, vec!["0", "2", "10", "12"]);
+    assert_eq!(out, vec!["0", "10"]);
 }
 
 #[test]

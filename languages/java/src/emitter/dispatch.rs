@@ -110,7 +110,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.size" => {
-            collections::emit_len(chunks, current, line);
+            super::list_adapter::emit_size(chunks, current, line);
         }
         "java.str_index_of" => {
             super::string_adapter::emit_index_of(chunks, current, argc, line);
@@ -897,13 +897,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             collections::emit_slice(chunks, current, line);
         }
         "java.arrays_sort" => {
-            if argc == 2 {
-                host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
-            } else if argc == 1 {
-                collections::emit_sort(chunks, current, line);
-            } else {
-                collections::emit_sort(chunks, current, line);
-            }
+            super::arrays_adapter::emit_sort(chunks, current, argc, line);
         }
         "java.arrays_fill" => {
             super::arrays_adapter::emit_fill(chunks, current, argc, line);
@@ -917,8 +911,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.arrays_to_string" => {
             super::arrays_adapter::emit_to_string(chunks, current, line);
         }
+        "java.arrays_deep_to_string" => {
+            super::arrays_adapter::emit_deep_to_string(chunks, current, line);
+        }
         "java.arrays_equals" => {
             super::arrays_adapter::emit_equals(chunks, current, line);
+        }
+        "java.arrays_deep_equals" => {
+            super::arrays_adapter::emit_deep_equals(chunks, current, line);
+        }
+        "java.arrays_compare" => {
+            super::arrays_adapter::emit_compare(chunks, current, line);
+        }
+        "java.arrays_compare_unsigned" => {
+            super::arrays_adapter::emit_compare_unsigned(chunks, current, line);
+        }
+        "java.arrays_mismatch" => {
+            super::arrays_adapter::emit_mismatch(chunks, current, line);
+        }
+        "java.arrays_set_all" => {
+            super::arrays_adapter::emit_set_all(chunks, current, line);
+        }
+        "java.arrays_parallel_prefix" => {
+            super::arrays_adapter::emit_parallel_prefix(chunks, current, argc, line);
         }
         "java.arrays_binary_search" => {
             super::arrays_adapter::emit_binary_search(chunks, current, line);
@@ -975,6 +990,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.collectors_filtering" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "filtering", 2, line);
+        }
+        "java.collectors_min_by" => {
+            super::stream_adapter::emit_collector_tag(chunks, current, "minBy", 1, line);
+        }
+        "java.collectors_max_by" => {
+            super::stream_adapter::emit_collector_tag(chunks, current, "maxBy", 1, line);
         }
         "java.collectors_grouping_by" => {
             super::stream_adapter::emit_collector_tag_with_default_downstream(
@@ -1080,11 +1101,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── List helpers ──────────────────────────────────────────────────
-        "java.list_of" | "java.set_of" => {
+        "java.mutable_list_of" => {
             collections::emit_array_new(chunks, current, argc as u16, line);
+        }
+        "java.hash_set_new" => {
+            collections::emit_array_new(chunks, current, argc as u16, line);
+            super::list_adapter::emit_mark_set_collection(chunks, current, line);
+        }
+        "java.list_of" => {
+            collections::emit_array_new(chunks, current, argc as u16, line);
+            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
+        }
+        "java.set_of" => {
+            super::list_adapter::emit_set_of(chunks, current, argc, line);
+        }
+        "java.set_copy_of" => {
+            collections::emit_clone(chunks, current, line);
+            super::list_adapter::emit_mark_set_collection(chunks, current, line);
+            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
         }
         "java.list_copy_of" => {
             collections::emit_clone(chunks, current, line);
+            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
         }
         "java.map_of" => {
             super::list_adapter::emit_map_of(chunks, current, argc, line);
@@ -1097,9 +1135,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.empty_list" => {
             collections::emit_array_new(chunks, current, 0, line);
+            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
         }
         "java.singleton_list" => {
             host::emit(&mut chunks[current], "ecma:array", "of", 1, line);
+            super::list_adapter::emit_mark_immutable_list(chunks, current, line);
         }
         "java.n_copies" => {
             super::list_adapter::emit_n_copies(chunks, current, line);
@@ -1138,26 +1178,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             if argc <= 1 {
                 super::stream_adapter::emit_get_optional_value(chunks, current, line);
             } else {
-                collections::emit_get(chunks, current, line);
+                super::list_adapter::emit_get(chunks, current, line);
             }
         }
         "java.list_set" => {
-            super::list_adapter::emit_set(chunks, current, line);
+            super::list_adapter::emit_set(chunks, current, argc, line);
         }
         "java.list_remove" => {
-            collections::emit_remove_at(chunks, current, line);
+            super::list_adapter::emit_remove_at(chunks, current, line);
         }
         "java.list_remove_value" => {
-            collections::emit_remove_value(chunks, current, line);
+            super::list_adapter::emit_remove_value_checked(chunks, current, line);
         }
         "java.list_clear" => {
-            host::emit(&mut chunks[current], "ecma:array", "clear", 1, line);
+            super::list_adapter::emit_clear(chunks, current, line);
         }
         "java.list_contains" => {
             collections::emit_contains(chunks, current, line);
         }
         "java.sub_list" => {
-            collections::emit_slice(chunks, current, line);
+            super::list_adapter::emit_sub_list(chunks, current, line);
         }
         "java.list_sort" => {
             super::list_adapter::emit_sort(chunks, current, argc, line);
@@ -1188,13 +1228,37 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             vybe_emitter::loops::emit_foreach(chunks, current, fn_slot, arr_slot, idx_slot, line);
         }
         "java.queue_poll" => {
-            collections::emit_shift(chunks, current, line);
+            super::list_adapter::emit_poll(chunks, current, false, line);
         }
         "java.sorted_first" => {
             super::list_adapter::emit_sorted_end(chunks, current, false, line);
         }
         "java.sorted_last" => {
             super::list_adapter::emit_sorted_end(chunks, current, true, line);
+        }
+        "java.sorted_ceiling" => {
+            super::list_adapter::emit_sorted_bound(chunks, current, 0, line);
+        }
+        "java.sorted_floor" => {
+            super::list_adapter::emit_sorted_bound(chunks, current, 1, line);
+        }
+        "java.sorted_higher" => {
+            super::list_adapter::emit_sorted_bound(chunks, current, 2, line);
+        }
+        "java.sorted_lower" => {
+            super::list_adapter::emit_sorted_bound(chunks, current, 3, line);
+        }
+        "java.sorted_descending_set" => {
+            super::list_adapter::emit_sorted_descending_set(chunks, current, line);
+        }
+        "java.sorted_sub_set" => {
+            super::list_adapter::emit_sorted_set_range_view(chunks, current, 0, line);
+        }
+        "java.sorted_head_set" => {
+            super::list_adapter::emit_sorted_set_range_view(chunks, current, 1, line);
+        }
+        "java.sorted_tail_set" => {
+            super::list_adapter::emit_sorted_set_range_view(chunks, current, 2, line);
         }
         "java.sorted_first_key" => {
             super::list_adapter::emit_sorted_map_key(chunks, current, false, line);
@@ -1209,15 +1273,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             collections::emit_shift(chunks, current, line);
         }
         "java.peek_first" => {
-            core_wasm::i32_const(&mut chunks[current], line, 0);
-            collections::emit_get(chunks, current, line);
+            super::list_adapter::emit_peek(chunks, current, false, line);
+        }
+        "java.poll_first" => {
+            super::list_adapter::emit_poll(chunks, current, false, line);
         }
         "java.peek_last" => {
-            core_wasm::dup(&mut chunks[current], line);
-            collections::emit_len(chunks, current, line);
-            core_wasm::i32_const(&mut chunks[current], line, 1);
-            chunks[current].emit_op(Op::I32_SUB, line);
-            collections::emit_get(chunks, current, line);
+            super::list_adapter::emit_peek(chunks, current, true, line);
+        }
+        "java.poll_last" => {
+            super::list_adapter::emit_poll(chunks, current, true, line);
         }
 
         // ── Map helpers ────────────────────────────────────────────────────
@@ -1364,11 +1429,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.entry_set_value" => {
             super::list_adapter::emit_entry_set_value(chunks, current, line);
         }
+        "java.list_iterator" => {
+            super::list_adapter::emit_list_iterator(chunks, current, argc, line);
+        }
         "java.iterator_next" => {
             super::list_adapter::emit_iterator_next(chunks, current, line);
         }
         "java.iterator_has_next" => {
             super::list_adapter::emit_iterator_has_next(chunks, current, line);
+        }
+        "java.iterator_previous" => {
+            super::list_adapter::emit_iterator_previous(chunks, current, line);
+        }
+        "java.iterator_has_previous" => {
+            super::list_adapter::emit_iterator_has_previous(chunks, current, line);
+        }
+        "java.iterator_next_index" => {
+            super::list_adapter::emit_iterator_next_index(chunks, current, line);
+        }
+        "java.iterator_previous_index" => {
+            super::list_adapter::emit_iterator_previous_index(chunks, current, line);
         }
 
         // ── StringBuilder helpers ──────────────────────────────────────────
@@ -1433,16 +1513,29 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             collections::emit_reverse(chunks, current, line);
         }
         "java.collections_shuffle" => {
-            host::emit(&mut chunks[current], "ecma:array", "shuffle", 1, line);
+            if argc == 2 {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op(Op::NULL, line);
+        }
+        "java.collections_fill" => {
+            super::arrays_adapter::emit_fill(chunks, current, 2, line);
+        }
+        "java.collections_copy" => {
+            super::list_adapter::emit_collection_copy(chunks, current, line);
         }
         "java.collections_min" => {
-            super::stream_adapter::emit_extreme_value(chunks, current, argc, true, line);
+            super::list_adapter::emit_collection_extreme(chunks, current, argc, true, line);
         }
         "java.collections_max" => {
-            super::stream_adapter::emit_extreme_value(chunks, current, argc, false, line);
+            super::list_adapter::emit_collection_extreme(chunks, current, argc, false, line);
         }
         "java.collections_frequency" => {
-            host::emit(&mut chunks[current], "ecma:array", "frequency", 2, line);
+            super::list_adapter::emit_collection_frequency(chunks, current, line);
+        }
+        "java.collections_disjoint" => {
+            super::list_adapter::emit_collection_disjoint(chunks, current, line);
         }
 
         // ── String formatting ─────────────────────────────────────────────
@@ -1498,15 +1591,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Object utilities ──────────────────────────────────────────────
         "java.equals" => {
-            vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_emitter::object::emit_equals(&mut chunks[current], line);
         }
         "java.objects_equals" => {
-            vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_emitter::object::emit_equals(&mut chunks[current], line);
         }
         "java.hash_code" => {
-            super::string_adapter::emit_hash_code(chunks, current, line);
+            vybe_emitter::object::emit_hash_code(&mut chunks[current], line);
         }
         "java.require_non_null" => {
             if argc > 1 {
@@ -1514,15 +1605,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             }
         }
         "java.is_null" => {
-            chunks[current].emit_op(Op::NULL, line);
-            vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_emitter::object::emit_is_null(&mut chunks[current], line);
         }
         "java.non_null" => {
-            chunks[current].emit_op(Op::NULL, line);
-            vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-            vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_emitter::object::emit_non_null(&mut chunks[current], line);
         }
 
         _ => return false,

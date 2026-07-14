@@ -12,7 +12,7 @@ fn while_complex_condition_with_and_or_and_not() {
 fn while_condition_with_nested_parentheses_and_modulo() {
     let out =
         run_main("int n = 1; while ((n % 3 != 0) && (n < 5)) { System.out.println(n); n++; }");
-    assert_eq!(out, vec!["1", "2", "4"]);
+    assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn nested_while_outer_break_via_flag() {
     let out = run_main(
         "int r = 0; boolean stop = false; while (r < 5 && !stop) { int c = 0; while (c < 3) { System.out.println(r); if (r == 1) { stop = true; break; } c++; } r++; }",
     );
-    assert_eq!(out, vec!["0", "1"]);
+    assert_eq!(out, vec!["0", "0", "0", "1"]);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn while_short_circuit_or_stops_when_left_true() {
     let out = run_main(
         "int a = 0; while ((a++ == 1) || (a < 0)) { System.out.println(a); if (a > 2) break; }",
     );
-    assert_eq!(out, vec!["2"]);
+    assert_eq!(out, Vec::<String>::new());
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn while_sentinel_on_decrementing_index() {
     let out = run_main(
         "int[] stack = {0, 0, 5, 0}; int top = 3; while (stack[top] != 0) { System.out.println(stack[top]); top--; }",
     );
-    assert_eq!(out, vec!["5"]);
+    assert_eq!(out, Vec::<String>::new());
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn nested_while_outer_break_on_first_inner_completion() {
     let out = run_main(
         "int a = 0; while (a < 5) { int b = 0; while (b < 2) { System.out.println(a); b++; } break; a++; }",
     );
-    assert_eq!(out, vec!["0"]);
+    assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]

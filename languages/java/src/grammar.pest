@@ -147,7 +147,7 @@ annotation_type_element = {
 // ── Constructor ──────────────────────────────────────────────────────────────
 
 constructor_declaration = {
-    modifiers ~ ident_name ~ type_params?
+    modifiers ~ type_params? ~ ident_name ~ type_params?
     ~ "(" ~ param_list? ~ ")"
     ~ throws_clause?
     ~ function_body_block
@@ -156,7 +156,7 @@ constructor_declaration = {
 // ── Method ───────────────────────────────────────────────────────────────────
 
 method_declaration = {
-    modifiers ~ type_ref ~ ident_name ~ type_params?
+    modifiers ~ type_params? ~ type_ref ~ ident_name ~ type_params?
     ~ "(" ~ param_list? ~ ")"
     ~ dim_suffix*
     ~ throws_clause?
@@ -546,7 +546,7 @@ primitive_type = @{
     | "int" | "long" | "short" | "void") ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
-type_args  = { "<" ~ type_arg ~ ("," ~ type_arg)* ~ ">" }
+type_args  = { "<" ~ (type_arg ~ ("," ~ type_arg)*)? ~ ">" }
 type_arg   = { "?" ~ (("extends" | "super") ~ type_ref)? | type_ref }
 type_params = { "<" ~ type_param ~ ("," ~ type_param)* ~ ">" }
 type_param  = { ident_name ~ ("extends" ~ type_ref ~ ("&" ~ type_ref)*)? }

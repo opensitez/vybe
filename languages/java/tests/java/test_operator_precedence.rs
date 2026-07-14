@@ -15,7 +15,7 @@ fn division_binds_tighter_than_subtraction() {
 #[test]
 fn modulo_same_precedence_as_multiply_left_to_right() {
     let out = run_main("System.out.println(20 - 10 % 3 * 2);");
-    assert_eq!(out, vec!["16"]);
+    assert_eq!(out, vec!["18"]);
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn nested_parentheses_group_inner_sum_first() {
 #[test]
 fn parentheses_override_modulo_and_division_order() {
     let out = run_main("System.out.println((10 % 3) * (8 / 2));");
-    assert_eq!(out, vec!["12"]);
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn unary_minus_on_variable_times_positive() {
 #[test]
 fn variable_plus_prefix_increment_times_two() {
     let out = run_main("int x = 3; System.out.println(x + ++x);");
-    assert_eq!(out, vec!["8"]);
+    assert_eq!(out, vec!["7"]);
 }
 
 #[test]

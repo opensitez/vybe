@@ -37,7 +37,7 @@ fn explicit_braces_prevent_dangling_else_misread() {
     let out = run_main(
         "int x = 1; if (x > 0) { if (x < 0) System.out.println(\"a\"); } else { System.out.println(\"b\"); }",
     );
-    assert_eq!(out, vec!["b"]);
+    assert_eq!(out, Vec::<String>::new());
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn quadruple_nested_if_stops_at_second_level() {
     let out = run_main(
         "int w = 1; int x = 0; if (w == 1) if (x == 1) if (true) System.out.println(\"three\"); else System.out.println(\"two\");",
     );
-    assert_eq!(out, vec!["two"]);
+    assert_eq!(out, Vec::<String>::new());
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn logical_or_evaluates_right_when_left_false() {
     let out = run_main(
         "int c = 0; boolean ok = (c++ == 5) || (c++ == 0); System.out.println(c); System.out.println(ok);",
     );
-    assert_eq!(out, vec!["2", "true"]);
+    assert_eq!(out, vec!["2", "false"]);
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn side_effects_in_or_condition_inside_if_body() {
     let out = run_main(
         "int a = 1; int b = 0; if ((a++ == 2) || (b++ == 0)) { System.out.println(a); System.out.println(b); }",
     );
-    assert_eq!(out, vec!["2", "0"]);
+    assert_eq!(out, vec!["2", "1"]);
 }
 
 #[test]

@@ -6,9 +6,12 @@
 //! common resolver; any language can walk `java.integer.parseint`.
 //!
 //! Leaf rules (dotnet template):
-//! - `common:java.<op>` emits register as `CommonEmit` leaves at the
-//!   builtin's own (dotted) key path (`Integer.parseInt` →
-//!   `java.integer.parseint`);
+//! - Java package-surface common emits register as `CommonEmit` leaves at
+//!   the builtin's own (dotted) key path (`java.util.Objects.equals` →
+//!   `java.util.objects.equals`), even when the actual common op is a
+//!   shared category such as `object.equals`;
+//! - Java shorthand common emits (`Integer.parseInt`) register when the
+//!   target is Java-owned (`common:java.<op>`);
 //! - host-backed builtins register as `Fn` leaves at their key path;
 //! - opcode/intrinsic/print builtins have no process-global target to
 //!   point at — skipped.
@@ -53,7 +56,7 @@ pub fn register_namespace_tree() {
             }
             match &def.emit {
                 BuiltinEmit::Common(op) => {
-                    if op.strip_prefix("java.").is_some() {
+                    if key.starts_with("java.") || op.starts_with("java.") {
                         insert_path(&mut root, &key, NamespaceNode::CommonEmit(op.clone()));
                     }
                 }

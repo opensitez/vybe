@@ -653,6 +653,32 @@ fn emit_collect_non_joining(
     );
     chunks[current].emit_else(line);
 
+    emit_collector_kind_eq(chunks, current, collector_slot, "minBy", line);
+    chunks[current].emit_if(line);
+    emit_collect_min_max_by(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        true,
+        line,
+    );
+    chunks[current].emit_else(line);
+
+    emit_collector_kind_eq(chunks, current, collector_slot, "maxBy", line);
+    chunks[current].emit_if(line);
+    emit_collect_min_max_by(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        false,
+        line,
+    );
+    chunks[current].emit_else(line);
+
     emit_collector_kind_eq(chunks, current, collector_slot, "groupingBy", line);
     chunks[current].emit_if(line);
     emit_collect_grouping(
@@ -682,6 +708,8 @@ fn emit_collect_non_joining(
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -859,6 +887,23 @@ fn emit_collect_filtering(
     chunks[current].emit_op_u16(Op::LOCAL_GET, filtered_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, downstream_slot, line);
     emit_collect_downstream_simple(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+}
+
+fn emit_collect_min_max_by(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    array_slot: u16,
+    result_slot: u16,
+    is_min: bool,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    emit_extreme_value(chunks, current, 2, is_min, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 }
 
