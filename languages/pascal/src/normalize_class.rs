@@ -13,6 +13,7 @@
 //!   - `override` / `virtual` / `reintroduce` → flag carries through.
 //!   - Case-insensitive: Pascal method names lowercase to canonical.
 
+use std::collections::{HashMap, HashSet};
 use vybe_ast::{
     Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
     PropertySetter, Span, Statement, StmtKind,
@@ -23,7 +24,6 @@ use vybe_plugin::class_normalize::{
     from_method_stmt,
     types::*,
 };
-use std::collections::{HashMap, HashSet};
 
 fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Option<String> {
     let [stmt] = body else {
@@ -337,7 +337,7 @@ fn rewrite_implicit_self_members_expr(
     match &mut expr.kind {
         ExprKind::Ident(name)
             if member_names.contains(&name.to_ascii_lowercase())
-                && !shadowed.contains(&name.to_ascii_lowercase()) =>
+                && (assignment_target || !shadowed.contains(&name.to_ascii_lowercase())) =>
         {
             *expr = self_member_expr(name);
         }
@@ -1608,19 +1608,17 @@ mod tests {
     }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(vybe_ast::Statement::new(
-            StmtKind::FunctionDecl {
-                name: src_name.into(),
-                params: vec![],
-                return_type: None,
-                body: vec![],
-                modifiers: Modifiers::default(),
-                handles: vec![],
-                is_async: false,
-                is_generator: false,
-                is_sub: false,
-            },
-        )))
+        ClassMember::Method(Box::new(vybe_ast::Statement::new(StmtKind::FunctionDecl {
+            name: src_name.into(),
+            params: vec![],
+            return_type: None,
+            body: vec![],
+            modifiers: Modifiers::default(),
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        })))
     }
 
     #[test]

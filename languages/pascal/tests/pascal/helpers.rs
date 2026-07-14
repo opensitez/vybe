@@ -5,7 +5,10 @@ use vybe_host::gui_state::GuiState;
 
 /// Run Pascal source through vybex pipeline: pest grammar -> walker -> common AST -> compiler -> VM
 pub fn run_pascal(src: &str) -> Vec<String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_pascal::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_pascal::register);
+    }
     let module = vybe_language_pascal::parse(src).expect("Pascal parse failed");
 
     let profile = load_pascal_profile();

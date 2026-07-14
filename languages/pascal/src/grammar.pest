@@ -45,6 +45,7 @@ declaration = _{
     | const_section
     | type_section
     | label_section
+    | class_var_decl_impl
     | constructor_method_impl
     | destructor_method_impl
     | procedure_decl_or_method
@@ -52,6 +53,7 @@ declaration = _{
 }
 
 label_section = { ^"label" ~ identifier ~ ("," ~ identifier)* ~ ";" }
+class_var_decl_impl = { ^"class" ~ ^"var" ~ qualified_type_name ~ "." ~ identifier ~ ":" ~ type_ref ~ var_init? ~ ";" }
 
 // ── Var Section ────────────────────────────────────────────────────────────────
 
@@ -93,7 +95,7 @@ subrange_type = { expression ~ ".." ~ expression }
 
 // Record
 record_helper_type = { ^"record" ~ ^"helper" ~ ^"for" ~ type_ref ~ record_body ~ ^"end" }
-record_type = { ^"record" ~ record_body ~ ^"end" }
+record_type = { (^"packed")? ~ ^"record" ~ record_body ~ ^"end" }
 
 record_body = { record_member* }
 
@@ -141,7 +143,8 @@ variant_field_decl = {
 
 // Class
 class_helper_type = { ^"class" ~ ^"helper" ~ ^"for" ~ type_ref ~ class_body }
-class_type = { (^"class" | ^"object") ~ class_heritage? ~ class_body? }
+class_type = { (^"class" | ^"object") ~ class_modifier* ~ class_heritage? ~ class_body? }
+class_modifier = { ^"abstract" | ^"sealed" | ^"static" }
 
 class_heritage = { "(" ~ type_ref ~ ("," ~ type_ref)* ~ ")" }
 
@@ -171,15 +174,15 @@ private_kw = @{ ^"private" ~ !(ASCII_ALPHANUMERIC | "_") }
 protected_kw = @{ ^"protected" ~ !(ASCII_ALPHANUMERIC | "_") }
 published_kw = @{ ^"published" ~ !(ASCII_ALPHANUMERIC | "_") }
 
-class_constructor = { ^"constructor" ~ method_sig_body }
-class_destructor = { ^"destructor" ~ method_sig_body }
-class_procedure = { ^"procedure" ~ method_sig_body }
-class_function = { ^"function" ~ method_sig_body }
+class_constructor = { ^"constructor" ~ method_sig_body ~ procedure_body? }
+class_destructor = { ^"destructor" ~ method_sig_body ~ procedure_body? }
+class_procedure = { ^"procedure" ~ method_sig_body ~ procedure_body? }
+class_function = { ^"function" ~ method_sig_body ~ function_body? }
 
 class_class_member = {
     ^"class" ~ (
-        ^"procedure" ~ method_sig_body
-        | ^"function" ~ method_sig_body
+        ^"procedure" ~ method_sig_body ~ procedure_body?
+        | ^"function" ~ method_sig_body ~ function_body?
         | ^"var" ~ field_decl
     )
 }
@@ -204,7 +207,7 @@ interface_function = { ^"function" ~ method_sig_body }
 interface_property_decl = { ^"property" ~ property_def }
 
 // Array type: `array[lo..hi] of Type`, `array[lo..hi, lo2..hi2] of Type`, or `array of Type`
-array_type = { ^"array" ~ ("[" ~ array_dimension ~ ("," ~ array_dimension)* ~ "]")? ~ ^"of" ~ type_ref }
+array_type = { ^"array" ~ ("[" ~ array_index_spec ~ ("," ~ array_index_spec)* ~ "]")? ~ ^"of" ~ type_ref }
 array_dimension = { expression ~ ".." ~ expression }
 
 // Pointer type: `^TypeName`
@@ -276,6 +279,8 @@ method_directive = {
 // Detect method impl: `procedure ClassName.MethodName`
 // vs standalone: `procedure ProcName`
 procedure_decl_or_method = {
+    (^"class" ~ ^"operator" ~ method_impl_proc)
+    |
     (^"class" ~ ^"procedure" ~ method_impl_proc)
     | (^"procedure" ~ (method_impl_proc | standalone_procedure))
 }
@@ -343,8 +348,11 @@ procedural_type = {
 
 // Inline array of: `array[...] of Type` or `array of Type`
 array_type_ref = {
-    ^"array" ~ ("[" ~ array_dimension ~ ("," ~ array_dimension)* ~ "]")? ~ ^"of" ~ type_ref
+    ^"array" ~ ("[" ~ array_index_spec ~ ("," ~ array_index_spec)* ~ "]")? ~ ^"of" ~ type_ref
 }
+
+array_index_spec = _{ array_dimension | array_index_type }
+array_index_type = { type_ref }
 
 set_type_ref = { ^"set" ~ ^"of" ~ type_ref }
 
@@ -547,7 +555,8 @@ relational_op = {
 additive = { multiplicative ~ (additive_op ~ multiplicative)* }
 
 additive_op = {
-    "+" | "-"
+    "><"
+    | "+" | "-"
     | or_kw
     | xor_kw
 }
@@ -632,13 +641,14 @@ lambda_procedure = { ^"procedure" ~ param_clause? ~ compound_statement }
 // Anonymous function: `function(params): Type begin ... end`
 lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ compound_statement }
 
-// Set literal: `[1, 2, 3]`
-set_literal = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
+// Set literal: `[1, 2, 3]` or `[A..D]`
+set_literal = { "[" ~ (set_element ~ ("," ~ set_element)*)? ~ "]" }
+set_element = { expression ~ (".." ~ expression)? }
 
 // ── Literals ───────────────────────────────────────────────────────────────────
 
-// Single-quoted string with '' escape
-string_literal = @{ "'" ~ ("''" | (!"'" ~ ANY))* ~ "'" }
+// Single-quoted Pascal strings plus double-quoted Delphi-style literals.
+string_literal = @{ ("'" ~ ("''" | (!"'" ~ ANY))* ~ "'") | ("\"" ~ ("\\\"" | (!"\"" ~ ANY))* ~ "\"") }
 
 // Character literal: #65, #13#10, etc.
 char_literal = @{ ("#" ~ ASCII_DIGIT+)+ }
@@ -678,7 +688,7 @@ keyword = _{
         | ^"record" | ^"array" | ^"set" | ^"object" | ^"class"
         | ^"inherited" | ^"override" | ^"virtual" | ^"abstract"
         | ^"with" | ^"in" | ^"is" | ^"as"
-        | ^"try" | ^"except" | ^"finally" | ^"raise" | ^"on"
+        | ^"try" | ^"except" | ^"finally" | ^"raise"
         | ^"and" | ^"or" | ^"not" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"
         | ^"nil" | ^"true" | ^"false"
         | ^"string" | ^"integer" | ^"boolean" | ^"char"

@@ -68,7 +68,9 @@ max           = { emit = "opcode:f64_max",                 min_args = 2, max_arg
 
 sin           = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
 cos           = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
+tan           = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
 arctan        = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
+arctan2       = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
 exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 ln            = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
@@ -98,7 +100,8 @@ copy          = { emit = "intrinsic:copy",                 min_args = 2, max_arg
 
 concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_args = 255 }
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
-ord           = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
+ord           = { emit = "common:pascal.ord",              min_args = 1, max_args = 1 }
+__pascal_set_length = { emit = "common:pascal.set_length", min_args = 1, max_args = 1 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "common:str_repeat",              min_args = 2, max_args = 2 }
@@ -122,12 +125,16 @@ strtobool     = { emit = "common:dyn_to_bool",             min_args = 1, max_arg
 # ── Date/time ───────────────────────────────────────────────────────────────
 
 now           = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
+__pascal_date_utc    = { emit = "host:ecma:date:UTC",       min_args = 3, max_args = 7 }
 __pascal_date_year   = { emit = "host:ecma:date:getUTCFullYear", min_args = 1, max_args = 1 }
 __pascal_date_month  = { emit = "host:ecma:date:getUTCMonth",    min_args = 1, max_args = 1 }
 __pascal_date_day    = { emit = "host:ecma:date:getUTCDate",     min_args = 1, max_args = 1 }
+__pascal_date_weekday = { emit = "host:ecma:date:getUTCDay",     min_args = 1, max_args = 1 }
 __pascal_date_hour   = { emit = "host:ecma:date:getUTCHours",    min_args = 1, max_args = 1 }
 __pascal_date_minute = { emit = "host:ecma:date:getUTCMinutes",  min_args = 1, max_args = 1 }
 __pascal_date_second = { emit = "host:ecma:date:getUTCSeconds",  min_args = 1, max_args = 1 }
+__pascal_date_millisecond = { emit = "host:ecma:date:getUTCMilliseconds", min_args = 1, max_args = 1 }
+__pascal_abs       = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
 
 # ── Ordinal / increment / decrement ─────────────────────────────────────────
 
