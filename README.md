@@ -1,48 +1,57 @@
 # Vybe
 
-Vybe is a Rust workspace for compiling multiple source languages into a shared bytecode VM, running them through a common host/runtime layer, and optionally emitting WebAssembly. The repo also contains the current CLI/runtime entrypoint, GUI/editor support crates, language examples, and broad per-language regression suites.
+Vybe is a Rust workspace centered on a WebAssembly-oriented VM with an ECMA-shaped runtime layer. It compiles multiple source languages into a shared bytecode model, provides WASI-facing host functionality and proposal-oriented runtime surfaces, and can emit WebAssembly alongside running code inside the native Vybe VM. The repo also contains the current CLI/runtime entrypoint, GUI/editor support crates, language examples, and broad per-language regression suites.
 
 ## What Is In This Repo
 
-The active workspace currently contains these crates:
+The active workspace currently contains these key components:
 
 ```text
 crates/
   code_editor/    Code editor and project-facing UI support
   vybe_bytecode/  Bytecode format, VM, and WASM emission support
-  vybe_compiler/  Frontends, common AST, lowering, bundling, and tests
+  vybe_compiler/  Common AST, lowering, bundling, and tests
+  vybe_emitter/   Shared cross-language bytecode helpers
   vybe_host/      Host/runtime modules and capabilities
+  vybe_plugin/    Plugin SDK (traits, registry, profiles)
   vybe_widgets/   Shared GUI/widget layer
   vybex/          CLI runner, server mode, and runtime entrypoint
+languages/        One crate per language frontend (grammar + walker + emit adapters)
+platforms/        One crate per target platform (e.g. dotnet, libc)
 ```
 
-The old split parser/compiler crate layout shown in earlier docs is no longer current. Language frontends now live under `crates/vybe_compiler/src/languages/`.
+Language frontends and platforms are now extracted into their own crates under `languages/` and `platforms/`.
 
 ## Supported Frontends
 
-The compiler currently registers these language frontends:
+The compiler currently registers 15 language frontends:
 
-- Visual Basic (`.vb`)
-- JavaScript (`.js`)
-- Pascal (`.pas`)
+- C (`.c`, `.h`)
 - C# (`.cs`)
-- Python (`.py`)
-- PHP (`.php`)
-- Ruby (`.rb`)
+- COBOL (`.cob`, `.cbl`, `.cobol`)
 - Dart (`.dart`)
-- COBOL (`.cbl`)
-- Fortran (`.f90`)
+- Fortran (`.f90`, `.f95`, `.f03`, `.f08`, `.f18`, `.f`)
 - Go (`.go`)
+- Java (`.java`)
+- JavaScript (`.js`, `.mjs`)
+- Lua (`.lua`)
+- Pascal / Delphi (`.pas`, `.pp`)
+- PHP (`.php`, `.phtml`)
+- Python (`.py`, `.pyw`)
+- Ruby (`.rb`)
+- Visual Basic (`.vb`)
+- WebAssembly Text (`.wast`, `.wat`)
 
 Project loaders currently support:
 
-- `.vybe`
-- `.vbproj`
-- `.csproj`
-- `.pyproj`
-- `.ipyproj`
+- `.vybe` (Vybe Project)
+- `.vbproj` (Visual Basic Project)
+- `.csproj` (C# Project)
+- `.pyproj` (Python Project)
+- `.ipyproj` (IronPython Project)
+- `.dpr`, `.lpr` (Delphi / Lazarus Project)
 
-Examples for several languages live under `examples/`, including `vb`, `js`, `python`, `php`, `ruby`, `dart`, `csharp`, `cobol`, `fortran`, `pascal`, and `webroot`.
+Examples for several languages live under `examples/`.
 
 ## Core Capabilities
 
@@ -79,47 +88,30 @@ cargo run -p vybex -- path/to/file.js
 
 The executable name is `vybex`.
 
-```bash
-# Compile and run a source file
-cargo run -p vybex -- path/to/program.vb
-cargo run -p vybex -- path/to/program.js
-cargo run -p vybex -- path/to/program.py
+```text
+vybex — Universal compiler
 
-# Dump bytecode
-cargo run -p vybex -- --dump path/to/program.js
+Usage: vybex [flags] <file>
+       vybex --eval CODE --lang NAME [--virtual-path PATH]
+       vybex --serve [--bind BIND] [BIND] [ROOT]
 
-# Dump the prepared common AST
-cargo run -p vybex -- --dump-ast path/to/program.php
-
-# Emit WebAssembly
-cargo run -p vybex -- --emit-wasm path/to/program.go
-
-# Evaluate source from a string
-cargo run -p vybex -- --eval 'print(1 + 2)' --lang python
-
-# Restricted runtime
-cargo run -p vybex -- --sandbox path/to/untrusted.py
-
-# Minimal portable runtime
-cargo run -p vybex -- --portable path/to/program.js
-
-# Start the directory server
-cargo run -p vybex -- --serve --bind 127.0.0.1:8080 examples/webroot
+Flags:
+  -d, --dump        Disassemble bytecode (no run)
+      --dump-ast    Parse and print the prepared common AST
+  -w, --emit-wasm   Compile to .wasm binary
+      --eval CODE   Compile source from a string
+      --lang NAME   Language for --eval (js, php, python, vb, ...)
+      --virtual-path PATH  Source path used for relative imports in --eval
+  -s, --sandbox     Restricted mode (safe capabilities only)
+  -p, --portable    Minimal WASI runtime (no Vybe host)
+  -t, --trace       Enable bytecode trace output
+      --chunk NAME  Limit --dump/--trace output to a chunk name or index
+      --serve       Start HTTP server for a directory (see httpserver.md)
+      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080
+                    BIND defaults to 127.0.0.1:8080, ROOT to current dir
+      --no-sandbox  With --serve: keep full host access (default)
+  -h, --help        Show this help
 ```
-
-Key flags exposed by the current CLI:
-
-- `--dump`
-- `--dump-ast`
-- `--emit-wasm`
-- `--eval CODE --lang NAME`
-- `--sandbox`
-- `--portable`
-- `--trace`
-- `--chunk NAME`
-- `--serve`
-- `--bind ADDR`
-- `--no-sandbox`
 
 ## Workspace Layout
 
@@ -140,24 +132,21 @@ tools/
 
 ## Tests
 
-The compiler crate has dedicated per-language regression suites. Common focused commands are:
+Each language frontend has its own dedicated test suite in its respective crate. Common focused commands are:
 
 ```bash
-# Entire compiler test suite
-cargo test -p vybe_compiler
-
 # Single language suites
-cargo test -p vybe_compiler --test vb
-cargo test -p vybe_compiler --test js
-cargo test -p vybe_compiler --test python
-cargo test -p vybe_compiler --test php
-cargo test -p vybe_compiler --test ruby
-cargo test -p vybe_compiler --test dart
-cargo test -p vybe_compiler --test csharp
-cargo test -p vybe_compiler --test pascal
-cargo test -p vybe_compiler --test cobol
-cargo test -p vybe_compiler --test fortran
-cargo test -p vybe_compiler --test go
+cargo test -p vybe_language_vb --test vb
+cargo test -p vybe_language_js --test js
+cargo test -p vybe_language_python --test python
+cargo test -p vybe_language_php --test php
+cargo test -p vybe_language_ruby --test ruby
+cargo test -p vybe_language_dart --test dart
+cargo test -p vybe_language_csharp --test csharp
+cargo test -p vybe_language_pascal --test pascal
+cargo test -p vybe_language_cobol --test cobol
+cargo test -p vybe_language_fortran --test fortran
+cargo test -p vybe_language_go --test go
 ```
 
 ## Where To Look Next
@@ -169,4 +158,6 @@ cargo test -p vybe_compiler --test go
 
 ## License
 
-The workspace package metadata currently declares `GPLv3`.
+Vybe is dual-licensed under `GPLv3` and a commercial license.
+
+To be accepted, contributions must be able to ship under either license. By submitting a contribution for inclusion, you are agreeing that the project may distribute that contribution under both licensing tracks.
