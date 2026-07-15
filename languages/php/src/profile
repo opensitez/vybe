@@ -428,6 +428,8 @@ __php_gen_key       = { emit = "common:php.generator_key",         min_args = 1,
 __php_gen_get_return = { emit = "common:php.generator_get_return", min_args = 1, max_args = 1 }
 __php_gen_rewind    = { emit = "common:php.generator_rewind",      min_args = 1, max_args = 1 }
 __php_gen_next      = { emit = "common:php.generator_next",        min_args = 1, max_args = 1 }
+__php_gen_send      = { emit = "common:php.generator_send",        min_args = 2, max_args = 2 }
+__php_gen_throw     = { emit = "common:php.generator_throw",       min_args = 2, max_args = 2 }
 __php_gen_current   = { emit = "common:php.generator_current",     min_args = 1, max_args = 1 }
 __php_gen_valid     = { emit = "common:php.generator_valid",       min_args = 1, max_args = 1 }
 # These stay on `common:array_*` because they dispatch through

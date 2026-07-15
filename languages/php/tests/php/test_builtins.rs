@@ -4,6 +4,27 @@ fn assert_outputs(src: &str, expected: &[&str]) {
     assert_eq!(run_prints(src), expected);
 }
 
+#[test]
+fn forward_function_call_inside_function_runtime() {
+    assert_outputs(
+        "<?php print f(); function f(){ return g(); } function g(){ return 'G'; }",
+        &["G"],
+    );
+}
+
+#[test]
+fn function_call_survives_same_named_variable_runtime() {
+    assert_outputs(
+        "<?php function translate($s){ return $s; } $translate = ['x' => 'y']; echo translate('ok');",
+        &["ok"],
+    );
+}
+
+#[test]
+fn case_insensitive_in_array_keeps_php_argument_order() {
+    assert_outputs("<?php echo in_Array('en', ['en']) ? 'yes' : 'no';", &["yes"]);
+}
+
 // ── String builtins ─────────────────────────────────────────
 #[test]
 fn strlen() {

@@ -62,6 +62,15 @@ echo $_SESSION['k'] ?? 'missing';
         ["v"]
     };
 
+    session_start_initializes_session_superglobal => {
+        r#"<?php
+session_start();
+$_SESSION['user'] = 'alice';
+echo isset($_SESSION['user']) ? $_SESSION['user'] : 'missing';
+"#,
+        ["alice"]
+    };
+
     session_unset_clears_superglobal => {
         r#"<?php
 session_start();

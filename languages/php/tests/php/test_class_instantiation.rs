@@ -1,6 +1,21 @@
 //! `new` on types that cannot be constructed — abstract, interface, trait, enum, missing classes.
 
 crate::php_cases! {
+    constructor_can_instantiate_class_declared_later => {
+        r#"<?php
+class Project {
+    public function __construct() { $this->workflow = new Workflow(); }
+    public function label(): string { return $this->workflow->label(); }
+}
+class Workflow {
+    public function label(): string { return 'W'; }
+}
+$p = new Project();
+echo $p->label();
+"#,
+        ["W"]
+    };
+
     instantiate_abstract_class_throws_error => {
         r#"<?php
 abstract class Abs {}

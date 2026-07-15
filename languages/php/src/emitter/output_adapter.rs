@@ -78,7 +78,22 @@ fn direct_stdout_value_from_slot(chunks: &mut [Chunk], current: usize, val_slot:
     let chunk = &mut chunks[current];
     let str_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, str_slot, line);
+    emit_php_stdout_write_string_slot(chunk, str_slot, line);
+}
+
+fn emit_php_stdout_write_string_slot(chunk: &mut Chunk, str_slot: u16, line: u32) {
+    global_get(chunk, OB_ACTIVE, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    global_get(chunk, OB_BUFFER, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, str_slot, line);
+    vybe_emitter::strings::emit_concat(chunk, 2, line);
+    global_set(chunk, OB_BUFFER, line);
+
+    chunk.emit_else(line);
     write_stdout_slot(chunk, str_slot, line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_php_stdout_write(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -94,18 +109,7 @@ pub fn emit_php_stdout_write(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let str_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, str_slot, line);
-    global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-
-    global_get(chunk, OB_BUFFER, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, str_slot, line);
-    vybe_emitter::strings::emit_concat(chunk, 2, line);
-    global_set(chunk, OB_BUFFER, line);
-
-    chunk.emit_else(line);
-    write_stdout_slot(chunk, str_slot, line);
-    chunk.emit_end(line);
+    emit_php_stdout_write_string_slot(chunk, str_slot, line);
 }
 
 pub fn emit_php_echo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -117,8 +121,7 @@ pub fn emit_php_echo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     slots.reverse();
     for s in slots {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-        emit_php_stdout_write(chunks, current, line);
+        direct_stdout_value_from_slot(chunks, current, s, line);
     }
 }
 

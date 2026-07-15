@@ -21,7 +21,7 @@ use vybe_ast::{
 };
 use vybe_plugin::class_normalize::{
     build_normal_method,
-    canonical::{ClassLang, canonicalize_method},
+    canonical::{canonicalize_method, ClassLang},
     from_method_stmt,
     types::*,
 };

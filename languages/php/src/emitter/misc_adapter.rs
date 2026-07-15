@@ -303,16 +303,25 @@ pub fn emit_php_spl_autoload_unregister(chunks: &mut [Chunk], current: usize, ar
 
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
+    let map_new_import = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
     let chunk = &mut chunks[current];
     let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
     let session_id = chunk.add_constant(Value::String(Arc::from("__php_session_id")));
     let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
     let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
+    let session = chunk.add_constant(Value::String(Arc::from("$_SESSION")));
 
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
+
+    chunk.emit_op_u16(Op::GLOBAL_GET, session, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_call(map_new_import, 0, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, session, line);
+    chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
     vybe_emitter::ops::emit_dyn_to_bool(chunk, line);

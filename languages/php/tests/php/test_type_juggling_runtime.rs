@@ -71,6 +71,13 @@ echo 4 <=> 4;
         ["0"]
     };
 
+    numeric_string_relational_coerces_to_number => {
+        r#"<?php
+echo '07' < 10 ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
     string_concatenates_with_int => {
         r#"<?php
 echo 'n' . 7;

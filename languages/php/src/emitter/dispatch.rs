@@ -6,8 +6,8 @@
 //! so PHP-specific routing lives in the PHP module instead of the common
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
@@ -17,18 +17,27 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
         return;
     }
     let base = chunk.local_count;
-    chunk.local_count = base + argc as u16;
+    chunk.local_count = base + argc as u16 + 1;
+    let tmp = base + argc as u16;
     for i in (0..argc).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
     }
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
-    for i in 1..argc {
+
+    for i in 0..argc {
         chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, tmp, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        vybe_emitter::ops::emit_dyn_not(chunk, line);
-        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
+        let undef = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undef, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+
+        if i > 0 {
+            chunk.emit_op(Op::I32_AND, line);
+        }
     }
 }
 
@@ -289,6 +298,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.generator_next" => {
             super::array_adapter::emit_generator_next(chunks, current, argc, line)
+        }
+        "php.generator_send" => {
+            super::array_adapter::emit_generator_send(chunks, current, argc, line)
+        }
+        "php.generator_throw" => {
+            super::array_adapter::emit_generator_throw(chunks, current, argc, line)
         }
         "php.generator_current" => {
             super::array_adapter::emit_generator_current(chunks, current, argc, line)
@@ -1252,9 +1267,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line)
         }
         "php.mysqli_stmt_result_metadata" => {
-            super::mysqli_adapter::emit_php_mysqli_stmt_result_metadata(
-                chunks, current, argc, line,
-            )
+            super::mysqli_adapter::emit_php_mysqli_stmt_result_metadata(chunks, current, argc, line)
         }
         "php.pdo_set_attribute" => {
             crate::emitter::pdo_adapter::emit_php_pdo_set_attribute(chunks, current, argc, line)

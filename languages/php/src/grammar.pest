@@ -911,6 +911,7 @@ closure_use_var = { "&"? ~ variable }
 
 arrow_function = {
     kw_static? ~ kw_fn ~ "(" ~ param_list? ~ ")" ~ return_type_annotation?
+    ~ closure_use?
     ~ "=>" ~ expression
 }
 

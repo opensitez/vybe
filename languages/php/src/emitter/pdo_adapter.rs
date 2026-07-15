@@ -768,6 +768,15 @@ pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
+    lget(chunk, conn_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    push_str(chunk, "sqlite::memory:", line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:sql", "connect", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, conn_slot, line);
+    chunk.emit_end(line);
     stamp_pdo_type(chunk, conn_slot, line);
     lget(chunk, conn_slot, line);
 }
@@ -1644,7 +1653,7 @@ pub fn emit_php_pdo_quote(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let s_slot = alloc_local(chunk);
     lset(chunk, s_slot, line);
     chunk.emit_op(Op::DROP, line); // receiver conn
-    // "'" + s.replaceAll("'", "''") + "'"
+                                   // "'" + s.replaceAll("'", "''") + "'"
     push_str(chunk, "'", line);
     lget(chunk, s_slot, line);
     push_str(chunk, "'", line);

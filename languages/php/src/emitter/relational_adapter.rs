@@ -46,6 +46,21 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
+fn emit_numeric_fallback(
+    chunk: &mut Chunk,
+    left_slot: u16,
+    right_slot: u16,
+    cmp_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let to_number = chunk.add_import("ecma:value", "toNumber");
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_call(to_number, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_call(to_number, 1, line);
+    cmp_fn(chunk, line);
+}
+
 pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
     let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
     let abstract_eq = chunks[0].add_import("ecma:value", "abstractEq");
@@ -146,15 +161,11 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     cmp_fn(chunk, line);
 
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    cmp_fn(chunk, line);
+    emit_numeric_fallback(chunk, t_a, t_b, cmp_fn, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
-    cmp_fn(chunk, line);
+    emit_numeric_fallback(chunk, t_a, t_b, cmp_fn, line);
     chunk.emit_end(line);
 }
 

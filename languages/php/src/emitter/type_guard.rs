@@ -13,8 +13,8 @@
 //! throws on failure, then restores every argument in its original order so the
 //! underlying builtin emit consumes an unchanged stack.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 /// What an argument is required to be for a builtin to accept it.
 #[derive(Clone, Copy)]

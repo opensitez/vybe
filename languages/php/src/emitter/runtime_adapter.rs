@@ -1,8 +1,8 @@
 //! PHP runtime-surface helpers routed via `common:php.*`.
 
+use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
-use vybe_bytecode::opcode::Op;
 use vybe_emitter::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {

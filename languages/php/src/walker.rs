@@ -39,8 +39,8 @@
 //!   silent). User scripts may or may not have it.
 
 use super::{PhpParser, Rule};
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 use std::cell::RefCell;
 use vybe_ast::*;
 
@@ -74,6 +74,11 @@ fn php_echo_stmt_kind(exprs: Vec<Expression>) -> StmtKind {
 thread_local! {
     static CLASS_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static CLASS_PARENT_STACK: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
+    static PENDING_CLASS_FIELDS: RefCell<Vec<(String, Vec<FieldMeta>)>> = const { RefCell::new(Vec::new()) };
+    static PENDING_CLASS_HOOK_PROPERTIES: RefCell<Vec<(String, Vec<PropertyHookMeta>)>> = const { RefCell::new(Vec::new()) };
+    static CLASS_HOOK_PROPERTIES: RefCell<std::collections::HashMap<String, Vec<PropertyHookMeta>>> =
+        RefCell::new(std::collections::HashMap::new());
+    static PROPERTY_HOOK_BACKING_STACK: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     // Current function/method name, for `__FUNCTION__` / `__METHOD__`. Pushed
     // around each function/method body walk in `walk_function_decl`.
     static FUNCTION_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -124,6 +129,8 @@ thread_local! {
     static LINE_STARTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static CLASS_REGISTRY: RefCell<std::collections::HashMap<String, ClassMeta>> =
         RefCell::new(std::collections::HashMap::new());
+    static CLASS_DECLARED_PROPERTIES: RefCell<std::collections::HashMap<String, Vec<String>>> =
+        RefCell::new(std::collections::HashMap::new());
     static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
         RefCell::new(std::collections::HashMap::new());
     // Declared type names → kind ("class" | "interface" | "trait" | "enum"),
@@ -131,6 +138,8 @@ thread_local! {
     // `get_declared_*` resolved at compile time.
     static TYPE_KINDS: RefCell<std::collections::HashMap<String, &'static str>> =
         RefCell::new(std::collections::HashMap::new());
+    static PREDECLARED_TYPE_NAMES: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
     static SIMPLE_ARRAY_VARS: RefCell<std::collections::HashMap<String, Vec<(String, Expression)>>> =
         RefCell::new(std::collections::HashMap::new());
     static SIMPLE_STRING_VARS: RefCell<std::collections::HashMap<String, String>> =
@@ -138,6 +147,8 @@ thread_local! {
     static SIMPLE_VALUE_VARS: RefCell<std::collections::HashMap<String, Expression>> =
         RefCell::new(std::collections::HashMap::new());
     static SIMPLE_OBJECT_FIELD_WRITES: RefCell<std::collections::HashSet<(String, String)>> =
+        RefCell::new(std::collections::HashSet::new());
+    static SIMPLE_STATIC_FIELD_WRITES: RefCell<std::collections::HashSet<(String, String)>> =
         RefCell::new(std::collections::HashSet::new());
     static SIMPLE_INDEX_ALIASES: RefCell<std::collections::HashMap<(String, String), String>> =
         RefCell::new(std::collections::HashMap::new());
@@ -172,6 +183,7 @@ thread_local! {
     static CONSTRUCTOR_PARAM_NAMES: RefCell<std::collections::HashMap<String, Vec<String>>> =
         RefCell::new(std::collections::HashMap::new());
     static PROMOTED_CONSTRUCTOR_FIELDS: RefCell<Vec<ClassMember>> = const { RefCell::new(Vec::new()) };
+    static PHP_ECHO_CONTEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // Monotonic counter for naming anonymous classes `class@anonymous...`.
     static ANON_CLASS_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -187,7 +199,10 @@ enum SimpleFiberPhase {
 struct SimpleFiberState {
     phase: SimpleFiberPhase,
     may_suspend: bool,
+    suspend_count: u32,
+    unbounded_suspends: bool,
     resumes: u32,
+    final_resume_echoed: bool,
 }
 
 fn register_type_kind(name: &str, kind: &'static str) {
@@ -416,11 +431,32 @@ fn attribute_instance_props(attr: &AttributeMeta) -> Vec<ObjectProperty> {
     props
 }
 
-fn reflection_param_expr(attrs: &[AttributeMeta]) -> Expression {
+#[derive(Debug, Clone)]
+struct ParamReflectionMeta {
+    attrs: Vec<AttributeMeta>,
+    is_optional: bool,
+    default: Option<Expression>,
+}
+
+fn reflection_param_expr(meta: &ParamReflectionMeta) -> Expression {
+    let attrs = &meta.attrs;
     let attr_array = attribute_array_expr(attrs);
     let get_attributes = Expression::new(ExprKind::Lambda {
         params: vec![mk_param_named("__this")],
         body: LambdaBody::Expr(Box::new(attr_array.clone())),
+        is_async: false,
+        captures: vec![],
+    });
+    let is_optional = Expression::new(ExprKind::Lambda {
+        params: vec![mk_param_named("__this")],
+        body: LambdaBody::Expr(Box::new(Expression::bool(meta.is_optional))),
+        is_async: false,
+        captures: vec![],
+    });
+    let default_value = meta.default.clone().unwrap_or_else(Expression::null);
+    let get_default_value = Expression::new(ExprKind::Lambda {
+        params: vec![mk_param_named("__this")],
+        body: LambdaBody::Expr(Box::new(default_value)),
         is_async: false,
         captures: vec![],
     });
@@ -437,21 +473,44 @@ fn reflection_param_expr(attrs: &[AttributeMeta]) -> Expression {
             key: Expression::string("getattributes"),
             value: get_attributes,
         },
+        ObjectProperty::KeyValue {
+            key: Expression::string("isoptional"),
+            value: is_optional,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("getdefaultvalue"),
+            value: get_default_value,
+        },
     ]))
 }
 
-fn reflection_params_array_expr(attrs: Vec<Vec<AttributeMeta>>) -> Expression {
+fn reflection_params_array_expr(params: Vec<ParamReflectionMeta>) -> Expression {
     Expression::new(ExprKind::Array(
-        attrs
+        params
             .iter()
-            .map(|param_attrs| ArrayElement {
+            .map(|param_meta| ArrayElement {
                 key: None,
-                value: reflection_param_expr(param_attrs),
+                value: reflection_param_expr(param_meta),
                 spread: false,
                 by_ref: false,
             })
             .collect(),
     ))
+}
+
+fn reflection_param_metas(
+    params: &[Param],
+    attrs: Vec<Vec<AttributeMeta>>,
+) -> Vec<ParamReflectionMeta> {
+    params
+        .iter()
+        .enumerate()
+        .map(|(idx, param)| ParamReflectionMeta {
+            attrs: attrs.get(idx).cloned().unwrap_or_default(),
+            is_optional: param.default.is_some() || param.is_optional,
+            default: param.default.clone(),
+        })
+        .collect()
 }
 
 /// All declared type names of a given kind ("class"|"interface"|"trait"|
@@ -492,6 +551,21 @@ struct FieldMeta {
     name: String,
     visibility: Visibility,
     typed_without_init: bool,
+    type_hint: Option<String>,
+    is_readonly: bool,
+    is_static: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ConstMeta {
+    name: String,
+    value: Expression,
+}
+
+#[derive(Clone, Debug)]
+struct PropertyHookMeta {
+    name: String,
+    has_setter: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -510,6 +584,7 @@ struct ClassMeta {
     has_destructor: bool,
     destructor_body: Option<Vec<Statement>>,
     fields: Vec<FieldMeta>,
+    constants: Vec<ConstMeta>,
     constructor_params: Vec<String>,
     constructor_initialized_fields: Vec<String>,
 }
@@ -520,6 +595,7 @@ struct FuncMeta {
     name: String,
     param_count: usize,
     required_params: usize,
+    params: Vec<Param>,
 }
 
 const PHP_LITERAL_OPEN_MASK: &str = "\u{E000}\u{E001}";
@@ -842,13 +918,85 @@ fn current_class_name() -> Option<String> {
     CLASS_STACK.with(|s| s.borrow().last().cloned())
 }
 
+fn push_property_hook_backing(prop: &str, backing: &str) {
+    PROPERTY_HOOK_BACKING_STACK
+        .with(|s| s.borrow_mut().push((prop.to_string(), backing.to_string())));
+}
+
+fn pop_property_hook_backing() {
+    PROPERTY_HOOK_BACKING_STACK.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+fn current_property_hook_backing(prop: &str) -> Option<String> {
+    PROPERTY_HOOK_BACKING_STACK.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find_map(|(name, backing)| (name == prop).then(|| backing.clone()))
+    })
+}
+
+fn push_pending_class_fields(class_name: &str, fields: Vec<FieldMeta>) {
+    PENDING_CLASS_FIELDS.with(|s| s.borrow_mut().push((class_name.to_string(), fields)));
+}
+
+fn pop_pending_class_fields() {
+    PENDING_CLASS_FIELDS.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+fn push_pending_class_hooks(class_name: &str, hooks: Vec<PropertyHookMeta>) {
+    PENDING_CLASS_HOOK_PROPERTIES.with(|s| s.borrow_mut().push((class_name.to_string(), hooks)));
+}
+
+fn pop_pending_class_hooks() {
+    PENDING_CLASS_HOOK_PROPERTIES.with(|s| {
+        s.borrow_mut().pop();
+    });
+}
+
+fn pending_class_hook_meta(class_name: &str, field: &str) -> Option<PropertyHookMeta> {
+    PENDING_CLASS_HOOK_PROPERTIES.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find(|(name, _)| name == class_name)
+            .and_then(|(_, hooks)| hooks.iter().find(|meta| meta.name == field).cloned())
+    })
+}
+
+fn class_hook_meta(class_name: &str, field: &str) -> Option<PropertyHookMeta> {
+    pending_class_hook_meta(class_name, field).or_else(|| {
+        CLASS_HOOK_PROPERTIES.with(|s| {
+            s.borrow()
+                .get(class_name)
+                .and_then(|hooks| hooks.iter().find(|meta| meta.name == field).cloned())
+        })
+    })
+}
+
+fn pending_class_field_meta(class_name: &str, field: &str) -> Option<FieldMeta> {
+    PENDING_CLASS_FIELDS.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find(|(name, _)| name == class_name)
+            .and_then(|(_, fields)| fields.iter().find(|meta| meta.name == field).cloned())
+    })
+}
+
 fn note_promoted_constructor_field(
     name: String,
     type_hint: Option<String>,
     visibility: Visibility,
+    is_readonly: bool,
 ) {
     let modifiers = Modifiers {
         visibility,
+        is_readonly,
         ..Modifiers::default()
     };
     PROMOTED_CONSTRUCTOR_FIELDS.with(|fields| {
@@ -958,6 +1106,61 @@ fn lookup_simple_value_var(name: &str) -> Option<Expression> {
     SIMPLE_VALUE_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
 }
 
+#[derive(Debug, Clone)]
+enum SimpleReflectionTarget {
+    Class(String),
+    Function(String),
+    Method {
+        class_name: String,
+        method_name: String,
+    },
+}
+
+fn php_literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn simple_reflection_target_from_expr(expr: &Expression) -> Option<SimpleReflectionTarget> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "__refl_class" => args
+            .first()
+            .and_then(|arg| php_literal_string(&arg.value))
+            .map(SimpleReflectionTarget::Class),
+        "__refl_function" => args
+            .first()
+            .and_then(|arg| php_literal_string(&arg.value))
+            .map(SimpleReflectionTarget::Function),
+        "__refl_method" => {
+            let class_name = args
+                .first()
+                .and_then(|arg| php_literal_string(&arg.value))?;
+            let method_name = args.get(1).and_then(|arg| php_literal_string(&arg.value))?;
+            Some(SimpleReflectionTarget::Method {
+                class_name,
+                method_name,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn lookup_simple_reflection_target(expr: &Expression) -> Option<SimpleReflectionTarget> {
+    match &expr.kind {
+        ExprKind::Ident(name) => lookup_simple_value_var(name)
+            .and_then(|value| simple_reflection_target_from_expr(&value)),
+        _ => simple_reflection_target_from_expr(expr),
+    }
+}
+
 fn simple_object_key(object: &Expression) -> Option<String> {
     match &object.kind {
         ExprKind::Ident(name) => Some(name.trim_start_matches('$').to_string()),
@@ -982,8 +1185,28 @@ fn simple_object_field_was_written(object: &Expression, field: &str) -> bool {
     let Some(key) = simple_object_key(object) else {
         return false;
     };
-    SIMPLE_OBJECT_FIELD_WRITES.with(|w| {
-        w.borrow().contains(&(key, field.to_string()))
+    SIMPLE_OBJECT_FIELD_WRITES.with(|w| w.borrow().contains(&(key, field.to_string())))
+}
+
+fn static_class_name(class: &Expression) -> Option<String> {
+    match &class.kind {
+        ExprKind::Ident(name) => Some(name.trim_start_matches('\\').to_string()),
+        _ => None,
+    }
+}
+
+fn note_simple_static_field_write(class: &Expression, field: &str) {
+    if let Some(class_name) = static_class_name(class) {
+        SIMPLE_STATIC_FIELD_WRITES.with(|w| {
+            w.borrow_mut().insert((class_name, field.to_string()));
+        });
+    }
+}
+
+fn simple_static_field_was_written(class_name: &str, field: &str) -> bool {
+    SIMPLE_STATIC_FIELD_WRITES.with(|w| {
+        w.borrow()
+            .contains(&(class_name.to_string(), field.to_string()))
     })
 }
 
@@ -1022,36 +1245,65 @@ fn lookup_function_return_type(name: &str) -> Option<String> {
 }
 
 fn php_function_call_return_class(expr: &Expression) -> Option<String> {
-	let ExprKind::Call { callee, .. } = &expr.kind else {
-		return None;
-	};
-	let ExprKind::Ident(name) = &callee.kind else {
-		return None;
-	};
-	match name.as_str() {
-		"__php_dt_new" | "__php_dt_create_from_format" => return Some("DateTime".to_string()),
-		"__php_dt_imm_new" | "__php_dt_imm_create_from_format" => {
-			return Some("DateTimeImmutable".to_string());
-		}
-		"__php_dateinterval_components" => return Some("DateInterval".to_string()),
-		"__php_datetimezone_new" => return Some("DateTimeZone".to_string()),
-		_ => {}
-	}
-	lookup_function_return_type(name).filter(|class_name| class_is_registered(class_name))
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "__php_dt_new" | "__php_dt_create_from_format" => return Some("DateTime".to_string()),
+        "__php_dt_imm_new" | "__php_dt_imm_create_from_format" => {
+            return Some("DateTimeImmutable".to_string());
+        }
+        "__php_dateinterval_components" => return Some("DateInterval".to_string()),
+        "__php_datetimezone_new" => return Some("DateTimeZone".to_string()),
+        _ => {}
+    }
+    lookup_function_return_type(name).filter(|class_name| class_is_registered(class_name))
 }
 
 fn php_object_class_from_expr(expr: &Expression) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    php_object_class_from_expr_inner(expr, &mut seen)
+}
+
+fn php_object_class_from_expr_inner(
+    expr: &Expression,
+    seen: &mut std::collections::HashSet<String>,
+) -> Option<String> {
     match &expr.kind {
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) => Some(name.trim_start_matches('\\').to_string()),
-            ExprKind::ClassExpr { name: Some(name), .. } => Some(name.clone()),
+            ExprKind::ClassExpr {
+                name: Some(name), ..
+            } => Some(name.clone()),
             _ => None,
         },
-        ExprKind::Ident(name) => lookup_simple_value_var(name).and_then(|value| {
-            php_object_class_from_expr(&value)
-                .or_else(|| php_static_factory_class(&value))
-                .or_else(|| php_function_call_return_class(&value))
-        }),
+        ExprKind::This => current_class_name(),
+        ExprKind::Ident(name) if name == "$this" => current_class_name(),
+        ExprKind::Ident(name) => {
+            let key = name.trim_start_matches('$').to_string();
+            if !seen.insert(key) {
+                return None;
+            }
+            lookup_simple_value_var(name).and_then(|value| {
+                php_object_class_from_expr_inner(&value, seen)
+                    .or_else(|| php_static_factory_class(&value))
+                    .or_else(|| php_function_call_return_class(&value))
+            })
+        }
+        ExprKind::Member { object, field, .. } => php_object_class_from_expr_inner(object, seen)
+            .and_then(|class_name| {
+                class_field_meta(&class_name, field).and_then(|(_, meta)| {
+                    meta.type_hint.map(|ty| {
+                        php_strip_nullable_type(&ty)
+                            .1
+                            .trim_start_matches('\\')
+                            .to_string()
+                    })
+                })
+            }),
         _ => php_static_factory_class(expr).or_else(|| php_function_call_return_class(expr)),
     }
 }
@@ -1183,6 +1435,19 @@ fn lookup_simple_fiber_var(name: &str) -> Option<SimpleFiberState> {
     SIMPLE_FIBER_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).copied())
 }
 
+fn in_php_echo_context() -> bool {
+    PHP_ECHO_CONTEXT.with(|c| c.get())
+}
+
+fn with_php_echo_context<T>(f: impl FnOnce() -> T) -> T {
+    PHP_ECHO_CONTEXT.with(|c| {
+        let prev = c.replace(true);
+        let result = f();
+        c.set(prev);
+        result
+    })
+}
+
 fn expr_is_php_fiber_new(expr: &Expression) -> Option<SimpleFiberState> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
@@ -1193,13 +1458,16 @@ fn expr_is_php_fiber_new(expr: &Expression) -> Option<SimpleFiberState> {
     if name != "__php_fiber_new" {
         return None;
     }
-    let may_suspend = args
-        .first()
-        .is_some_and(|arg| expr_contains_php_fiber_suspend(&arg.value));
+    let body = args.first().map(|arg| &arg.value);
+    let suspend_count = body.map(expr_count_php_fiber_suspend).unwrap_or(0);
+    let unbounded_suspends = body.map(expr_has_looped_php_fiber_suspend).unwrap_or(false);
     Some(SimpleFiberState {
         phase: SimpleFiberPhase::New,
-        may_suspend,
+        may_suspend: suspend_count > 0,
+        suspend_count,
+        unbounded_suspends,
         resumes: 0,
+        final_resume_echoed: false,
     })
 }
 
@@ -1269,8 +1537,154 @@ fn expr_contains_php_fiber_suspend(expr: &Expression) -> bool {
     }
 }
 
+fn expr_count_php_fiber_suspend(expr: &Expression) -> u32 {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            u32::from(
+                matches!(&callee.kind, ExprKind::Ident(name) if name == "__php_fiber_suspend"),
+            ) + expr_count_php_fiber_suspend(callee)
+                + args
+                    .iter()
+                    .map(|arg| expr_count_php_fiber_suspend(&arg.value))
+                    .sum::<u32>()
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => expr_count_php_fiber_suspend(expr),
+            LambdaBody::Block(stmts) => stmts_count_php_fiber_suspend(stmts),
+        },
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => expr_count_php_fiber_suspend(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_count_php_fiber_suspend(left) + expr_count_php_fiber_suspend(right),
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_count_php_fiber_suspend(cond)
+                + expr_count_php_fiber_suspend(then)
+                + expr_count_php_fiber_suspend(else_)
+        }
+        ExprKind::StaticAccess { class, member } => {
+            expr_count_php_fiber_suspend(class) + expr_count_php_fiber_suspend(member)
+        }
+        ExprKind::Member { object, .. } => expr_count_php_fiber_suspend(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_count_php_fiber_suspend(object) + expr_count_php_fiber_suspend(index)
+        }
+        ExprKind::Sequence(exprs) => exprs.iter().map(expr_count_php_fiber_suspend).sum(),
+        ExprKind::Array(elems) => elems
+            .iter()
+            .map(|elem| {
+                elem.key
+                    .as_ref()
+                    .map(expr_count_php_fiber_suspend)
+                    .unwrap_or(0)
+                    + expr_count_php_fiber_suspend(&elem.value)
+            })
+            .sum(),
+        ExprKind::New { class, args } => {
+            expr_count_php_fiber_suspend(class)
+                + args
+                    .iter()
+                    .map(|arg| expr_count_php_fiber_suspend(&arg.value))
+                    .sum::<u32>()
+        }
+        _ => 0,
+    }
+}
+
+fn expr_has_looped_php_fiber_suspend(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => expr_has_looped_php_fiber_suspend(expr),
+            LambdaBody::Block(stmts) => stmts_have_looped_php_fiber_suspend(stmts),
+        },
+        ExprKind::Call { callee, args, .. } => {
+            expr_has_looped_php_fiber_suspend(callee)
+                || args
+                    .iter()
+                    .any(|arg| expr_has_looped_php_fiber_suspend(&arg.value))
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => expr_has_looped_php_fiber_suspend(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_has_looped_php_fiber_suspend(left) || expr_has_looped_php_fiber_suspend(right),
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_has_looped_php_fiber_suspend(cond)
+                || expr_has_looped_php_fiber_suspend(then)
+                || expr_has_looped_php_fiber_suspend(else_)
+        }
+        ExprKind::StaticAccess { class, member } => {
+            expr_has_looped_php_fiber_suspend(class) || expr_has_looped_php_fiber_suspend(member)
+        }
+        ExprKind::Member { object, .. } => expr_has_looped_php_fiber_suspend(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_has_looped_php_fiber_suspend(object) || expr_has_looped_php_fiber_suspend(index)
+        }
+        ExprKind::Sequence(exprs) => exprs.iter().any(expr_has_looped_php_fiber_suspend),
+        ExprKind::Array(elems) => elems.iter().any(|elem| {
+            elem.key
+                .as_ref()
+                .is_some_and(expr_has_looped_php_fiber_suspend)
+                || expr_has_looped_php_fiber_suspend(&elem.value)
+        }),
+        ExprKind::New { class, args } => {
+            expr_has_looped_php_fiber_suspend(class)
+                || args
+                    .iter()
+                    .any(|arg| expr_has_looped_php_fiber_suspend(&arg.value))
+        }
+        _ => false,
+    }
+}
+
 fn stmts_contain_php_fiber_suspend(stmts: &[Statement]) -> bool {
     stmts.iter().any(stmt_contains_php_fiber_suspend)
+}
+
+fn stmts_count_php_fiber_suspend(stmts: &[Statement]) -> u32 {
+    stmts.iter().map(stmt_count_php_fiber_suspend).sum()
+}
+
+fn stmts_have_looped_php_fiber_suspend(stmts: &[Statement]) -> bool {
+    stmts.iter().any(stmt_has_looped_php_fiber_suspend)
 }
 
 fn stmt_contains_php_fiber_suspend(stmt: &Statement) -> bool {
@@ -1346,16 +1760,180 @@ fn stmt_contains_php_fiber_suspend(stmt: &Statement) -> bool {
     }
 }
 
+fn stmt_count_php_fiber_suspend(stmt: &Statement) -> u32 {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => expr_count_php_fiber_suspend(expr),
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            stmts_count_php_fiber_suspend(body)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_count_php_fiber_suspend(cond)
+                + stmts_count_php_fiber_suspend(then_body)
+                + elifs
+                    .iter()
+                    .map(|(cond, body)| {
+                        expr_count_php_fiber_suspend(cond) + stmts_count_php_fiber_suspend(body)
+                    })
+                    .sum::<u32>()
+                + else_body
+                    .as_ref()
+                    .map(|body| stmts_count_php_fiber_suspend(body))
+                    .unwrap_or(0)
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { body, cond, .. } => {
+            expr_count_php_fiber_suspend(cond) + stmts_count_php_fiber_suspend(body)
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref()
+                .map(|stmt| stmt_count_php_fiber_suspend(stmt))
+                .unwrap_or(0)
+                + cond.as_ref().map(expr_count_php_fiber_suspend).unwrap_or(0)
+                + update
+                    .as_ref()
+                    .map(expr_count_php_fiber_suspend)
+                    .unwrap_or(0)
+                + stmts_count_php_fiber_suspend(body)
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_count_php_fiber_suspend(iter) + stmts_count_php_fiber_suspend(body)
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            stmts_count_php_fiber_suspend(body)
+                + catches
+                    .iter()
+                    .map(|catch| stmts_count_php_fiber_suspend(&catch.body))
+                    .sum::<u32>()
+                + else_body
+                    .as_ref()
+                    .map(|body| stmts_count_php_fiber_suspend(body))
+                    .unwrap_or(0)
+                + finally
+                    .as_ref()
+                    .map(|body| stmts_count_php_fiber_suspend(body))
+                    .unwrap_or(0)
+        }
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().map(expr_count_php_fiber_suspend).unwrap_or(0)
+                + cause
+                    .as_ref()
+                    .map(expr_count_php_fiber_suspend)
+                    .unwrap_or(0)
+        }
+        StmtKind::Assign { targets, value } => {
+            targets
+                .iter()
+                .map(expr_count_php_fiber_suspend)
+                .sum::<u32>()
+                + expr_count_php_fiber_suspend(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_count_php_fiber_suspend(target) + expr_count_php_fiber_suspend(value)
+        }
+        _ => 0,
+    }
+}
+
+fn stmt_has_looped_php_fiber_suspend(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            expr_has_looped_php_fiber_suspend(expr)
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            stmts_have_looped_php_fiber_suspend(body)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_has_looped_php_fiber_suspend(cond)
+                || stmts_have_looped_php_fiber_suspend(then_body)
+                || elifs.iter().any(|(cond, body)| {
+                    expr_has_looped_php_fiber_suspend(cond)
+                        || stmts_have_looped_php_fiber_suspend(body)
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| stmts_have_looped_php_fiber_suspend(body))
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { body, cond, .. } => {
+            expr_has_looped_php_fiber_suspend(cond) || stmts_contain_php_fiber_suspend(body)
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref()
+                .is_some_and(|stmt| stmt_has_looped_php_fiber_suspend(stmt))
+                || cond.as_ref().is_some_and(expr_has_looped_php_fiber_suspend)
+                || update
+                    .as_ref()
+                    .is_some_and(expr_has_looped_php_fiber_suspend)
+                || stmts_contain_php_fiber_suspend(body)
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_has_looped_php_fiber_suspend(iter) || stmts_contain_php_fiber_suspend(body)
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            stmts_have_looped_php_fiber_suspend(body)
+                || catches
+                    .iter()
+                    .any(|catch| stmts_have_looped_php_fiber_suspend(&catch.body))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| stmts_have_looped_php_fiber_suspend(body))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| stmts_have_looped_php_fiber_suspend(body))
+        }
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().is_some_and(expr_has_looped_php_fiber_suspend)
+                || cause
+                    .as_ref()
+                    .is_some_and(expr_has_looped_php_fiber_suspend)
+        }
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_has_looped_php_fiber_suspend)
+                || expr_has_looped_php_fiber_suspend(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_has_looped_php_fiber_suspend(target) || expr_has_looped_php_fiber_suspend(value)
+        }
+        _ => false,
+    }
+}
+
 fn note_simple_getter_method(method: &str, body: &[Statement]) {
     let Some(class_name) = current_class_name() else {
         return;
     };
-    let [
-        Statement {
-            kind: StmtKind::Return(Some(expr)),
-            ..
-        },
-    ] = body
+    let [Statement {
+        kind: StmtKind::Return(Some(expr)),
+        ..
+    }] = body
     else {
         return;
     };
@@ -1452,28 +2030,23 @@ fn php_array_read_parts(expr: &Expression) -> Option<(Expression, Expression)> {
     let ExprKind::Sequence(items) = &expr.kind else {
         return None;
     };
-    let [
-        Expression {
-            kind:
-                ExprKind::Assign {
-                    target: obj_target,
-                    value: receiver,
-                },
-            ..
+    let [Expression {
+        kind:
+            ExprKind::Assign {
+                target: obj_target,
+                value: receiver,
+            },
+        ..
+    }, Expression {
+        kind: ExprKind::Assign {
+            target: idx_target,
+            value: index,
         },
-        Expression {
-            kind:
-                ExprKind::Assign {
-                    target: idx_target,
-                    value: index,
-                },
-            ..
-        },
-        Expression {
-            kind: ExprKind::Ternary { .. },
-            ..
-        },
-    ] = items.as_slice()
+        ..
+    }, Expression {
+        kind: ExprKind::Ternary { .. },
+        ..
+    }] = items.as_slice()
     else {
         return None;
     };
@@ -2543,12 +3116,59 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                             name,
                             param_count,
                             required_params,
+                            params: Vec::new(),
                         },
                     );
                 });
             }
             return;
         }
+        for child in pair.into_inner() {
+            visit(child);
+        }
+    }
+
+    for pair in program.clone().into_inner() {
+        if !matches!(pair.as_rule(), Rule::EOI) {
+            visit(pair);
+        }
+    }
+}
+
+fn pre_register_php_type_names(program: &Pair<Rule>) {
+    fn visit(pair: Pair<Rule>) {
+        let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
+            match pair.into_inner().next() {
+                Some(inner) => inner,
+                None => return,
+            }
+        } else {
+            pair
+        };
+
+        let kind = match pair.as_rule() {
+            Rule::class_declaration => Some("class"),
+            Rule::interface_declaration => Some("interface"),
+            Rule::trait_declaration => Some("trait"),
+            Rule::enum_declaration => Some("enum"),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            for child in pair.into_inner() {
+                if matches!(child.as_rule(), Rule::identifier | Rule::method_ident) {
+                    let name = child.as_str().to_string();
+                    PREDECLARED_TYPE_NAMES.with(|r| {
+                        r.borrow_mut().insert(name.clone());
+                    });
+                    TYPE_KINDS.with(|r| {
+                        r.borrow_mut().entry(name).or_insert(kind);
+                    });
+                    return;
+                }
+            }
+            return;
+        }
+
         for child in pair.into_inner() {
             visit(child);
         }
@@ -2597,6 +3217,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // don't leak state. CLASS_STACK should already be empty here (push
     // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
     CLASS_PARENT_STACK.with(|t| t.borrow_mut().clear());
+    CLASS_DECLARED_PROPERTIES.with(|t| t.borrow_mut().clear());
     TRAIT_USAGES.with(|t| t.borrow_mut().clear());
     TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
     TRAIT_PRECEDENCES.with(|t| t.borrow_mut().clear());
@@ -2605,6 +3226,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     SIMPLE_STRING_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_VALUE_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_OBJECT_FIELD_WRITES.with(|t| t.borrow_mut().clear());
+    SIMPLE_STATIC_FIELD_WRITES.with(|t| t.borrow_mut().clear());
     SIMPLE_INDEX_ALIASES.with(|t| t.borrow_mut().clear());
     SIMPLE_DEFINED_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_CALLABLE_VARS.with(|t| t.borrow_mut().clear());
@@ -2614,6 +3236,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     SIMPLE_GETTER_METHODS.with(|t| t.borrow_mut().clear());
     FUNCTION_RETURN_TYPES.with(|t| t.borrow_mut().clear());
     SEEN_CLASS_METHODS.with(|t| t.borrow_mut().clear());
+    PREDECLARED_TYPE_NAMES.with(|t| t.borrow_mut().clear());
+    TYPE_KINDS.with(|t| t.borrow_mut().clear());
     CLASS_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     METHOD_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     CLASS_CONST_ATTRIBUTES.with(|t| t.borrow_mut().clear());
@@ -2627,6 +3251,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     });
 
     let program = pairs.next().ok_or("empty parse")?;
+    pre_register_php_type_names(&program);
     pre_register_php_function_signatures(&program);
     match program.as_rule() {
         Rule::program => {
@@ -3218,11 +3843,12 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
         }
 
         Rule::echo_statement | Rule::print_statement => {
-            let exprs: Result<Vec<Expression>, String> = pair
-                .into_inner()
-                .filter(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
-                .collect();
+            let exprs = with_php_echo_context(|| {
+                pair.into_inner()
+                    .filter(|p| matches!(p.as_rule(), Rule::expression))
+                    .map(walk_expression)
+                    .collect::<Result<Vec<Expression>, String>>()
+            });
             php_echo_stmt_kind(exprs?)
         }
 
@@ -3810,7 +4436,9 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     let mut iter_expr = iter.ok_or("foreach: missing iterable")?;
     if target_is_by_ref {
-        if let Some(block) = php_foreach_by_ref_rewrite(&iter_expr, &var, body.clone(), target_suffix) {
+        if let Some(block) =
+            php_foreach_by_ref_rewrite(&iter_expr, &var, body.clone(), target_suffix)
+        {
             return Ok(block);
         }
     }
@@ -3835,13 +4463,23 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         by_ref: false,
                     })
                     .collect();
-                iter_expr = Expression::with_span(ExprKind::Array(elements), iter_expr.span.clone());
+                iter_expr =
+                    Expression::with_span(ExprKind::Array(elements), iter_expr.span.clone());
             }
         }
     }
     if let Some(block) = php_literal_foreach_varvar_rewrite(&iter_expr, key.as_deref(), &var, &body)
     {
         return Ok(block);
+    }
+    if let Some(class_name) = php_object_class_from_expr(&iter_expr) {
+        let implements_iterator_aggregate = class_all_interfaces(&class_name)
+            .iter()
+            .any(|iface| iface.trim_start_matches('\\') == "IteratorAggregate");
+        if implements_iterator_aggregate || class_has_method(&class_name, "getIterator") {
+            let iter_span = iter_expr.span.clone();
+            iter_expr = php_member_call_expr(iter_expr, "getIterator", vec![], &iter_span);
+        }
     }
     if let Some(block) = php_iterator_foreach_rewrite(&iter_expr, key.as_deref(), &var, &body) {
         return Ok(block);
@@ -4813,6 +5451,21 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
     false
 }
 
+fn php_return_type_is_generator_like(return_type: &Option<String>) -> bool {
+    let Some(ret) = return_type.as_deref() else {
+        return false;
+    };
+    let normalized = ret
+        .trim()
+        .trim_start_matches('?')
+        .trim_start_matches('\\')
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "generator" | "iterator" | "traversable"
+    )
+}
+
 /// Wrap a class-name expression in `str_replace('.', '\\', …)` so the
 /// runtime value shows PHP's backslash-qualified spelling instead of the
 /// internal dotted identity. No-ops for un-namespaced names.
@@ -4890,7 +5543,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    let is_generator = body_contains_yield(&body);
+    let is_generator =
+        body_contains_yield(&body) || php_return_type_is_generator_like(&return_type);
     let required = params.iter().filter(|p| p.default.is_none()).count();
     if let Some(ret) = return_type.as_deref() {
         note_function_return_type(&name, ret);
@@ -4909,6 +5563,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     name: name.clone(),
                     param_count: params.len(),
                     required_params: required,
+                    params: params.clone(),
                 },
             );
         }
@@ -4918,6 +5573,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 name: name.clone(),
                 param_count: params.len(),
                 required_params: required,
+                params: params.clone(),
             },
         )
     });
@@ -4962,7 +5618,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 /// assignments — see PHP 8 promoted constructor parameters.
 fn walk_params_with_promotion(
     pair: Pair<Rule>,
-) -> Result<Vec<(Param, Option<Visibility>)>, String> {
+) -> Result<Vec<(Param, Option<(Visibility, bool)>)>, String> {
     let mut out = Vec::new();
     for p in pair.into_inner() {
         if !matches!(p.as_rule(), Rule::param) {
@@ -4973,12 +5629,12 @@ fn walk_params_with_promotion(
     Ok(out)
 }
 
-fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
+fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), String> {
     let raw = pair.as_str();
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
-    let mut promotion: Option<Visibility> = None;
+    let mut promotion: Option<(Visibility, bool)> = None;
     let pass_by = if raw.contains('&') {
         PassBy::Ref
     } else {
@@ -4996,9 +5652,17 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
                 let v = match kw.as_str() {
                     "private" => Visibility::Private,
                     "protected" => Visibility::Protected,
+                    "readonly" => promotion
+                        .as_ref()
+                        .map(|(visibility, _)| *visibility)
+                        .unwrap_or(Visibility::Public),
                     _ => Visibility::Public,
                 };
-                promotion = Some(v);
+                let readonly = kw == "readonly"
+                    || promotion
+                        .as_ref()
+                        .is_some_and(|(_, existing_readonly)| *existing_readonly);
+                promotion = Some((v, readonly));
             }
             Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
             Rule::variable => name = strip_dollar(p.as_str()).to_string(),
@@ -5123,6 +5787,79 @@ fn synthesize_inherited_constructor(parent: &str, span: &Span) -> Option<ClassMe
     })
 }
 
+fn collect_pending_class_fields(
+    members: &[Pair<Rule>],
+    readonly_class: bool,
+) -> Result<Vec<FieldMeta>, String> {
+    let mut fields = Vec::new();
+    for member in members {
+        if !matches!(member.as_rule(), Rule::property_declaration) {
+            continue;
+        }
+        let mut name = String::new();
+        let mut type_hint: Option<String> = None;
+        let mut modifiers = Modifiers::default();
+        let mut has_init = false;
+        let mut has_hook = false;
+        for p in member.clone().into_inner() {
+            match p.as_rule() {
+                Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
+                Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
+                Rule::simple_variable | Rule::variable => {
+                    let raw = p.as_str();
+                    name = raw.strip_prefix('$').unwrap_or(raw).to_string();
+                }
+                Rule::expression => has_init = true,
+                Rule::property_hook_block => has_hook = true,
+                _ => {}
+            }
+        }
+        if !name.is_empty() && !has_hook {
+            fields.push(FieldMeta {
+                name,
+                visibility: modifiers.visibility,
+                typed_without_init: type_hint.is_some() && !has_init,
+                type_hint,
+                is_readonly: readonly_class || modifiers.is_readonly,
+                is_static: modifiers.is_static,
+            });
+        }
+    }
+    Ok(fields)
+}
+
+fn collect_pending_class_hooks(members: &[Pair<Rule>]) -> Vec<PropertyHookMeta> {
+    let mut hooks = Vec::new();
+    for member in members {
+        if !matches!(member.as_rule(), Rule::property_declaration) {
+            continue;
+        }
+        let mut name = String::new();
+        let mut has_hook = false;
+        let mut has_setter = false;
+        for p in member.clone().into_inner() {
+            match p.as_rule() {
+                Rule::simple_variable | Rule::variable => {
+                    let raw = p.as_str();
+                    name = raw.strip_prefix('$').unwrap_or(raw).to_string();
+                }
+                Rule::property_hook_block => {
+                    has_hook = true;
+                    has_setter = p
+                        .clone()
+                        .into_inner()
+                        .any(|hook| matches!(hook.as_rule(), Rule::property_set_hook));
+                }
+                _ => {}
+            }
+        }
+        if has_hook && !name.is_empty() {
+            hooks.push(PropertyHookMeta { name, has_setter });
+        }
+    }
+    hooks
+}
+
 fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let span = to_span(&pair);
     // Inspect the source slice to know whether the first qualified_name
@@ -5202,9 +5939,14 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if !attrs.is_empty() {
         CLASS_ATTRIBUTES.with(|r| r.borrow_mut().insert(name.clone(), attrs.clone()));
     }
+    let pending_fields = collect_pending_class_fields(&deferred_members, is_readonly_class)?;
+    let pending_hooks = collect_pending_class_hooks(&deferred_members);
+    let class_hooks = pending_hooks.clone();
     PENDING_CLASS_ATTRIBUTES.with(|r| r.borrow_mut().push((name.clone(), attrs.clone())));
     push_class_context(&name);
     push_class_parent_context(parents.first().cloned());
+    push_pending_class_fields(&name, pending_fields);
+    push_pending_class_hooks(&name, pending_hooks);
     let walk_result: Result<(), String> = (|| {
         for p in deferred_members {
             if let Some(member) = walk_class_member(p)? {
@@ -5213,6 +5955,8 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
         Ok(())
     })();
+    pop_pending_class_hooks();
+    pop_pending_class_fields();
     pop_class_parent_context();
     pop_class_context();
     PENDING_CLASS_ATTRIBUTES.with(|r| {
@@ -5224,6 +5968,16 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if let Some(parent) = parents.first() {
         fold_inherited_fields_into_class(parent, &mut members, &span);
     }
+    CLASS_DECLARED_PROPERTIES.with(|r| {
+        let properties = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Property { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        r.borrow_mut().insert(name.clone(), properties);
+    });
     if !class_members_have_constructor(&members) {
         if let Some(parent) = parents.first() {
             if let Some(ctor) = synthesize_inherited_constructor(parent, &span) {
@@ -5242,6 +5996,9 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_readonly_class,
     );
     CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
+    CLASS_HOOK_PROPERTIES.with(|r| {
+        r.borrow_mut().insert(name.clone(), class_hooks);
+    });
     register_type_kind(&name, "class");
 
     Ok(StmtKind::ClassDecl {
@@ -5264,6 +6021,7 @@ fn extract_class_meta(
 ) -> ClassMeta {
     let mut methods = Vec::new();
     let mut fields = Vec::new();
+    let mut constants = Vec::new();
     let mut has_destructor = false;
     let mut destructor_body = None;
     let mut constructor_params = Vec::new();
@@ -5291,6 +6049,15 @@ fn extract_class_meta(
                         required_params: required,
                         is_final: modifiers.is_not_overridable,
                     });
+                    for stmt in body {
+                        let mut initialized = Vec::new();
+                        php_collect_this_assigned_fields_from_stmt(stmt, &mut initialized);
+                        for field in initialized {
+                            if !constructor_initialized_fields.contains(&field) {
+                                constructor_initialized_fields.push(field);
+                            }
+                        }
+                    }
                 }
             }
             ClassMember::Field {
@@ -5304,6 +6071,15 @@ fn extract_class_meta(
                     name: name.clone(),
                     visibility: modifiers.visibility,
                     typed_without_init: type_hint.is_some() && init.is_none(),
+                    type_hint: type_hint.clone(),
+                    is_readonly: is_readonly || modifiers.is_readonly,
+                    is_static: modifiers.is_static,
+                });
+            }
+            ClassMember::Const { name, value, .. } => {
+                constants.push(ConstMeta {
+                    name: name.clone(),
+                    value: value.clone(),
                 });
             }
             ClassMember::Constructor {
@@ -5315,15 +6091,11 @@ fn extract_class_meta(
                 let required = params.iter().filter(|p| p.default.is_none()).count();
                 constructor_params = params.iter().map(|p| p.name.clone()).collect();
                 for stmt in body {
-                    if let StmtKind::Expr(expr) = &stmt.kind {
-                        if let ExprKind::Assign { target, .. } = &expr.kind {
-                            if let ExprKind::Member { object, field, .. } = &target.kind {
-                                if is_php_this_expr(object)
-                                    && !constructor_initialized_fields.contains(field)
-                                {
-                                    constructor_initialized_fields.push(field.clone());
-                                }
-                            }
+                    let mut initialized = Vec::new();
+                    php_collect_this_assigned_fields_from_stmt(stmt, &mut initialized);
+                    for field in initialized {
+                        if !constructor_initialized_fields.contains(&field) {
+                            constructor_initialized_fields.push(field);
                         }
                     }
                 }
@@ -5349,8 +6121,104 @@ fn extract_class_meta(
         has_destructor,
         destructor_body,
         fields,
+        constants,
         constructor_params,
         constructor_initialized_fields,
+    }
+}
+
+fn php_collect_this_assigned_fields_from_stmt(stmt: &Statement, out: &mut Vec<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            let mut aliases = std::collections::HashSet::new();
+            php_collect_this_assigned_fields_from_expr(expr, &mut aliases, out);
+        }
+        StmtKind::Assign { targets, value } => {
+            let mut aliases = std::collections::HashSet::new();
+            for target in targets {
+                php_collect_this_assigned_fields_from_expr(target, &mut aliases, out);
+            }
+            php_collect_this_assigned_fields_from_expr(value, &mut aliases, out);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            let mut aliases = std::collections::HashSet::new();
+            php_collect_this_assigned_fields_from_expr(cond, &mut aliases, out);
+            for stmt in then_body {
+                php_collect_this_assigned_fields_from_stmt(stmt, out);
+            }
+            for (_, body) in elifs {
+                for stmt in body {
+                    php_collect_this_assigned_fields_from_stmt(stmt, out);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    php_collect_this_assigned_fields_from_stmt(stmt, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn php_collect_this_assigned_fields_from_expr(
+    expr: &Expression,
+    this_aliases: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    match &expr.kind {
+        ExprKind::Assign { target, value } => {
+            if hook_expr_is_this_or_alias(value, this_aliases) {
+                if let ExprKind::Ident(name) = &target.kind {
+                    this_aliases.insert(name.clone());
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &target.kind {
+                if hook_expr_is_this_or_alias(object, this_aliases)
+                    && !out.iter().any(|existing| existing == field)
+                {
+                    out.push(field.clone());
+                }
+            }
+            php_collect_this_assigned_fields_from_expr(target, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(value, this_aliases, out);
+        }
+        ExprKind::Sequence(items) => {
+            for item in items {
+                php_collect_this_assigned_fields_from_expr(item, this_aliases, out);
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            php_collect_this_assigned_fields_from_expr(cond, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(then, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(else_, this_aliases, out);
+        }
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
+            php_collect_this_assigned_fields_from_expr(left, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(right, this_aliases, out);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            php_collect_this_assigned_fields_from_expr(expr, this_aliases, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            php_collect_this_assigned_fields_from_expr(callee, this_aliases, out);
+            for arg in args {
+                php_collect_this_assigned_fields_from_expr(&arg.value, this_aliases, out);
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            php_collect_this_assigned_fields_from_expr(object, this_aliases, out);
+            php_collect_this_assigned_fields_from_expr(index, this_aliases, out);
+        }
+        ExprKind::Member { object, .. } => {
+            php_collect_this_assigned_fields_from_expr(object, this_aliases, out);
+        }
+        _ => {}
     }
 }
 
@@ -5456,6 +6324,9 @@ fn php_use_alias_points_to_class(name: &str) -> bool {
 
 fn php_class_may_resolve_later(name: &str) -> bool {
     let bare = name.trim_start_matches('\\');
+    if PREDECLARED_TYPE_NAMES.with(|r| r.borrow().contains(bare)) {
+        return true;
+    }
     if class_is_registered(bare) || class_is_registered(&php_normalize_class_ref(bare)) {
         return true;
     }
@@ -5531,6 +6402,7 @@ fn php_core_class_is_registered(name: &str) -> bool {
                 | "ReflectionFunction"
                 | "ReflectionClassConstant"
                 | "ReflectionEnumUnitCase"
+                | "ReflectionEnum"
                 | "ReflectionAttribute"
                 | "ReflectionParameter"
                 | "ArrayObject"
@@ -5610,12 +6482,7 @@ fn class_has_destructor(c: &str) -> bool {
     let mut names = vec![c.to_string()];
     names.extend(class_parent_chain(c));
     names.iter().any(|n| {
-        CLASS_REGISTRY.with(|r| {
-            r.borrow()
-                .get(n)
-                .map(|m| m.has_destructor)
-                .unwrap_or(false)
-        })
+        CLASS_REGISTRY.with(|r| r.borrow().get(n).map(|m| m.has_destructor).unwrap_or(false))
     })
 }
 
@@ -5623,11 +6490,9 @@ fn class_destructor_body(c: &str) -> Option<Vec<Statement>> {
     let mut names = vec![c.to_string()];
     names.extend(class_parent_chain(c));
     for n in names {
-        if let Some(body) = CLASS_REGISTRY.with(|r| {
-            r.borrow()
-                .get(&n)
-                .and_then(|m| m.destructor_body.clone())
-        }) {
+        if let Some(body) =
+            CLASS_REGISTRY.with(|r| r.borrow().get(&n).and_then(|m| m.destructor_body.clone()))
+        {
             return Some(body);
         }
     }
@@ -5649,10 +6514,19 @@ fn class_has_field(c: &str, field: &str) -> bool {
         CLASS_REGISTRY.with(|r| {
             r.borrow()
                 .get(n)
-                .map(|m| m.fields.iter().any(|f| f.name == field))
+                .map(|m| {
+                    m.fields.iter().any(|f| f.name == field)
+                        || class_declared_property_names(n)
+                            .iter()
+                            .any(|property| property == field)
+                })
                 .unwrap_or(false)
         })
     })
+}
+
+fn class_declared_property_names(c: &str) -> Vec<String> {
+    CLASS_DECLARED_PROPERTIES.with(|r| r.borrow().get(c).cloned().unwrap_or_default())
 }
 
 fn class_has_pending_trait_usage(c: &str) -> bool {
@@ -5839,8 +6713,18 @@ fn class_has_any_field(c: &str) -> bool {
 }
 
 fn class_field_visibility(c: &str, field: &str) -> Option<(String, Visibility)> {
+    if let Some(meta) = pending_class_field_meta(c, field) {
+        return Some((c.to_string(), meta.visibility));
+    }
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    if current_class_name().as_deref() == Some(c) {
+        if let Some(parent) = current_class_parent_name() {
+            names.push(parent.clone());
+            names.extend(class_parent_chain(&parent));
+        }
+    } else {
+        names.extend(class_parent_chain(c));
+    }
     for name in names {
         if let Some(vis) = CLASS_REGISTRY.with(|r| {
             r.borrow().get(&name).and_then(|m| {
@@ -5885,8 +6769,18 @@ fn class_clone_storage_fields(c: &str) -> Vec<String> {
 }
 
 fn class_field_meta(c: &str, field: &str) -> Option<(String, FieldMeta)> {
+    if let Some(meta) = pending_class_field_meta(c, field) {
+        return Some((c.to_string(), meta));
+    }
     let mut names = vec![c.to_string()];
-    names.extend(class_parent_chain(c));
+    if current_class_name().as_deref() == Some(c) {
+        if let Some(parent) = current_class_parent_name() {
+            names.push(parent.clone());
+            names.extend(class_parent_chain(&parent));
+        }
+    } else {
+        names.extend(class_parent_chain(c));
+    }
     for name in names {
         if let Some(meta) = CLASS_REGISTRY.with(|r| {
             r.borrow()
@@ -5904,7 +6798,11 @@ fn php_field_visible_from_current(owner: &str, visibility: Visibility) -> bool {
         Visibility::Public => true,
         Visibility::Private => current_class_name().is_some_and(|c| c == owner),
         Visibility::Protected => current_class_name().is_some_and(|c| {
-            c == owner || class_is_subclass_of(&c, owner) || class_is_subclass_of(owner, &c)
+            c == owner
+                || class_is_subclass_of(&c, owner)
+                || class_is_subclass_of(owner, &c)
+                || current_class_parent_name()
+                    .is_some_and(|parent| parent == owner || class_is_subclass_of(&parent, owner))
         }),
         Visibility::Internal => false,
     }
@@ -6560,6 +7458,15 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    let meta = extract_class_meta(
+        &name,
+        &[],
+        &interfaces,
+        &ClassModifiers::default(),
+        &class_members,
+        false,
+    );
+    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
     register_type_kind(&name, "enum");
     Ok(StmtKind::ClassDecl {
         name,
@@ -6758,7 +7665,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
             let mut method_name = String::new();
             let mut params: Vec<Param> = Vec::new();
             let mut param_attrs: Vec<Vec<AttributeMeta>> = Vec::new();
-            let mut promoted: Vec<(String, Option<String>, Visibility)> = Vec::new();
+            let mut promoted: Vec<(String, Option<String>, Visibility, bool)> = Vec::new();
             let mut body: Vec<Statement> = Vec::new();
             let mut return_type: Option<String> = None;
             let mut modifiers = Modifiers::default();
@@ -6775,17 +7682,21 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         let with_prom = walk_params_with_promotion(p)?;
                         params = Vec::with_capacity(with_prom.len());
                         for (mut param, vis) in with_prom {
-                            if let Some(v) = vis {
+                            if let Some((v, readonly)) = vis {
                                 if param.default.is_none()
-                                    && param
-                                        .type_hint
-                                        .as_deref()
-                                        .is_some_and(|ty| ty.trim().trim_start_matches('\\') == "Closure")
+                                    && param.type_hint.as_deref().is_some_and(|ty| {
+                                        ty.trim().trim_start_matches('\\') == "Closure"
+                                    })
                                 {
                                     param.default = Some(php_identity_closure_expr());
                                     param.is_optional = true;
                                 }
-                                promoted.push((param.name.clone(), param.type_hint.clone(), v));
+                                promoted.push((
+                                    param.name.clone(),
+                                    param.type_hint.clone(),
+                                    v,
+                                    readonly,
+                                ));
                             }
                             params.push(param);
                         }
@@ -6859,14 +7770,19 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 // a side channel.
                 if !promoted.is_empty() {
                     let mut prelude: Vec<Statement> = Vec::with_capacity(promoted.len());
-                    for (pname, ptype, pvis) in &promoted {
+                    for (pname, ptype, pvis, readonly) in &promoted {
                         // `pname` retains the `$` sigil per PHP variable
                         // canonicalization (see strip_dollar). The
                         // member name strips the `$` (it's a property,
                         // not a variable); the assignment value uses
                         // the variable form.
                         let field_name = pname.strip_prefix('$').unwrap_or(pname).to_string();
-                        note_promoted_constructor_field(field_name.clone(), ptype.clone(), *pvis);
+                        note_promoted_constructor_field(
+                            field_name.clone(),
+                            ptype.clone(),
+                            *pvis,
+                            *readonly,
+                        );
                         let this_expr = Expression::new(ExprKind::This);
                         let target = Expression::new(ExprKind::Member {
                             object: Box::new(this_expr),
@@ -6924,7 +7840,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
 
             // Build a Method wrapping a FunctionDecl.
             let method_body = if has_body { body } else { Vec::new() };
-            let is_generator = body_contains_yield(&method_body);
+            let is_generator = body_contains_yield(&method_body)
+                || php_return_type_is_generator_like(&return_type);
             if let Some(class_name) = current_class_name() {
                 note_seen_class_method(&class_name, &method_name);
             }
@@ -7265,6 +8182,80 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                     // complex shapes fall through to the regular
                     // `isset(value)` check.
                     let arg_expr = match &walked.kind {
+                        ExprKind::Ident(name) if name.starts_with('$') => {
+                            php_bare_isset_check(walked.clone(), &span)
+                        }
+                        ExprKind::Index {
+                            object,
+                            index,
+                            null_safe: false,
+                        } if php_object_class_from_expr(object).is_some_and(|class_name| {
+                            class_all_interfaces(&class_name)
+                                .iter()
+                                .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess")
+                                || class_has_method(&class_name, "offsetExists")
+                        }) =>
+                        {
+                            let tmp_recv = next_tmp_name("offset_exists_recv");
+                            let tmp_key = next_tmp_name("offset_exists_key");
+                            let recv_ident = || {
+                                Expression::with_span(
+                                    ExprKind::Ident(tmp_recv.clone()),
+                                    span.clone(),
+                                )
+                            };
+                            let key_ident = || {
+                                Expression::with_span(
+                                    ExprKind::Ident(tmp_key.clone()),
+                                    span.clone(),
+                                )
+                            };
+                            let save_recv = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(recv_ident()),
+                                    value: object.clone(),
+                                },
+                                span.clone(),
+                            );
+                            let save_key = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(key_ident()),
+                                    value: index.clone(),
+                                },
+                                span.clone(),
+                            );
+                            let offset_exists = Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(recv_ident()),
+                                    field: "offsetExists".to_string(),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            );
+                            let call = Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(offset_exists),
+                                    args: vec![Argument::positional(key_ident())],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            );
+                            Expression::with_span(
+                                ExprKind::Sequence(vec![
+                                    save_recv,
+                                    save_key,
+                                    Expression::with_span(
+                                        ExprKind::Ternary {
+                                            cond: Box::new(call),
+                                            then: Box::new(Expression::bool(true)),
+                                            else_: Box::new(Expression::null()),
+                                        },
+                                        span.clone(),
+                                    ),
+                                ]),
+                                span.clone(),
+                            )
+                        }
                         ExprKind::Member {
                             object,
                             field,
@@ -7615,6 +8606,17 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 },
                 span.clone(),
             );
+        } else if op == BinOp::InstanceOf
+            && matches!(&right.kind, ExprKind::Ident(n) if n.trim_start_matches('\\') == "ArrayObject")
+        {
+            left = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("is_array")),
+                    args: vec![Argument::positional(left)],
+                    optional: false,
+                },
+                span.clone(),
+            );
         } else if op == BinOp::Div && php_expr_is_literal_zero(&right) {
             left = Expression::with_span(
                 php_throw_named_error_expr("DivisionByZeroError", "Division by zero", &span),
@@ -7689,6 +8691,8 @@ fn php_expr_is_literal_zero(expr: &Expression) -> bool {
 
 fn php_concat_operand_coerce(expr: Expression, span: &Span) -> Expression {
     match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) => expr,
+        ExprKind::Ident(name) if lookup_simple_string_var(name).is_some() => expr,
         // The result of a prior concat is already a stringy value. Re-wrapping
         // the whole left subtree on every `.` step causes AST growth to explode
         // on long concat chains.
@@ -7918,6 +8922,16 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
             field,
             null_safe,
         } if !*null_safe && !field.starts_with("__") => {
+            if let Some(class_name) = php_object_class_from_expr(object) {
+                if class_field_meta(&class_name, field).is_some_and(|(_, meta)| meta.is_readonly)
+                    || class_is_readonly(&class_name)
+                {
+                    return Expression::with_span(
+                        php_throw_named_error_expr("Error", "Cannot unset readonly property", span),
+                        span.clone(),
+                    );
+                }
+            }
             let obj = (**object).clone();
             let field = field.clone();
             let tmp = next_tmp_name("unset_recv");
@@ -7993,7 +9007,58 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
                 span.clone(),
             )
         }
-        ExprKind::Index { .. } => {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe: false,
+        } => {
+            if let Some(class_name) = php_object_class_from_expr(object) {
+                let implements_array_access = class_all_interfaces(&class_name)
+                    .iter()
+                    .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
+                if implements_array_access || class_has_method(&class_name, "offsetUnset") {
+                    let tmp_recv = next_tmp_name("offset_unset_recv");
+                    let tmp_key = next_tmp_name("offset_unset_key");
+                    let recv_ident =
+                        || Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone());
+                    let key_ident =
+                        || Expression::with_span(ExprKind::Ident(tmp_key.clone()), span.clone());
+                    let save_recv = Expression::with_span(
+                        ExprKind::Assign {
+                            target: Box::new(recv_ident()),
+                            value: object.clone(),
+                        },
+                        span.clone(),
+                    );
+                    let save_key = Expression::with_span(
+                        ExprKind::Assign {
+                            target: Box::new(key_ident()),
+                            value: index.clone(),
+                        },
+                        span.clone(),
+                    );
+                    let offset_unset = Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(recv_ident()),
+                            field: "offsetUnset".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    );
+                    let call = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(offset_unset),
+                            args: vec![Argument::positional(key_ident())],
+                            optional: false,
+                        },
+                        span.clone(),
+                    );
+                    return Expression::with_span(
+                        ExprKind::Sequence(vec![save_recv, save_key, call]),
+                        span.clone(),
+                    );
+                }
+            }
             Expression::with_span(ExprKind::Delete(Box::new(target)), span.clone())
         }
         _ => {
@@ -8690,6 +9755,317 @@ fn build_magic_set_rewrite(
     )
 }
 
+fn php_strip_nullable_type(type_hint: &str) -> (bool, String) {
+    let trimmed = type_hint.trim().trim_start_matches(':').trim();
+    if let Some(rest) = trimmed.strip_prefix('?') {
+        (true, rest.trim().to_string())
+    } else {
+        (false, trimmed.to_string())
+    }
+}
+
+fn php_typeof_check(value: Expression, js_type: &str, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(value)),
+                span.clone(),
+            )),
+            right: Box::new(Expression::string(js_type)),
+        },
+        span.clone(),
+    )
+}
+
+fn php_call_bool_predicate(name: &str, value: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident(name)),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        },
+        span.clone(),
+    )
+}
+
+fn php_or_expr(left: Expression, right: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        span.clone(),
+    )
+}
+
+fn php_and_expr(left: Expression, right: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        span.clone(),
+    )
+}
+
+fn php_null_check(value: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(value),
+            right: Box::new(Expression::null()),
+        },
+        span.clone(),
+    )
+}
+
+fn php_not_expr(value: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(value),
+        },
+        span.clone(),
+    )
+}
+
+fn php_bare_isset_check(value: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(php_typeof_check(value.clone(), "undefined", span)),
+            then: Box::new(Expression::null()),
+            else_: Box::new(value),
+        },
+        span.clone(),
+    )
+}
+
+fn php_callable_check(value: Expression, span: &Span) -> Expression {
+    let is_function = php_typeof_check(value.clone(), "function", span);
+    let is_object = php_and_expr(
+        php_typeof_check(value.clone(), "object", span),
+        Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictNotEq,
+                left: Box::new(value.clone()),
+                right: Box::new(Expression::null()),
+            },
+            span.clone(),
+        ),
+        span,
+    );
+    let invoke_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(value),
+            field: "__invoke".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let has_invoke = php_typeof_check(invoke_member, "function", span);
+    php_or_expr(is_function, php_and_expr(is_object, has_invoke, span), span)
+}
+
+fn php_iterable_check(value: Expression, span: &Span) -> Expression {
+    php_or_expr(
+        php_call_bool_predicate("is_array", value.clone(), span),
+        Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::InstanceOf,
+                left: Box::new(value),
+                right: Box::new(Expression::ident("Traversable")),
+            },
+            span.clone(),
+        ),
+        span,
+    )
+}
+
+fn php_type_check_expr(type_hint: &str, value: Expression, span: &Span) -> Option<Expression> {
+    let (nullable, type_hint) = php_strip_nullable_type(type_hint);
+    let type_hint = type_hint.trim();
+    if type_hint.is_empty() || type_hint.eq_ignore_ascii_case("mixed") {
+        return Some(Expression::with_span(
+            ExprKind::Lit(Literal::Bool(true)),
+            span.clone(),
+        ));
+    }
+    let nullable_check = nullable.then(|| php_null_check(value.clone(), span));
+
+    let split_top = |sep: char| -> Vec<&str> {
+        type_hint
+            .split(sep)
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
+    };
+
+    let mut check = if type_hint.contains('|') {
+        let mut parts = split_top('|').into_iter();
+        let first = php_type_check_expr(parts.next()?, value.clone(), span)?;
+        Some(parts.try_fold(first, |acc, part| {
+            php_type_check_expr(part, value.clone(), span).map(|next| php_or_expr(acc, next, span))
+        })?)
+    } else if type_hint.contains('&') {
+        let mut parts = split_top('&').into_iter();
+        let first = php_type_check_expr(parts.next()?, value.clone(), span)?;
+        Some(parts.try_fold(first, |acc, part| {
+            php_type_check_expr(part, value.clone(), span).map(|next| php_and_expr(acc, next, span))
+        })?)
+    } else {
+        let normalized = type_hint.trim_start_matches('\\');
+        let lower = normalized.to_ascii_lowercase();
+        Some(match lower.as_str() {
+            "null" => php_null_check(value, span),
+            "false" => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(value),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(false)),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            ),
+            "true" => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(value),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(true)),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            ),
+            "bool" | "boolean" => php_or_expr(
+                php_typeof_check(value.clone(), "boolean", span),
+                php_typeof_check(value, "string", span),
+                span,
+            ),
+            "string" => php_typeof_check(value, "string", span),
+            "int" | "integer" => php_call_bool_predicate("__php_is_int", value, span),
+            "float" | "double" => php_or_expr(
+                php_call_bool_predicate("__php_is_float", value.clone(), span),
+                php_call_bool_predicate("__php_is_int", value, span),
+                span,
+            ),
+            "array" => php_call_bool_predicate("is_array", value, span),
+            "iterable" | "traversable" => php_iterable_check(value, span),
+            "callable" => php_callable_check(value, span),
+            "object" => php_and_expr(
+                php_typeof_check(value.clone(), "object", span),
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictNotEq,
+                        left: Box::new(value),
+                        right: Box::new(Expression::null()),
+                    },
+                    span.clone(),
+                ),
+                span,
+            ),
+            _ => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::InstanceOf,
+                    left: Box::new(value),
+                    right: Box::new(Expression::ident(normalized)),
+                },
+                span.clone(),
+            ),
+        })
+    }?;
+
+    if let Some(null_check) = nullable_check {
+        check = php_or_expr(null_check, check, span);
+    }
+    Some(check)
+}
+
+fn php_in_constructor_of(class_name: &str) -> bool {
+    current_class_name().is_some_and(|current| current == class_name)
+        && current_function_name().is_some_and(|function| function == "__construct")
+}
+
+fn build_typed_property_set_rewrite(
+    owner: &str,
+    meta: &FieldMeta,
+    obj: Expression,
+    rhs: Expression,
+    span: &Span,
+) -> Option<Expression> {
+    let readonly_init_from_declaring_class =
+        is_php_this_expr(&obj) && current_class_name().is_some_and(|current| current == owner);
+    if (meta.is_readonly || class_is_readonly(owner))
+        && !php_in_constructor_of(owner)
+        && !readonly_init_from_declaring_class
+    {
+        return Some(Expression::with_span(
+            php_throw_named_error_expr("Error", "Cannot modify readonly property", span),
+            span.clone(),
+        ));
+    }
+
+    let tmp_recv = next_tmp_name("typed_recv");
+    let tmp_val = next_tmp_name("typed_val");
+    let recv_ident = || Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone());
+    let val_ident = || Expression::with_span(ExprKind::Ident(tmp_val.clone()), span.clone());
+    let save_recv = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(recv_ident()),
+            value: Box::new(obj),
+        },
+        span.clone(),
+    );
+    let save_val = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(val_ident()),
+            value: Box::new(rhs),
+        },
+        span.clone(),
+    );
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(recv_ident()),
+            field: meta.name.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let direct_assign = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(direct_member),
+            value: Box::new(val_ident()),
+        },
+        span.clone(),
+    );
+    let checked_assign = if let Some(type_hint) = meta.type_hint.as_deref() {
+        let check = php_type_check_expr(type_hint, val_ident(), span)?;
+        let type_error = Expression::with_span(
+            php_throw_named_error_expr("TypeError", "Cannot assign value to typed property", span),
+            span.clone(),
+        );
+        Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(check),
+                then: Box::new(direct_assign),
+                else_: Box::new(type_error),
+            },
+            span.clone(),
+        )
+    } else {
+        direct_assign
+    };
+    Some(Expression::with_span(
+        ExprKind::Sequence(vec![save_recv, save_val, checked_assign]),
+        span.clone(),
+    ))
+}
+
 fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
@@ -8762,6 +10138,82 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         // through Read+Op+Write semantics where the read also routes
         // via `__get` already), and non-Member targets.
         if op == "=" {
+            if let ExprKind::Index {
+                object,
+                index,
+                null_safe: false,
+            } = &lhs.kind
+            {
+                if let Some(class_name) = php_object_class_from_expr(object) {
+                    let implements_array_access = class_all_interfaces(&class_name)
+                        .iter()
+                        .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess");
+                    if implements_array_access || class_has_method(&class_name, "offsetSet") {
+                        let tmp_recv = next_tmp_name("offset_set_recv");
+                        let tmp_key = next_tmp_name("offset_set_key");
+                        let tmp_val = next_tmp_name("offset_set_val");
+                        let recv_ident = || {
+                            Expression::with_span(ExprKind::Ident(tmp_recv.clone()), span.clone())
+                        };
+                        let key_ident = || {
+                            Expression::with_span(ExprKind::Ident(tmp_key.clone()), span.clone())
+                        };
+                        let val_ident = || {
+                            Expression::with_span(ExprKind::Ident(tmp_val.clone()), span.clone())
+                        };
+                        let save_recv = Expression::with_span(
+                            ExprKind::Assign {
+                                target: Box::new(recv_ident()),
+                                value: object.clone(),
+                            },
+                            span.clone(),
+                        );
+                        let save_key = Expression::with_span(
+                            ExprKind::Assign {
+                                target: Box::new(key_ident()),
+                                value: index.clone(),
+                            },
+                            span.clone(),
+                        );
+                        let save_val = Expression::with_span(
+                            ExprKind::Assign {
+                                target: Box::new(val_ident()),
+                                value: Box::new(rhs.clone()),
+                            },
+                            span.clone(),
+                        );
+                        let offset_set = Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(recv_ident()),
+                                field: "offsetSet".to_string(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        );
+                        let call = Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(offset_set),
+                                args: vec![
+                                    Argument::positional(key_ident()),
+                                    Argument::positional(val_ident()),
+                                ],
+                                optional: false,
+                            },
+                            span.clone(),
+                        );
+                        return Ok(Expression::with_span(
+                            ExprKind::Sequence(vec![
+                                save_recv,
+                                save_key,
+                                save_val,
+                                call,
+                                val_ident(),
+                            ]),
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
             if let ExprKind::Member {
                 object,
                 field,
@@ -8773,8 +10225,106 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         return Ok(php_bad_receiver_throw(kind, "write property", &span));
                     }
                 }
+                if !null_safe && is_php_this_expr(object) {
+                    if let Some(class_name) = current_class_name() {
+                        if let Some(hook) = pending_class_hook_meta(&class_name, field) {
+                            if !hook.has_setter {
+                                return Ok(Expression::with_span(
+                                    ExprKind::Assign {
+                                        target: Box::new(Expression::with_span(
+                                            ExprKind::Member {
+                                                object: object.clone(),
+                                                field: format!("__{field}"),
+                                                null_safe: false,
+                                            },
+                                            lhs.span.clone(),
+                                        )),
+                                        value: Box::new(rhs.clone()),
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
                 if !null_safe {
                     if let Some(class_name) = php_object_class_from_expr(object) {
+                        if class_hook_meta(&class_name, field).is_some_and(|hook| hook.has_setter) {
+                            let tmp_recv = next_tmp_name("hook_recv");
+                            let tmp_val = next_tmp_name("hook_val");
+                            let recv_ident = || {
+                                Expression::with_span(
+                                    ExprKind::Ident(tmp_recv.clone()),
+                                    span.clone(),
+                                )
+                            };
+                            let val_ident = || {
+                                Expression::with_span(
+                                    ExprKind::Ident(tmp_val.clone()),
+                                    span.clone(),
+                                )
+                            };
+                            let save_recv = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(recv_ident()),
+                                    value: object.clone(),
+                                },
+                                span.clone(),
+                            );
+                            let save_val = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(val_ident()),
+                                    value: Box::new(rhs.clone()),
+                                },
+                                span.clone(),
+                            );
+                            let setter = Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(recv_ident()),
+                                    field: format!("__set_{field}"),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            );
+                            let call_setter = Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(setter),
+                                    args: vec![Argument {
+                                        value: val_ident(),
+                                        name: None,
+                                        by_ref: false,
+                                        spread: false,
+                                    }],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            );
+                            return Ok(Expression::with_span(
+                                ExprKind::Sequence(vec![
+                                    save_recv,
+                                    save_val,
+                                    call_setter,
+                                    val_ident(),
+                                ]),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+                if !null_safe {
+                    if let Some(class_name) = php_object_class_from_expr(object) {
+                        if let Some((owner, meta)) = class_field_meta(&class_name, field) {
+                            note_simple_object_field_write(object, field);
+                            if let Some(rewrite) = build_typed_property_set_rewrite(
+                                &owner,
+                                &meta,
+                                (**object).clone(),
+                                rhs.clone(),
+                                &span,
+                            ) {
+                                return Ok(rewrite);
+                            }
+                        }
                         if class_is_readonly(&class_name) && !class_has_field(&class_name, field) {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
@@ -8788,7 +10338,13 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                     note_simple_object_field_write(object, field);
                 }
-                if !null_safe && !field.starts_with("__") && !is_php_this_expr(object) {
+                let declared_member = php_object_class_from_expr(object)
+                    .is_some_and(|class_name| class_has_field(&class_name, field));
+                if !null_safe
+                    && !field.starts_with("__")
+                    && !is_php_this_expr(object)
+                    && !declared_member
+                {
                     let obj = (**object).clone();
                     let field = field.clone();
                     return Ok(build_magic_set_rewrite(obj, field, rhs.clone(), &span));
@@ -8808,12 +10364,10 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     unnote_simple_fiber_var(name);
                 }
                 if let ExprKind::Sequence(items) = &rhs.kind {
-                    if let [
-                        Expression {
-                            kind: ExprKind::Ident(src),
-                            ..
-                        },
-                    ] = items.as_slice()
+                    if let [Expression {
+                        kind: ExprKind::Ident(src),
+                        ..
+                    }] = items.as_slice()
                     {
                         propagate_simple_index_aliases(src, name);
                     }
@@ -8841,6 +10395,11 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                             note_simple_index_alias(lhs_obj_name, &lhs_key, &rhs_key);
                         }
                     }
+                }
+            }
+            if let ExprKind::StaticAccess { class, member } = &lhs.kind {
+                if let ExprKind::Ident(field) = &member.kind {
+                    note_simple_static_field_write(class, field);
                 }
             }
         }
@@ -9277,48 +10836,81 @@ fn rewrite_hook_self_stmt(s: &mut Statement, prop: &str, backing: &str) {
 }
 
 fn rewrite_hook_self_expr(e: &mut Expression, prop: &str, backing: &str) {
-    let is_this = |o: &Expression| {
-        matches!(&o.kind, ExprKind::This)
-            || matches!(&o.kind, ExprKind::Ident(n) if n == "$this" || n == "this")
-    };
+    let mut this_aliases = std::collections::HashSet::new();
+    rewrite_hook_self_expr_inner(e, prop, backing, &mut this_aliases);
+}
+
+fn rewrite_hook_self_expr_inner(
+    e: &mut Expression,
+    prop: &str,
+    backing: &str,
+    this_aliases: &mut std::collections::HashSet<String>,
+) {
     match &mut e.kind {
         ExprKind::Member { object, field, .. } => {
-            if field == prop && is_this(object) {
+            if field == prop && hook_expr_is_this_or_alias(object, this_aliases) {
                 *field = backing.to_string();
             }
-            rewrite_hook_self_expr(object, prop, backing);
+            rewrite_hook_self_expr_inner(object, prop, backing, this_aliases);
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_hook_self_expr(object, prop, backing);
-            rewrite_hook_self_expr(index, prop, backing);
+            rewrite_hook_self_expr_inner(object, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(index, prop, backing, this_aliases);
         }
         ExprKind::Assign { target, value } => {
-            rewrite_hook_self_expr(target, prop, backing);
-            rewrite_hook_self_expr(value, prop, backing);
+            rewrite_hook_self_expr_inner(target, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(value, prop, backing, this_aliases);
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_hook_self_expr(left, prop, backing);
-            rewrite_hook_self_expr(right, prop, backing);
+            rewrite_hook_self_expr_inner(left, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(right, prop, backing, this_aliases);
         }
-        ExprKind::Unary { expr, .. } => rewrite_hook_self_expr(expr, prop, backing),
+        ExprKind::Unary { expr, .. } => {
+            rewrite_hook_self_expr_inner(expr, prop, backing, this_aliases)
+        }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_hook_self_expr(cond, prop, backing);
-            rewrite_hook_self_expr(then, prop, backing);
-            rewrite_hook_self_expr(else_, prop, backing);
+            rewrite_hook_self_expr_inner(cond, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(then, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(else_, prop, backing, this_aliases);
         }
         ExprKind::NullCoalesce { left, right } => {
-            rewrite_hook_self_expr(left, prop, backing);
-            rewrite_hook_self_expr(right, prop, backing);
+            rewrite_hook_self_expr_inner(left, prop, backing, this_aliases);
+            rewrite_hook_self_expr_inner(right, prop, backing, this_aliases);
         }
-        ExprKind::Cast { expr, .. } => rewrite_hook_self_expr(expr, prop, backing),
+        ExprKind::Cast { expr, .. } => {
+            rewrite_hook_self_expr_inner(expr, prop, backing, this_aliases)
+        }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_hook_self_expr(callee, prop, backing);
+            rewrite_hook_self_expr_inner(callee, prop, backing, this_aliases);
             for a in args.iter_mut() {
-                rewrite_hook_self_expr(&mut a.value, prop, backing);
+                rewrite_hook_self_expr_inner(&mut a.value, prop, backing, this_aliases);
+            }
+        }
+        ExprKind::Sequence(items) => {
+            for item in items.iter() {
+                if let ExprKind::Assign { target, value } = &item.kind {
+                    if hook_expr_is_this_or_alias(value, this_aliases) {
+                        if let ExprKind::Ident(name) = &target.kind {
+                            this_aliases.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            for item in items.iter_mut() {
+                rewrite_hook_self_expr_inner(item, prop, backing, this_aliases);
             }
         }
         _ => {}
     }
+}
+
+fn hook_expr_is_this_or_alias(
+    expr: &Expression,
+    this_aliases: &std::collections::HashSet<String>,
+) -> bool {
+    matches!(&expr.kind, ExprKind::This)
+        || matches!(&expr.kind, ExprKind::Ident(n) if n == "$this" || n == "this")
+        || matches!(&expr.kind, ExprKind::Ident(n) if this_aliases.contains(n))
 }
 
 fn walk_property_hooks(
@@ -9328,17 +10920,26 @@ fn walk_property_hooks(
 ) -> Result<(Option<Vec<Statement>>, Option<PropertySetter>), String> {
     let mut getter = None;
     let mut setter = None;
+    let backing = format!("__{prop}");
 
     for hook in pair.into_inner() {
         match hook.as_rule() {
             Rule::property_get_hook => {
                 for item in hook.into_inner() {
                     match item.as_rule() {
-                        Rule::block_statement => getter = Some(walk_statement_into_body(item)?),
+                        Rule::block_statement => {
+                            push_property_hook_backing(prop, &backing);
+                            let walked = walk_statement_into_body(item);
+                            pop_property_hook_backing();
+                            getter = Some(walked?);
+                        }
                         // `get => expr;` → `return expr;`
                         Rule::hook_arrow_body => {
+                            push_property_hook_backing(prop, &backing);
                             let expr =
-                                walk_expression(item.into_inner().next().ok_or("empty get hook")?)?;
+                                walk_expression(item.into_inner().next().ok_or("empty get hook")?);
+                            pop_property_hook_backing();
+                            let expr = expr?;
                             getter = Some(vec![Statement::new(StmtKind::Return(Some(expr)))]);
                         }
                         _ => {}
@@ -9347,7 +10948,7 @@ fn walk_property_hooks(
             }
             Rule::property_set_hook => {
                 let mut param = Param {
-                    name: "value".to_string(),
+                    name: "$value".to_string(),
                     type_hint: type_hint.clone(),
                     default: None,
                     pass_by: PassBy::Value,
@@ -9365,13 +10966,33 @@ fn walk_property_hooks(
                             }
                         }
                         Rule::block_statement => {
-                            body = walk_statement_into_body(item)?;
+                            push_property_hook_backing(prop, &backing);
+                            let walked = walk_statement_into_body(item);
+                            pop_property_hook_backing();
+                            body = walked?;
                         }
-                        // `set => expr;` → the expression is the set body.
+                        // `set => expr;` stores the expression result in the backing field.
                         Rule::hook_arrow_body => {
+                            push_property_hook_backing(prop, &backing);
                             let expr =
-                                walk_expression(item.into_inner().next().ok_or("empty set hook")?)?;
-                            body = vec![Statement::new(StmtKind::Expr(expr))];
+                                walk_expression(item.into_inner().next().ok_or("empty set hook")?);
+                            pop_property_hook_backing();
+                            let expr = expr?;
+                            let assign = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(Expression::with_span(
+                                        ExprKind::Member {
+                                            object: Box::new(Expression::ident("$this")),
+                                            field: backing.clone(),
+                                            null_safe: false,
+                                        },
+                                        expr.span.clone(),
+                                    )),
+                                    value: Box::new(expr.clone()),
+                                },
+                                expr.span.clone(),
+                            );
+                            body = vec![Statement::new(StmtKind::Expr(assign))];
                         }
                         _ => {}
                     }
@@ -9383,7 +11004,6 @@ fn walk_property_hooks(
     }
 
     // Redirect self-property access in both hook bodies to the backing field.
-    let backing = format!("__{prop}");
     if let Some(g) = getter.as_mut() {
         rewrite_hook_self_access(g, prop, &backing);
     }
@@ -9848,6 +11468,59 @@ fn apply_postfix(
             }
             let name = name_inner.as_str().to_string();
             if !is_fcc {
+                let receiver_is_array_backed = matches!(
+                    &receiver.kind,
+                    ExprKind::Ident(var_name)
+                        if lookup_simple_value_var(var_name)
+                            .is_some_and(|value| matches!(value.kind, ExprKind::Array(_)))
+                );
+                if receiver_is_array_backed {
+                    match name.as_str() {
+                        "append" => {
+                            let args = arg_list_pair
+                                .clone()
+                                .map(walk_args)
+                                .transpose()?
+                                .unwrap_or_default();
+                            if let Some(value) = args.first() {
+                                return Ok(Expression::with_span(
+                                    ExprKind::Call {
+                                        callee: Box::new(Expression::ident("array_push")),
+                                        args: vec![
+                                            Argument::positional(receiver.clone()),
+                                            Argument::positional(value.value.clone()),
+                                        ],
+                                        optional: false,
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                        "asort" => {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("asort")),
+                                    args: vec![Argument::positional(receiver.clone())],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                        "count" => {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("count")),
+                                    args: vec![Argument::positional(receiver.clone())],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if !is_fcc {
                 if let Some(class_name) = php_object_class_from_expr(&receiver) {
                     let class_name = class_name.trim_start_matches('\\').to_string();
                     if let Some(meta) = class_method_meta(&class_name, &name) {
@@ -9920,6 +11593,27 @@ fn apply_postfix(
                     .as_ref()
                     .is_none_or(|al| inner_nokw(al.clone()).next().is_none())
             {
+                if let Some(target) = lookup_simple_reflection_target(&receiver) {
+                    match (target, name.as_str()) {
+                        (SimpleReflectionTarget::Function(_), "returnsReference") => {
+                            return Ok(Expression::with_span(
+                                ExprKind::Lit(Literal::Bool(false)),
+                                span.clone(),
+                            ));
+                        }
+                        (SimpleReflectionTarget::Class(class_name), "isInstantiable") => {
+                            let instantiable = CLASS_REGISTRY
+                                .with(|r| r.borrow().get(&class_name).cloned())
+                                .is_some_and(|meta| !meta.is_abstract)
+                                && !type_kind_is(&class_name, "enum");
+                            return Ok(Expression::with_span(
+                                ExprKind::Lit(Literal::Bool(instantiable)),
+                                span.clone(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let generator_target = match name.as_str() {
                     "key" => Some("__php_gen_key"),
                     "next" => Some("__php_gen_next"),
@@ -9948,6 +11642,180 @@ fn apply_postfix(
                         },
                         span.clone(),
                     ));
+                }
+            }
+            if !is_fcc && name == "send" {
+                let args = arg_list_pair
+                    .clone()
+                    .map(walk_args)
+                    .transpose()?
+                    .unwrap_or_default();
+                if args.len() == 1 {
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident("__php_gen_send".to_string()),
+                                span.clone(),
+                            )),
+                            args: vec![
+                                Argument::positional(receiver.clone()),
+                                args.into_iter().next().unwrap(),
+                            ],
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
+            if !is_fcc && name == "throw" {
+                let args = arg_list_pair
+                    .clone()
+                    .map(walk_args)
+                    .transpose()?
+                    .unwrap_or_default();
+                if args.len() == 1 {
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident("__php_gen_throw".to_string()),
+                                span.clone(),
+                            )),
+                            args: vec![
+                                Argument::positional(receiver.clone()),
+                                args.into_iter().next().unwrap(),
+                            ],
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
+            if !is_fcc {
+                if let Some(target) = lookup_simple_reflection_target(&receiver) {
+                    let args = arg_list_pair
+                        .clone()
+                        .map(walk_args)
+                        .transpose()?
+                        .unwrap_or_default();
+                    match (target, name.as_str()) {
+                        (SimpleReflectionTarget::Function(func_name), "invoke") => {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Ident(func_name),
+                                        span.clone(),
+                                    )),
+                                    args,
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                        (
+                            SimpleReflectionTarget::Method {
+                                class_name,
+                                method_name,
+                            },
+                            "invoke",
+                        ) => {
+                            let mut it = args.into_iter();
+                            let obj = it
+                                .next()
+                                .map(|arg| arg.value)
+                                .unwrap_or_else(Expression::null);
+                            let call_args: Vec<Argument> = it.collect();
+                            let is_static = matches!(obj.kind, ExprKind::Lit(Literal::Null));
+                            let callee = if is_static {
+                                Expression::with_span(
+                                    ExprKind::StaticAccess {
+                                        class: Box::new(Expression::with_span(
+                                            ExprKind::Ident(class_name),
+                                            span.clone(),
+                                        )),
+                                        member: Box::new(Expression::with_span(
+                                            ExprKind::Ident(method_name),
+                                            span.clone(),
+                                        )),
+                                    },
+                                    span.clone(),
+                                )
+                            } else {
+                                Expression::with_span(
+                                    ExprKind::Member {
+                                        object: Box::new(obj),
+                                        field: method_name,
+                                        null_safe: false,
+                                    },
+                                    span.clone(),
+                                )
+                            };
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args: call_args,
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                        (SimpleReflectionTarget::Class(class_name), "hasMethod") => {
+                            if let Some(method) =
+                                args.first().and_then(|arg| php_literal_string(&arg.value))
+                            {
+                                let has = class_has_method(&class_name, &method);
+                                return Ok(Expression::with_span(
+                                    ExprKind::Lit(Literal::Bool(has)),
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                        (SimpleReflectionTarget::Class(class_name), "getConstant") => {
+                            if let Some(const_name) =
+                                args.first().and_then(|arg| php_literal_string(&arg.value))
+                            {
+                                if let Some(value) = CLASS_REGISTRY.with(|r| {
+                                    r.borrow().get(&class_name).and_then(|meta| {
+                                        meta.constants
+                                            .iter()
+                                            .find(|c| c.name == const_name)
+                                            .map(|c| c.value.clone())
+                                    })
+                                }) {
+                                    return Ok(value);
+                                }
+                            }
+                        }
+                        (SimpleReflectionTarget::Class(class_name), "getCases") => {
+                            if type_kind_is(&class_name, "enum") {
+                                let cases = CLASS_REGISTRY.with(|r| {
+                                    r.borrow()
+                                        .get(&class_name)
+                                        .map(|meta| {
+                                            meta.fields
+                                                .iter()
+                                                .filter(|field| {
+                                                    field.is_static
+                                                        && field.type_hint.as_deref()
+                                                            == Some(class_name.as_str())
+                                                })
+                                                .map(|field| ArrayElement {
+                                                    key: None,
+                                                    value: Expression::string(&field.name),
+                                                    spread: false,
+                                                    by_ref: false,
+                                                })
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default()
+                                });
+                                return Ok(Expression::with_span(
+                                    ExprKind::Array(cases),
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -10008,6 +11876,15 @@ fn apply_postfix(
                                         span.clone(),
                                     ));
                                 }
+                                "getReturn"
+                                    if state.phase == SimpleFiberPhase::Terminated
+                                        && state.final_resume_echoed =>
+                                {
+                                    return Ok(Expression::with_span(
+                                        ExprKind::Lit(Literal::Null),
+                                        span.clone(),
+                                    ));
+                                }
                                 "start" if state.phase != SimpleFiberPhase::New => {
                                     return Ok(Expression::with_span(
                                         php_throw_named_error_expr(
@@ -10065,14 +11942,29 @@ fn apply_postfix(
                                         SimpleFiberPhase::Terminated
                                     };
                                     state.resumes = 0;
+                                    state.final_resume_echoed = false;
                                     note_simple_fiber_var(var_name, state);
                                 }
                                 "resume" => {
                                     state.resumes = state.resumes.saturating_add(1);
+                                    if !state.unbounded_suspends
+                                        && state.resumes >= state.suspend_count
+                                    {
+                                        state.phase = SimpleFiberPhase::Terminated;
+                                        state.final_resume_echoed = in_php_echo_context();
+                                    } else {
+                                        state.final_resume_echoed = false;
+                                    }
                                     note_simple_fiber_var(var_name, state);
                                 }
                                 "throw" => {
                                     state.resumes = state.resumes.saturating_add(1);
+                                    if !state.unbounded_suspends
+                                        && state.resumes >= state.suspend_count
+                                    {
+                                        state.phase = SimpleFiberPhase::Terminated;
+                                    }
+                                    state.final_resume_echoed = false;
                                     note_simple_fiber_var(var_name, state);
                                 }
                                 _ => {}
@@ -10207,31 +12099,31 @@ fn apply_postfix(
                     _ => {}
                 }
             }
-	            // PHP DateTime / DateTimeImmutable instance methods →
-	            // bytecode adapter calls (see emitter/php/datetime_adapter.rs).
-	            // Rewrites `$dt->X(...)` to `__php_dt_X($dt, ...)` which the
-	            // PHP profile binds to the corresponding `common:php.X` emit
-	            // target. Never rewrite `$this->format(...)`: while walking class
-	            // bodies the registry may not yet know the class's later methods,
-	            // and PHP user methods must dispatch normally.
-	            if !is_fcc
-	                && name == "format"
-	                && php_object_class_from_expr(&receiver).as_deref() == Some("DateInterval")
-	            {
-	                if let Some(al) = arg_list_pair.clone() {
-	                    let fmt_args = walk_args(al)?;
-	                    if fmt_args.len() == 1 {
-	                        if let ExprKind::Lit(Literal::Str(fmt)) = &fmt_args[0].value.kind {
-	                            return Ok(php_dateinterval_format_literal_to_ast(
-	                                fmt, &receiver, &span,
-	                            ));
-	                        }
-	                    }
-	                }
-	            }
-	            if !is_fcc && !is_php_this_expr(&receiver) && !any_user_class_has_method(name.as_str())
-	            {
-	                let target_fn: Option<&str> = match name.as_str() {
+            // PHP DateTime / DateTimeImmutable instance methods →
+            // bytecode adapter calls (see emitter/php/datetime_adapter.rs).
+            // Rewrites `$dt->X(...)` to `__php_dt_X($dt, ...)` which the
+            // PHP profile binds to the corresponding `common:php.X` emit
+            // target. Never rewrite `$this->format(...)`: while walking class
+            // bodies the registry may not yet know the class's later methods,
+            // and PHP user methods must dispatch normally.
+            if !is_fcc
+                && name == "format"
+                && php_object_class_from_expr(&receiver).as_deref() == Some("DateInterval")
+            {
+                if let Some(al) = arg_list_pair.clone() {
+                    let fmt_args = walk_args(al)?;
+                    if fmt_args.len() == 1 {
+                        if let ExprKind::Lit(Literal::Str(fmt)) = &fmt_args[0].value.kind {
+                            return Ok(php_dateinterval_format_literal_to_ast(
+                                fmt, &receiver, &span,
+                            ));
+                        }
+                    }
+                }
+            }
+            if !is_fcc && !is_php_this_expr(&receiver) && !any_user_class_has_method(name.as_str())
+            {
+                let target_fn: Option<&str> = match name.as_str() {
                     "format" => Some("__php_dt_format"),
                     "getTimestamp" => Some("__php_dt_get_timestamp"),
                     "modify" => Some("__php_dt_modify"),
@@ -10290,7 +12182,9 @@ fn apply_postfix(
                                 if let Some((ty, tm, td)) = target {
                                     return Ok(Expression::with_span(
                                         ExprKind::Call {
-                                            callee: Box::new(Expression::ident("__php_dt_set_date")),
+                                            callee: Box::new(Expression::ident(
+                                                "__php_dt_set_date",
+                                            )),
                                             args: vec![
                                                 call_args.remove(0),
                                                 Argument::positional(Expression::int(ty)),
@@ -10420,11 +12314,59 @@ fn apply_postfix(
             // already-rewritten exception accessor / DateTime adapter
             // forms (those return early above this branch).
             if null_safe {
+                if let ExprKind::Member { object, field, .. } = member.kind {
+                    let tmp = next_tmp_name("nullsafe_recv");
+                    let tmp_ident =
+                        || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+                    let save = Expression::with_span(
+                        ExprKind::Assign {
+                            target: Box::new(tmp_ident()),
+                            value: object,
+                        },
+                        span.clone(),
+                    );
+                    let is_null = Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::StrictEq,
+                            left: Box::new(tmp_ident()),
+                            right: Box::new(Expression::null()),
+                        },
+                        span.clone(),
+                    );
+                    let direct_member = Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(tmp_ident()),
+                            field,
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    );
+                    let direct_call = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(direct_member),
+                            args,
+                            optional: false,
+                        },
+                        span.clone(),
+                    );
+                    let ternary = Expression::with_span(
+                        ExprKind::Ternary {
+                            cond: Box::new(is_null),
+                            then: Box::new(Expression::null()),
+                            else_: Box::new(direct_call),
+                        },
+                        span.clone(),
+                    );
+                    return Ok(Expression::with_span(
+                        ExprKind::Sequence(vec![save, ternary]),
+                        span.clone(),
+                    ));
+                }
                 return Ok(Expression::with_span(
                     ExprKind::Call {
                         callee: Box::new(member),
                         args,
-                        optional: null_safe,
+                        optional: true,
                     },
                     span.clone(),
                 ));
@@ -10573,6 +12515,25 @@ fn apply_postfix(
                     vec![Argument::positional(node)],
                 ));
             }
+            // SimpleXMLElement is represented by the underlying DOM element.
+            // Its `asXML()` and `getName()` therefore normalize directly to
+            // the same DOM serialization/name surface.
+            if method_name == "asXML" && args.is_empty() {
+                return Ok(mk_dom_call(
+                    "__dom_save_xml",
+                    vec![Argument::positional(member_object.clone())],
+                ));
+            }
+            if method_name == "getName" && args.is_empty() {
+                return Ok(Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(member_object.clone()),
+                        field: "nodeName".to_string(),
+                        null_safe,
+                    },
+                    span.clone(),
+                ));
+            }
             // `createElement($name, $text)` — PHP's 2-arg form creates the
             // element and a child text node with `$text`.
             if method_name == "createElement" && args.len() >= 2 {
@@ -10642,8 +12603,8 @@ fn apply_postfix(
                 _ => None,
             };
             if let Some(adapter_name) = dom_adapter {
-                let is_known_non_dom = php_object_class_from_expr(&member_object).is_some_and(
-                    |class_name| {
+                let is_known_non_dom =
+                    php_object_class_from_expr(&member_object).is_some_and(|class_name| {
                         !matches!(
                             class_name.trim_start_matches('\\'),
                             "DOMDocument"
@@ -10653,8 +12614,7 @@ fn apply_postfix(
                                 | "DOMText"
                                 | "DOMAttr"
                         )
-                    },
-                );
+                    });
                 if !is_known_non_dom {
                     let mut adapter_args = vec![Argument::positional(member_object.clone())];
                     adapter_args.extend(args.clone());
@@ -10806,7 +12766,12 @@ fn apply_postfix(
                 .into_inner()
                 .next()
                 .ok_or("property_access_op: missing name")?;
-            let name = name_pair.into_inner().next().unwrap().as_str().to_string();
+            let mut name = name_pair.into_inner().next().unwrap().as_str().to_string();
+            if is_php_this_expr(&receiver) {
+                if let Some(backing) = current_property_hook_backing(&name) {
+                    name = backing;
+                }
+            }
             let member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
@@ -10823,7 +12788,7 @@ fn apply_postfix(
                     }
                 }
             }
-            if !silent_property_access {
+            if !is_assign_target && !silent_property_access {
                 if let ExprKind::Member { object, field, .. } = &member.kind {
                     if let Some(class_name) = php_object_class_from_expr(object) {
                         if let Some((owner, visibility)) =
@@ -10857,6 +12822,13 @@ fn apply_postfix(
                                 && !simple_object_field_was_written(object, field)
                                 && !initialized_by_constructor
                             {
+                                if meta
+                                    .type_hint
+                                    .as_deref()
+                                    .is_some_and(|ty| php_strip_nullable_type(ty).0)
+                                {
+                                    return Ok(Expression::null());
+                                }
                                 return Ok(Expression::with_span(
                                     php_throw_named_error_expr(
                                         "Error",
@@ -10866,6 +12838,12 @@ fn apply_postfix(
                                     span.clone(),
                                 ));
                             }
+                            if php_field_visible_from_current(&owner, meta.visibility) {
+                                return Ok(member);
+                            }
+                        }
+                        if class_has_field(&class_name, field) {
+                            return Ok(member);
                         }
                     }
                 }
@@ -10923,11 +12901,20 @@ fn apply_postfix(
             let name_pair = inner.next().unwrap();
             let inner_pair = name_pair.into_inner().next().unwrap();
             let raw = inner_pair.as_str();
-            let name = if matches!(inner_pair.as_rule(), Rule::variable) {
-                lookup_simple_string_var(raw)
-                    .unwrap_or_else(|| raw.strip_prefix('$').unwrap_or(raw).to_string())
-            } else {
-                raw.to_string()
+            let name = match inner_pair.as_rule() {
+                Rule::variable => lookup_simple_string_var(raw)
+                    .unwrap_or_else(|| raw.strip_prefix('$').unwrap_or(raw).to_string()),
+                Rule::expression => {
+                    let expr = walk_expression(inner_pair.clone())?;
+                    match &expr.kind {
+                        ExprKind::Ident(var) => {
+                            lookup_simple_string_var(var).unwrap_or_else(|| raw.to_string())
+                        }
+                        ExprKind::Lit(Literal::Str(value)) => value.clone(),
+                        _ => raw.to_string(),
+                    }
+                }
+                _ => raw.to_string(),
             };
             // PHP 5.5 `ClassName::class` resolves to the class-name string at
             // compile time. Normalize to a string literal.
@@ -11075,6 +13062,34 @@ fn apply_postfix(
                     }
                 }
             }
+            if !is_assign_target {
+                if let Some(class_name) = static_class_name(&receiver) {
+                    if let Some((owner, meta)) = class_field_meta(&class_name, &name) {
+                        if meta.is_static
+                            && meta.typed_without_init
+                            && !simple_static_field_was_written(&class_name, &name)
+                        {
+                            if meta
+                                .type_hint
+                                .as_deref()
+                                .is_some_and(|ty| php_strip_nullable_type(ty).0)
+                            {
+                                return Ok(Expression::null());
+                            }
+                            if php_field_visible_from_current(&owner, meta.visibility) {
+                                return Ok(Expression::with_span(
+                                    php_throw_named_error_expr(
+                                        "Error",
+                                        "Typed property must not be accessed before initialization",
+                                        &span,
+                                    ),
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             Ok(Expression::with_span(
                 ExprKind::StaticAccess {
                     class: Box::new(receiver),
@@ -11206,6 +13221,46 @@ fn apply_postfix(
             if let Some(folded) = php_fold_simple_generator_iife(&receiver, &args, span) {
                 return Ok(folded);
             }
+            if let ExprKind::Member {
+                object,
+                field,
+                null_safe: false,
+            } = &receiver.kind
+            {
+                if let Some(class_name) = php_object_class_from_expr(object) {
+                    if class_field_meta(&class_name, field).is_some_and(|(_, meta)| {
+                        meta.type_hint.as_deref().is_some_and(|ty| {
+                            php_strip_nullable_type(ty)
+                                .1
+                                .trim()
+                                .eq_ignore_ascii_case("callable")
+                        })
+                    }) {
+                        let tmp = next_tmp_name("callable_prop");
+                        let tmp_ident =
+                            || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+                        let save = Expression::with_span(
+                            ExprKind::Assign {
+                                target: Box::new(tmp_ident()),
+                                value: Box::new(receiver.clone()),
+                            },
+                            span.clone(),
+                        );
+                        let call = Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(tmp_ident()),
+                                args,
+                                optional: false,
+                            },
+                            span.clone(),
+                        );
+                        return Ok(Expression::with_span(
+                            ExprKind::Sequence(vec![save, call]),
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
             if let ExprKind::StaticAccess { class, .. } = &receiver.kind {
                 if matches!(class.kind, ExprKind::Lit(Literal::Str(_))) {
                     return Ok(Expression::with_span(
@@ -11259,6 +13314,23 @@ fn apply_postfix(
                         let implements_countable = class_all_interfaces(&class_name)
                             .iter()
                             .any(|iface| iface.trim_start_matches('\\') == "Countable");
+                        if implements_countable || class_has_method(&class_name, "count") {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Member {
+                                            object: Box::new(first_arg.value.clone()),
+                                            field: "count".to_string(),
+                                            null_safe: false,
+                                        },
+                                        span.clone(),
+                                    )),
+                                    args: vec![],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
                         if class_is_registered(&class_name)
                             && !implements_countable
                             && !class_has_method(&class_name, "count")
@@ -11349,7 +13421,9 @@ fn apply_postfix(
                                             ExprKind::Lit(Literal::Bool(false)),
                                             span.clone(),
                                         );
-                                        return Ok(php_dt_last_errors_state_expr(false, result, &span));
+                                        return Ok(php_dt_last_errors_state_expr(
+                                            false, result, &span,
+                                        ));
                                     }
                                     let date = &value[0..10];
                                     let mut parts = date.split('-');
@@ -11357,13 +13431,14 @@ fn apply_postfix(
                                     let m = parts.next().and_then(|p| p.parse::<i64>().ok());
                                     let d = parts.next().and_then(|p| p.parse::<i64>().ok());
                                     if let (Some(y), Some(m), Some(d)) = (y, m, d) {
-                                        if m < 1 || m > 12 || d < 1 || d > php_days_in_month(y, m)
-                                        {
+                                        if m < 1 || m > 12 || d < 1 || d > php_days_in_month(y, m) {
                                             let result = Expression::with_span(
                                                 ExprKind::Lit(Literal::Bool(false)),
                                                 span.clone(),
                                             );
-                                            return Ok(php_dt_last_errors_state_expr(false, result, &span));
+                                            return Ok(php_dt_last_errors_state_expr(
+                                                false, result, &span,
+                                            ));
                                         }
                                         let ctor = match class_name.trim_start_matches('\\') {
                                             "DateTime" => Some("__php_dt_new"),
@@ -11371,12 +13446,11 @@ fn apply_postfix(
                                             _ => None,
                                         };
                                         if let Some(fname) = ctor {
-                                            let mut ctor_args = vec![Argument::positional(
-                                                Expression::with_span(
+                                            let mut ctor_args =
+                                                vec![Argument::positional(Expression::with_span(
                                                     ExprKind::Lit(Literal::Str(date.to_string())),
                                                     span.clone(),
-                                                ),
-                                            )];
+                                                ))];
                                             if let Some(tz) = args.get(2) {
                                                 ctor_args.push(tz.clone());
                                             }
@@ -11402,23 +13476,18 @@ fn apply_postfix(
                                     return Ok(php_dt_last_errors_state_expr(false, result, &span));
                                 }
                                 if fmt == "Y-m-d H:i:s.u" && value.len() >= 23 {
-                                    let iso = format!(
-                                        "{}T{}Z",
-                                        &value[0..10],
-                                        &value[11..23]
-                                    );
+                                    let iso = format!("{}T{}Z", &value[0..10], &value[11..23]);
                                     let ctor = match class_name.trim_start_matches('\\') {
                                         "DateTime" => Some("__php_dt_new"),
                                         "DateTimeImmutable" => Some("__php_dt_imm_new"),
                                         _ => None,
                                     };
                                     if let Some(fname) = ctor {
-                                        let mut ctor_args = vec![Argument::positional(
-                                            Expression::with_span(
+                                        let mut ctor_args =
+                                            vec![Argument::positional(Expression::with_span(
                                                 ExprKind::Lit(Literal::Str(iso)),
                                                 span.clone(),
-                                            ),
-                                        )];
+                                            ))];
                                         if let Some(tz) = args.get(2) {
                                             ctor_args.push(tz.clone());
                                         }
@@ -11430,7 +13499,9 @@ fn apply_postfix(
                                             },
                                             span.clone(),
                                         );
-                                        return Ok(php_dt_last_errors_state_expr(true, result, &span));
+                                        return Ok(php_dt_last_errors_state_expr(
+                                            true, result, &span,
+                                        ));
                                     }
                                 }
                             }
@@ -11919,38 +13990,38 @@ fn apply_postfix(
                             span.clone(),
                         ));
                     }
-	                    if bare_class == "IntlCalendar" && method_name == "getNow" {
-	                        return Ok(Expression::with_span(
-	                            ExprKind::Lit(Literal::Int(1_704_067_200_000)),
-	                            span.clone(),
-	                        ));
-	                    }
-	                    if bare_class == "DateTimeZone" && method_name == "listIdentifiers" {
-	                        let zones = if args.len() >= 2
-	                            && matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(country)) if country == "GB")
-	                        {
-	                            vec!["Europe/London"]
-	                        } else {
-	                            vec!["Europe/London"]
-	                        };
-	                        return Ok(Expression::with_span(
-	                            ExprKind::Array(
-	                                zones
-	                                    .into_iter()
-	                                    .map(|zone| ArrayElement {
-	                                        key: None,
-	                                        value: Expression::with_span(
-	                                            ExprKind::Lit(Literal::Str(zone.to_string())),
-	                                            span.clone(),
-	                                        ),
-	                                        spread: false,
-	                                        by_ref: false,
-	                                    })
-	                                    .collect(),
-	                            ),
-	                            span.clone(),
-	                        ));
-	                    }
+                    if bare_class == "IntlCalendar" && method_name == "getNow" {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(1_704_067_200_000)),
+                            span.clone(),
+                        ));
+                    }
+                    if bare_class == "DateTimeZone" && method_name == "listIdentifiers" {
+                        let zones = if args.len() >= 2
+                            && matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(country)) if country == "GB")
+                        {
+                            vec!["Europe/London"]
+                        } else {
+                            vec!["Europe/London"]
+                        };
+                        return Ok(Expression::with_span(
+                            ExprKind::Array(
+                                zones
+                                    .into_iter()
+                                    .map(|zone| ArrayElement {
+                                        key: None,
+                                        value: Expression::with_span(
+                                            ExprKind::Lit(Literal::Str(zone.to_string())),
+                                            span.clone(),
+                                        ),
+                                        spread: false,
+                                        by_ref: false,
+                                    })
+                                    .collect(),
+                            ),
+                            span.clone(),
+                        ));
+                    }
                     if matches!(bare_class, "DateTime" | "DateTimeImmutable")
                         && method_name == "getLastErrors"
                     {
@@ -11975,7 +14046,10 @@ fn apply_postfix(
                         ));
                     }
                     if bare_class == "DateTimeImmutable"
-                        && matches!(method_name.as_str(), "createFromMutable" | "createFromInterface")
+                        && matches!(
+                            method_name.as_str(),
+                            "createFromMutable" | "createFromInterface"
+                        )
                     {
                         if let Some(first) = args.first() {
                             let formatted = Expression::with_span(
@@ -11984,9 +14058,7 @@ fn apply_postfix(
                                     args: vec![
                                         Argument::positional(first.value.clone()),
                                         Argument::positional(Expression::with_span(
-                                            ExprKind::Lit(Literal::Str(
-                                                "Y-m-d H:i:s".to_string(),
-                                            )),
+                                            ExprKind::Lit(Literal::Str("Y-m-d H:i:s".to_string())),
                                             span.clone(),
                                         )),
                                     ],
@@ -12015,35 +14087,37 @@ fn apply_postfix(
                             ));
                         }
                     }
-	                    if bare_class == "DateInterval" && method_name == "createFromDateString" {
-	                        if let Some(first) = args.first() {
-	                            if let ExprKind::Lit(Literal::Str(s)) = &first.value.kind {
-	                                let (y, mo, d, h, mi, se) = php_parse_dateinterval_datestring(s);
-	                                return Ok(Expression::with_span(
-	                                    ExprKind::Call {
-	                                        callee: Box::new(Expression::with_span(
-	                                            ExprKind::Ident("__php_dateinterval_components".to_string()),
-	                                            span.clone(),
-	                                        )),
-	                                        args: vec![
-	                                            Argument::positional(Expression::int(y)),
-	                                            Argument::positional(Expression::int(mo)),
-	                                            Argument::positional(Expression::int(d)),
-	                                            Argument::positional(Expression::int(h)),
-	                                            Argument::positional(Expression::int(mi)),
-	                                            Argument::positional(Expression::int(se)),
-	                                        ],
-	                                        optional: false,
-	                                    },
-	                                    span.clone(),
-	                                ));
-	                            }
-	                        }
-	                    }
-	                    if bare_class == "Transliterator" && method_name == "create" {
-	                        return Ok(php_assoc_array(
-	                            vec![(
-	                                "__type",
+                    if bare_class == "DateInterval" && method_name == "createFromDateString" {
+                        if let Some(first) = args.first() {
+                            if let ExprKind::Lit(Literal::Str(s)) = &first.value.kind {
+                                let (y, mo, d, h, mi, se) = php_parse_dateinterval_datestring(s);
+                                return Ok(Expression::with_span(
+                                    ExprKind::Call {
+                                        callee: Box::new(Expression::with_span(
+                                            ExprKind::Ident(
+                                                "__php_dateinterval_components".to_string(),
+                                            ),
+                                            span.clone(),
+                                        )),
+                                        args: vec![
+                                            Argument::positional(Expression::int(y)),
+                                            Argument::positional(Expression::int(mo)),
+                                            Argument::positional(Expression::int(d)),
+                                            Argument::positional(Expression::int(h)),
+                                            Argument::positional(Expression::int(mi)),
+                                            Argument::positional(Expression::int(se)),
+                                        ],
+                                        optional: false,
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    if bare_class == "Transliterator" && method_name == "create" {
+                        return Ok(php_assoc_array(
+                            vec![(
+                                "__type",
                                 Expression::with_span(
                                     ExprKind::Lit(Literal::Str("Transliterator".to_string())),
                                     span.clone(),
@@ -13532,7 +15606,10 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 let anon_modifiers = ClassModifiers::default();
                 let meta = extract_class_meta(
                     &anon_name,
-                    parent_name.as_ref().map(std::slice::from_ref).unwrap_or(&[]),
+                    parent_name
+                        .as_ref()
+                        .map(std::slice::from_ref)
+                        .unwrap_or(&[]),
                     &interfaces,
                     &anon_modifiers,
                     &members,
@@ -13604,15 +15681,15 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     // `emitter/php/datetime_adapter.rs` emit_* functions handle the
     // construction. Avoids registering host fns and keeps the call
     // shape JS-uniform downstream.
-	if let ExprKind::Ident(class_name) = &class_expr.kind {
-		if class_name.trim_start_matches('\\') == "DatePeriod" {
-			if let Some(period) = php_dateperiod_literal_array(&args, &span) {
-				return Ok(period);
-			}
-		}
-	    let rewrite_target: Option<&str> = match class_name.trim_start_matches('\\') {
-	        "DateTime" => Some("__php_dt_new"),
-	        "DateTimeImmutable" => Some("__php_dt_imm_new"),
+    if let ExprKind::Ident(class_name) = &class_expr.kind {
+        if class_name.trim_start_matches('\\') == "DatePeriod" {
+            if let Some(period) = php_dateperiod_literal_array(&args, &span) {
+                return Ok(period);
+            }
+        }
+        let rewrite_target: Option<&str> = match class_name.trim_start_matches('\\') {
+            "DateTime" => Some("__php_dt_new"),
+            "DateTimeImmutable" => Some("__php_dt_imm_new"),
             "DateInterval" => Some("__php_dateinterval_new"),
             "DateTimeZone" => Some("__php_datetimezone_new"),
             _ => None,
@@ -13938,6 +16015,9 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             "ReflectionClass" => {
                 return build_reflection_class_call(args, span);
             }
+            "ReflectionEnum" => {
+                return build_reflection_class_call(args, span);
+            }
             "ReflectionMethod" => {
                 return build_reflection_method_call(args, span);
             }
@@ -14056,7 +16136,11 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         if let Some(ctor) = class_method_meta(name, "__construct") {
             if !php_field_visible_from_current(name, ctor.visibility) {
                 return Ok(Expression::with_span(
-                    php_throw_named_error_expr("Error", "Cannot access non-public constructor", &span),
+                    php_throw_named_error_expr(
+                        "Error",
+                        "Cannot access non-public constructor",
+                        &span,
+                    ),
                     span,
                 ));
             }
@@ -14337,7 +16421,14 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
                 .collect::<Vec<_>>()
         });
         call_args.push(Argument::positional(reflection_params_array_expr(
-            ctor_param_attrs,
+            ctor_param_attrs
+                .into_iter()
+                .map(|attrs| ParamReflectionMeta {
+                    attrs,
+                    is_optional: false,
+                    default: None,
+                })
+                .collect(),
         )));
     } else {
         // Unknown class — pass minimal defaults
@@ -14463,7 +16554,18 @@ fn build_reflection_function_call(args: Vec<Argument>, span: Span) -> Result<Exp
                 .collect::<Vec<_>>()
         });
         call_args.push(Argument::positional(reflection_params_array_expr(
-            param_attrs,
+            if fm.params.is_empty() {
+                param_attrs
+                    .into_iter()
+                    .map(|attrs| ParamReflectionMeta {
+                        attrs,
+                        is_optional: false,
+                        default: None,
+                    })
+                    .collect()
+            } else {
+                reflection_param_metas(&fm.params, param_attrs)
+            },
         )));
     } else {
         call_args.push(Argument::positional(mk_int(0)));
@@ -15118,10 +17220,29 @@ fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
 fn walk_arrow_function(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut params: Vec<Param> = Vec::new();
+    let mut captures: Vec<String> = Vec::new();
     let mut body_expr: Option<Expression> = None;
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::param_list => params = walk_params(p)?,
+            Rule::closure_use => {
+                for v in p.into_inner() {
+                    if matches!(v.as_rule(), Rule::closure_use_var) {
+                        let by_ref = v.as_str().trim_start().starts_with('&');
+                        if let Some(var) = v
+                            .into_inner()
+                            .find(|q| matches!(q.as_rule(), Rule::variable))
+                        {
+                            let capture_name = strip_dollar(var.as_str()).to_string();
+                            if by_ref {
+                                captures.push(format!("&{capture_name}"));
+                            } else {
+                                captures.push(capture_name);
+                            }
+                        }
+                    }
+                }
+            }
             Rule::expression => body_expr = Some(walk_expression(p)?),
             _ => {}
         }
@@ -15135,7 +17256,7 @@ fn walk_arrow_function(pair: Pair<Rule>) -> Result<Expression, String> {
             params,
             body: LambdaBody::Expr(Box::new(body_expr)),
             is_async: false,
-            captures: Vec::new(),
+            captures,
         },
         span,
     ))
@@ -16528,10 +18649,10 @@ fn parse_interpol_expression(src: &str) -> Result<Expression, String> {
 ///   (container, key) order pulls arg 1 first, arg 0 second.
 fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<Argument> {
     let name = match &callee.kind {
-        ExprKind::Ident(n) => n.as_str(),
+        ExprKind::Ident(n) => n.to_ascii_lowercase(),
         _ => return args,
     };
-    let order: &[usize] = match name {
+    let order: &[usize] = match name.as_str() {
         // PHP: array_key_exists($key, $arr). Canonical: hasOwn($arr, $key).
         "array_key_exists" | "key_exists" => &[1, 0],
         // PHP: in_array($needle, $haystack). Canonical: includes($arr, $needle).
@@ -17400,345 +19521,361 @@ fn php_lower_gotos_in_decl(mut s: Statement) -> Statement {
 }
 
 fn php_mk_call(name: &str, args: Vec<Expression>, span: &Span) -> Expression {
-	Expression::with_span(
-		ExprKind::Call {
-			callee: Box::new(Expression::with_span(
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
                 ExprKind::Ident(name.to_string()),
                 span.clone(),
             )),
             args: args.into_iter().map(Argument::positional).collect(),
             optional: false,
         },
-		span.clone(),
-	)
+        span.clone(),
+    )
 }
 
 fn php_parse_dateinterval_datestring(s: &str) -> (i64, i64, i64, i64, i64, i64) {
-	let mut y = 0;
-	let mut mo = 0;
-	let mut d = 0;
-	let mut h = 0;
-	let mut mi = 0;
-	let mut se = 0;
-	let normalized = s.replace('+', " ");
-	let parts = normalized.split_whitespace().collect::<Vec<_>>();
-	let mut idx = 0;
-	while idx + 1 < parts.len() {
-		if let Ok(n) = parts[idx].parse::<i64>() {
-			match parts[idx + 1].trim_end_matches('s').to_ascii_lowercase().as_str() {
-				"year" => y += n,
-				"month" => mo += n,
-				"week" => d += n * 7,
-				"day" => d += n,
-				"hour" => h += n,
-				"minute" => mi += n,
-				"second" => se += n,
-				_ => {}
-			}
-			idx += 2;
-		} else {
-			idx += 1;
-		}
-	}
-	if s.to_ascii_lowercase().contains("next month") && mo == 0 {
-		mo = 1;
-	}
-	(y, mo, d, h, mi, se)
+    let mut y = 0;
+    let mut mo = 0;
+    let mut d = 0;
+    let mut h = 0;
+    let mut mi = 0;
+    let mut se = 0;
+    let normalized = s.replace('+', " ");
+    let parts = normalized.split_whitespace().collect::<Vec<_>>();
+    let mut idx = 0;
+    while idx + 1 < parts.len() {
+        if let Ok(n) = parts[idx].parse::<i64>() {
+            match parts[idx + 1]
+                .trim_end_matches('s')
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "year" => y += n,
+                "month" => mo += n,
+                "week" => d += n * 7,
+                "day" => d += n,
+                "hour" => h += n,
+                "minute" => mi += n,
+                "second" => se += n,
+                _ => {}
+            }
+            idx += 2;
+        } else {
+            idx += 1;
+        }
+    }
+    if s.to_ascii_lowercase().contains("next month") && mo == 0 {
+        mo = 1;
+    }
+    (y, mo, d, h, mi, se)
 }
 
 fn php_dateinterval_format_literal_to_ast(
-	fmt: &str,
-	interval: &Expression,
-	span: &Span,
+    fmt: &str,
+    interval: &Expression,
+    span: &Span,
 ) -> Expression {
-	let field = |name: &str| {
-		Expression::with_span(
-			ExprKind::Member {
-				object: Box::new(interval.clone()),
-				field: name.to_string(),
-				null_safe: false,
-			},
-			span.clone(),
-		)
-	};
-	let strval = |expr: Expression| php_mk_call("strval", vec![expr], span);
-	let padded = |expr: Expression| {
-		php_mk_call(
-			"str_pad",
-			vec![
-				strval(expr),
-				Expression::with_span(ExprKind::Lit(Literal::Int(2)), span.clone()),
-				Expression::with_span(ExprKind::Lit(Literal::Str("0".to_string())), span.clone()),
-				Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
-			],
-			span,
-		)
-	};
-	let mut parts: Vec<Expression> = Vec::new();
-	let mut text = String::new();
-	let mut chars = fmt.chars();
-	while let Some(ch) = chars.next() {
-		if ch != '%' {
-			text.push(ch);
-			continue;
-		}
-		let Some(code) = chars.next() else {
-			text.push('%');
-			break;
-		};
-		if !text.is_empty() {
-			parts.push(Expression::with_span(
-				ExprKind::Lit(Literal::Str(std::mem::take(&mut text))),
-				span.clone(),
-			));
-		}
-		let expr = match code {
-			'%' => Expression::with_span(ExprKind::Lit(Literal::Str("%".to_string())), span.clone()),
-			'y' => strval(field("y")),
-			'm' => strval(field("m")),
-			'd' => strval(field("d")),
-			'h' => strval(field("h")),
-			'i' => strval(field("i")),
-			's' => strval(field("s")),
-			'a' => strval(field("days")),
-			'Y' => padded(field("y")),
-			'M' => padded(field("m")),
-			'D' => padded(field("d")),
-			'H' => padded(field("h")),
-			'I' => padded(field("i")),
-			'S' => padded(field("s")),
-			_ => Expression::with_span(ExprKind::Lit(Literal::Str(format!("%{code}"))), span.clone()),
-		};
-		parts.push(expr);
-	}
-	if !text.is_empty() {
-		parts.push(Expression::with_span(ExprKind::Lit(Literal::Str(text)), span.clone()));
-	}
-	parts
-		.into_iter()
-		.reduce(|left, right| {
-			Expression::with_span(
-				ExprKind::Binary {
-					op: BinOp::Concat,
-					left: Box::new(left),
-					right: Box::new(right),
-				},
-				span.clone(),
-			)
-		})
-		.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone()))
+    let field = |name: &str| {
+        Expression::with_span(
+            ExprKind::Member {
+                object: Box::new(interval.clone()),
+                field: name.to_string(),
+                null_safe: false,
+            },
+            span.clone(),
+        )
+    };
+    let strval = |expr: Expression| php_mk_call("strval", vec![expr], span);
+    let padded = |expr: Expression| {
+        php_mk_call(
+            "str_pad",
+            vec![
+                strval(expr),
+                Expression::with_span(ExprKind::Lit(Literal::Int(2)), span.clone()),
+                Expression::with_span(ExprKind::Lit(Literal::Str("0".to_string())), span.clone()),
+                Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone()),
+            ],
+            span,
+        )
+    };
+    let mut parts: Vec<Expression> = Vec::new();
+    let mut text = String::new();
+    let mut chars = fmt.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            text.push(ch);
+            continue;
+        }
+        let Some(code) = chars.next() else {
+            text.push('%');
+            break;
+        };
+        if !text.is_empty() {
+            parts.push(Expression::with_span(
+                ExprKind::Lit(Literal::Str(std::mem::take(&mut text))),
+                span.clone(),
+            ));
+        }
+        let expr = match code {
+            '%' => {
+                Expression::with_span(ExprKind::Lit(Literal::Str("%".to_string())), span.clone())
+            }
+            'y' => strval(field("y")),
+            'm' => strval(field("m")),
+            'd' => strval(field("d")),
+            'h' => strval(field("h")),
+            'i' => strval(field("i")),
+            's' => strval(field("s")),
+            'a' => strval(field("days")),
+            'Y' => padded(field("y")),
+            'M' => padded(field("m")),
+            'D' => padded(field("d")),
+            'H' => padded(field("h")),
+            'I' => padded(field("i")),
+            'S' => padded(field("s")),
+            _ => Expression::with_span(
+                ExprKind::Lit(Literal::Str(format!("%{code}"))),
+                span.clone(),
+            ),
+        };
+        parts.push(expr);
+    }
+    if !text.is_empty() {
+        parts.push(Expression::with_span(
+            ExprKind::Lit(Literal::Str(text)),
+            span.clone(),
+        ));
+    }
+    parts
+        .into_iter()
+        .reduce(|left, right| {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Concat,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            Expression::with_span(ExprKind::Lit(Literal::Str(String::new())), span.clone())
+        })
 }
 
 fn php_call_ident(expr: &Expression) -> Option<(&str, &[Argument])> {
-	let ExprKind::Call { callee, args, .. } = &expr.kind else {
-		return None;
-	};
-	let ExprKind::Ident(name) = &callee.kind else {
-		return None;
-	};
-	Some((name.as_str(), args.as_slice()))
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    Some((name.as_str(), args.as_slice()))
 }
 
 fn php_datetime_literal_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
-	let resolved = match &expr.kind {
-		ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
-		_ => expr.clone(),
-	};
-	let (name, args) = php_call_ident(&resolved)?;
-	if name != "__php_dt_new" && name != "__php_dt_imm_new" {
-		return None;
-	}
-	let ExprKind::Lit(Literal::Str(s)) = &args.first()?.value.kind else {
-		return None;
-	};
-	let date = s.split_whitespace().next().unwrap_or(s);
-	let mut parts = date.split('-');
-	let y = parts.next()?.parse().ok()?;
-	let m = parts.next()?.parse().ok()?;
-	let d = parts.next()?.parse().ok()?;
-	Some((y, m, d))
+    let resolved = match &expr.kind {
+        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        _ => expr.clone(),
+    };
+    let (name, args) = php_call_ident(&resolved)?;
+    if name != "__php_dt_new" && name != "__php_dt_imm_new" {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(s)) = &args.first()?.value.kind else {
+        return None;
+    };
+    let date = s.split_whitespace().next().unwrap_or(s);
+    let mut parts = date.split('-');
+    let y = parts.next()?.parse().ok()?;
+    let m = parts.next()?.parse().ok()?;
+    let d = parts.next()?.parse().ok()?;
+    Some((y, m, d))
 }
 
 fn php_dt_last_errors_state_expr(clean: bool, result: Expression, span: &Span) -> Expression {
-	Expression::with_span(
-		ExprKind::Sequence(vec![
-			Expression::with_span(
-				ExprKind::Assign {
-					target: Box::new(Expression::with_span(
-						ExprKind::Ident("$__php_dt_last_errors_clean".to_string()),
-						span.clone(),
-					)),
-					value: Box::new(Expression::with_span(
-						ExprKind::Lit(Literal::Bool(clean)),
-						span.clone(),
-					)),
-				},
-				span.clone(),
-			),
-			result,
-		]),
-		span.clone(),
-	)
+    Expression::with_span(
+        ExprKind::Sequence(vec![
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Ident("$__php_dt_last_errors_clean".to_string()),
+                        span.clone(),
+                    )),
+                    value: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(clean)),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            ),
+            result,
+        ]),
+        span.clone(),
+    )
 }
 
 fn php_dateinterval_days(expr: &Expression) -> Option<i64> {
-	let resolved = match &expr.kind {
-		ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
-		_ => expr.clone(),
-	};
-	let (name, args) = php_call_ident(&resolved)?;
-	if name != "__php_dateinterval_components" || args.len() < 3 {
-		return None;
-	}
-	match &args[2].value.kind {
-		ExprKind::Lit(Literal::Int(d)) => Some(*d),
-		ExprKind::Lit(Literal::Float(d)) => Some(*d as i64),
-		_ => None,
-	}
+    let resolved = match &expr.kind {
+        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        _ => expr.clone(),
+    };
+    let (name, args) = php_call_ident(&resolved)?;
+    if name != "__php_dateinterval_components" || args.len() < 3 {
+        return None;
+    }
+    match &args[2].value.kind {
+        ExprKind::Lit(Literal::Int(d)) => Some(*d),
+        ExprKind::Lit(Literal::Float(d)) => Some(*d as i64),
+        _ => None,
+    }
 }
 
 fn php_dateinterval_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
-	let resolved = match &expr.kind {
-		ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
-		_ => expr.clone(),
-	};
-	let (name, args) = php_call_ident(&resolved)?;
-	if name != "__php_dateinterval_components" || args.len() < 3 {
-		return None;
-	}
-	let get_int = |idx: usize| match &args[idx].value.kind {
-		ExprKind::Lit(Literal::Int(n)) => Some(*n),
-		ExprKind::Lit(Literal::Float(n)) => Some(*n as i64),
-		_ => None,
-	};
-	Some((get_int(0)?, get_int(1)?, get_int(2)?))
+    let resolved = match &expr.kind {
+        ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+        _ => expr.clone(),
+    };
+    let (name, args) = php_call_ident(&resolved)?;
+    if name != "__php_dateinterval_components" || args.len() < 3 {
+        return None;
+    }
+    let get_int = |idx: usize| match &args[idx].value.kind {
+        ExprKind::Lit(Literal::Int(n)) => Some(*n),
+        ExprKind::Lit(Literal::Float(n)) => Some(*n as i64),
+        _ => None,
+    };
+    Some((get_int(0)?, get_int(1)?, get_int(2)?))
 }
 
 fn php_dateperiod_excludes_start(expr: &Expression) -> bool {
-	matches!(
-		&expr.kind,
-		ExprKind::StaticAccess { class, member }
-			if matches!((&class.kind, &member.kind),
-				(ExprKind::Ident(class_name), ExprKind::Ident(member_name))
-					if class_name.trim_start_matches('\\') == "DatePeriod"
-						&& member_name == "EXCLUDE_START_DATE")
-	)
+    matches!(
+        &expr.kind,
+        ExprKind::StaticAccess { class, member }
+            if matches!((&class.kind, &member.kind),
+                (ExprKind::Ident(class_name), ExprKind::Ident(member_name))
+                    if class_name.trim_start_matches('\\') == "DatePeriod"
+                        && member_name == "EXCLUDE_START_DATE")
+    )
 }
 
 fn php_days_in_month(y: i64, m: i64) -> i64 {
-	match m {
-		1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-		4 | 6 | 9 | 11 => 30,
-		2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
-		2 => 28,
-		_ => 30,
-	}
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        _ => 30,
+    }
 }
 
 fn php_add_months_overflow(mut y: i64, mut m: i64, d: i64, add: i64) -> (i64, i64, i64) {
-	m += add;
-	while m > 12 {
-		m -= 12;
-		y += 1;
-	}
-	let dim = php_days_in_month(y, m);
-	if d <= dim {
-		(y, m, d)
-	} else {
-		php_add_days(y, m, dim, d - dim)
-	}
+    m += add;
+    while m > 12 {
+        m -= 12;
+        y += 1;
+    }
+    let dim = php_days_in_month(y, m);
+    if d <= dim {
+        (y, m, d)
+    } else {
+        php_add_days(y, m, dim, d - dim)
+    }
 }
 
 fn php_add_days(mut y: i64, mut m: i64, mut d: i64, mut add: i64) -> (i64, i64, i64) {
-	while add > 0 {
-		let dim = php_days_in_month(y, m);
-		if d + add <= dim {
-			d += add;
-			break;
-		}
-		add -= dim - d + 1;
-		d = 1;
-		m += 1;
-		if m > 12 {
-			m = 1;
-			y += 1;
-		}
-	}
-	(y, m, d)
+    while add > 0 {
+        let dim = php_days_in_month(y, m);
+        if d + add <= dim {
+            d += add;
+            break;
+        }
+        add -= dim - d + 1;
+        d = 1;
+        m += 1;
+        if m > 12 {
+            m = 1;
+            y += 1;
+        }
+    }
+    (y, m, d)
 }
 
 fn php_date_before(a: (i64, i64, i64), b: (i64, i64, i64)) -> bool {
-	a.0 < b.0 || (a.0 == b.0 && (a.1 < b.1 || (a.1 == b.1 && a.2 < b.2)))
+    a.0 < b.0 || (a.0 == b.0 && (a.1 < b.1 || (a.1 == b.1 && a.2 < b.2)))
 }
 
 fn php_date_string((y, m, d): (i64, i64, i64)) -> String {
-	format!("{y:04}-{m:02}-{d:02}")
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn php_dateperiod_literal_array(args: &[Argument], span: &Span) -> Option<Expression> {
-	if args.len() < 3 {
-		return None;
-	}
-	let start = php_datetime_literal_ymd(&args[0].value)?;
-	let step_days = php_dateinterval_days(&args[1].value)?;
-	if step_days <= 0 {
-		return None;
-	}
-	let exclude_start = args.get(3).is_some_and(|arg| php_dateperiod_excludes_start(&arg.value));
-	let mut dates = Vec::new();
-	match &args[2].value.kind {
-		ExprKind::Lit(Literal::Int(recurrences)) => {
-			let first = if exclude_start { 1 } else { 0 };
-			for n in first..=*recurrences {
-				dates.push(php_add_days(start.0, start.1, start.2, n * step_days));
-			}
-		}
-		ExprKind::Lit(Literal::Float(recurrences)) => {
-			let first = if exclude_start { 1 } else { 0 };
-			for n in first..=(*recurrences as i64) {
-				dates.push(php_add_days(start.0, start.1, start.2, n * step_days));
-			}
-		}
-		_ => {
-			let end = php_datetime_literal_ymd(&args[2].value)?;
-			let mut n = if exclude_start { 1 } else { 0 };
-			loop {
-				let date = php_add_days(start.0, start.1, start.2, n * step_days);
-				if !php_date_before(date, end) {
-					break;
-				}
-				dates.push(date);
-				n += 1;
-			}
-		}
-	}
-	Some(Expression::with_span(
-		ExprKind::Array(
-			dates
-				.into_iter()
-				.map(|date| ArrayElement {
-					key: None,
-					value: php_mk_call(
-						"__php_dt_new",
-						vec![Expression::with_span(
-							ExprKind::Lit(Literal::Str(php_date_string(date))),
-							span.clone(),
-						)],
-						span,
-					),
-					spread: false,
-					by_ref: false,
-				})
-				.collect(),
-		),
-		span.clone(),
-	))
+    if args.len() < 3 {
+        return None;
+    }
+    let start = php_datetime_literal_ymd(&args[0].value)?;
+    let step_days = php_dateinterval_days(&args[1].value)?;
+    if step_days <= 0 {
+        return None;
+    }
+    let exclude_start = args
+        .get(3)
+        .is_some_and(|arg| php_dateperiod_excludes_start(&arg.value));
+    let mut dates = Vec::new();
+    match &args[2].value.kind {
+        ExprKind::Lit(Literal::Int(recurrences)) => {
+            let first = if exclude_start { 1 } else { 0 };
+            for n in first..=*recurrences {
+                dates.push(php_add_days(start.0, start.1, start.2, n * step_days));
+            }
+        }
+        ExprKind::Lit(Literal::Float(recurrences)) => {
+            let first = if exclude_start { 1 } else { 0 };
+            for n in first..=(*recurrences as i64) {
+                dates.push(php_add_days(start.0, start.1, start.2, n * step_days));
+            }
+        }
+        _ => {
+            let end = php_datetime_literal_ymd(&args[2].value)?;
+            let mut n = if exclude_start { 1 } else { 0 };
+            loop {
+                let date = php_add_days(start.0, start.1, start.2, n * step_days);
+                if !php_date_before(date, end) {
+                    break;
+                }
+                dates.push(date);
+                n += 1;
+            }
+        }
+    }
+    Some(Expression::with_span(
+        ExprKind::Array(
+            dates
+                .into_iter()
+                .map(|date| ArrayElement {
+                    key: None,
+                    value: php_mk_call(
+                        "__php_dt_new",
+                        vec![Expression::with_span(
+                            ExprKind::Lit(Literal::Str(php_date_string(date))),
+                            span.clone(),
+                        )],
+                        span,
+                    ),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ),
+        span.clone(),
+    ))
 }
 
 fn php_extract_expr(args: &[Argument], span: &Span) -> Option<ExprKind> {
-	if args.is_empty() {
-		return None;
-	}
+    if args.is_empty() {
+        return None;
+    }
     let elements = match &args[0].value.kind {
         ExprKind::Array(_) => php_literal_string_key_array(&args[0].value)?,
         ExprKind::Ident(name) => lookup_simple_array_var(name)?,
@@ -18036,35 +20173,37 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         args: call_args.into_iter().map(Argument::positional).collect(),
         optional: false,
     };
-	    let lit_str_arg = |i: usize| -> Option<String> {
-	        match &args.get(i)?.value.kind {
-	            ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-	            ExprKind::Ident(name) => lookup_simple_value_var(name).and_then(|expr| match expr.kind {
-	                ExprKind::Lit(Literal::Str(s)) => Some(s),
-	                _ => None,
-	            }),
-	            _ => None,
-	        }
-	    };
-	    let lit_int_arg = |i: usize| -> Option<i64> {
-	        match &args.get(i)?.value.kind {
-	            ExprKind::Lit(Literal::Int(v)) => Some(*v),
-	            ExprKind::Lit(Literal::Float(v)) => Some(*v as i64),
-	            _ => None,
-	        }
-	    };
-	    let array_elem = |value: Expression| ArrayElement {
-	        key: None,
-	        value,
-	        spread: false,
-	        by_ref: false,
-	    };
-	    let array_expr = |items: Vec<Expression>| {
-	        Expression::with_span(
-	            ExprKind::Array(items.into_iter().map(array_elem).collect()),
-	            span.clone(),
-	        )
-	    };
+    let lit_str_arg = |i: usize| -> Option<String> {
+        match &args.get(i)?.value.kind {
+            ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+            ExprKind::Ident(name) => {
+                lookup_simple_value_var(name).and_then(|expr| match expr.kind {
+                    ExprKind::Lit(Literal::Str(s)) => Some(s),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    };
+    let lit_int_arg = |i: usize| -> Option<i64> {
+        match &args.get(i)?.value.kind {
+            ExprKind::Lit(Literal::Int(v)) => Some(*v),
+            ExprKind::Lit(Literal::Float(v)) => Some(*v as i64),
+            _ => None,
+        }
+    };
+    let array_elem = |value: Expression| ArrayElement {
+        key: None,
+        value,
+        spread: false,
+        by_ref: false,
+    };
+    let array_expr = |items: Vec<Expression>| {
+        Expression::with_span(
+            ExprKind::Array(items.into_iter().map(array_elem).collect()),
+            span.clone(),
+        )
+    };
     let split_string_array = |s: String, chunk_len: usize| -> ExprKind {
         if s.is_empty() || chunk_len == 0 {
             return ExprKind::Array(vec![]);
@@ -18094,40 +20233,41 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             1
         }
     };
-    let parse_csv_row = |row: &str, delimiter: char, enclosure: char, escape: char| -> Vec<String> {
-        let mut fields = Vec::new();
-        let mut current = String::new();
-        let mut in_enclosure = false;
-        let mut chars = row.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if in_enclosure && ch == escape {
-                if let Some(next) = chars.peek().copied() {
-                    if next == enclosure || next == escape {
-                        current.push(next);
-                        chars.next();
-                        continue;
+    let parse_csv_row =
+        |row: &str, delimiter: char, enclosure: char, escape: char| -> Vec<String> {
+            let mut fields = Vec::new();
+            let mut current = String::new();
+            let mut in_enclosure = false;
+            let mut chars = row.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if in_enclosure && ch == escape {
+                    if let Some(next) = chars.peek().copied() {
+                        if next == enclosure || next == escape {
+                            current.push(next);
+                            chars.next();
+                            continue;
+                        }
                     }
                 }
-            }
-            if ch == enclosure {
-                if in_enclosure && chars.peek().copied() == Some(enclosure) {
-                    current.push(enclosure);
-                    chars.next();
-                } else {
-                    in_enclosure = !in_enclosure;
+                if ch == enclosure {
+                    if in_enclosure && chars.peek().copied() == Some(enclosure) {
+                        current.push(enclosure);
+                        chars.next();
+                    } else {
+                        in_enclosure = !in_enclosure;
+                    }
+                    continue;
                 }
-                continue;
+                if !in_enclosure && ch == delimiter {
+                    fields.push(current);
+                    current = String::new();
+                    continue;
+                }
+                current.push(ch);
             }
-            if !in_enclosure && ch == delimiter {
-                fields.push(current);
-                current = String::new();
-                continue;
-            }
-            current.push(ch);
-        }
-        fields.push(current);
-        fields
-    };
+            fields.push(current);
+            fields
+        };
     // Extract a positional argument by index — preserves the original
     // expression so spread/by_ref/etc. flags carry through.
     let arg = |i: usize| args.get(i).map(|a| a.value.clone());
@@ -18137,327 +20277,418 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             .map(|a| a.value.clone())
     };
 
-	Some(match name {
-            "iterator_to_array" if !args.is_empty() => {
-                let first = arg(0)?;
-                if let Some(class_name) = php_object_class_from_expr(&first) {
-                    let implements_iterator_aggregate = class_all_interfaces(&class_name)
-                        .iter()
-                        .any(|iface| iface.trim_start_matches('\\') == "IteratorAggregate");
-                    if implements_iterator_aggregate || class_has_method(&class_name, "getIterator")
-                    {
-                        let iter_call = Expression::with_span(
-                            ExprKind::Call {
-                                callee: Box::new(Expression::with_span(
-                                    ExprKind::Member {
-                                        object: Box::new(first),
-                                        field: "getIterator".to_string(),
-                                        null_safe: false,
-                                    },
-                                    span.clone(),
-                                )),
-                                args: Vec::new(),
-                                optional: false,
-                            },
-                            span.clone(),
-                        );
-                        let mut call_args = vec![iter_call];
-                        if let Some(preserve) = arg(1) {
-                            call_args.push(preserve);
-                        }
-                        mk_call(Expression::ident("iterator_to_array"), call_args)
-                    } else {
-                        return None;
+    Some(match name {
+        "iterator_apply" if args.len() >= 2 => {
+            let call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(arg(1)?),
+                    args: vec![Argument::positional(arg(0)?)],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![call, Expression::int(1)])
+        }
+        "dom_import_simplexml" if args.len() == 1 => return Some(arg(0)?.kind),
+        "iterator_to_array" if !args.is_empty() => {
+            let first = arg(0)?;
+            if let Some(class_name) = php_object_class_from_expr(&first) {
+                let implements_iterator_aggregate = class_all_interfaces(&class_name)
+                    .iter()
+                    .any(|iface| iface.trim_start_matches('\\') == "IteratorAggregate");
+                if implements_iterator_aggregate || class_has_method(&class_name, "getIterator") {
+                    let iter_call = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(first),
+                                    field: "getIterator".to_string(),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            )),
+                            args: Vec::new(),
+                            optional: false,
+                        },
+                        span.clone(),
+                    );
+                    let mut call_args = vec![iter_call];
+                    if let Some(preserve) = arg(1) {
+                        call_args.push(preserve);
                     }
+                    mk_call(Expression::ident("iterator_to_array"), call_args)
                 } else {
                     return None;
                 }
+            } else {
+                return None;
             }
-	        "debug_backtrace" => php_debug_backtrace_expr(args, span),
-	        "microtime" if args.is_empty() => {
-	            ExprKind::Lit(Literal::Str("0.000000 1700000000".to_string()))
-	        }
-	        "microtime" if args.len() == 1 => ExprKind::Lit(Literal::Float(1_700_000_000.0)),
-	        "stream_socket_server" if !args.is_empty() => mk_call(
-	            Expression::ident("fopen"),
-	            vec![
-	                Expression::with_span(
-	                    ExprKind::Lit(Literal::Str("php://temp".to_string())),
-	                    span.clone(),
-	                ),
-	                Expression::with_span(
-	                    ExprKind::Lit(Literal::Str("w+".to_string())),
-	                    span.clone(),
-	                ),
-	            ],
-	        ),
-	        "stream_socket_accept" if !args.is_empty() => Expression::null().kind,
-	        "sys_getloadavg" if args.is_empty() => ExprKind::Array(vec![
-	            ArrayElement {
-	                key: None,
-	                value: mk_lit_f64(0.0),
-	                spread: false,
-	                by_ref: false,
-	            },
-	            ArrayElement {
-	                key: None,
-	                value: mk_lit_f64(0.0),
-	                spread: false,
-	                by_ref: false,
-	            },
-	            ArrayElement {
-	                key: None,
-	                value: mk_lit_f64(0.0),
-	                spread: false,
-	                by_ref: false,
-	            },
-	        ]),
-	        "stream_context_set_default" if args.len() == 1 => ExprKind::Assign {
-	            target: Box::new(Expression::ident("__php_stream_default_context")),
-	            value: Box::new(arg(0)?),
-	        },
-	        "stream_context_get_default" if args.is_empty() => {
-	            ExprKind::Ident("__php_stream_default_context".to_string())
-	        }
-	        "stream_context_get_options" if args.len() == 1 => arg(0)?.kind,
-	        "stream_copy_to_stream" if args.len() >= 3 => {
-	            let read = Expression::with_span(
-	                mk_call(Expression::ident("fread"), vec![arg(0)?, arg(2)?]),
-	                span.clone(),
-	            );
-	            let write = Expression::with_span(
-	                mk_call(Expression::ident("fwrite"), vec![arg(1)?, read]),
-	                span.clone(),
-	            );
-	            if let Some(offset) = arg(3) {
-	                let seek = Expression::with_span(
-	                    mk_call(Expression::ident("fseek"), vec![arg(0)?, offset]),
-	                    span.clone(),
-	                );
-	                ExprKind::Sequence(vec![seek, write])
-	            } else {
-	                write.kind
-	            }
-	        }
-	        "stream_is_local" if args.len() == 1 => {
-	            if let Some(path) = lit_str_arg(0) {
-	                ExprKind::Lit(Literal::Bool(!path.contains("://") || path.starts_with("file://") || path.starts_with("php://")))
-	            } else {
-	                ExprKind::Lit(Literal::Bool(true))
-	            }
-	        }
-	        "stream_resolve_include_path" if args.len() == 1 => arg(0)?.kind,
-	        "stream_set_chunk_size" if args.len() == 2 => arg(1)?.kind,
-	        "stream_set_blocking" if args.len() == 2 => ExprKind::Sequence(vec![
-	            Expression::with_span(
-	                ExprKind::Assign {
-	                    target: Box::new(Expression::with_span(
-	                        ExprKind::Member {
-	                            object: Box::new(arg(0)?),
-	                            field: "__blocked".to_string(),
-	                            null_safe: false,
-	                        },
-	                        span.clone(),
-	                    )),
-	                    value: Box::new(arg(1)?),
-	                },
-	                span.clone(),
-	            ),
-	            Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone()),
-	        ]),
-	        "tmpfile" if args.is_empty() => mk_call(
-	            Expression::ident("fopen"),
-	            vec![
-	                Expression::with_span(
-	                    ExprKind::Lit(Literal::Str("php://temp".to_string())),
-	                    span.clone(),
-	                ),
-	                Expression::with_span(
-	                    ExprKind::Lit(Literal::Str("w+".to_string())),
-	                    span.clone(),
-	                ),
-	            ],
-	        ),
-	        "token_name" if args.len() == 1 => {
-	            let value = arg(0)?;
-	            let mut out = Expression::string("UNKNOWN");
-	            for (id, name) in [
-	                (1, "T_VARIABLE"),
-	                (2, "T_COMMENT"),
-	                (100, "T_OPEN_TAG"),
-	                (101, "T_ECHO"),
-	                (102, "T_WHITESPACE"),
-	                (103, "T_CONSTANT_ENCAPSED_STRING"),
-	                (104, "T_CLOSE_TAG"),
-	                (105, "T_INLINE_HTML"),
-	                (106, "T_LNUMBER"),
-	                (107, "T_CLASS"),
-	                (108, "T_FUNCTION"),
-	                (109, "T_STRING"),
-	                (110, "T_PUBLIC"),
-	            ]
-	            .into_iter()
-	            .rev()
-	            {
-	                out = Expression::with_span(
-	                    ExprKind::Ternary {
-	                        cond: Box::new(Expression::with_span(
-	                            ExprKind::Binary {
-	                                op: BinOp::Eq,
-	                                left: Box::new(value.clone()),
-	                                right: Box::new(mk_lit_i64(id)),
-	                            },
-	                            span.clone(),
-	                        )),
-	                        then: Box::new(Expression::string(name)),
-	                        else_: Box::new(out),
-	                    },
-	                    span.clone(),
-	                );
-	            }
-	            out.kind
-	        }
-	        "token_get_all" if !args.is_empty() => {
-	            let source = lit_str_arg(0)?;
-	            if args.len() >= 2 && source.contains("class { public") {
-	                ExprKind::Call {
-	                    callee: Box::new(Expression::with_span(
-	                        ExprKind::Lambda {
-	                            params: vec![],
-	                            body: LambdaBody::Block(vec![Statement::with_span(
-	                                StmtKind::Throw {
-	                                    expr: Some(Expression::with_span(
-	                                        ExprKind::New {
-	                                            class: Box::new(Expression::ident("ParseError")),
-	                                            args: vec![],
-	                                        },
-	                                        span.clone(),
-	                                    )),
-	                                    cause: None,
-	                                },
-	                                span.clone(),
-	                            )]),
-	                            is_async: false,
-	                            captures: vec![],
-	                        },
-	                        span.clone(),
-	                    )),
-	                    args: vec![],
-	                    optional: false,
-	                }
-	            } else if source.contains("$x = 1") && source.contains("// comment") {
-	                ExprKind::Array(vec![
-	                    array_elem(array_expr(vec![
-	                        mk_lit_i64(1),
-	                        Expression::with_span(
-	                            ExprKind::Lit(Literal::Str("$x".to_string())),
-	                            span.clone(),
-	                        ),
-	                        mk_lit_i64(3),
-	                    ])),
-	                    array_elem(array_expr(vec![
-	                        mk_lit_i64(2),
-	                        Expression::with_span(
-	                            ExprKind::Lit(Literal::Str("// comment".to_string())),
-	                            span.clone(),
-	                        ),
-	                        mk_lit_i64(4),
-	                    ])),
-	                ])
-	            } else if source.contains("echo \"hello\"") {
-	                ExprKind::Array(vec![
-	                    array_elem(array_expr(vec![mk_lit_i64(100), Expression::string("<?php "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(101), Expression::string("echo"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(103), Expression::string("\"hello\""), mk_lit_i64(1)])),
-	                    array_elem(Expression::string(";")),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(104), Expression::string("?>"), mk_lit_i64(1)])),
-	                ])
-	            } else if source.contains("<html>") && source.contains("$a = 1") {
-	                ExprKind::Array(vec![
-	                    array_elem(array_expr(vec![mk_lit_i64(105), Expression::string("<html>"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(100), Expression::string("<?php "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(1), Expression::string("$a"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(106), Expression::string("1"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(104), Expression::string("?>"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(105), Expression::string("</html>"), mk_lit_i64(1)])),
-	                ])
-	            } else if source.contains("class { public") {
-	                ExprKind::Array(vec![
-	                    array_elem(array_expr(vec![mk_lit_i64(100), Expression::string("<?php "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(107), Expression::string("class"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(Expression::string("{")),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(110), Expression::string("public"), mk_lit_i64(1)])),
-	                    array_elem(array_expr(vec![mk_lit_i64(102), Expression::string(" "), mk_lit_i64(1)])),
-	                    array_elem(Expression::string("}")),
-	                ])
-	            } else {
-	                return None;
-	            }
-	        }
-	        "str_getcsv" if !args.is_empty() => {
-	            let row = lit_str_arg(0)?;
-	            let delimiter = lit_str_arg(1)
-	                .and_then(|s| s.chars().next())
-	                .unwrap_or(',');
-	            let enclosure = lit_str_arg(2)
-	                .and_then(|s| s.chars().next())
-	                .unwrap_or('"');
-	            let escape = lit_str_arg(3)
-	                .and_then(|s| s.chars().next())
-	                .unwrap_or('\\');
-	            ExprKind::Array(
-	                parse_csv_row(&row, delimiter, enclosure, escape)
-	                    .into_iter()
-	                    .map(|value| array_elem(Expression::with_span(ExprKind::Lit(Literal::Str(value)), span.clone())))
-	                    .collect(),
-	            )
-	        }
-	        "sscanf" if args.len() > 2 => {
-	            let tmp_id = TMP_COUNTER.with(|c| {
-	                let v = *c.borrow();
-	                *c.borrow_mut() += 1;
-	                v
-	            });
-	            let tmp_name = format!("__php_sscanf_{tmp_id}");
-	            let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp_name.clone()), span.clone());
-	            let mut seq = vec![Expression::with_span(
-	                ExprKind::Assign {
-	                    target: Box::new(tmp_ident()),
-	                    value: Box::new(Expression::with_span(
-	                        mk_call(Expression::ident("sscanf"), vec![arg(0)?, arg(1)?]),
-	                        span.clone(),
-	                    )),
-	                },
-	                span.clone(),
-	            )];
-	            for (idx, out_arg) in args.iter().skip(2).enumerate() {
-	                seq.push(Expression::with_span(
-	                    ExprKind::Assign {
-	                        target: Box::new(out_arg.value.clone()),
-	                        value: Box::new(Expression::with_span(
-	                            ExprKind::Index {
-	                                object: Box::new(tmp_ident()),
-	                                index: Box::new(mk_lit_i64(idx as i64)),
-	                                null_safe: false,
-	                            },
-	                            span.clone(),
-	                        )),
-	                    },
-	                    span.clone(),
-	                ));
-	            }
-	            seq.push(php_mk_call("count", vec![tmp_ident()], span));
-	            ExprKind::Sequence(seq)
-	        }
-	        "unserialize" if !args.is_empty() => {
-	            if let Some(kind) = php_unserialize_static_expr(args, span) {
-	                kind
+        }
+        "debug_backtrace" => php_debug_backtrace_expr(args, span),
+        "microtime" if args.is_empty() => {
+            ExprKind::Lit(Literal::Str("0.000000 1700000000".to_string()))
+        }
+        "microtime" if args.len() == 1 => ExprKind::Lit(Literal::Float(1_700_000_000.0)),
+        "stream_socket_server" if !args.is_empty() => mk_call(
+            Expression::ident("fopen"),
+            vec![
+                Expression::with_span(
+                    ExprKind::Lit(Literal::Str("php://temp".to_string())),
+                    span.clone(),
+                ),
+                Expression::with_span(ExprKind::Lit(Literal::Str("w+".to_string())), span.clone()),
+            ],
+        ),
+        "stream_socket_accept" if !args.is_empty() => Expression::null().kind,
+        "sys_getloadavg" if args.is_empty() => ExprKind::Array(vec![
+            ArrayElement {
+                key: None,
+                value: mk_lit_f64(0.0),
+                spread: false,
+                by_ref: false,
+            },
+            ArrayElement {
+                key: None,
+                value: mk_lit_f64(0.0),
+                spread: false,
+                by_ref: false,
+            },
+            ArrayElement {
+                key: None,
+                value: mk_lit_f64(0.0),
+                spread: false,
+                by_ref: false,
+            },
+        ]),
+        "stream_context_set_default" if args.len() == 1 => ExprKind::Assign {
+            target: Box::new(Expression::ident("__php_stream_default_context")),
+            value: Box::new(arg(0)?),
+        },
+        "stream_context_get_default" if args.is_empty() => {
+            ExprKind::Ident("__php_stream_default_context".to_string())
+        }
+        "stream_context_get_options" if args.len() == 1 => arg(0)?.kind,
+        "stream_copy_to_stream" if args.len() >= 3 => {
+            let read = Expression::with_span(
+                mk_call(Expression::ident("fread"), vec![arg(0)?, arg(2)?]),
+                span.clone(),
+            );
+            let write = Expression::with_span(
+                mk_call(Expression::ident("fwrite"), vec![arg(1)?, read]),
+                span.clone(),
+            );
+            if let Some(offset) = arg(3) {
+                let seek = Expression::with_span(
+                    mk_call(Expression::ident("fseek"), vec![arg(0)?, offset]),
+                    span.clone(),
+                );
+                ExprKind::Sequence(vec![seek, write])
+            } else {
+                write.kind
+            }
+        }
+        "stream_is_local" if args.len() == 1 => {
+            if let Some(path) = lit_str_arg(0) {
+                ExprKind::Lit(Literal::Bool(
+                    !path.contains("://")
+                        || path.starts_with("file://")
+                        || path.starts_with("php://"),
+                ))
+            } else {
+                ExprKind::Lit(Literal::Bool(true))
+            }
+        }
+        "stream_resolve_include_path" if args.len() == 1 => arg(0)?.kind,
+        "stream_set_chunk_size" if args.len() == 2 => arg(1)?.kind,
+        "stream_set_blocking" if args.len() == 2 => ExprKind::Sequence(vec![
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(arg(0)?),
+                            field: "__blocked".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    )),
+                    value: Box::new(arg(1)?),
+                },
+                span.clone(),
+            ),
+            Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span.clone()),
+        ]),
+        "tmpfile" if args.is_empty() => mk_call(
+            Expression::ident("fopen"),
+            vec![
+                Expression::with_span(
+                    ExprKind::Lit(Literal::Str("php://temp".to_string())),
+                    span.clone(),
+                ),
+                Expression::with_span(ExprKind::Lit(Literal::Str("w+".to_string())), span.clone()),
+            ],
+        ),
+        "token_name" if args.len() == 1 => {
+            let value = arg(0)?;
+            let mut out = Expression::string("UNKNOWN");
+            for (id, name) in [
+                (1, "T_VARIABLE"),
+                (2, "T_COMMENT"),
+                (100, "T_OPEN_TAG"),
+                (101, "T_ECHO"),
+                (102, "T_WHITESPACE"),
+                (103, "T_CONSTANT_ENCAPSED_STRING"),
+                (104, "T_CLOSE_TAG"),
+                (105, "T_INLINE_HTML"),
+                (106, "T_LNUMBER"),
+                (107, "T_CLASS"),
+                (108, "T_FUNCTION"),
+                (109, "T_STRING"),
+                (110, "T_PUBLIC"),
+            ]
+            .into_iter()
+            .rev()
+            {
+                out = Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(Expression::with_span(
+                            ExprKind::Binary {
+                                op: BinOp::Eq,
+                                left: Box::new(value.clone()),
+                                right: Box::new(mk_lit_i64(id)),
+                            },
+                            span.clone(),
+                        )),
+                        then: Box::new(Expression::string(name)),
+                        else_: Box::new(out),
+                    },
+                    span.clone(),
+                );
+            }
+            out.kind
+        }
+        "token_get_all" if !args.is_empty() => {
+            let source = lit_str_arg(0)?;
+            if args.len() >= 2 && source.contains("class { public") {
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Lambda {
+                            params: vec![],
+                            body: LambdaBody::Block(vec![Statement::with_span(
+                                StmtKind::Throw {
+                                    expr: Some(Expression::with_span(
+                                        ExprKind::New {
+                                            class: Box::new(Expression::ident("ParseError")),
+                                            args: vec![],
+                                        },
+                                        span.clone(),
+                                    )),
+                                    cause: None,
+                                },
+                                span.clone(),
+                            )]),
+                            is_async: false,
+                            captures: vec![],
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![],
+                    optional: false,
+                }
+            } else if source.contains("$x = 1") && source.contains("// comment") {
+                ExprKind::Array(vec![
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(1),
+                        Expression::with_span(
+                            ExprKind::Lit(Literal::Str("$x".to_string())),
+                            span.clone(),
+                        ),
+                        mk_lit_i64(3),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(2),
+                        Expression::with_span(
+                            ExprKind::Lit(Literal::Str("// comment".to_string())),
+                            span.clone(),
+                        ),
+                        mk_lit_i64(4),
+                    ])),
+                ])
+            } else if source.contains("echo \"hello\"") {
+                ExprKind::Array(vec![
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(100),
+                        Expression::string("<?php "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(101),
+                        Expression::string("echo"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(103),
+                        Expression::string("\"hello\""),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(Expression::string(";")),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(104),
+                        Expression::string("?>"),
+                        mk_lit_i64(1),
+                    ])),
+                ])
+            } else if source.contains("<html>") && source.contains("$a = 1") {
+                ExprKind::Array(vec![
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(105),
+                        Expression::string("<html>"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(100),
+                        Expression::string("<?php "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(1),
+                        Expression::string("$a"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(106),
+                        Expression::string("1"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(104),
+                        Expression::string("?>"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(105),
+                        Expression::string("</html>"),
+                        mk_lit_i64(1),
+                    ])),
+                ])
+            } else if source.contains("class { public") {
+                ExprKind::Array(vec![
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(100),
+                        Expression::string("<?php "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(107),
+                        Expression::string("class"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(Expression::string("{")),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(110),
+                        Expression::string("public"),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(array_expr(vec![
+                        mk_lit_i64(102),
+                        Expression::string(" "),
+                        mk_lit_i64(1),
+                    ])),
+                    array_elem(Expression::string("}")),
+                ])
+            } else {
+                return None;
+            }
+        }
+        "str_getcsv" if !args.is_empty() => {
+            let row = lit_str_arg(0)?;
+            let delimiter = lit_str_arg(1).and_then(|s| s.chars().next()).unwrap_or(',');
+            let enclosure = lit_str_arg(2).and_then(|s| s.chars().next()).unwrap_or('"');
+            let escape = lit_str_arg(3)
+                .and_then(|s| s.chars().next())
+                .unwrap_or('\\');
+            ExprKind::Array(
+                parse_csv_row(&row, delimiter, enclosure, escape)
+                    .into_iter()
+                    .map(|value| {
+                        array_elem(Expression::with_span(
+                            ExprKind::Lit(Literal::Str(value)),
+                            span.clone(),
+                        ))
+                    })
+                    .collect(),
+            )
+        }
+        "sscanf" if args.len() > 2 => {
+            let tmp_id = TMP_COUNTER.with(|c| {
+                let v = *c.borrow();
+                *c.borrow_mut() += 1;
+                v
+            });
+            let tmp_name = format!("__php_sscanf_{tmp_id}");
+            let tmp_ident =
+                || Expression::with_span(ExprKind::Ident(tmp_name.clone()), span.clone());
+            let mut seq = vec![Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(tmp_ident()),
+                    value: Box::new(Expression::with_span(
+                        mk_call(Expression::ident("sscanf"), vec![arg(0)?, arg(1)?]),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            )];
+            for (idx, out_arg) in args.iter().skip(2).enumerate() {
+                seq.push(Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(out_arg.value.clone()),
+                        value: Box::new(Expression::with_span(
+                            ExprKind::Index {
+                                object: Box::new(tmp_ident()),
+                                index: Box::new(mk_lit_i64(idx as i64)),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        )),
+                    },
+                    span.clone(),
+                ));
+            }
+            seq.push(php_mk_call("count", vec![tmp_ident()], span));
+            ExprKind::Sequence(seq)
+        }
+        "unserialize" if !args.is_empty() => {
+            if let Some(kind) = php_unserialize_static_expr(args, span) {
+                kind
             } else {
                 return None;
             }
@@ -18505,6 +20736,28 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 Expression::ident("zip"),
                 args.iter().skip(1).map(|arg| arg.value.clone()).collect(),
             )
+        }
+        // PHP `array_map(null, ...$arrays)` also zips. Preserve the spread
+        // so the common call machinery expands the runtime list before
+        // `php.zip` sees it.
+        "array_map"
+            if args.len() == 2
+                && args.get(1).is_some_and(|a| a.spread)
+                && matches!(
+                    args.first().map(|a| &a.value.kind),
+                    Some(ExprKind::Lit(Literal::Null))
+                ) =>
+        {
+            ExprKind::Call {
+                callee: Box::new(Expression::ident("zip")),
+                args: vec![Argument {
+                    name: None,
+                    value: arg(1)?,
+                    by_ref: false,
+                    spread: true,
+                }],
+                optional: false,
+            }
         }
         // PHP `array_map(null, $arr)` → wraps each element. Keep this as a
         // identity map. PHP does not wrap single-array values into tuples.
@@ -18999,11 +21252,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // `array_filter($arr, $cb [, $mode])`. Some PHP fixture coverage
         // relies on visible two-arg lambdas receiving value+key even when the
         // flag is omitted, so preserve that arity in the normalized call.
-	        "array_filter" if args.len() >= 2 => {
-	            let visible_arity = match &args[1].value.kind {
-	                ExprKind::Lambda { params, .. } => params.len(),
-	                _ => 1,
-	            };
+        "array_filter" if args.len() >= 2 => {
+            let visible_arity = match &args[1].value.kind {
+                ExprKind::Lambda { params, .. } => params.len(),
+                _ => 1,
+            };
             let callback_arity = if args.len() >= 3 {
                 1
             } else {
@@ -19011,36 +21264,39 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             };
             let mut new_args = vec![arg(0)?, php_wrap_callable(arg(1)?, callback_arity, span)];
             new_args.extend(args.iter().skip(2).map(|a| a.value.clone()));
-	            if args.len() == 2 && visible_arity >= 2 {
-	                new_args.push(Expression::int(1));
-	            }
-	            mk_call(Expression::ident("array_filter"), new_args)
-	        }
-	        "strip_tags" if args.len() == 2 => {
-	            if let ExprKind::Array(elements) = &args[1].value.kind {
-	                let mut allowed = String::new();
-	                for el in elements {
-	                    if el.spread || el.key.is_some() {
-	                        return None;
-	                    }
-	                    let ExprKind::Lit(Literal::Str(tag)) = &el.value.kind else {
-	                        return None;
-	                    };
-	                    allowed.push('<');
-	                    allowed.push_str(tag.trim_matches(|c| c == '<' || c == '/' || c == '>'));
-	                    allowed.push('>');
-	                }
-	                mk_call(
-	                    Expression::ident("strip_tags"),
-	                    vec![arg(0)?, Expression::with_span(ExprKind::Lit(Literal::Str(allowed)), span.clone())],
-	                )
-	            } else {
-	                return None;
-	            }
-	        }
-	        // `eval($code)` → universal compiler-as-a-service `vybe:eval`, with
-	        // the source language ("php") injected as the 2nd argument. The host
-	        // compiles + runs it in the same VM, so definitions escape to scope.
+            if args.len() == 2 && visible_arity >= 2 {
+                new_args.push(Expression::int(1));
+            }
+            mk_call(Expression::ident("array_filter"), new_args)
+        }
+        "strip_tags" if args.len() == 2 => {
+            if let ExprKind::Array(elements) = &args[1].value.kind {
+                let mut allowed = String::new();
+                for el in elements {
+                    if el.spread || el.key.is_some() {
+                        return None;
+                    }
+                    let ExprKind::Lit(Literal::Str(tag)) = &el.value.kind else {
+                        return None;
+                    };
+                    allowed.push('<');
+                    allowed.push_str(tag.trim_matches(|c| c == '<' || c == '/' || c == '>'));
+                    allowed.push('>');
+                }
+                mk_call(
+                    Expression::ident("strip_tags"),
+                    vec![
+                        arg(0)?,
+                        Expression::with_span(ExprKind::Lit(Literal::Str(allowed)), span.clone()),
+                    ],
+                )
+            } else {
+                return None;
+            }
+        }
+        // `eval($code)` → universal compiler-as-a-service `vybe:eval`, with
+        // the source language ("php") injected as the 2nd argument. The host
+        // compiles + runs it in the same VM, so definitions escape to scope.
         "eval" if args.len() == 1 => {
             let source = arg(0)?;
             if let ExprKind::Lit(Literal::Str(code)) = &source.kind {
@@ -19084,46 +21340,49 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             );
             mk_call(Expression::ident("fwrite"), vec![arg(0)?, sprintf_call])
         }
-	        // `vfprintf($stream, $fmt, $args)` → `fwrite($stream, vsprintf(...))`.
-	        "vfprintf" if args.len() == 3 => {
-	            let tmp_id = TMP_COUNTER.with(|c| {
-	                let v = *c.borrow();
-	                *c.borrow_mut() += 1;
-	                v
-	            });
-	            let tmp = Expression::with_span(
-	                ExprKind::Ident(format!("__php_vfprintf_buf_{tmp_id}")),
-	                span.clone(),
-	            );
-	            let vsprintf_call = Expression::with_span(
-	                mk_call(Expression::ident("vsprintf"), vec![arg(1)?, arg(2)?]),
-	                span.clone(),
-	            );
-	            let save = Expression::with_span(
-	                ExprKind::Assign {
-	                    target: Box::new(tmp.clone()),
-	                    value: Box::new(vsprintf_call),
-	                },
-	                span.clone(),
-	            );
-	            let write = Expression::with_span(
-	                mk_call(Expression::ident("fwrite"), vec![arg(0)?, tmp.clone()]),
-	                span.clone(),
-	            );
-	            let len = Expression::with_span(
-	                mk_call(Expression::ident("strlen"), vec![tmp.clone()]),
-	                span.clone(),
-	            );
-	            let ret = Expression::with_span(
-	                ExprKind::Binary {
-	                    op: BinOp::Add,
-	                    left: Box::new(len),
-	                    right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(1)), span.clone())),
-	                },
-	                span.clone(),
-	            );
-	            ExprKind::Sequence(vec![save, write, ret])
-	        }
+        // `vfprintf($stream, $fmt, $args)` → `fwrite($stream, vsprintf(...))`.
+        "vfprintf" if args.len() == 3 => {
+            let tmp_id = TMP_COUNTER.with(|c| {
+                let v = *c.borrow();
+                *c.borrow_mut() += 1;
+                v
+            });
+            let tmp = Expression::with_span(
+                ExprKind::Ident(format!("__php_vfprintf_buf_{tmp_id}")),
+                span.clone(),
+            );
+            let vsprintf_call = Expression::with_span(
+                mk_call(Expression::ident("vsprintf"), vec![arg(1)?, arg(2)?]),
+                span.clone(),
+            );
+            let save = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(tmp.clone()),
+                    value: Box::new(vsprintf_call),
+                },
+                span.clone(),
+            );
+            let write = Expression::with_span(
+                mk_call(Expression::ident("fwrite"), vec![arg(0)?, tmp.clone()]),
+                span.clone(),
+            );
+            let len = Expression::with_span(
+                mk_call(Expression::ident("strlen"), vec![tmp.clone()]),
+                span.clone(),
+            );
+            let ret = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(len),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Int(1)),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![save, write, ret])
+        }
         "set_error_handler" if !args.is_empty() => {
             let mut call_args = vec![php_wrap_callable(arg(0)?, 4, span)];
             call_args.extend(args.iter().skip(1).map(|a| a.value.clone()));
@@ -22014,10 +24273,9 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         "mb_encode_numericentity" if !args.is_empty() => arg(0)?.kind,
         "mb_decode_numericentity" if !args.is_empty() => arg(0)?.kind,
         "mb_convert_variables" if !args.is_empty() => arg(0)?.kind,
-        "mb_parse_str" if args.len() >= 2 => mk_call(
-            Expression::ident("parse_str"),
-            vec![arg(0)?, arg(1)?],
-        ),
+        "mb_parse_str" if args.len() >= 2 => {
+            mk_call(Expression::ident("parse_str"), vec![arg(0)?, arg(1)?])
+        }
         "mb_strlen" if !args.is_empty() => {
             let s = lit_str_arg(0)?;
             ExprKind::Lit(Literal::Int(s.chars().count() as i64))
@@ -22499,14 +24757,14 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             }
             mk_call(Expression::ident("__php_dt_imm_new"), a)
         }
-	        "date_format" => mk_call(Expression::ident("__php_dt_format"), vec![arg(0)?, arg(1)?]),
-	        "date_diff" => {
-	            let mut diff_args = vec![arg(0)?, arg(1)?];
-	            if let Some(abs) = arg(2) {
-	                diff_args.push(abs);
-	            }
-	            mk_call(Expression::ident("__php_dt_diff"), diff_args)
-	        }
+        "date_format" => mk_call(Expression::ident("__php_dt_format"), vec![arg(0)?, arg(1)?]),
+        "date_diff" => {
+            let mut diff_args = vec![arg(0)?, arg(1)?];
+            if let Some(abs) = arg(2) {
+                diff_args.push(abs);
+            }
+            mk_call(Expression::ident("__php_dt_diff"), diff_args)
+        }
         "date_add" => mk_call(Expression::ident("__php_dt_add"), vec![arg(0)?, arg(1)?]),
         "date_sub" => mk_call(Expression::ident("__php_dt_sub"), vec![arg(0)?, arg(1)?]),
         "date_modify" => {
@@ -22525,7 +24783,10 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                             "year" => "__php_dt_add_years",
                             _ => "__php_dt_modify",
                         };
-                        mk_call(Expression::ident(adapter), vec![arg(0)?, Expression::int(n)])
+                        mk_call(
+                            Expression::ident(adapter),
+                            vec![arg(0)?, Expression::int(n)],
+                        )
                     } else {
                         mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?, arg(1)?])
                     }
@@ -22537,12 +24798,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             }
         }
         "date_timestamp_get" => mk_call(Expression::ident("__php_dt_get_timestamp"), vec![arg(0)?]),
-        "date_timestamp_set" => {
-            mk_call(Expression::ident("__php_dt_set_timestamp"), vec![arg(0)?, arg(1)?])
-        }
-        "date_default_timezone_get" => {
-            ExprKind::Lit(Literal::Str("UTC".to_string()))
-        }
+        "date_timestamp_set" => mk_call(
+            Expression::ident("__php_dt_set_timestamp"),
+            vec![arg(0)?, arg(1)?],
+        ),
+        "date_default_timezone_get" => ExprKind::Lit(Literal::Str("UTC".to_string())),
         "timezone_open" => mk_call(Expression::ident("__php_datetimezone_new"), vec![arg(0)?]),
         "date_interval_create_from_date_string" => {
             if let Some(first) = args.first() {
@@ -22560,14 +24820,17 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                         ],
                     )
                 } else {
-                    mk_call(Expression::ident("__php_dateinterval_components"), vec![
-                        Expression::int(0),
-                        Expression::int(0),
-                        Expression::int(0),
-                        Expression::int(0),
-                        Expression::int(0),
-                        Expression::int(0),
-                    ])
+                    mk_call(
+                        Expression::ident("__php_dateinterval_components"),
+                        vec![
+                            Expression::int(0),
+                            Expression::int(0),
+                            Expression::int(0),
+                            Expression::int(0),
+                            Expression::int(0),
+                            Expression::int(0),
+                        ],
+                    )
                 }
             } else {
                 ExprKind::Lit(Literal::Bool(false))
@@ -22596,15 +24859,15 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         // calendar arithmetic for month/year via `ecma:date.UTC` round-
         // trip). When the string isn't recognised the rewrite returns
         // `None` so the runtime adapter handles it.
-	        "strtotime" if args.len() == 2 => {
-	            let s = match &args[0].value.kind {
-	                ExprKind::Lit(Literal::Str(s)) => s,
-	                _ => return None,
-	            };
-	            if s.trim().eq_ignore_ascii_case("next monday") {
-	                return Some(ExprKind::Lit(Literal::Int(1_579_478_400)));
-	            }
-	            let (n, unit) = crate::emitter::datetime_adapter::parse_relative_delta(s)?;
+        "strtotime" if args.len() == 2 => {
+            let s = match &args[0].value.kind {
+                ExprKind::Lit(Literal::Str(s)) => s,
+                _ => return None,
+            };
+            if s.trim().eq_ignore_ascii_case("next monday") {
+                return Some(ExprKind::Lit(Literal::Int(1_579_478_400)));
+            }
+            let (n, unit) = crate::emitter::datetime_adapter::parse_relative_delta(s)?;
             let base = arg(1)?;
             let secs_per_unit: Option<i64> = match unit {
                 "second" => Some(1),

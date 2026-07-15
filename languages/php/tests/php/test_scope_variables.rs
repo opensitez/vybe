@@ -1,5 +1,8 @@
 //! Variable scope: global, static, `use`, and `$GLOBALS`.
 
+use super::helpers::run_prints_dynamic;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 crate::php_cases! {
     global_keyword_imports_global => {
         r#"<?php
@@ -44,6 +47,30 @@ unset($z);
 echo isset($z) ? 'yes' : 'no';
 "#,
         ["no"]
+    };
+
+    variable_name_does_not_collide_with_error_class => {
+        r#"<?php
+echo isset($error) ? 'bad' : 'ok';
+$error = 'set';
+echo isset($error) ? ':' . $error : ':bad';
+"#,
+        ["ok:set"]
+    };
+
+    branch_assigned_variable_survives_block_scope => {
+        r#"<?php
+function label($key, $flag = null) {
+    if ($flag === null) {
+        $retval = $key;
+    } else {
+        $retval = 'bad';
+    }
+    return $retval;
+}
+echo label('Host');
+"#,
+        ["Host"]
     };
 
     variable_variables => {
@@ -319,4 +346,51 @@ echo $missing ?? 'def';
 "#,
         ["def"]
     };
+}
+
+#[test]
+fn method_include_returns_to_caller_frame() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("vybe-php-method-include-{stamp}"));
+    std::fs::create_dir_all(&base).expect("create temp dir");
+    let view_path = base.join("view.php");
+    std::fs::write(&view_path, "<?php echo 'T';").expect("write view");
+
+    let src = format!(
+        r#"<?php
+class C {{
+    public function index() {{
+        include '{}';
+    }}
+}}
+$action = 'index';
+$id = null;
+try {{
+    $controller = new C();
+    switch ($action) {{
+        case 'index':
+            $controller->index();
+            break;
+        case 'view':
+            if ($id === null) throw new Exception('Project ID required');
+            break;
+    }}
+    echo 'D';
+}} catch (Exception $e) {{
+    echo 'caught:' . $e->getMessage();
+}}
+"#,
+        view_path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+    );
+
+    assert_eq!(
+        run_prints_dynamic(&src, base.join("main.php").to_string_lossy().as_ref()),
+        vec!["TD".to_string()]
+    );
 }
