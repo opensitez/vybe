@@ -2,6 +2,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Op;
+use vybe_bytecode::Value;
 use vybe_emitter::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
@@ -24,6 +25,16 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         return true;
     }
 
+    if name == "pascal.int_xor" {
+        chunks[current].emit_op(Op::I32_XOR, line);
+        return true;
+    }
+
+    if name == "pascal.file_eof" {
+        emit_pascal_file_eof(chunks, current, line);
+        return true;
+    }
+
     let global = match name {
         "pascal.str_remove_range" => "__vybe_str_remove_range",
         "pascal.str_insert" => "__vybe_str_insert",
@@ -32,6 +43,101 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
+}
+
+fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {
+    let handle_slot = chunks[current].alloc_scratch(1);
+    let next_slot = chunks[current].alloc_scratch(1);
+    let rows_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let eof_map_slot = ensure_global_map(chunks, current, "__vb_file_eof_by_handle", line);
+    let next_map_slot =
+        ensure_global_map(chunks, current, "__vb_record_next_index_by_handle", line);
+    let rows_map_slot = ensure_global_map(chunks, current, "__vb_record_rows_by_handle", line);
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, handle_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, next_map_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, next_slot, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, rows_map_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, rows_slot, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, next_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, eof_map_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        vybe_emitter::instructions::core_wasm::dup(chunk, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, rows_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, eof_map_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        vybe_emitter::instructions::core_wasm::dup(chunk, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, rows_slot, line);
+    }
+    collections::emit_len(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, next_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    }
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
+    let slot = chunks[current].alloc_scratch(1);
+    let key = chunks[current].add_constant(Value::String(std::sync::Arc::from(name)));
+    chunks[current].emit_op_u16(Op::GLOBAL_GET, key, line);
+    vybe_emitter::instructions::core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::DROP, line);
+    collections::emit_map_new(chunks, current, line);
+    vybe_emitter::instructions::core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::GLOBAL_SET, key, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    slot
 }
 
 fn emit_ord(chunks: &mut [Chunk], current: usize, line: u32) {

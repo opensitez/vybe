@@ -297,7 +297,7 @@ fn partial_sort_first_two_bubble() {
         run_pascal(
             r#"program T; var a:array[0..3] of Integer; i,j,t:Integer; begin a[0]:=4; a[1]:=2; a[2]:=3; a[3]:=1; for i:=0 to 1 do for j:=0 to 3-i-1 do if a[j]>a[j+1] then begin t:=a[j]; a[j]:=a[j+1]; a[j+1]:=t; end; WriteLn(a[0]); WriteLn(a[1]); end."#
         ),
-        &["1", "2"]
+        &["2", "1"]
     );
 }
 
@@ -397,7 +397,7 @@ fn partition_pivot_count_less() {
         run_pascal(
             r#"program T; var a:array[0..4] of Integer; i,p,c:Integer; begin a[0]:=5; a[1]:=2; a[2]:=8; a[3]:=1; a[4]:=6; p:=5; c:=0; for i:=0 to 4 do if a[i]<p then Inc(c); WriteLn(c); end."#
         ),
-        &["3"]
+        &["2"]
     );
 }
 

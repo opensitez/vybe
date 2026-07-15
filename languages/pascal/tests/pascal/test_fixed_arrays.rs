@@ -125,7 +125,7 @@ fn static_array_nested_type_field() {
 fn static_array_enum_indexed() {
     assert_eq!(
         run_pascal(
-            r#"program T; type TD=(A,B,C); var a: array[TD] of Integer; begin a[A]:=1; a[C]:=3; WriteLn(a[A]+a[C]); end."#
+            r#"program T; type TD=(A,B,C); var arr: array[TD] of Integer; begin arr[A]:=1; arr[C]:=3; WriteLn(arr[A]+arr[C]); end."#
         ),
         &["4"]
     );

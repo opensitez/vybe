@@ -336,6 +336,7 @@ type_ref = {
     procedural_type
     | array_type_ref
     | set_type_ref
+    | file_type_ref
     | pointer_type
     | simple_type_ref
 }
@@ -355,6 +356,8 @@ array_index_spec = _{ array_dimension | array_index_type }
 array_index_type = { type_ref }
 
 set_type_ref = { ^"set" ~ ^"of" ~ type_ref }
+
+file_type_ref = { ^"file" ~ (^"of" ~ type_ref)? }
 
 // Simple type ref: identifier with optional generic `<Type>`
 builtin_type_keyword = @{ builtin_type ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -665,7 +668,9 @@ real_literal = @{
 // Integer literal: decimal digits or hex
 int_literal = @{
     "$" ~ ASCII_HEX_DIGIT+
-    | ASCII_DIGIT+
+    | "%" ~ ("0" | "1")+
+    | "&" ~ ('0'..'7')+
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")*
 }
 
 // ── Identifiers ────────────────────────────────────────────────────────────────

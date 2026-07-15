@@ -51,6 +51,20 @@ writeln       = { emit = "print",                          min_args = 0, max_arg
 write         = { emit = "print",                          min_args = 0, max_args = 255 }
 readln        = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
 read          = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
+eof           = { emit = "common:pascal.file_eof",          min_args = 1, max_args = 1 }
+fileexists    = { emit = "host:wasi:filesystem:exists",     min_args = 1, max_args = 1 }
+flush         = { emit = "noop",                            min_args = 1, max_args = 1 }
+__pascal_file_open      = { emit = "host:wasi:filesystem:openFile",          min_args = 3, max_args = 3 }
+__pascal_file_close     = { emit = "host:wasi:filesystem:closeFile",         min_args = 1, max_args = 1 }
+__pascal_file_println   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
+__pascal_file_writeln   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
+__pascal_file_writecsv  = { emit = "host:wasi:filesystem:writeFile_handle",  min_args = 1, max_args = 255 }
+__pascal_file_readline  = { emit = "host:wasi:filesystem:lineInput",         min_args = 1, max_args = 1 }
+__pascal_file_readcsv   = { emit = "host:wasi:filesystem:inputFile",         min_args = 1, max_args = 1 }
+__pascal_file_exists    = { emit = "host:wasi:filesystem:exists",            min_args = 1, max_args = 1 }
+__pascal_file_remove    = { emit = "host:wasi:filesystem:remove",            min_args = 1, max_args = 1 }
+__pascal_file_rename    = { emit = "host:wasi:filesystem:rename",            min_args = 2, max_args = 2 }
+__pascal_file_flush     = { emit = "noop",                                   min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
 
@@ -102,6 +116,7 @@ concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_ar
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ord           = { emit = "common:pascal.ord",              min_args = 1, max_args = 1 }
 __pascal_set_length = { emit = "common:pascal.set_length", min_args = 1, max_args = 1 }
+__pascal_int_xor = { emit = "common:pascal.int_xor",       min_args = 2, max_args = 2 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "common:str_repeat",              min_args = 2, max_args = 2 }
@@ -155,6 +170,8 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 # ── Array operations ─────────────────────────────────────────────────────────
 
 append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
+__pascal_array_slice  = { emit = "host:ecma:array:slice",  min_args = 3, max_args = 3 }
+__pascal_array_concat = { emit = "host:ecma:array:concat", min_args = 2, max_args = 2 }
 sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
 

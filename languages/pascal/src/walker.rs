@@ -104,6 +104,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     merge_separated_methods(&mut body);
     lower_pascal_helpers(&mut body);
     lower_pascal_gotos_in_body(&mut body);
+    lower_pascal_file_io(&mut body);
 
     // Synthesize minimal RTL classes at the top of every Pascal program
     // before constructor-call rewriting so known runtime base types exist
@@ -208,6 +209,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let explicit_ctor_record_names = collect_records_without_default_constructor(&body);
     let variant_record_names = collect_variant_record_names_and_clear_markers(&mut body);
     let record_array_types = collect_record_array_types(&body, &struct_names);
+    let early_enum_type_counts = collect_enum_type_counts(&body);
+    normalize_pascal_enum_indexed_array_decls(&mut body, &early_enum_type_counts);
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
     }
@@ -219,6 +222,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     let struct_fields = collect_struct_fields(&body);
     lower_struct_copy_assignments(&mut body, &struct_fields);
+    lower_pascal_array_value_semantics(&mut body);
+    default_init_const_bounded_arrays(&mut body);
+    rewrite_pascal_fixed_array_bounds(&mut body);
     for stmt in body.iter_mut() {
         materialize_record_array_setlength_stmt(stmt, &record_array_types);
     }
@@ -231,9 +237,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let enum_type_names = collect_enum_type_names(&body);
     let enum_type_counts = collect_enum_type_counts(&body);
     let enum_member_ordinals = collect_enum_member_ordinals(&body);
+    default_init_enum_indexed_arrays(&mut body, &enum_type_counts);
     rewrite_pascal_enum_ordinals(&mut body, &enum_member_ordinals);
     rename_shadowing_pascal_set_vars(&mut body, &enum_member_ordinals);
-    default_init_enum_indexed_arrays(&mut body, &enum_type_counts);
     rewrite_pascal_set_semantics(&mut body, &enum_type_names);
     // Pascal allows user functions to shadow builtin type names. When that
     // happens, `Double(x)` should stay a function call rather than getting
@@ -2451,10 +2457,13 @@ fn default_array_init_for_type(type_hint: &str) -> Option<Expression> {
     if !lower.starts_with("array") {
         return None;
     }
-    Some(match fixed_array_length(trimmed) {
-        Some(count) => null_array_initializer(count),
-        None => Expression::new(ExprKind::Array(Vec::new())),
-    })
+    if let Some(count) = fixed_array_length(trimmed) {
+        return Some(null_array_initializer(count));
+    }
+    if lower.starts_with("array[") {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Array(Vec::new())))
 }
 
 fn default_field_init_for_type(type_hint: &str) -> Option<Expression> {
@@ -2473,6 +2482,117 @@ fn default_field_init_for_type(type_hint: &str) -> Option<Expression> {
         }
         _ => None,
     }
+}
+
+fn default_init_const_bounded_arrays(body: &mut [Statement]) {
+    let mut consts = std::collections::HashMap::new();
+    collect_pascal_int_consts(body, &mut consts);
+    if !consts.is_empty() {
+        default_init_const_bounded_arrays_body(body, &consts);
+    }
+}
+
+fn collect_pascal_int_consts(
+    body: &[Statement],
+    out: &mut std::collections::HashMap<String, i64>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::VarDecl {
+                declarations,
+                kind: VarDeclKind::Const,
+            } => {
+                for decl in declarations {
+                    if let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init)
+                    {
+                        if let Some(value) = const_int_expr(init) {
+                            out.insert(name.to_lowercase(), value);
+                        }
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                collect_pascal_int_consts(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn default_init_const_bounded_arrays_body(
+    body: &mut [Statement],
+    consts: &std::collections::HashMap<String, i64>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if decl.init.is_some() {
+                        continue;
+                    }
+                    let Some(type_hint) = decl.type_hint.as_deref() else {
+                        continue;
+                    };
+                    if let Some(count) = fixed_array_length_with_consts(type_hint, consts) {
+                        decl.init = Some(null_array_initializer(count));
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                default_init_const_bounded_arrays_body(body, consts);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                default_init_const_bounded_arrays_body(then_body, consts);
+                for (_, body) in elifs {
+                    default_init_const_bounded_arrays_body(body, consts);
+                }
+                if let Some(body) = else_body {
+                    default_init_const_bounded_arrays_body(body, consts);
+                }
+            }
+            StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. } => {
+                default_init_const_bounded_arrays_body(body, consts);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn fixed_array_length_with_consts(
+    type_hint: &str,
+    consts: &std::collections::HashMap<String, i64>,
+) -> Option<usize> {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower.strip_prefix("array[")?;
+    let close = rest.find(']')?;
+    let bounds = &trimmed["array[".len().."array[".len() + close];
+    let mut total = 1usize;
+    for dim in bounds.split(',') {
+        let (lo, hi) = dim.split_once("..")?;
+        let lo = pascal_bound_int(lo.trim(), consts)?;
+        let hi = pascal_bound_int(hi.trim(), consts)?;
+        if hi < lo {
+            return None;
+        }
+        total = total.checked_mul((hi - lo + 1) as usize)?;
+    }
+    Some(total)
+}
+
+fn pascal_bound_int(value: &str, consts: &std::collections::HashMap<String, i64>) -> Option<i64> {
+    value
+        .parse::<i64>()
+        .ok()
+        .or_else(|| consts.get(&value.to_lowercase()).copied())
 }
 
 fn collect_struct_fields(body: &[Statement]) -> std::collections::HashMap<String, Vec<String>> {
@@ -3567,6 +3687,697 @@ fn build_struct_copy_statements(
     stmts
 }
 
+fn lower_pascal_array_value_semantics(body: &mut [Statement]) {
+    let mut env = std::collections::HashMap::new();
+    lower_pascal_array_value_semantics_block(body, &mut env);
+}
+
+fn lower_pascal_array_value_semantics_block(
+    body: &mut [Statement],
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        lower_pascal_array_value_semantics_stmt(stmt, env);
+    }
+}
+
+fn lower_pascal_array_value_semantics_stmt(
+    stmt: &mut Statement,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    lower_pascal_array_value_semantics_expr(init, env);
+                }
+            }
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    env.insert(name.to_lowercase(), type_hint.to_string());
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            lower_pascal_array_value_semantics_expr(value, env);
+            if pascal_expr_is_array_like(value, env) && pascal_expr_is_array_like(&targets[0], env)
+            {
+                *value = pascal_array_clone_expr(value.clone());
+            }
+            lower_pascal_array_value_semantics_expr(&mut targets[0], env);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                lower_pascal_array_value_semantics_expr(target, env);
+            }
+            lower_pascal_array_value_semantics_expr(value, env);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            lower_pascal_array_value_semantics_expr(expr, env);
+        }
+        StmtKind::Return(None) | StmtKind::Empty => {}
+        StmtKind::Block(inner) => {
+            let mut scoped = env.clone();
+            lower_pascal_array_value_semantics_block(inner, &mut scoped);
+        }
+        StmtKind::FunctionDecl {
+            params,
+            return_type,
+            body,
+            ..
+        } => {
+            let mut scoped = std::collections::HashMap::new();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(param.name.to_lowercase(), type_hint.to_string());
+                }
+            }
+            if let Some(return_type) = return_type {
+                if is_pascal_array_type_hint(return_type) {
+                    scoped.insert("result".to_string(), return_type.to_string());
+                }
+            }
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_pascal_array_value_semantics_expr(cond, env);
+            let mut then_scope = env.clone();
+            lower_pascal_array_value_semantics_block(then_body, &mut then_scope);
+            for (cond, body) in elifs {
+                lower_pascal_array_value_semantics_expr(cond, env);
+                let mut elif_scope = env.clone();
+                lower_pascal_array_value_semantics_block(body, &mut elif_scope);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                lower_pascal_array_value_semantics_block(body, &mut else_scope);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                lower_pascal_array_value_semantics_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                lower_pascal_array_value_semantics_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                lower_pascal_array_value_semantics_expr(update, &scoped);
+            }
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            lower_pascal_array_value_semantics_expr(iter, env);
+            let mut scoped = env.clone();
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            lower_pascal_array_value_semantics_expr(cond, env);
+            let mut scoped = env.clone();
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                lower_pascal_array_value_semantics_block(body, &mut else_scope);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = env.clone();
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+            lower_pascal_array_value_semantics_expr(cond, env);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_scope = env.clone();
+            lower_pascal_array_value_semantics_block(body, &mut try_scope);
+            for catch in catches {
+                let mut catch_scope = env.clone();
+                lower_pascal_array_value_semantics_block(&mut catch.body, &mut catch_scope);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                lower_pascal_array_value_semantics_block(body, &mut else_scope);
+            }
+            if let Some(body) = finally {
+                let mut finally_scope = env.clone();
+                lower_pascal_array_value_semantics_block(body, &mut finally_scope);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_pascal_array_value_semantics_member(member, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_array_value_semantics_member(
+    member: &mut ClassMember,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = env.clone();
+            lower_pascal_array_value_semantics_stmt(stmt, &mut scoped);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(param.name.to_lowercase(), type_hint.to_string());
+                }
+            }
+            lower_pascal_array_value_semantics_block(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = env.clone();
+                lower_pascal_array_value_semantics_block(getter, &mut scoped);
+            }
+            if let Some(setter) = setter {
+                let mut scoped = env.clone();
+                if let Some(type_hint) = &setter.param.type_hint {
+                    if is_pascal_array_type_hint(type_hint) {
+                        scoped.insert(setter.param.name.to_lowercase(), type_hint.to_string());
+                    }
+                }
+                lower_pascal_array_value_semantics_block(&mut setter.body, &mut scoped);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_array_value_semantics_expr(
+    expr: &mut Expression,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            lower_pascal_array_value_semantics_expr(callee, env);
+            for arg in args.iter_mut() {
+                lower_pascal_array_value_semantics_expr(&mut arg.value, env);
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name.eq_ignore_ascii_case("copy") && args.len() >= 2 {
+                    let source = args[0].value.clone();
+                    if pascal_expr_is_array_like(&source, env) {
+                        let start = args[1].value.clone();
+                        let count = args
+                            .get(2)
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(|| pascal_array_length_expr(source.clone()));
+                        *expr = pascal_array_copy_expr(source, start, count);
+                    }
+                }
+            }
+        }
+        ExprKind::Binary { op, left, right } => {
+            lower_pascal_array_value_semantics_expr(left, env);
+            lower_pascal_array_value_semantics_expr(right, env);
+            if matches!(op, BinOp::Add)
+                && (pascal_expr_is_array_like(left, env) || pascal_expr_is_array_like(right, env))
+            {
+                *expr = pascal_array_concat_expr((**left).clone(), (**right).clone());
+            } else if matches!(op, BinOp::BitXor)
+                && pascal_expr_is_pascal_integer_like(left, env)
+                && pascal_expr_is_pascal_integer_like(right, env)
+            {
+                *expr = pascal_call(
+                    "__pascal_int_xor",
+                    vec![(**left).clone(), (**right).clone()],
+                );
+            }
+        }
+        ExprKind::Member { object, .. } => lower_pascal_array_value_semantics_expr(object, env),
+        ExprKind::Index { object, index, .. } => {
+            lower_pascal_array_value_semantics_expr(object, env);
+            lower_pascal_array_value_semantics_expr(index, env);
+        }
+        ExprKind::Unary { expr, .. } => lower_pascal_array_value_semantics_expr(expr, env),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_pascal_array_value_semantics_expr(cond, env);
+            lower_pascal_array_value_semantics_expr(then, env);
+            lower_pascal_array_value_semantics_expr(else_, env);
+        }
+        ExprKind::Assign { target, value } => {
+            lower_pascal_array_value_semantics_expr(value, env);
+            if pascal_expr_is_array_like(value, env) && pascal_expr_is_array_like(target, env) {
+                **value = pascal_array_clone_expr((**value).clone());
+            }
+            lower_pascal_array_value_semantics_expr(target, env);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                lower_pascal_array_value_semantics_expr(&mut item.value, env);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    lower_pascal_array_value_semantics_expr(key, env);
+                    lower_pascal_array_value_semantics_expr(value, env);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                lower_pascal_array_value_semantics_expr(item, env);
+            }
+        }
+        ExprKind::New { class, args } => {
+            lower_pascal_array_value_semantics_expr(class, env);
+            for arg in args {
+                lower_pascal_array_value_semantics_expr(&mut arg.value, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_pascal_array_type_hint(type_hint: &str) -> bool {
+    type_hint
+        .trim_start()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array"))
+}
+
+fn pascal_expr_is_array_like(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|hint| is_pascal_array_type_hint(hint)),
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if name.eq_ignore_ascii_case("__pascal_array_slice")
+                    || name.eq_ignore_ascii_case("__pascal_array_concat")
+        ),
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_pascal_integer_like(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => true,
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|hint| pascal_type_hint_is_integer(hint)),
+        ExprKind::Index { object, .. } => pascal_array_index_is_integer(object, env),
+        ExprKind::Cast { type_name, .. } => pascal_type_hint_is_integer(type_name),
+        _ => false,
+    }
+}
+
+fn pascal_array_index_is_integer(
+    object: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &object.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .and_then(|hint| pascal_array_element_type(hint))
+            .is_some_and(|element| pascal_type_hint_is_integer(&element)),
+        ExprKind::Index { object, .. } => pascal_array_index_is_integer(object, env),
+        _ => false,
+    }
+}
+
+fn pascal_type_hint_is_integer(type_hint: &str) -> bool {
+    matches!(
+        bare_type_name(type_hint).to_ascii_lowercase().as_str(),
+        "integer"
+            | "int"
+            | "longint"
+            | "shortint"
+            | "smallint"
+            | "byte"
+            | "word"
+            | "cardinal"
+            | "int64"
+            | "uint64"
+            | "longword"
+    )
+}
+
+fn pascal_array_copy_expr(source: Expression, start: Expression, count: Expression) -> Expression {
+    let start0 = Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(start),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+    });
+    let end = Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(start0.clone()),
+        right: Box::new(count),
+    });
+    pascal_call("__pascal_array_slice", vec![source, start0, end])
+}
+
+fn pascal_array_clone_expr(source: Expression) -> Expression {
+    pascal_call(
+        "__pascal_array_slice",
+        vec![
+            source.clone(),
+            Expression::new(ExprKind::Lit(Literal::Int(0))),
+            pascal_array_length_expr(source),
+        ],
+    )
+}
+
+fn pascal_array_concat_expr(left: Expression, right: Expression) -> Expression {
+    pascal_call("__pascal_array_concat", vec![left, right])
+}
+
+fn pascal_array_length_expr(source: Expression) -> Expression {
+    pascal_call("__len__", vec![source])
+}
+
+fn rewrite_pascal_fixed_array_bounds(body: &mut [Statement]) {
+    let mut env = std::collections::HashMap::new();
+    rewrite_pascal_fixed_array_bounds_block(body, &mut env);
+}
+
+fn rewrite_pascal_fixed_array_bounds_block(
+    body: &mut [Statement],
+    env: &mut std::collections::HashMap<String, Vec<(i64, i64)>>,
+) {
+    for stmt in body {
+        rewrite_pascal_fixed_array_bounds_stmt(stmt, env);
+    }
+}
+
+fn rewrite_pascal_fixed_array_bounds_stmt(
+    stmt: &mut Statement,
+    env: &mut std::collections::HashMap<String, Vec<(i64, i64)>>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_fixed_array_bounds_expr(init, env);
+                }
+            }
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                        env.insert(name.to_lowercase(), bounds);
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_fixed_array_bounds_expr(target, env);
+            }
+            rewrite_pascal_fixed_array_bounds_expr(value, env);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_fixed_array_bounds_expr(expr, env);
+        }
+        StmtKind::Block(inner) => {
+            let mut scoped = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(inner, &mut scoped);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = std::collections::HashMap::new();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                        scoped.insert(param.name.to_lowercase(), bounds);
+                    }
+                }
+            }
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_fixed_array_bounds_expr(cond, env);
+            let mut then_scope = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(then_body, &mut then_scope);
+            for (cond, body) in elifs {
+                rewrite_pascal_fixed_array_bounds_expr(cond, env);
+                let mut elif_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(body, &mut elif_scope);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(body, &mut else_scope);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_fixed_array_bounds_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_fixed_array_bounds_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_fixed_array_bounds_expr(update, &scoped);
+            }
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(iter, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_fixed_array_bounds_expr(cond, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(body, &mut else_scope);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+            rewrite_pascal_fixed_array_bounds_expr(cond, env);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_scope = env.clone();
+            rewrite_pascal_fixed_array_bounds_block(body, &mut try_scope);
+            for catch in catches {
+                let mut catch_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(&mut catch.body, &mut catch_scope);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(body, &mut else_scope);
+            }
+            if let Some(body) = finally {
+                let mut finally_scope = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(body, &mut finally_scope);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_fixed_array_bounds_member(member, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_fixed_array_bounds_member(
+    member: &mut ClassMember,
+    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = env.clone();
+            rewrite_pascal_fixed_array_bounds_stmt(stmt, &mut scoped);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                        scoped.insert(param.name.to_lowercase(), bounds);
+                    }
+                }
+            }
+            rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(getter, &mut scoped);
+            }
+            if let Some(setter) = setter {
+                let mut scoped = env.clone();
+                rewrite_pascal_fixed_array_bounds_block(&mut setter.body, &mut scoped);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_fixed_array_bounds_expr(
+    expr: &mut Expression,
+    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(callee, env);
+            for arg in args.iter_mut() {
+                rewrite_pascal_fixed_array_bounds_expr(&mut arg.value, env);
+            }
+            let ExprKind::Ident(name) = &callee.kind else {
+                return;
+            };
+            if !(name.eq_ignore_ascii_case("low") || name.eq_ignore_ascii_case("high")) {
+                return;
+            }
+            let Some(first) = args.first() else {
+                return;
+            };
+            let Some(bounds) = pascal_bounds_for_expr(&first.value, env) else {
+                return;
+            };
+            let dim = args
+                .get(1)
+                .and_then(|arg| const_int_expr(&arg.value))
+                .unwrap_or(1);
+            if dim < 1 {
+                return;
+            }
+            let Some((lo, hi)) = bounds.get((dim - 1) as usize).copied() else {
+                return;
+            };
+            *expr = Expression::new(ExprKind::Lit(Literal::Int(if name.eq_ignore_ascii_case("low") {
+                lo
+            } else {
+                hi
+            })));
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(left, env);
+            rewrite_pascal_fixed_array_bounds_expr(right, env);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_fixed_array_bounds_expr(object, env),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(object, env);
+            rewrite_pascal_fixed_array_bounds_expr(index, env);
+        }
+        ExprKind::Unary { expr, .. } => rewrite_pascal_fixed_array_bounds_expr(expr, env),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_fixed_array_bounds_expr(cond, env);
+            rewrite_pascal_fixed_array_bounds_expr(then, env);
+            rewrite_pascal_fixed_array_bounds_expr(else_, env);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_pascal_fixed_array_bounds_expr(target, env);
+            rewrite_pascal_fixed_array_bounds_expr(value, env);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_pascal_fixed_array_bounds_expr(&mut item.value, env);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    rewrite_pascal_fixed_array_bounds_expr(key, env);
+                    rewrite_pascal_fixed_array_bounds_expr(value, env);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_pascal_fixed_array_bounds_expr(item, env);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_fixed_array_bounds_expr(class, env);
+            for arg in args {
+                rewrite_pascal_fixed_array_bounds_expr(&mut arg.value, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_bounds_for_expr(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
+) -> Option<Vec<(i64, i64)>> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env.get(&name.to_lowercase()).cloned(),
+        _ => None,
+    }
+}
+
+fn pascal_const_array_bounds(type_hint: &str) -> Option<Vec<(i64, i64)>> {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower.strip_prefix("array[")?;
+    let close = rest.find(']')?;
+    let bounds = &trimmed["array[".len().."array[".len() + close];
+    let mut out = Vec::new();
+    for dim in bounds.split(',') {
+        let (lo, hi) = dim.split_once("..")?;
+        let lo = lo.trim().parse::<i64>().ok()?;
+        let hi = hi.trim().parse::<i64>().ok()?;
+        out.push((lo, hi));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 fn collect_variant_record_names_and_clear_markers(
     body: &mut [Statement],
 ) -> std::collections::HashSet<String> {
@@ -3723,47 +4534,96 @@ fn erase_variant_record_param_type_hints_stmt(
 }
 
 fn collect_enum_type_names(body: &[Statement]) -> std::collections::HashSet<String> {
-    body.iter()
-        .filter_map(|stmt| {
-            if let StmtKind::EnumDecl { name, .. } = &stmt.kind {
-                Some(name.to_lowercase())
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut out = std::collections::HashSet::new();
+    collect_enum_metadata(body, &mut out, &mut std::collections::HashMap::new(), None);
+    out
 }
 
 fn collect_enum_type_counts(body: &[Statement]) -> std::collections::HashMap<String, usize> {
-    body.iter()
-        .filter_map(|stmt| {
-            if let StmtKind::EnumDecl { name, members, .. } = &stmt.kind {
-                Some((name.to_lowercase(), members.len()))
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut out = std::collections::HashMap::new();
+    collect_enum_metadata(body, &mut std::collections::HashSet::new(), &mut out, None);
+    out
 }
 
 fn collect_enum_member_ordinals(body: &[Statement]) -> std::collections::HashMap<String, i64> {
     let mut out = std::collections::HashMap::new();
+    collect_enum_metadata(
+        body,
+        &mut std::collections::HashSet::new(),
+        &mut std::collections::HashMap::new(),
+        Some(&mut out),
+    );
+    out
+}
+
+fn collect_enum_metadata(
+    body: &[Statement],
+    names: &mut std::collections::HashSet<String>,
+    counts: &mut std::collections::HashMap<String, usize>,
+    mut ordinals: Option<&mut std::collections::HashMap<String, i64>>,
+) {
     for stmt in body {
-        let StmtKind::EnumDecl { members, .. } = &stmt.kind else {
-            continue;
-        };
-        let mut next = 0i64;
-        for member in members {
-            if let Some(value) = &member.value {
-                if let Some(int_value) = const_int_expr(value) {
-                    next = int_value;
+        match &stmt.kind {
+            StmtKind::EnumDecl { name, members, .. } => {
+                names.insert(name.to_lowercase());
+                counts.insert(name.to_lowercase(), members.len());
+                if let Some(ordinals) = ordinals.as_deref_mut() {
+                    let mut next = 0i64;
+                    for member in members {
+                        if let Some(value) = &member.value {
+                            if let Some(int_value) = const_int_expr(value) {
+                                next = int_value;
+                            }
+                        }
+                        ordinals.insert(member.name.clone(), next);
+                        next += 1;
+                    }
                 }
             }
-            out.insert(member.name.clone(), next);
-            next += 1;
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                collect_enum_metadata(body, names, counts, ordinals.as_deref_mut());
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                            collect_enum_metadata(
+                                std::slice::from_ref(stmt),
+                                names,
+                                counts,
+                                ordinals.as_deref_mut(),
+                            );
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            collect_enum_metadata(body, names, counts, ordinals.as_deref_mut());
+                        }
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(getter) = getter {
+                                collect_enum_metadata(
+                                    getter,
+                                    names,
+                                    counts,
+                                    ordinals.as_deref_mut(),
+                                );
+                            }
+                            if let Some(setter) = setter {
+                                collect_enum_metadata(
+                                    &setter.body,
+                                    names,
+                                    counts,
+                                    ordinals.as_deref_mut(),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    out
 }
 
 fn rename_shadowing_pascal_set_vars(
@@ -4038,6 +4898,61 @@ fn default_init_enum_indexed_arrays(
     }
 }
 
+fn normalize_pascal_enum_indexed_array_decls(
+    body: &mut [Statement],
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    let Some(type_hint) = decl.type_hint.as_deref() else {
+                        continue;
+                    };
+                    let Some(count) = enum_indexed_array_len(type_hint, enum_type_counts) else {
+                        continue;
+                    };
+                    let Some(element_type) = pascal_array_element_type(type_hint) else {
+                        continue;
+                    };
+                    decl.type_hint = Some(format!("array[0..{}] of {}", count - 1, element_type));
+                    decl.array_bounds = Some(vec![
+                        Expression::new(ExprKind::Lit(Literal::Int(0))),
+                        Expression::new(ExprKind::Lit(Literal::Int(count as i64 - 1))),
+                    ]);
+                    if decl.init.is_none() {
+                        decl.init = Some(null_array_initializer(count));
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_pascal_enum_indexed_array_decls(then_body, enum_type_counts);
+                for (_, body) in elifs {
+                    normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
+                }
+                if let Some(body) = else_body {
+                    normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
+                }
+            }
+            StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. } => {
+                normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn default_init_enum_indexed_arrays_stmt(
     stmt: &mut Statement,
     enum_type_counts: &std::collections::HashMap<String, usize>,
@@ -4055,6 +4970,16 @@ fn default_init_enum_indexed_arrays_stmt(
                         .and_then(|hint| enum_indexed_array_len(hint, enum_type_counts))
                     {
                         decl.init = Some(null_array_initializer(count));
+                        if let Some(type_hint) = decl.type_hint.as_deref() {
+                            if let Some(element_type) = pascal_array_element_type(type_hint) {
+                                decl.type_hint =
+                                    Some(format!("array[0..{}] of {}", count - 1, element_type));
+                            }
+                        }
+                        decl.array_bounds = Some(vec![
+                            Expression::new(ExprKind::Lit(Literal::Int(0))),
+                            Expression::new(ExprKind::Lit(Literal::Int(count as i64 - 1))),
+                        ]);
                     }
                 }
             }
@@ -11085,8 +12010,18 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Lit(Literal::Int(
                     i64::from_str_radix(&s[1..], 16).unwrap_or(0),
                 )))
+            } else if let Some(rest) = s.strip_prefix('%') {
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(rest, 2).unwrap_or(0),
+                )))
+            } else if let Some(rest) = s.strip_prefix('&') {
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(rest, 8).unwrap_or(0),
+                )))
             } else {
-                Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
+                Ok(ExprKind::Lit(Literal::Int(
+                    s.replace('_', "").parse().unwrap_or(0),
+                )))
             }
         }
         Rule::real_literal => Ok(ExprKind::Lit(Literal::Float(
@@ -11389,6 +12324,8 @@ fn pascal_bare_identifier_expr(name: &str) -> Expression {
             args: Vec::new(),
             optional: false,
         })
+    } else if name.eq_ignore_ascii_case("MinInt") {
+        Expression::new(ExprKind::Lit(Literal::Int(i32::MIN as i64)))
     } else {
         Expression::ident(name)
     }
@@ -12174,6 +13111,603 @@ fn flatten_stmt(stmt: Statement) -> Vec<Statement> {
     match stmt.kind {
         StmtKind::Block(stmts) => stmts,
         _ => vec![stmt],
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PascalFileInfo {
+    path_var: Option<String>,
+    is_text: bool,
+}
+
+fn lower_pascal_file_io(body: &mut Vec<Statement>) {
+    static NEXT_PASCAL_FILE_HANDLE: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(10_000);
+    let mut next_handle =
+        NEXT_PASCAL_FILE_HANDLE.fetch_add(1_000, std::sync::atomic::Ordering::Relaxed);
+    let mut scope = std::collections::HashMap::new();
+    let mut aliases = std::collections::HashMap::new();
+    lower_pascal_file_io_body(body, &mut next_handle, &mut scope, &mut aliases);
+}
+
+fn lower_pascal_file_io_body(
+    body: &mut Vec<Statement>,
+    next_handle: &mut i64,
+    scope: &mut std::collections::HashMap<String, PascalFileInfo>,
+    aliases: &mut std::collections::HashMap<String, String>,
+) {
+    let mut out = Vec::with_capacity(body.len());
+    for mut stmt in std::mem::take(body) {
+        if let StmtKind::VarDecl { declarations, kind } = &mut stmt.kind {
+            let mut companions = Vec::new();
+            for decl in declarations.iter_mut() {
+                let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, decl.type_hint.as_deref())
+                else {
+                    continue;
+                };
+                if *kind == VarDeclKind::Const && decl.init.is_none() {
+                    if is_pascal_file_type_hint(type_hint, aliases) {
+                        aliases.insert(name.to_lowercase(), type_hint.to_string());
+                    }
+                    continue;
+                }
+                if !is_pascal_file_type_hint(type_hint, aliases) {
+                    continue;
+                }
+                let is_text = is_pascal_text_file_type_hint(type_hint, aliases);
+                let handle = *next_handle;
+                *next_handle += 1;
+                if decl.init.is_none() {
+                    decl.init = Some(Expression::int(handle));
+                }
+                let path_var = format!("__pascal_file_path_{}", handle);
+                scope.insert(
+                    name.to_lowercase(),
+                    PascalFileInfo {
+                        path_var: Some(path_var.clone()),
+                        is_text,
+                    },
+                );
+                companions.push(VarDeclarator {
+                    pattern: BindingPattern::Ident(path_var),
+                    type_hint: Some("String".to_string()),
+                    init: Some(Expression::string("")),
+                    array_bounds: None,
+                    with_events: false,
+                });
+            }
+            declarations.extend(companions);
+        }
+
+        lower_pascal_file_io_stmt(&mut stmt, next_handle, scope, aliases);
+        out.push(stmt);
+    }
+    *body = out;
+}
+
+fn is_pascal_file_type_hint(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> bool {
+    let lower = normalize_pascal_type_hint(type_hint).to_ascii_lowercase();
+    lower == "text"
+        || lower == "textfile"
+        || lower == "file"
+        || lower.starts_with("file of ")
+        || aliases
+            .get(&lower)
+            .is_some_and(|aliased| is_pascal_file_type_hint(aliased, aliases))
+}
+
+fn is_pascal_text_file_type_hint(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> bool {
+    let lower = normalize_pascal_type_hint(type_hint).to_ascii_lowercase();
+    lower == "text"
+        || lower == "textfile"
+        || aliases
+            .get(&lower)
+            .is_some_and(|aliased| is_pascal_text_file_type_hint(aliased, aliases))
+}
+
+fn lower_pascal_file_io_stmt(
+    stmt: &mut Statement,
+    next_handle: &mut i64,
+    scope: &mut std::collections::HashMap<String, PascalFileInfo>,
+    aliases: &mut std::collections::HashMap<String, String>,
+) {
+    let replacement = match &mut stmt.kind {
+        StmtKind::Expr(expr) => lower_pascal_file_io_call_stmt(expr, scope),
+        StmtKind::Assign { value, .. } => {
+            lower_pascal_file_io_expr(value, scope);
+            None
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_pascal_file_io_expr(target, scope);
+            lower_pascal_file_io_expr(value, scope);
+            None
+        }
+        StmtKind::Block(stmts) => {
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(stmts, next_handle, &mut scoped, &mut scoped_aliases);
+            None
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|hint| is_pascal_file_type_hint(hint, aliases))
+                {
+                    let is_text = param
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(|hint| is_pascal_text_file_type_hint(hint, aliases));
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        PascalFileInfo {
+                            path_var: None,
+                            is_text,
+                        },
+                    );
+                }
+            }
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            None
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_pascal_file_io_expr(cond, scope);
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(then_body, next_handle, &mut scoped, &mut scoped_aliases);
+            for (cond, body) in elifs {
+                lower_pascal_file_io_expr(cond, scope);
+                let mut scoped = scope.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            }
+            None
+        }
+        StmtKind::While { cond, body, .. } => {
+            lower_pascal_file_io_expr(cond, scope);
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            None
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                lower_pascal_file_io_stmt(init, next_handle, scope, aliases);
+            }
+            if let Some(cond) = cond {
+                lower_pascal_file_io_expr(cond, scope);
+            }
+            if let Some(update) = update {
+                lower_pascal_file_io_expr(update, scope);
+            }
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            None
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            lower_pascal_file_io_expr(iter, scope);
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            None
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            lower_pascal_file_io_expr(cond, scope);
+            None
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            lower_pascal_file_io_expr(expr, scope);
+            for case in cases {
+                for cond in &mut case.conditions {
+                    lower_pascal_file_io_case_condition(cond, scope);
+                }
+                let mut scoped = scope.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(
+                    &mut case.body,
+                    next_handle,
+                    &mut scoped,
+                    &mut scoped_aliases,
+                );
+            }
+            if let Some(body) = default {
+                let mut scoped = scope.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            }
+            None
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                lower_pascal_file_io_member(member, next_handle, scope, aliases);
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Some(kind) = replacement {
+        stmt.kind = kind;
+    }
+}
+
+fn lower_pascal_file_io_member(
+    member: &mut ClassMember,
+    next_handle: &mut i64,
+    scope: &std::collections::HashMap<String, PascalFileInfo>,
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = scope.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_stmt(stmt, next_handle, &mut scoped, &mut scoped_aliases);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|hint| is_pascal_file_type_hint(hint, aliases))
+                {
+                    let is_text = param
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(|hint| is_pascal_text_file_type_hint(hint, aliases));
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        PascalFileInfo {
+                            path_var: None,
+                            is_text,
+                        },
+                    );
+                }
+            }
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(body) = getter {
+                let mut scoped = scope.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
+            }
+            if let Some(setter) = setter {
+                let mut scoped = scope.clone();
+                if setter
+                    .param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|hint| is_pascal_file_type_hint(hint, aliases))
+                {
+                    let is_text = setter
+                        .param
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(|hint| is_pascal_text_file_type_hint(hint, aliases));
+                    scoped.insert(
+                        setter.param.name.to_lowercase(),
+                        PascalFileInfo {
+                            path_var: None,
+                            is_text,
+                        },
+                    );
+                }
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_file_io_body(
+                    &mut setter.body,
+                    next_handle,
+                    &mut scoped,
+                    &mut scoped_aliases,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_file_io_case_condition(
+    cond: &mut CaseCondition,
+    scope: &std::collections::HashMap<String, PascalFileInfo>,
+) {
+    match cond {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            lower_pascal_file_io_expr(expr, scope)
+        }
+        CaseCondition::Range { from, to } => {
+            lower_pascal_file_io_expr(from, scope);
+            lower_pascal_file_io_expr(to, scope);
+        }
+    }
+}
+
+fn lower_pascal_file_io_call_stmt(
+    expr: &mut Expression,
+    scope: &std::collections::HashMap<String, PascalFileInfo>,
+) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        lower_pascal_file_io_expr(expr, scope);
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        lower_pascal_file_io_expr(expr, scope);
+        return None;
+    };
+    let lowered = name.to_ascii_lowercase();
+    let file_expr = args.first().map(|arg| arg.value.clone())?;
+    let info = pascal_file_info_for_expr(&file_expr, scope)?;
+
+    match lowered.as_str() {
+        "assign" | "assignfile" if args.len() >= 2 => {
+            let path_var = info.path_var.as_ref()?;
+            Some(StmtKind::Assign {
+                targets: vec![Expression::ident(path_var)],
+                value: args[1].value.clone(),
+            })
+        }
+        "rewrite" => Some(StmtKind::OpenFile {
+            path: pascal_file_path_expr(&info)?,
+            mode: FileMode::Output,
+            file_number: file_expr,
+        }),
+        "reset" => Some(StmtKind::OpenFile {
+            path: pascal_file_path_expr(&info)?,
+            mode: FileMode::Input,
+            file_number: file_expr,
+        }),
+        "append" => Some(StmtKind::OpenFile {
+            path: pascal_file_path_expr(&info)?,
+            mode: FileMode::Append,
+            file_number: file_expr,
+        }),
+        "close" | "closefile" => Some(StmtKind::CloseFile(Some(file_expr))),
+        "erase" => Some(StmtKind::Expr(pascal_call(
+            "__pascal_file_remove",
+            vec![pascal_file_path_expr(&info)?],
+        ))),
+        "rename" if args.len() >= 2 => {
+            let path_var = info.path_var.as_ref()?;
+            let new_path = args[1].value.clone();
+            Some(StmtKind::Block(vec![
+                Statement::new(StmtKind::Expr(pascal_call(
+                    "__pascal_file_rename",
+                    vec![Expression::ident(path_var), new_path.clone()],
+                ))),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(path_var)],
+                    value: new_path,
+                }),
+            ]))
+        }
+        "writeln" => {
+            if !info.is_text && args.len() > 2 {
+                return Some(StmtKind::Block(
+                    args.iter()
+                        .skip(1)
+                        .map(|arg| {
+                            Statement::new(StmtKind::PrintFile {
+                                file_number: file_expr.clone(),
+                                items: vec![arg.value.clone()],
+                            })
+                        })
+                        .collect(),
+                ));
+            }
+            let items = args.iter().skip(1).map(|arg| arg.value.clone()).collect();
+            Some(StmtKind::PrintFile {
+                file_number: file_expr,
+                items,
+            })
+        }
+        "write" => {
+            if !info.is_text && args.len() > 2 {
+                return Some(StmtKind::Block(
+                    args.iter()
+                        .skip(1)
+                        .map(|arg| {
+                            Statement::new(StmtKind::PrintFile {
+                                file_number: file_expr.clone(),
+                                items: vec![arg.value.clone()],
+                            })
+                        })
+                        .collect(),
+                ));
+            }
+            let items = args.iter().skip(1).map(|arg| arg.value.clone()).collect();
+            Some(StmtKind::PrintFile {
+                file_number: file_expr,
+                items,
+            })
+        }
+        "readln" if args.len() == 1 => Some(StmtKind::Expr(pascal_call(
+            "__pascal_file_readline",
+            vec![file_expr],
+        ))),
+        "readln" if args.len() == 2 => {
+            let target = args[1].value.clone();
+            if let ExprKind::Ident(var) = &target.kind {
+                Some(StmtKind::LineInput {
+                    file_number: file_expr,
+                    variable: var.clone(),
+                })
+            } else {
+                Some(StmtKind::Assign {
+                    targets: vec![target],
+                    value: pascal_call("__pascal_file_readline", vec![file_expr]),
+                })
+            }
+        }
+        "read" if args.len() == 2 => {
+            let target = args[1].value.clone();
+            if !info.is_text {
+                if let ExprKind::Ident(var) = &target.kind {
+                    Some(StmtKind::InputFile {
+                        file_number: file_expr,
+                        variables: vec![Expression::ident(var)],
+                    })
+                } else {
+                    Some(StmtKind::Assign {
+                        targets: vec![target],
+                        value: pascal_call("__pascal_file_readline", vec![file_expr]),
+                    })
+                }
+            } else if let ExprKind::Ident(var) = &target.kind {
+                Some(StmtKind::LineInput {
+                    file_number: file_expr,
+                    variable: var.clone(),
+                })
+            } else {
+                Some(StmtKind::Assign {
+                    targets: vec![target],
+                    value: pascal_call("__pascal_file_readline", vec![file_expr]),
+                })
+            }
+        }
+        "read" if args.len() > 2 && !info.is_text => Some(StmtKind::Block(
+            args.iter()
+                .skip(1)
+                .map(|arg| {
+                    let target = arg.value.clone();
+                    if let ExprKind::Ident(var) = &target.kind {
+                        Statement::new(StmtKind::InputFile {
+                            file_number: file_expr.clone(),
+                            variables: vec![Expression::ident(var)],
+                        })
+                    } else {
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![target],
+                            value: pascal_call("__pascal_file_readline", vec![file_expr.clone()]),
+                        })
+                    }
+                })
+                .collect(),
+        )),
+        _ => {
+            for arg in args {
+                lower_pascal_file_io_expr(&mut arg.value, scope);
+            }
+            None
+        }
+    }
+}
+
+fn pascal_file_path_expr(info: &PascalFileInfo) -> Option<Expression> {
+    info.path_var.as_deref().map(Expression::ident)
+}
+
+fn pascal_file_info_for_expr(
+    expr: &Expression,
+    scope: &std::collections::HashMap<String, PascalFileInfo>,
+) -> Option<PascalFileInfo> {
+    match &expr.kind {
+        ExprKind::Ident(name) => scope.get(&name.to_lowercase()).cloned(),
+        _ => None,
+    }
+}
+
+fn pascal_call(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn lower_pascal_file_io_expr(
+    expr: &mut Expression,
+    scope: &std::collections::HashMap<String, PascalFileInfo>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            lower_pascal_file_io_expr(callee, scope);
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name.eq_ignore_ascii_case("eof") && args.len() == 1 {
+                    if pascal_file_info_for_expr(&args[0].value, scope).is_some() {
+                        return;
+                    }
+                }
+            }
+            for arg in args {
+                lower_pascal_file_io_expr(&mut arg.value, scope);
+            }
+        }
+        ExprKind::Member { object, .. } => lower_pascal_file_io_expr(object, scope),
+        ExprKind::Index { object, index, .. } => {
+            lower_pascal_file_io_expr(object, scope);
+            lower_pascal_file_io_expr(index, scope);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            lower_pascal_file_io_expr(left, scope);
+            lower_pascal_file_io_expr(right, scope);
+        }
+        ExprKind::Unary { expr, .. } => lower_pascal_file_io_expr(expr, scope),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_pascal_file_io_expr(cond, scope);
+            lower_pascal_file_io_expr(then, scope);
+            lower_pascal_file_io_expr(else_, scope);
+        }
+        ExprKind::Assign { target, value } => {
+            lower_pascal_file_io_expr(target, scope);
+            lower_pascal_file_io_expr(value, scope);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                lower_pascal_file_io_expr(&mut item.value, scope);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    lower_pascal_file_io_expr(key, scope);
+                    lower_pascal_file_io_expr(value, scope);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                lower_pascal_file_io_expr(item, scope);
+            }
+        }
+        ExprKind::New { class, args } => {
+            lower_pascal_file_io_expr(class, scope);
+            for arg in args {
+                lower_pascal_file_io_expr(&mut arg.value, scope);
+            }
+        }
+        _ => {}
     }
 }
 
