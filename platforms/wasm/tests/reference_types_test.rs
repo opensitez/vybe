@@ -142,50 +142,6 @@ fn select_t_picks_second_when_cond_is_zero() {
 
 // ── Typed ref.null variants ────────────────────────────────────────────
 
-#[test]
-fn null_func_produces_null_at_runtime() {
-    // At runtime every ref.null is identical (Value::Null). What matters
-    // is that the WASM binary carries the right heaptype byte.
-    let mut vm = VM::new();
-    let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL_FUNC, 0);
-    chunk.emit_op(Op::RETURN, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Null));
-}
-
-#[test]
-fn null_variants_emit_correct_heaptypes_in_wasm() {
-    use vybe_platform_wasm::write_wasm;
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_FUNC, 0);
-    chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_ANY, 0);
-    chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_NONE, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let wasm = write_wasm(&vec![chunk]);
-
-    // The four ref.null emissions produce 0xD0 followed by the heaptype
-    // byte: 0x6F (extern), 0x70 (func), 0x6E (any), 0x71 (none). The
-    // sequence `0xD0 0x6F ... 0xD0 0x70 ... 0xD0 0x6E ... 0xD0 0x71`
-    // appears in the code section body.
-    let needle = [0xD0u8, 0x6F];
-    let has_extern = wasm.windows(2).any(|w| w == needle);
-    let has_func = wasm.windows(2).any(|w| w == [0xD0u8, 0x70]);
-    let has_any = wasm.windows(2).any(|w| w == [0xD0u8, 0x6E]);
-    let has_none = wasm.windows(2).any(|w| w == [0xD0u8, 0x71]);
-    assert!(has_extern, "ref.null extern byte pair missing");
-    assert!(has_func, "ref.null func byte pair missing");
-    assert!(has_any, "ref.null any byte pair missing");
-    assert!(has_none, "ref.null none byte pair missing");
-}
-
 // ── Multi-table routing ────────────────────────────────────────────────
 
 #[test]

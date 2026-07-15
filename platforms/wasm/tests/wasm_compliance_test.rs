@@ -61,48 +61,24 @@ fn const_string_on_stack() {
 }
 
 #[test]
-fn true_false_null_opcodes() {
-    assert_eq!(
-        run_script(|c| {
-            c.emit_op(Op::TRUE, 0);
-        })
-        .as_bool(),
-        true
-    );
-    assert_eq!(
-        run_script(|c| {
-            c.emit_op(Op::FALSE, 0);
-        })
-        .as_bool(),
-        false
-    );
-    assert!(matches!(
-        run_script(|c| {
-            c.emit_op(Op::NULL, 0);
-        }),
-        Value::Null
-    ));
-}
-
-#[test]
 fn i32_const_shortcuts() {
     assert_eq!(
         run_script(|c| {
-            c.emit_op(Op::I32_CONST_0, 0);
+            c.emit_i32_const(0, 0);
         })
         .as_i32(),
         0
     );
     assert_eq!(
         run_script(|c| {
-            c.emit_op(Op::I32_CONST_1, 0);
+            c.emit_i32_const(1, 0);
         })
         .as_i32(),
         1
     );
     assert_eq!(
         run_script(|c| {
-            c.emit_op(Op::F64_CONST_0, 0);
+            c.emit_f64_const(0.0, 0);
         })
         .as_f64(),
         0.0
@@ -115,7 +91,7 @@ fn dup_replicates_top_of_stack() {
     let result = run_script(|c| {
         let idx = c.add_constant(Value::F64(5.0));
         c.emit_op_u16(Op::CONST, idx, 0);
-        c.emit_op(Op::DUP, 0);
+        c.emit_dup(0);
         c.emit_op(Op::DROP, 0);
     });
     assert_eq!(result.as_f64(), 5.0);
@@ -410,7 +386,7 @@ fn simple_while_loop() {
     // block { loop { i<3 ? (i++; br 0) : br 1 } } → 3
     let result = run_script(|c| {
         c.local_count = 1;
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         let bp = c.emit_block(0);
@@ -427,7 +403,7 @@ fn simple_while_loop() {
 
         // i++
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
@@ -465,9 +441,9 @@ fn nested_loops_break_with_labels() {
         c.local_count = 3; // total=0, i_outer=1, i_inner=2
 
         // Init
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
         let outer_b = c.emit_block(0);
@@ -482,7 +458,7 @@ fn nested_loops_break_with_labels() {
         c.emit_br_if(1, 0); // exit outer block if !(i_outer<3)
 
         // Reset i_inner = 0
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 2, 0);
 
         let inner_b = c.emit_block(0);
@@ -498,13 +474,13 @@ fn nested_loops_break_with_labels() {
 
         // total++
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // i_inner++
         c.emit_op_u16(Op::LOCAL_GET, 2, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 2, 0);
 
@@ -516,7 +492,7 @@ fn nested_loops_break_with_labels() {
 
         // i_outer++
         c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -831,7 +807,7 @@ fn i32_ne() {
 #[test]
 fn i32_eqz_zero() {
     let r = run_script(|c| {
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_EQZ, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -840,7 +816,7 @@ fn i32_eqz_zero() {
 #[test]
 fn i32_eqz_nonzero() {
     let r = run_script(|c| {
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_EQZ, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -920,52 +896,6 @@ fn f64_neg_negates() {
 // ──────────────────────────────────────────────────────────────────────
 // 10. STRING OPS
 // ──────────────────────────────────────────────────────────────────────
-
-#[test]
-fn str_concat_basic() {
-    let r = run_script(|c| {
-        let a = c.add_constant(Value::String(std::sync::Arc::from("hello ")));
-        let b = c.add_constant(Value::String(std::sync::Arc::from("world")));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::STR_CONCAT, 0);
-    });
-    assert_eq!(format!("{}", r), "hello world");
-}
-
-#[test]
-fn str_length() {
-    let r = run_script(|c| {
-        let a = c.add_constant(Value::String(std::sync::Arc::from("hello")));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op(Op::STR_LENGTH, 0);
-    });
-    assert_eq!(r.as_i32(), 5);
-}
-
-#[test]
-fn str_equals_true() {
-    let r = run_script(|c| {
-        let a = c.add_constant(Value::String(std::sync::Arc::from("abc")));
-        let b = c.add_constant(Value::String(std::sync::Arc::from("abc")));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::STR_EQUALS, 0);
-    });
-    assert!(r.as_bool() || r.as_i32() == 1);
-}
-
-#[test]
-fn str_equals_false() {
-    let r = run_script(|c| {
-        let a = c.add_constant(Value::String(std::sync::Arc::from("abc")));
-        let b = c.add_constant(Value::String(std::sync::Arc::from("xyz")));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::STR_EQUALS, 0);
-    });
-    assert!(!r.as_bool() && r.as_i32() == 0);
-}
 
 // ──────────────────────────────────────────────────────────────────────
 // 11. GC ARRAY OPS
@@ -1177,7 +1107,7 @@ fn loop_restarts_at_top() {
     // Simple counter test
     let r = run_script(|c| {
         c.local_count = 1;
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         let bp = c.emit_block(0);
@@ -1190,7 +1120,7 @@ fn loop_restarts_at_top() {
         c.emit_br_if(1, 0); // exit if !(i < 5)
         // i++
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::I32_ADD, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_br(0, 0);
@@ -1266,7 +1196,7 @@ fn round_trip_preserves_constants() {
 fn round_trip_loop_execution_matches() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     let bp = chunk.emit_block(0);
@@ -1278,7 +1208,7 @@ fn round_trip_loop_execution_matches() {
     chunk.emit_op(Op::I32_EQZ, 0);
     chunk.emit_br_if(1, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_br(0, 0);
@@ -1368,7 +1298,7 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     assert_eq!(Op::CALL_IMPORT.group(), 0xFF);
     assert_eq!(Op::BR.group(), 0x00);
     assert_eq!(Op::BR.sub(), 0x0C);
-    assert_eq!(Op::STR_CONCAT.group(), 0xFF);
+    assert_eq!(Op::HALT.group(), 0xFF);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1422,7 +1352,7 @@ fn select_picks_val1_when_cond_nonzero() {
         let v2 = c.add_constant(Value::I32(20));
         c.emit_op_u16(Op::CONST, v1, 0);
         c.emit_op_u16(Op::CONST, v2, 0);
-        c.emit_op(Op::I32_CONST_1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::SELECT, 0);
     });
     assert_eq!(result.as_i32(), 10);
@@ -1435,7 +1365,7 @@ fn select_picks_val2_when_cond_zero() {
         let v2 = c.add_constant(Value::I32(20));
         c.emit_op_u16(Op::CONST, v1, 0);
         c.emit_op_u16(Op::CONST, v2, 0);
-        c.emit_op(Op::I32_CONST_0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::SELECT, 0);
     });
     assert_eq!(result.as_i32(), 20);
@@ -1566,7 +1496,7 @@ fn structured_if_takes_then_when_i32_nonzero() {
     let v5 = chunk.add_constant(Value::F64(5.0));
     let v99 = chunk.add_constant(Value::F64(99.0));
 
-    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_if_value(0);
     chunk.emit_op_u16(Op::CONST, v99, 0);
     chunk.emit_else(0);
@@ -1585,7 +1515,7 @@ fn structured_if_takes_else_when_i32_zero() {
     let v5 = chunk.add_constant(Value::F64(5.0));
     let v99 = chunk.add_constant(Value::F64(99.0));
 
-    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_if_value(0);
     chunk.emit_op_u16(Op::CONST, v99, 0);
     chunk.emit_else(0);
@@ -1610,7 +1540,7 @@ fn return_inside_block_does_not_poison_caller_labels() {
     script.emit(0, 0);
     script.emit_op_u8(Op::CALL_REF, 0, 0);
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::I32_CONST_0, 0);
+    script.emit_i32_const(0, 0);
     script.emit_if_value(0);
     script.emit_op_u16(Op::CONST, v1, 0);
     script.emit_else(0);
@@ -2067,81 +1997,6 @@ fn wasm_imports_include_all_js_builtin_modules() {
 
 /// Round-trip: the 4 js-string-builtins string opcodes that were
 /// previously unwired now execute correctly in the VM.
-#[test]
-fn str_from_code_point_emits_unicode() {
-    // U+1F600 (grinning face) is a supplementary-plane code point.
-    let result = run_script(|c| {
-        let k = c.add_constant(Value::I32(0x1F600));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::STR_FROM_CODE_POINT, 0);
-    });
-    match result {
-        Value::String(s) => assert_eq!(s.as_ref(), "\u{1F600}"),
-        other => panic!("expected String, got {:?}", other),
-    }
-}
-
-#[test]
-fn str_code_point_at_reads_unicode() {
-    use std::sync::Arc;
-    let result = run_script(|c| {
-        let s = c.add_constant(Value::String(Arc::from("A\u{1F600}B")));
-        let i = c.add_constant(Value::I32(1));
-        c.emit_op_u16(Op::CONST, s, 0);
-        c.emit_op_u16(Op::CONST, i, 0);
-        c.emit_op(Op::STR_CODE_POINT_AT, 0);
-    });
-    assert_eq!(result.as_i32(), 0x1F600);
-}
-
-#[test]
-fn str_into_char_codes_produces_array() {
-    use std::sync::Arc;
-    let result = run_script(|c| {
-        let s = c.add_constant(Value::String(Arc::from("ABc")));
-        c.emit_op_u16(Op::CONST, s, 0);
-        c.emit_op(Op::STR_INTO_CHAR_CODES, 0);
-    });
-    // Expect a 3-element array with codes [65, 66, 99]
-    match result {
-        Value::Object(obj) => {
-            let o = obj.lock().unwrap();
-            match &o.kind {
-                vybe_bytecode::value::ObjectKind::Array(a) => {
-                    assert_eq!(a.len(), 3);
-                    assert_eq!(a[0].as_i32(), 65);
-                    assert_eq!(a[1].as_i32(), 66);
-                    assert_eq!(a[2].as_i32(), 99);
-                }
-                _ => panic!("expected array object"),
-            }
-        }
-        other => panic!("expected Object(Array), got {:?}", other),
-    }
-}
-
-#[test]
-fn str_from_char_codes_builds_string() {
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
-
-    // Build an array [72, 105] via the VM and feed it to STR_FROM_CHAR_CODES.
-    let mut script = Chunk::new("<script>");
-    let arr_obj = Object::new_array(vec![Value::I32(72), Value::I32(105)]);
-    let k = script.add_constant(Value::Object(Arc::new(Mutex::new(arr_obj))));
-    script.emit_op_u16(Op::CONST, k, 0);
-    script.emit_op(Op::STR_FROM_CHAR_CODES, 0);
-    script.emit_op(Op::RETURN, 0);
-
-    let mut vm = VM::new();
-    let result = vm.run(vec![script]).unwrap();
-    match result {
-        Value::String(s) => assert_eq!(s.as_ref(), "Hi"),
-        other => panic!("expected String, got {:?}", other),
-    }
-}
-
 // ──────────────────────────────────────────────────────────────────────
 // 25. ESM INTEGRATION — generated .wasm has a clean shape
 // ──────────────────────────────────────────────────────────────────────
@@ -2149,199 +2004,6 @@ fn str_from_char_codes_builds_string() {
 // ──────────────────────────────────────────────────────────────────────
 // 24b. JS PRIMITIVES — Undefined / Symbol / BigInt opcodes
 // ──────────────────────────────────────────────────────────────────────
-
-#[test]
-fn undefined_opcode_pushes_undefined_value() {
-    let result = run_script(|c| {
-        c.emit_op(Op::UNDEFINED, 0);
-    });
-    assert!(matches!(result, Value::Undefined), "got {:?}", result);
-}
-
-#[test]
-fn ref_is_undefined_distinguishes_from_null() {
-    // undefined → true
-    let r = run_script(|c| {
-        c.emit_op(Op::UNDEFINED, 0);
-        c.emit_op(Op::REF_IS_UNDEFINED, 0);
-    });
-    assert_eq!(r.as_i32(), 1);
-    // null → false
-    let r = run_script(|c| {
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::REF_IS_UNDEFINED, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
-}
-
-#[test]
-fn symbol_opcode_creates_symbol_with_description() {
-    use std::sync::Arc;
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::String(Arc::from("tag")));
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    let v = vm.run(vec![chunk]).unwrap();
-    match v {
-        Value::Symbol(d) => assert_eq!(d.as_ref(), "tag"),
-        other => panic!("expected Symbol, got {:?}", other),
-    }
-}
-
-#[test]
-fn symbols_have_identity_equality_not_structural() {
-    use std::sync::Arc;
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::String(Arc::from("x")));
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op(Op::EQ, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    // Two fresh Symbol(x) calls produce distinct values even with the same description.
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
-}
-
-#[test]
-fn bigint_opcode_pushes_i64_bigint() {
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::I64(9_000_000_000_000));
-    chunk.emit_op_u16(Op::BIGINT, k, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    match vm.run(vec![chunk]).unwrap() {
-        Value::BigInt(n) => assert_eq!(n.to_i64_wrapping(), 9_000_000_000_000),
-        other => panic!("expected BigInt, got {:?}", other),
-    }
-}
-
-#[test]
-fn ref_is_i32_distinguishes_integers_in_number_range() {
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::F64(42.0));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::REF_IS_I32, 0);
-    });
-    assert_eq!(r.as_i32(), 1);
-
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::F64(3.14));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::REF_IS_I32, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
-}
-
-#[test]
-fn ref_is_u32_rejects_negatives() {
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::I32(-1));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::REF_IS_U32, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
-
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::I32(42));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::REF_IS_U32, 0);
-    });
-    assert_eq!(r.as_i32(), 1);
-}
-
-#[test]
-fn str_from_int_and_float_produce_js_compatible_strings() {
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::I32(42));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::STR_FROM_I32, 0);
-    });
-    assert_eq!(format!("{}", r), "42");
-
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::F64(3.14));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::STR_FROM_F64, 0);
-    });
-    assert_eq!(format!("{}", r), "3.14");
-
-    // Integer-valued f64 should format without trailing `.0` (JS behaviour).
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::F64(100.0));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::STR_FROM_F64, 0);
-    });
-    assert_eq!(format!("{}", r), "100");
-
-    // NaN / Infinity round-trip.
-    let r = run_script(|c| {
-        let k = c.add_constant(Value::F64(f64::NAN));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op(Op::STR_FROM_F64, 0);
-    });
-    assert_eq!(format!("{}", r), "NaN");
-}
-
-#[test]
-fn symbol_eq_uses_identity_not_description() {
-    use std::sync::Arc;
-    // Two independent SYMBOL ops with the same description — different identities.
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::String(Arc::from("tag")));
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op(Op::SYMBOL_EQ, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_bool(), false);
-}
-
-#[test]
-fn bool_cast_extracts_bool_primitive() {
-    let r = run_script(|c| {
-        c.emit_op(Op::TRUE, 0);
-        c.emit_op(Op::BOOL_CAST, 0);
-    });
-    assert_eq!(r.as_i32(), 1);
-
-    let r = run_script(|c| {
-        c.emit_op(Op::FALSE, 0);
-        c.emit_op(Op::BOOL_CAST, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
-}
-
-#[test]
-fn ref_is_symbol_and_ref_is_bigint_discriminate_types() {
-    use std::sync::Arc;
-    // Symbol
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::String(Arc::from("x")));
-    chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op(Op::REF_IS_SYMBOL, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
-
-    // BigInt
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::I64(42));
-    chunk.emit_op_u16(Op::BIGINT, k, 0);
-    chunk.emit_op(Op::REF_IS_BIGINT, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);
-
-    // A regular i32 is not a BigInt.
-    let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, k, 0);
-    chunk.emit_op(Op::REF_IS_BIGINT, 0);
-    chunk.emit_op(Op::RETURN, 0);
-    let mut vm = VM::new();
-    assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 0);
-}
 
 // ──────────────────────────────────────────────────────────────────────
 // 25. ESM INTEGRATION — generated .wasm has a clean shape
@@ -2907,25 +2569,6 @@ fn ref_eq_matches_identical_objects() {
 }
 
 #[test]
-fn ref_eq_handles_null_and_undefined() {
-    // null == null → true
-    let r = run_script(|c| {
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::REF_EQ, 0);
-    });
-    assert_eq!(r.as_i32(), 1);
-
-    // undefined == null → false (distinct per ref.eq semantics)
-    let r = run_script(|c| {
-        c.emit_op(Op::UNDEFINED, 0);
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::REF_EQ, 0);
-    });
-    assert_eq!(r.as_i32(), 0);
-}
-
-#[test]
 fn name_section_includes_type_subsection() {
     let wasm = emit_trivial_wasm();
     let name_payload = find_custom_section(&wasm, "name").expect("name section missing");
@@ -2957,7 +2600,7 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
     let zero = fun.add_constant(Value::I32(0));
     fun.emit_op_u16(Op::CONST, zero, 0);
     fun.emit_loop_s(0);
-    fun.emit_op(Op::DUP, 0);
+    fun.emit_dup(0);
     fun.emit_br_if(0, 0); // back-edge inside loop
     fun.emit_op(Op::END, 0);
     fun.emit_op(Op::RETURN, 0);
@@ -2982,23 +2625,30 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
 /// exception-handling output (tag section + try_table + throw).
 fn emit_try_catch_wasm() -> Vec<u8> {
     let mut script = Chunk::new("<script>");
-    // try { throw 1 } catch (e) { /* swallow */ }
-    let catch_jump = script.emit_jump(Op::TRY_START, 0);
-    script.emit(0u8, 0);
-    script.emit(0u8, 0);
+    // try { throw 1 } catch (e) { /* swallow */ } via the real spec try_table.
+    // Immediate (one catch clause, as common::errors::emit_try_start emits):
+    //   [u8 clause_count=1, u8 kind=catch(0), u16 tag, u16 catch_offset].
+    script.emit_op(Op::TRY_TABLE, 0);
+    script.emit(1u8, 0); // clause_count = 1
+    script.emit(0u8, 0); // kind = catch
+    script.emit(0u8, 0); // tag hi
+    script.emit(0u8, 0); // tag lo
+    let catch_off_pos = script.current_offset();
+    script.emit(0u8, 0); // catch offset hi (placeholder)
+    script.emit(0u8, 0); // catch offset lo (placeholder)
     let one = script.add_constant(Value::I32(1));
     script.emit_op_u16(Op::CONST, one, 0);
-    // `throw <tagidx>` carries its tag index as a u16 immediate (spec form);
-    // emitting the bare opcode desynced the bytecode scan.
+    // `throw <tagidx>` carries its tag index as a u16 immediate (spec form).
     script.emit_op_u16(Op::THROW, 0, 0);
     script.emit_op(Op::TRY_END, 0);
     // skip-catch BR placeholder
     let skip = script.emit_jump(Op::BR, 0);
-    // patch TRY_START's catch_offset to land here (catch body start)
+    // patch catch_offset to land here (catch body start): the VM/codec compute
+    // catch_ip = (catch_off_pos + 2) + offset.
     let here = script.current_offset() as i32;
-    let jump = here - (catch_jump as i32 + 2) - 2;
-    script.code[catch_jump] = (jump >> 8) as u8;
-    script.code[catch_jump + 1] = (jump & 0xff) as u8;
+    let jump = here - (catch_off_pos as i32 + 2);
+    script.code[catch_off_pos] = (jump >> 8) as u8;
+    script.code[catch_off_pos + 1] = (jump & 0xff) as u8;
     // catch body: just drop the caught exception
     script.emit_op(Op::DROP, 0);
     // patch skip BR to land here (after-catch)

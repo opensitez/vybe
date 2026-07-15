@@ -14,7 +14,7 @@
 use vybe_platform_wasm::write_wasm;
 use vybe_platform_wasm::writer::builtins::{
     js_array_builtins, js_arraybuffer_builtins, js_map_builtins, js_object_builtins,
-    js_set_builtins, js_string_builtins, js_typedarray_builtins, js_weakmap_builtins,
+    js_set_builtins, js_typedarray_builtins, js_weakmap_builtins,
 };
 use vybe_bytecode::{Chunk, Op, Value};
 
@@ -543,71 +543,6 @@ fn bigint64array_get_returns_i64() {
         results,
         vec![0x7E],
         "BigInt64Array.get returns i64 (0x7E) per BigInt typed-array convention"
-    );
-}
-
-#[test]
-fn js_string_cast_and_numeric_format_opcodes_lower_to_proposal_imports() {
-    use std::sync::Arc;
-
-    assert_single_op_calls(
-        Value::String(Arc::from("x")),
-        Op::STR_CAST,
-        &[(js_string_builtins::MODULE, "cast")],
-    );
-    assert_single_op_calls(
-        Value::I32(-12),
-        Op::STR_FROM_I32,
-        &[
-            ("wasm:js-number", "toI32"),
-            (js_string_builtins::MODULE, "fromI32"),
-        ],
-    );
-    assert_single_op_calls(
-        Value::I32(-1),
-        Op::STR_FROM_U32,
-        &[
-            ("wasm:js-number", "toI32"),
-            (js_string_builtins::MODULE, "fromU32"),
-        ],
-    );
-    assert_single_op_calls(
-        Value::I32(-12),
-        Op::STR_FROM_I64,
-        &[
-            ("wasm:js-number", "toI32"),
-            (js_string_builtins::MODULE, "fromI64"),
-        ],
-    );
-    assert_single_op_calls(
-        Value::I32(-1),
-        Op::STR_FROM_U64,
-        &[
-            ("wasm:js-number", "toI32"),
-            (js_string_builtins::MODULE, "fromU64"),
-        ],
-    );
-    assert_single_op_calls(
-        Value::F64(1.25),
-        Op::STR_FROM_F64,
-        &[
-            ("wasm:js-number", "toF64"),
-            (js_string_builtins::MODULE, "fromF64"),
-        ],
-    );
-}
-
-#[test]
-fn js_number_unsigned_boxing_opcodes_lower_to_typed_number_imports() {
-    assert_single_op_calls(
-        Value::I32(-1),
-        Op::NUM_BOX_U32,
-        &[("wasm:js-number", "toI32"), ("wasm:js-number", "fromU32")],
-    );
-    assert_single_op_calls(
-        Value::I32(-1),
-        Op::NUM_UNBOX_U32,
-        &[("wasm:js-number", "toU32"), ("wasm:js-number", "fromI32")],
     );
 }
 

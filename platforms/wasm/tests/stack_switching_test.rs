@@ -28,7 +28,7 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
     chunk.emit_op(Op::I32_EQZ, 0);
     let _done_if = chunk.emit_if(0);
     chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_br(1, 0);
     chunk.emit_end(0);
 
@@ -38,14 +38,14 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
     chunk.emit_op_u16(Op::RESUME, 0, 0);
     // Completion arm: stamp done, push has_more = 0.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
-    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u16(Op::STRUCT_SET, done_key, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_br(0, 0);
     // Yield arm (VM jumps here on suspend tag 0): push has_more = 1.
     let handler_ip = chunk.code.len();
-    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_end(0);
 
     chunk.stack_switch_handlers.insert(
@@ -182,7 +182,7 @@ fn stack_switching_opcodes_emit_spec_bytes() {
     script.local_count = 2;
     script.emit_op(Op::NULL, 0);
     script.emit_op(Op::CONT_NEW, 0); // e0 <cont_typeidx>
-    script.emit_op(Op::DUP, 0);
+    script.emit_dup(0);
     script.emit_op(Op::NULL, 0);
     script.emit_op_u16(Op::RESUME, 0, 0); // e3 <cont_typeidx> <handlers>
     script.emit_op(Op::NULL, 0);
@@ -309,37 +309,6 @@ fn stack_switching_tag_section_declares_suspend_tag() {
             return;
         }
         pos += size as usize;
-    }
-    panic!("tag section (id 13) not found");
-}
-
-#[test]
-fn suspend_typed_emits_distinct_continuation_tag() {
-    let mut script = Chunk::new("<script>");
-    script.local_count = 1;
-    let tag_idx = script.add_continuation_tag("typed-yield", "i32", "i32");
-    let value = script.add_constant(Value::I32(7));
-    script.emit_op_u16(Op::CONST, value, 0);
-    script.emit_op_u16(Op::SUSPEND_TYPED, tag_idx, 0);
-    script.emit_op(Op::RETURN, 0);
-
-    let wasm = write_wasm(&vec![script]);
-    assert!(
-        find_byte_seq(&wasm, &[0xE2, 0x02]),
-        "typed suspend should reference the first typed continuation tag at tagidx 2"
-    );
-
-    let mut pos = 8;
-    while pos < wasm.len() {
-        let id = wasm[pos];
-        pos += 1;
-        let size = read_leb_u32_at(&wasm, &mut pos) as usize;
-        if id == 13 {
-            let mut tag_pos = pos;
-            assert_eq!(read_leb_u32_at(&wasm, &mut tag_pos), 3);
-            return;
-        }
-        pos += size;
     }
     panic!("tag section (id 13) not found");
 }
@@ -868,7 +837,7 @@ fn cont_bind_consumes_source_continuation() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
-    script.emit_op(Op::DUP, 0);
+    script.emit_dup(0);
     script.emit_op(Op::NULL, 0);
     script.emit_op_u8(Op::CONT_BIND, 1, 0);
     script.emit_op(Op::DROP, 0);
@@ -1046,7 +1015,7 @@ fn generator_resume_preserves_loop_label_stack() {
     gen_body.local_count = 2; // slot 0 = resume/control, slot 1 = i
     gen_body.is_generator = true;
 
-    gen_body.emit_op(Op::I32_CONST_0, 0);
+    gen_body.emit_i32_const(0, 0);
     gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     let block = gen_body.emit_block(0);

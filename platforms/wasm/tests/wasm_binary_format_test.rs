@@ -773,19 +773,19 @@ fn core_reference_opcodes_have_spec_byte_values() {
 #[test]
 fn memory64_internal_ops_emit_standard_memory_bytes() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::I64_MEMORY_SIZE, 0);
+    chunk.emit_op(Op::MEMORY_SIZE, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::I32_LOAD_64, 0);
+    chunk.emit_op(Op::I32_LOAD, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::I64_LOAD_64, 0);
+    chunk.emit_op(Op::I64_LOAD, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::F64_LOAD_64, 0);
+    chunk.emit_op(Op::F64_LOAD, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::I32_STORE_64, 0);
-    chunk.emit_op(Op::I64_STORE_64, 0);
-    chunk.emit_op(Op::F64_STORE_64, 0);
+    chunk.emit_op(Op::I32_STORE, 0);
+    chunk.emit_op(Op::I64_STORE, 0);
+    chunk.emit_op(Op::F64_STORE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);
@@ -809,7 +809,12 @@ fn memory64_internal_ops_emit_standard_memory_bytes() {
 #[test]
 fn memory64_ops_emit_i64_memory_limits_flag() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::I64_MEMORY_SIZE, 0);
+    // A 64-bit memory is declared via its index type (memory_is_64) — memory64
+    // adds no opcodes, so the writer keys the 0x04 limits flag off this, not
+    // off any instruction.
+    chunk.memory_min_pages = vec![1];
+    chunk.memory_is_64 = vec![true];
+    chunk.emit_op(Op::MEMORY_SIZE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);

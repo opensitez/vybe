@@ -771,152 +771,6 @@ fn wasm_writer_magic() {
 // JS String Builtins
 // ============================================================
 
-#[test]
-fn str_length_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op(Op::STR_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::I32(5) => {}
-        _ => panic!("Expected I32(5), got {:?}", result),
-    }
-}
-
-#[test]
-fn str_to_upper_lower() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("Hello")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op(Op::STR_TO_UPPER, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match &result {
-        Value::String(s) if s.as_ref() == "HELLO" => {}
-        _ => panic!("Expected HELLO, got {:?}", result),
-    }
-}
-
-#[test]
-fn str_char_code_and_from() {
-    let mut chunk = Chunk::new("test");
-    // chr(65) → "A"
-    let c65 = chunk.add_constant(Value::I32(65));
-    chunk.emit_op_u16(Op::CONST, c65, 0);
-    chunk.emit_op(Op::STR_FROM_CHAR_CODE, 0);
-    // "A" → char_code_at(0) → 65
-    chunk.emit_op(Op::I32_CONST_0, 0);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::I32(65) => {}
-        _ => panic!("Expected I32(65), got {:?}", result),
-    }
-}
-
-#[test]
-fn str_index_of_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
-    let cn = chunk.add_constant(Value::String(Arc::from("world")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::CONST, cn, 0);
-    chunk.emit_op(Op::STR_INDEX_OF, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::I32(6) => {}
-        _ => panic!("Expected I32(6), got {:?}", result),
-    }
-}
-
-#[test]
-fn str_substring_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
-    let c0 = chunk.add_constant(Value::I32(0));
-    let c5 = chunk.add_constant(Value::I32(5));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, c5, 0);
-    chunk.emit_op(Op::STR_SUBSTRING, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match &result {
-        Value::String(s) if s.as_ref() == "hello" => {}
-        _ => panic!("Expected hello, got {:?}", result),
-    }
-}
-
-#[test]
-fn str_replace_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
-    let co = chunk.add_constant(Value::String(Arc::from("world")));
-    let cn = chunk.add_constant(Value::String(Arc::from("rust")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::CONST, co, 0);
-    chunk.emit_op_u16(Op::CONST, cn, 0);
-    chunk.emit_op(Op::STR_REPLACE, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match &result {
-        Value::String(s) if s.as_ref() == "hello rust" => {}
-        _ => panic!("Expected 'hello rust', got {:?}", result),
-    }
-}
-
-#[test]
-fn str_split_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("a,b,c")));
-    let cd = chunk.add_constant(Value::String(Arc::from(",")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::CONST, cd, 0);
-    chunk.emit_op(Op::STR_SPLIT, 0);
-    chunk.emit_op(Op::ARRAY_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::I32(3) => {}
-        _ => panic!("Expected I32(3), got {:?}", result),
-    }
-}
-
-#[test]
-fn str_trim_op() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("  hello  ")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op(Op::STR_TRIM, 0);
-    chunk.emit_op(Op::STR_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::I32(5) => {}
-        _ => panic!("Expected I32(5), got {:?}", result),
-    }
-}
-
-#[test]
-fn str_starts_ends_contains() {
-    let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
-    let cp = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::CONST, cp, 0);
-    chunk.emit_op(Op::STR_STARTS_WITH, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result {
-        Value::Bool(true) => {}
-        _ => panic!("Expected Bool(true), got {:?}", result),
-    }
-}
-
 // ============================================================
 // Array Builtins
 // ============================================================
@@ -1137,13 +991,12 @@ fn ref_cast_success() {
     let ct = chunk.add_constant(Value::String(Arc::from("string")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::REF_CAST, ct, 0);
-    // Should not trap — value stays on stack
-    chunk.emit_op(Op::STR_LENGTH, 0);
+    // Should not trap — the cast value stays on the stack unchanged.
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
-        Value::I32(5) => {}
-        _ => panic!("Expected I32(5), got {:?}", result),
+        Value::String(s) if s.as_ref() == "hello" => {}
+        _ => panic!("Expected String(\"hello\"), got {:?}", result),
     }
 }
 
@@ -1252,18 +1105,18 @@ fn memory64_grow_and_load() {
     // Grow with i64
     let c1 = chunk.add_constant(Value::I64(1));
     chunk.emit_op_u16(Op::CONST, c1, 0);
-    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 42 at i64 addr 0
     let c0 = chunk.add_constant(Value::I64(0));
     let c42 = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, c0, 0);
     chunk.emit_op_u16(Op::CONST, c42, 0);
-    chunk.emit_op(Op::I32_STORE_64, 0);
+    chunk.emit_op(Op::I32_STORE, 0);
     emit_memarg64(&mut chunk, 2, 0, 0);
     // Load back
     chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op(Op::I32_LOAD_64, 0);
+    chunk.emit_op(Op::I32_LOAD, 0);
     emit_memarg64(&mut chunk, 2, 0, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
@@ -1281,17 +1134,17 @@ fn memory64_load_store_apply_memarg_offset() {
     let value = chunk.add_constant(Value::I32(99));
 
     chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_op_u16(Op::CONST, base, 0);
     chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op(Op::I32_STORE_64, 0);
+    chunk.emit_op(Op::I32_STORE, 0);
     chunk.emit_leb_u32(2, 0); // align
     emit_leb_u64(&mut chunk, 8); // offset: effective address is 12
 
     chunk.emit_op_u16(Op::CONST, base, 0);
-    chunk.emit_op(Op::I32_LOAD_64, 0);
+    chunk.emit_op(Op::I32_LOAD, 0);
     chunk.emit_leb_u32(2, 0);
     emit_leb_u64(&mut chunk, 8);
     chunk.emit_op(Op::HALT, 0);

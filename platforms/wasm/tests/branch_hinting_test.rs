@@ -128,7 +128,7 @@ fn loop_chunk(name: &str) -> Chunk {
     let zero = f.add_constant(Value::I32(0));
     f.emit_op_u16(Op::CONST, zero, 0);
     f.emit_loop_s(0);
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0); // back-edge → likely
     f.emit_op(Op::END, 0);
     f.emit_op(Op::RETURN, 0);
@@ -276,9 +276,9 @@ fn branch_hint_offsets_within_function_are_strictly_increasing() {
     let zero = f.add_constant(Value::I32(0));
     f.emit_op_u16(Op::CONST, zero, 0);
     f.emit_loop_s(0);
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0); // first back-edge
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0); // second back-edge
     f.emit_op(Op::END, 0);
     f.emit_op(Op::RETURN, 0);
@@ -366,10 +366,10 @@ fn branch_hint_nested_loops_both_get_hints() {
     f.emit_op_u16(Op::CONST, zero, 0);
     f.emit_loop_s(0); // outer loop
     f.emit_loop_s(0); // inner loop
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0); // inner back-edge
     f.emit_op(Op::END, 0); // end inner
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0); // outer back-edge
     f.emit_op(Op::END, 0); // end outer
     f.emit_op(Op::RETURN, 0);
@@ -397,7 +397,7 @@ fn branch_hint_br_if_in_loop_gets_likely() {
     let zero = f.add_constant(Value::I32(0));
     f.emit_op_u16(Op::CONST, zero, 0);
     f.emit_loop_s(0);
-    f.emit_op(Op::DUP, 0);
+    f.emit_dup(0);
     f.emit_br_if(0, 0);
     f.emit_op(Op::END, 0);
     f.emit_op(Op::RETURN, 0);

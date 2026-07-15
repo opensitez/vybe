@@ -311,7 +311,7 @@ fn standard_table64_size_must_not_decode_as_table32_i32_semantics() {
         0xFC, 0x10, 0x00, // table.size 0
     ]);
 
-    assert!(decoded_body_contains(&bytes, Op::TABLE_SIZE_64));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_SIZE));
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn standard_table64_grow_must_not_decode_as_table32_i32_semantics() {
         0xFC, 0x0F, 0x00, // table.grow 0
     ]);
 
-    assert!(decoded_body_contains(&bytes, Op::TABLE_GROW_64));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_GROW));
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn standard_table64_fill_must_not_decode_as_table32_i32_semantics() {
         0x42, 0x00, // i64.const 0, result sentinel
     ]);
 
-    assert!(decoded_body_contains(&bytes, Op::TABLE_FILL_64));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_FILL));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn standard_table64_copy_must_not_decode_as_table32_i32_semantics() {
         0x42, 0x00, // i64.const 0, result sentinel
     ]);
 
-    assert!(decoded_body_contains(&bytes, Op::TABLE_COPY_64));
+    assert!(decoded_body_contains(&bytes, Op::TABLE_COPY));
 }
 
 #[test]
@@ -362,7 +362,7 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0xD1, // ref.is_null
                 0xAC, // i64.extend_i32_s
             ],
-            Op::TABLE_GET_64,
+            Op::TABLE_GET,
         ),
         (
             "table.set",
@@ -372,7 +372,7 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0x26, 0x00, // table.set 0
                 0x42, 0x00, // i64.const 0
             ],
-            Op::TABLE_SET_64,
+            Op::TABLE_SET,
         ),
         (
             "table.init",
@@ -383,7 +383,7 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
                 0xFC, 0x0C, 0x00, 0x00, // table.init elemidx=0 tableidx=0
                 0x42, 0x00, // i64.const 0
             ],
-            Op::TABLE_INIT_64,
+            Op::TABLE_INIT,
         ),
     ];
 
@@ -399,49 +399,49 @@ fn standard_table64_get_set_init_must_not_decode_as_table32_i32_semantics() {
 #[test]
 fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() {
     let load_cases: &[(&str, u8, &[u8], Op)] = &[
-        ("i32.load", 0x28, &[0x42, 0x00], Op::I32_LOAD_64),
-        ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Op::I64_LOAD_64),
+        ("i32.load", 0x28, &[0x42, 0x00], Op::I32_LOAD),
+        ("i64.load", 0x29, &[0x42, 0x00, 0xA7], Op::I64_LOAD),
         (
             "f32.load",
             0x2A,
             &[0x42, 0x00, 0x1A, 0x41, 0x00],
-            Op::F32_LOAD_64,
+            Op::F32_LOAD,
         ),
         (
             "f64.load",
             0x2B,
             &[0x42, 0x00, 0x1A, 0x41, 0x00],
-            Op::F64_LOAD_64,
+            Op::F64_LOAD,
         ),
-        ("i32.load8_s", 0x2C, &[0x42, 0x00], Op::I32_LOAD8_S_64),
-        ("i32.load8_u", 0x2D, &[0x42, 0x00], Op::I32_LOAD8_U_64),
-        ("i32.load16_s", 0x2E, &[0x42, 0x00], Op::I32_LOAD16_S_64),
-        ("i32.load16_u", 0x2F, &[0x42, 0x00], Op::I32_LOAD16_U_64),
-        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_S_64),
-        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_U_64),
+        ("i32.load8_s", 0x2C, &[0x42, 0x00], Op::I32_LOAD8_S),
+        ("i32.load8_u", 0x2D, &[0x42, 0x00], Op::I32_LOAD8_U),
+        ("i32.load16_s", 0x2E, &[0x42, 0x00], Op::I32_LOAD16_S),
+        ("i32.load16_u", 0x2F, &[0x42, 0x00], Op::I32_LOAD16_U),
+        ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_S),
+        ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_U),
         (
             "i64.load16_s",
             0x32,
             &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD16_S_64,
+            Op::I64_LOAD16_S,
         ),
         (
             "i64.load16_u",
             0x33,
             &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD16_U_64,
+            Op::I64_LOAD16_U,
         ),
         (
             "i64.load32_s",
             0x34,
             &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD32_S_64,
+            Op::I64_LOAD32_S,
         ),
         (
             "i64.load32_u",
             0x35,
             &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD32_U_64,
+            Op::I64_LOAD32_U,
         ),
     ];
 
@@ -461,19 +461,19 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
             "i32.store",
             0x36,
             &[0x42, 0x00, 0x41, 0x01],
-            Op::I32_STORE_64,
+            Op::I32_STORE,
         ),
         (
             "i64.store",
             0x37,
             &[0x42, 0x00, 0x42, 0x01],
-            Op::I64_STORE_64,
+            Op::I64_STORE,
         ),
         (
             "f32.store",
             0x38,
             &[0x42, 0x00, 0x43, 0x00, 0x00, 0x80, 0x3F],
-            Op::F32_STORE_64,
+            Op::F32_STORE,
         ),
         (
             "f64.store",
@@ -481,37 +481,37 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
             &[
                 0x42, 0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
             ],
-            Op::F64_STORE_64,
+            Op::F64_STORE,
         ),
         (
             "i32.store8",
             0x3A,
             &[0x42, 0x00, 0x41, 0x01],
-            Op::I32_STORE8_64,
+            Op::I32_STORE8,
         ),
         (
             "i32.store16",
             0x3B,
             &[0x42, 0x00, 0x41, 0x01],
-            Op::I32_STORE16_64,
+            Op::I32_STORE16,
         ),
         (
             "i64.store8",
             0x3C,
             &[0x42, 0x00, 0x42, 0x01],
-            Op::I64_STORE8_64,
+            Op::I64_STORE8,
         ),
         (
             "i64.store16",
             0x3D,
             &[0x42, 0x00, 0x42, 0x01],
-            Op::I64_STORE16_64,
+            Op::I64_STORE16,
         ),
         (
             "i64.store32",
             0x3E,
             &[0x42, 0x00, 0x42, 0x01],
-            Op::I64_STORE32_64,
+            Op::I64_STORE32,
         ),
     ];
 
@@ -536,14 +536,14 @@ fn standard_memory64_bulk_simd_and_atomic_memory_ops_must_not_decode_as_i32_memo
             &[
                 0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00, 0x41, 0x00,
             ],
-            Op::I64_MEMORY_COPY,
+            Op::MEMORY_COPY,
         ),
         (
             "memory.fill",
             &[
                 0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0B, 0x00, 0x41, 0x00,
             ],
-            Op::I64_MEMORY_FILL,
+            Op::MEMORY_FILL,
         ),
         (
             "v128.load",
@@ -715,171 +715,6 @@ fn decoded_standard_table64_init_uses_i64_indices() {
 }
 
 #[test]
-fn memory_init_creates_new_memory() {
-    let mut vm = VM::new();
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    // memory.new: create a new VM-internal memory with 1 page
-    let pages = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    // Returns the memory index
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    let mem_idx = result.as_i32();
-    assert!(
-        mem_idx >= 1,
-        "new memory index should be >= 1, got {}",
-        mem_idx
-    );
-}
-
-#[test]
-fn spec_memarg_i32_store_and_load_use_memory_index() {
-    let mut vm = VM::new();
-    vm.memory.resize(65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let pages = chunk.add_constant(Value::I32(1));
-    let zero = chunk.add_constant(Value::I32(0));
-    let value = chunk.add_constant(Value::I32(0x1234_5678));
-
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op(Op::I32_STORE, 0);
-    emit_memarg(&mut chunk, 2, 0, 1);
-
-    chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op(Op::I32_LOAD, 0);
-    emit_memarg(&mut chunk, 2, 0, 1);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 0x1234_5678);
-    assert_eq!(
-        vm.memory.load_i32(0).unwrap(),
-        0,
-        "indexed store must not write memory 0"
-    );
-}
-
-#[test]
-fn spec_memory_size_and_grow_use_memory_index_immediate() {
-    let mut vm = VM::new();
-    vm.memory.resize(3 * 65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let one_page = chunk.add_constant(Value::I32(1));
-    let two_pages = chunk.add_constant(Value::I32(2));
-
-    chunk.emit_op_u16(Op::CONST, one_page, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    chunk.emit_op_u16(Op::CONST, two_pages, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_op(Op::DROP, 0);
-
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 3);
-    assert_eq!(
-        vm.memory.len(),
-        3 * 65536,
-        "memory.grow memidx=1 must not grow memory 0"
-    );
-}
-
-#[test]
-fn spec_memory_fill_and_copy_use_memory_indices() {
-    let mut vm = VM::new();
-    vm.memory.resize(65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let pages = chunk.add_constant(Value::I32(1));
-    let zero = chunk.add_constant(Value::I32(0));
-    let four = chunk.add_constant(Value::I32(4));
-    let fill = chunk.add_constant(Value::I32(0x7F));
-    let dest = chunk.add_constant(Value::I32(16));
-
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op_u16(Op::CONST, fill, 0);
-    chunk.emit_op_u16(Op::CONST, four, 0);
-    chunk.emit_op(Op::MEMORY_FILL, 0);
-    chunk.emit_leb_u32(1, 0);
-
-    chunk.emit_op_u16(Op::CONST, dest, 0);
-    chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op_u16(Op::CONST, four, 0);
-    chunk.emit_op(Op::MEMORY_COPY, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_leb_u32(1, 0);
-
-    chunk.emit_op_u16(Op::CONST, dest, 0);
-    chunk.emit_op(Op::I32_LOAD8_U, 0);
-    emit_memarg(&mut chunk, 0, 0, 1);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 0x7F);
-}
-
-#[test]
-fn spec_memory64_memarg_uses_memory_index() {
-    let mut vm = VM::new();
-    vm.memory.resize(65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let pages = chunk.add_constant(Value::I32(1));
-    let zero64 = chunk.add_constant(Value::I64(0));
-    let value = chunk.add_constant(Value::I32(0x55AA));
-
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    chunk.emit_op_u16(Op::CONST, zero64, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op(Op::I32_STORE_64, 0);
-    emit_memarg64(&mut chunk, 2, 0, 1);
-
-    chunk.emit_op_u16(Op::CONST, zero64, 0);
-    chunk.emit_op(Op::I32_LOAD_64, 0);
-    emit_memarg64(&mut chunk, 2, 0, 1);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 0x55AA);
-    assert_eq!(
-        vm.memory.load_i32(0).unwrap(),
-        0,
-        "memory64 memidx=1 store must not write memory 0"
-    );
-}
-
-#[test]
 fn spec_memory64_all_scalar_widths_execute_with_i64_addresses() {
     fn run_pair(store_op: Op, load_op: Op, value: Value, expected: Value, align: u32) {
         let mut vm = VM::new();
@@ -907,180 +742,102 @@ fn spec_memory64_all_scalar_widths_execute_with_i64_addresses() {
     }
 
     run_pair(
-        Op::I32_STORE_64,
-        Op::I32_LOAD_64,
+        Op::I32_STORE,
+        Op::I32_LOAD,
         Value::I32(0x12345678),
         Value::I32(0x12345678),
         2,
     );
     run_pair(
-        Op::I64_STORE_64,
-        Op::I64_LOAD_64,
+        Op::I64_STORE,
+        Op::I64_LOAD,
         Value::I64(0x1122334455667788),
         Value::I64(0x1122334455667788),
         3,
     );
     run_pair(
-        Op::F32_STORE_64,
-        Op::F32_LOAD_64,
+        Op::F32_STORE,
+        Op::F32_LOAD,
         Value::F64(1.5),
         Value::F64(1.5),
         2,
     );
     run_pair(
-        Op::F64_STORE_64,
-        Op::F64_LOAD_64,
+        Op::F64_STORE,
+        Op::F64_LOAD,
         Value::F64(2.25),
         Value::F64(2.25),
         3,
     );
     run_pair(
-        Op::I32_STORE8_64,
-        Op::I32_LOAD8_S_64,
+        Op::I32_STORE8,
+        Op::I32_LOAD8_S,
         Value::I32(0xFE),
         Value::I32(-2),
         0,
     );
     run_pair(
-        Op::I32_STORE8_64,
-        Op::I32_LOAD8_U_64,
+        Op::I32_STORE8,
+        Op::I32_LOAD8_U,
         Value::I32(0xFE),
         Value::I32(0xFE),
         0,
     );
     run_pair(
-        Op::I32_STORE16_64,
-        Op::I32_LOAD16_S_64,
+        Op::I32_STORE16,
+        Op::I32_LOAD16_S,
         Value::I32(0xFFFE),
         Value::I32(-2),
         1,
     );
     run_pair(
-        Op::I32_STORE16_64,
-        Op::I32_LOAD16_U_64,
+        Op::I32_STORE16,
+        Op::I32_LOAD16_U,
         Value::I32(0xFFFE),
         Value::I32(0xFFFE),
         1,
     );
     run_pair(
-        Op::I64_STORE8_64,
-        Op::I64_LOAD8_S_64,
+        Op::I64_STORE8,
+        Op::I64_LOAD8_S,
         Value::I64(0xFE),
         Value::I64(-2),
         0,
     );
     run_pair(
-        Op::I64_STORE8_64,
-        Op::I64_LOAD8_U_64,
+        Op::I64_STORE8,
+        Op::I64_LOAD8_U,
         Value::I64(0xFE),
         Value::I64(0xFE),
         0,
     );
     run_pair(
-        Op::I64_STORE16_64,
-        Op::I64_LOAD16_S_64,
+        Op::I64_STORE16,
+        Op::I64_LOAD16_S,
         Value::I64(0xFFFE),
         Value::I64(-2),
         1,
     );
     run_pair(
-        Op::I64_STORE16_64,
-        Op::I64_LOAD16_U_64,
+        Op::I64_STORE16,
+        Op::I64_LOAD16_U,
         Value::I64(0xFFFE),
         Value::I64(0xFFFE),
         1,
     );
     run_pair(
-        Op::I64_STORE32_64,
-        Op::I64_LOAD32_S_64,
+        Op::I64_STORE32,
+        Op::I64_LOAD32_S,
         Value::I64(0xFFFF_FFFE),
         Value::I64(-2),
         2,
     );
     run_pair(
-        Op::I64_STORE32_64,
-        Op::I64_LOAD32_U_64,
+        Op::I64_STORE32,
+        Op::I64_LOAD32_U,
         Value::I64(0xFFFF_FFFE),
         Value::I64(0xFFFF_FFFE),
         2,
-    );
-}
-
-#[test]
-fn spec_memory64_size_and_grow_use_memory_index() {
-    let mut vm = VM::new();
-    vm.memory.resize(2 * 65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    let one_page = chunk.add_constant(Value::I32(1));
-    let two_pages64 = chunk.add_constant(Value::I64(2));
-
-    chunk.emit_op_u16(Op::CONST, one_page, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-
-    chunk.emit_op_u16(Op::CONST, two_pages64, 0);
-    chunk.emit_op(Op::I64_MEMORY_GROW, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_op(Op::DROP, 0);
-
-    chunk.emit_op(Op::I64_MEMORY_SIZE, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i64(), 3);
-    assert_eq!(
-        vm.memory.len(),
-        2 * 65536,
-        "memory64.grow memidx=1 must not grow memory 0"
-    );
-}
-
-#[test]
-fn spec_memory64_fill_and_copy_use_i64_addresses_and_memory_indices() {
-    let mut vm = VM::new();
-    vm.memory.resize(65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 1;
-
-    let pages = chunk.add_constant(Value::I32(1));
-    let zero64 = chunk.add_constant(Value::I64(0));
-    let dst64 = chunk.add_constant(Value::I64(8));
-    let count4 = chunk.add_constant(Value::I64(4));
-    let byte = chunk.add_constant(Value::I32(0x6D));
-
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-
-    chunk.emit_op_u16(Op::CONST, zero64, 0);
-    chunk.emit_op_u16(Op::CONST, byte, 0);
-    chunk.emit_op_u16(Op::CONST, count4, 0);
-    chunk.emit_op(Op::I64_MEMORY_FILL, 0);
-    chunk.emit_leb_u32(1, 0);
-
-    chunk.emit_op_u16(Op::CONST, dst64, 0);
-    chunk.emit_op_u16(Op::CONST, zero64, 0);
-    chunk.emit_op_u16(Op::CONST, count4, 0);
-    chunk.emit_op(Op::I64_MEMORY_COPY, 0);
-    chunk.emit_leb_u32(1, 0);
-    chunk.emit_leb_u32(1, 0);
-
-    chunk.emit_op_u16(Op::CONST, dst64, 0);
-    chunk.emit_op(Op::I32_LOAD8_U, 0);
-    emit_memarg(&mut chunk, 0, 0, 1);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 0x6D);
-    assert_eq!(
-        vm.memory.load_u8(0).unwrap(),
-        0,
-        "memory64 bulk op memidx=1 must not write memory 0"
     );
 }
 
@@ -1093,7 +850,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     grow.emit_op(Op::NULL, 0);
     let delta = grow.add_constant(Value::I64(2));
     grow.emit_op_u16(Op::CONST, delta, 0);
-    grow.emit_op_u8(Op::TABLE_GROW_64, 0, 0);
+    grow.emit_op_u8(Op::TABLE_GROW, 0, 0);
     grow.emit_op(Op::HALT, 0);
     let result = vm.run(vec![grow]).unwrap();
     assert_eq!(result.as_i64(), 3);
@@ -1109,20 +866,20 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
 
     chunk.emit_op_u16(Op::CONST, idx1, 0);
     chunk.emit_op_u16(Op::CONST, seven, 0);
-    chunk.emit_op_u8(Op::TABLE_SET_64, 0, 0);
+    chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
 
     chunk.emit_op_u16(Op::CONST, idx2, 0);
     chunk.emit_op_u16(Op::CONST, nine, 0);
     chunk.emit_op_u16(Op::CONST, count2, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL_64, 0, 0);
+    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
 
     chunk.emit_op_u16(Op::CONST, idx3, 0);
     chunk.emit_op_u16(Op::CONST, idx1, 0);
     chunk.emit_op_u16(Op::CONST, count2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY_64, 0, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
 
     chunk.emit_op_u16(Op::CONST, idx3, 0);
-    chunk.emit_op_u8(Op::TABLE_GET_64, 0, 0);
+    chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -1152,7 +909,7 @@ fn spec_table64_init_copies_element_segment_with_i64_indices() {
     chunk.emit_op_u16(Op::CONST, dst, 0);
     chunk.emit_op_u16(Op::CONST, src, 0);
     chunk.emit_op_u16(Op::CONST, count, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_INIT_64, 0, 0, 0);
+    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).expect("table64.init should copy");
@@ -1299,83 +1056,6 @@ fn memory_select_switches_active() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 42);
-}
-
-#[test]
-fn multiple_memories_independent() {
-    let mut vm = VM::new();
-    // Default memory (index 0)
-    vm.memory.resize(65536, 0);
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 3;
-
-    // Create a second memory (index 1)
-    let pages = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // store mem idx
-
-    // Store 42 in default memory at addr 0
-    let addr = chunk.add_constant(Value::I32(0));
-    let val42 = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
-    chunk.emit_op_u16(Op::CONST, val42, 0);
-    chunk.emit_op(Op::I32_STORE, 0);
-
-    // Read back from default memory — should be 42
-    let addr2 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, addr2, 0);
-    chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(result.as_i32(), 42);
-}
-
-#[test]
-fn memory_copy_cross_between_memories() {
-    let mut vm = VM::new();
-    // Default memory with data
-    vm.memory.resize(65536, 0);
-    vm.memory.store_i32(0, 99).unwrap();
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
-
-    // Create second memory
-    let pages = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, pages, 0);
-    chunk.emit_op(Op::MEMORY_NEW, 0);
-    chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // mem_idx = 1
-
-    // Copy 4 bytes from memory 0 addr 0 → memory 1 addr 0
-    let zero = chunk.add_constant(Value::I32(0));
-    let four = chunk.add_constant(Value::I32(4));
-    let mem0 = chunk.add_constant(Value::I32(0));
-    let mem1 = chunk.add_constant(Value::I32(1));
-
-    // Stack order: dst_mem, dst_addr, src_mem, src_addr, len
-    chunk.emit_op_u16(Op::CONST, mem1, 0); // dst_mem = 1
-    chunk.emit_op_u16(Op::CONST, zero, 0); // dst_addr = 0
-    chunk.emit_op_u16(Op::CONST, mem0, 0); // src_mem = 0
-    chunk.emit_op_u16(Op::CONST, zero, 0); // src_addr = 0
-    chunk.emit_op_u16(Op::CONST, four, 0); // len = 4
-    chunk.emit_op(Op::MEMORY_COPY_CROSS, 0);
-
-    // Switch to memory 1 and read
-    chunk.emit_op(Op::MEMORY_SELECT, 0);
-    chunk.emit(1, 0); // memory index 1
-    chunk.emit_op_u16(Op::CONST, zero, 0);
-    chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
-
-    let result = vm.run(vec![chunk]).unwrap();
-    assert_eq!(
-        result.as_i32(),
-        99,
-        "data should have been copied to memory 1"
-    );
 }
 
 #[test]
