@@ -52,6 +52,17 @@ thread_local! {
     // Monotonic counter for synthetic result temporaries of value-producing
     // structured control (block/if with a `(result …)` type).
     static WAST_TEMP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    // Exception tag name (without `$`) → payload arity, from `(tag $e (param …))`.
+    // A `catch $e` needs the arity to bind the right number of payload values.
+    static TAG_ARITIES: RefCell<HashMap<String, u8>> = RefCell::new(HashMap::new());
+    // Stack of the currently-open catch handlers' captured `exnref` locals, so a
+    // `rethrow` inside a catch body resolves to the exception it caught.
+    static ACTIVE_CATCH_EXNREFS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+/// Payload arity of exception tag `name` (0 if undeclared).
+fn tag_arity(name: &str) -> u8 {
+    TAG_ARITIES.with(|t| t.borrow().get(name).copied().unwrap_or(0))
 }
 
 /// A fresh unique identifier for a structured-control result temporary.
@@ -460,6 +471,24 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     }
     STRUCT_FIELD_COUNTS.with(|f| *f.borrow_mut() = struct_counts);
 
+    // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
+    //     the tag's payload arity regardless of source order. Reset first —
+    //     the thread-local persists across modules compiled on this thread.
+    let mut tag_arities: HashMap<String, u8> = HashMap::new();
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::tag_field {
+                    let (name, arity) = scan_tag_signature(inner);
+                    if let Some(name) = name {
+                        tag_arities.insert(name, arity);
+                    }
+                }
+            }
+        }
+    }
+    TAG_ARITIES.with(|t| *t.borrow_mut() = tag_arities);
+
     // 4. Detect the WASI command entry. A module that exports a function as
     //    "_start" is a command module — instantiation runs `_start` with no
     //    driver. Explicit `(start $f)` fields are handled separately below; if
@@ -553,7 +582,11 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     Rule::memory_field => pre_stmts.push(walk_memory_field(inner)?),
                     Rule::data_field => pre_stmts.push(walk_data_field(inner)?),
                     Rule::table_field => pre_stmts.push(walk_table_field(inner)?),
-                    _ => {} // elem, tag, type — structural metadata
+                    // Exception tags: declared before the class so the tag
+                    // entity exists in the script chunk; `throw`/`catch` in the
+                    // function chunks re-import by name and coalesce to it.
+                    Rule::tag_field => pre_stmts.push(walk_tag_field(inner)?),
+                    _ => {} // elem, type — structural metadata
                 }
             }
             _ => {}
@@ -1682,6 +1715,46 @@ fn walk_memory_field(pair: Pair<Rule>) -> Result<Statement, String> {
     ))
 }
 
+/// Extract `(tag $e (param t*))`'s name (without `$`) and payload arity.
+fn scan_tag_signature(pair: Pair<Rule>) -> (Option<String>, u8) {
+    let mut name: Option<String> = None;
+    let mut arity: u8 = 0;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::id => name = Some(child.as_str()[1..].to_string()),
+            Rule::tag_type => {
+                // tag_type = ("func" param*) | param* — count val types across params.
+                arity = child
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::param)
+                    .map(|p| {
+                        p.into_inner()
+                            .filter(|v| v.as_rule() == Rule::any_val_type)
+                            .count()
+                    })
+                    .sum::<usize>() as u8;
+            }
+            _ => {}
+        }
+    }
+    (name, arity)
+}
+
+/// `(tag $e (param t*))` — an exception-tag declaration. Emits a `WasmTagDecl`
+/// the compiler imports as a load-time tag entity. Arities are recorded in the
+/// module pre-scan (so `catch $e` sees them regardless of source order).
+fn walk_tag_field(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let (name, arity) = scan_tag_signature(pair);
+    Ok(Statement::with_span(
+        StmtKind::WasmTagDecl {
+            name: name.unwrap_or_default(),
+            arity,
+        },
+        span,
+    ))
+}
+
 fn walk_table_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut min_size: u64 = 0;
@@ -2217,8 +2290,11 @@ fn find_matching_end(
     while j < pairs.len() {
         if let Some(kw) = peek_plain_name(&pairs[j]) {
             match kw.as_str() {
-                "block" | "loop" | "if" => depth += 1,
+                "block" | "loop" | "if" | "try" => depth += 1,
                 "else" if depth == 1 => else_idx = Some(j),
+                // A legacy `delegate N` closes its `try` with no `end`; count it
+                // as a closer so a delegate-try nested here doesn't unbalance us.
+                "delegate" => depth -= 1,
                 "end" => {
                     depth -= 1;
                     if depth == 0 {
@@ -2231,6 +2307,66 @@ fn find_matching_end(
         j += 1;
     }
     Err("unterminated block/loop/if (missing end)".to_string())
+}
+
+/// How an unfolded `try` block terminates: a structural `end`, or a legacy
+/// `delegate N` (which reraises to an enclosing try and has no `end`).
+enum TryTerminator {
+    End(usize),
+    Delegate(usize),
+}
+
+/// Scan an unfolded `try … (catch $e … | catch_all …)* (end | delegate N)`,
+/// returning its top-level catch clauses (`(tag, keyword_index)`, `tag == None`
+/// for `catch_all`) and the terminator index. Nesting is tracked with an
+/// opener stack so a nested `try … delegate` (which has no `end`) closes its
+/// own level correctly.
+fn scan_try(
+    pairs: &[Pair<Rule>],
+    opener: usize,
+) -> Result<(Vec<(Option<String>, usize)>, TryTerminator), String> {
+    // true = the open level is a `try`; false = block/loop/if.
+    let mut stack: Vec<bool> = vec![true];
+    let mut clauses: Vec<(Option<String>, usize)> = Vec::new();
+    let mut j = opener + 1;
+    while j < pairs.len() {
+        if let Some(kw) = peek_plain_name(&pairs[j]) {
+            match kw.as_str() {
+                "block" | "loop" | "if" => stack.push(false),
+                "try" => stack.push(true),
+                "catch" if stack.len() == 1 => {
+                    clauses.push((peek_plain_label(&pairs[j]), j));
+                }
+                "catch_all" if stack.len() == 1 => clauses.push((None, j)),
+                "delegate" => {
+                    if *stack.last().unwrap_or(&false) {
+                        stack.pop();
+                        if stack.is_empty() {
+                            return Ok((clauses, TryTerminator::Delegate(j)));
+                        }
+                    }
+                }
+                "end" => {
+                    stack.pop();
+                    if stack.is_empty() {
+                        return Ok((clauses, TryTerminator::End(j)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        j += 1;
+    }
+    Err("unterminated try (missing end/delegate)".to_string())
+}
+
+/// Does this flat pair slice contain a top-level `rethrow`? A catch whose body
+/// rethrows must capture the exception's `exnref` (catch_ref), so the reraise
+/// lowers to `throw_ref`.
+fn pairs_contain_rethrow(pairs: &[Pair<Rule>]) -> bool {
+    pairs
+        .iter()
+        .any(|p| peek_plain_name(p).as_deref() == Some("rethrow"))
 }
 
 fn fold_instructions(
@@ -2403,6 +2539,152 @@ fn fold_instructions_seeded(
                         }
                     }
                     i = end_idx + 1;
+                    continue;
+                }
+                // ── Unfolded exception handling: try … catch … end ──────────
+                "try" => {
+                    let span = to_span(&pairs[i]);
+                    let produces_value = peek_has_block_type(&pairs[i]);
+                    let (clauses, terminator) = scan_try(&pairs, i)?;
+                    let end_idx = match &terminator {
+                        TryTerminator::End(e) => *e,
+                        TryTerminator::Delegate(d) => *d,
+                    };
+
+                    // Sequence any pending side effects before the try.
+                    for e in stack.drain(..) {
+                        statements.push(Statement::new(StmtKind::Expr(e)));
+                    }
+
+                    // A `try (result T)` yields a value: capture the body's and
+                    // each handler's trailing value in a shared temp, left on the
+                    // stack afterwards (mirrors the block/loop lowering).
+                    let result_temp = if produces_value {
+                        Some(fresh_result_temp())
+                    } else {
+                        None
+                    };
+                    if let Some(tmp) = &result_temp {
+                        statements.push(Statement::new(StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(tmp.clone()),
+                                type_hint: None,
+                                init: Some(Expression::null()),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::Let,
+                        }));
+                    }
+
+                    // Body: opener+1 .. first clause (or the terminator).
+                    let body_end = clauses.first().map(|(_, idx)| *idx).unwrap_or(end_idx);
+                    let body_pairs: Vec<Pair<Rule>> = pairs[i + 1..body_end].to_vec();
+                    let mut body = fold_instructions(body_pairs, labels)?;
+                    if let Some(tmp) = &result_temp {
+                        assign_last_expr_to(&mut body, tmp);
+                    }
+
+                    // Catch clauses. The delivered payload binds to fresh locals,
+                    // seeded into the handler fold so its body reads them.
+                    let mut wasm_catches: Vec<WasmCatch> = Vec::new();
+                    for (k, (tag, kw_idx)) in clauses.iter().enumerate() {
+                        let clause_body_start = kw_idx + 1;
+                        let clause_body_end =
+                            clauses.get(k + 1).map(|(_, idx)| *idx).unwrap_or(end_idx);
+                        let clause_pairs: Vec<Pair<Rule>> =
+                            pairs[clause_body_start..clause_body_end].to_vec();
+
+                        let arity = tag.as_deref().map(tag_arity).unwrap_or(0);
+                        let payload_binds: Vec<String> =
+                            (0..arity).map(|_| fresh_result_temp()).collect();
+                        let seed: Vec<Expression> =
+                            payload_binds.iter().map(|n| Expression::ident(n)).collect();
+
+                        // Only capture the exnref when the handler rethrows.
+                        let capture_ref = pairs_contain_rethrow(&clause_pairs);
+                        let exnref_bind = if capture_ref {
+                            Some(fresh_result_temp())
+                        } else {
+                            None
+                        };
+                        if let Some(exnref) = &exnref_bind {
+                            ACTIVE_CATCH_EXNREFS
+                                .with(|s| s.borrow_mut().push(exnref.clone()));
+                        }
+                        let mut cbody = fold_instructions_seeded(clause_pairs, labels, seed)?;
+                        if exnref_bind.is_some() {
+                            ACTIVE_CATCH_EXNREFS.with(|s| {
+                                s.borrow_mut().pop();
+                            });
+                        }
+                        if let Some(tmp) = &result_temp {
+                            assign_last_expr_to(&mut cbody, tmp);
+                        }
+                        wasm_catches.push(WasmCatch {
+                            tag: tag.clone(),
+                            payload_binds,
+                            capture_ref,
+                            exnref_bind,
+                            body: cbody,
+                        });
+                    }
+
+                    // Legacy `delegate N`: no catch clause — reraise to the
+                    // enclosing try. Modelled as a catch_all_ref handler that
+                    // `throw_ref`s the captured exnref (propagates outward).
+                    if matches!(terminator, TryTerminator::Delegate(_)) {
+                        let exnref = fresh_result_temp();
+                        wasm_catches.push(WasmCatch {
+                            tag: None,
+                            payload_binds: Vec::new(),
+                            capture_ref: true,
+                            exnref_bind: Some(exnref.clone()),
+                            body: vec![Statement::new(StmtKind::WasmRethrow {
+                                exnref_local: exnref,
+                            })],
+                        });
+                    }
+
+                    statements.push(Statement::with_span(
+                        StmtKind::WasmTryTable {
+                            body,
+                            catches: wasm_catches,
+                        },
+                        span,
+                    ));
+                    if let Some(tmp) = &result_temp {
+                        stack.push(Expression::ident(&tmp));
+                    }
+                    i = end_idx + 1;
+                    continue;
+                }
+                // ── throw $tag: raise with the top `arity` stack values ─────
+                "throw" => {
+                    let span = to_span(&pairs[i]);
+                    let tag = peek_plain_label(&pairs[i]).unwrap_or_default();
+                    let arity = tag_arity(&tag) as usize;
+                    let n = arity.min(stack.len());
+                    let args: Vec<Expression> = stack.split_off(stack.len() - n);
+                    statements.push(Statement::with_span(
+                        StmtKind::WasmThrow { tag, args },
+                        span,
+                    ));
+                    i += 1;
+                    continue;
+                }
+                // ── rethrow N: reraise the exception this catch handler caught ─
+                "rethrow" => {
+                    let span = to_span(&pairs[i]);
+                    let exnref = ACTIVE_CATCH_EXNREFS.with(|s| s.borrow().last().cloned());
+                    match exnref {
+                        Some(name) => statements.push(Statement::with_span(
+                            StmtKind::WasmRethrow { exnref_local: name },
+                            span,
+                        )),
+                        None => return Err("rethrow outside of a catch handler".to_string()),
+                    }
+                    i += 1;
                     continue;
                 }
                 "end" | "else" => {

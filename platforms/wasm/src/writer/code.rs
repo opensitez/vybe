@@ -75,10 +75,17 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
         };
         if op == Op::TRY_TABLE {
             let op_pos = ip;
-            // Internal TRY_TABLE immediate layout (one `catch` clause, as
-            // emitted by common::errors::emit_try_start): after the 4-byte
-            // opcode — u8 clause_count, u8 kind, u16 tag, u16 catch_offset.
-            // The catch_offset lives at ip+8..ip+10; operands end at ip+10.
+            // Internal TRY_TABLE immediate layout: after the 4-byte opcode —
+            // u8 clause_count, then per clause [u8 kind, u16 tag, u16 offset].
+            // Only the single-clause shape common::errors::emit_try_start emits
+            // gets this structural block-wrapping transform; multi-clause
+            // try_tables (e.g. from wast) fall through to the generic path.
+            let clause_count = chunk.code[ip + 4];
+            if clause_count != 1 {
+                ip += opcode_size(op, &chunk.code, ip);
+                continue;
+            }
+            // Single clause: catch_offset lives at ip+8..ip+10, operands end ip+10.
             let catch_off = ((chunk.code[ip + 8] as i16) << 8) | (chunk.code[ip + 9] as i16 & 0xFF);
             let operands_end = ip + 10;
             // catch_ip is relative to the byte *after* the immediate (the VM
@@ -86,7 +93,11 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
             let catch_ip = (operands_end as i64 + catch_off as i64) as usize;
             ip = operands_end;
 
-            // Find the matching TRY_END (nested TRY_TABLEs count).
+            // Find the matching structural `end` that closes this try_table.
+            // `try_table` is a real block (spec), closed by a structural END
+            // (common::errors::emit_try_end — the retired custom TRY_END is
+            // gone). Count every block opener and decrement on END; the END at
+            // depth 0 is the close.
             let mut depth = 1i32;
             let mut try_end_pos: Option<usize> = None;
             let mut scan = ip;
@@ -98,21 +109,21 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                     scan += 4;
                     continue;
                 };
-                if inner == Op::TRY_TABLE {
+                let size = opcode_size(inner, &chunk.code, scan);
+                if inner == Op::BLOCK
+                    || inner == Op::LOOP
+                    || inner == Op::IF
+                    || inner == Op::TRY_TABLE
+                {
                     depth += 1;
-                    scan += opcode_size(inner, &chunk.code, scan);
-                    continue;
-                }
-                if inner == Op::TRY_END {
+                } else if inner == Op::END {
                     depth -= 1;
                     if depth == 0 {
                         try_end_pos = Some(scan);
                         break;
                     }
-                    scan += opcode_size(inner, &chunk.code, scan);
-                    continue;
                 }
-                scan += opcode_size(inner, &chunk.code, scan);
+                scan += size;
             }
 
             if let Some(te_pos) = try_end_pos {
@@ -474,9 +485,10 @@ pub fn encode_code_section(
                 ip += 10; // opcode(4) + [clause_count,kind,tag(2),offset(2)] = 6
                 continue;
             }
-            // TRY_END → close try_table. An `else` body (Python/Ruby) runs
-            // inside $catch, unprotected, between this point and skip_br.
-            if op == Op::TRY_END && try_end_events.contains(&ip) {
+            // The structural END that closes the try_table block → spec `end`.
+            // An `else` body (Python/Ruby) runs inside $catch, unprotected,
+            // between this point and skip_br.
+            if op == Op::END && try_end_events.contains(&ip) {
                 body.push(0x0B); // end (closes try_table)
                 ip += 4;
                 continue;
@@ -1798,9 +1810,14 @@ fn emit_vm_internal_op(
 
         // Stack ops
         // Exception handling — a TRY_TABLE not recognised as a structural
-        // region (should not happen for compiler output) is skipped as a nop.
+        // single-clause region (multi-clause try_tables, e.g. from wast, are
+        // not yet serialized here) is skipped as a nop. Skip the full variable
+        // immediate (1 + 5·clause_count) so multi-clause never mis-parses into
+        // malformed bytes. Unreached for current compiler output (the OO path
+        // and wast-via-VM both stay single-clause).
         _ if op == Op::TRY_TABLE => {
-            *ip += 6; // skip immediate: clause_count, kind, tag(2), offset(2)
+            let clause_count = chunk.code[*ip] as usize;
+            *ip += 1 + 5 * clause_count; // clause_count + N·[kind,tag(2),offset(2)]
             body.push(0x01);
         }
         _ if op == Op::TRY_END => {

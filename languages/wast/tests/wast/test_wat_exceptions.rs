@@ -98,5 +98,26 @@ wat_exec! {
   end
   call $log
 )
-"#, "42" }
+"#, "42" },
+
+    // A `throw` raised inside a *called* function unwinds across the call
+    // frame and is caught by the caller's `try`. The tag `$e` is a single
+    // load-time entity shared by both functions' chunks, so the throw and the
+    // catch resolve to the same tag — the unified `throw`/`try_table`
+    // mechanism is compatible across compilation units.
+    test_exception_throw_propagates_across_call => { r#"
+(tag $e (param i32))
+(func $raise
+  i32.const 7
+  throw $e
+)
+(func (export "_start")
+  try (result i32)
+    call $raise
+    i32.const 0 ;; unreached
+  catch $e
+  end
+  call $log
+)
+"#, "7" }
 }

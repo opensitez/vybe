@@ -2640,7 +2640,8 @@ fn emit_try_catch_wasm() -> Vec<u8> {
     script.emit_op_u16(Op::CONST, one, 0);
     // `throw <tagidx>` carries its tag index as a u16 immediate (spec form).
     script.emit_op_u16(Op::THROW, 0, 0);
-    script.emit_op(Op::TRY_END, 0);
+    // Structural END closes the try_table block (the retired custom TRY_END).
+    script.emit_op(Op::END, 0);
     // skip-catch BR placeholder
     let skip = script.emit_jump(Op::BR, 0);
     // patch catch_offset to land here (catch body start): the VM/codec compute

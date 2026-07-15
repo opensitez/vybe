@@ -21,6 +21,7 @@ struct StandardSections {
     code_section: Vec<u8>,
     data_section: Vec<u8>,
     data_count_section: Vec<u8>,
+    tag_section: Vec<u8>,
 }
 
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
@@ -80,6 +81,7 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
             SECTION_CODE => sections.code_section = section_data,
             11 => sections.data_section = section_data,
             12 => sections.data_count_section = section_data,
+            SECTION_TAG => sections.tag_section = section_data,
             _ => {}
         }
         pos = section_end;
@@ -105,8 +107,18 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
         &sections.elem_section,
         &sections.code_section,
         &sections.data_section,
+        &sections.tag_section,
     )
 }
+
+/// Rejection message for the legacy (pre-3.0) exception-handling proposal.
+/// We import the standardized `try_table`/`throw`/`throw_ref` model (WASM 3.0);
+/// the legacy `try`/`catch`/`catch_all`/`delegate`/`rethrow` opcodes are not
+/// supported (same stance as Wasmtime). Reject them loudly rather than
+/// silently mis-decode.
+const LEGACY_EH_UNSUPPORTED: &str = "Unsupported WASM: legacy exception-handling \
+     (pre-3.0 try/catch/catch_all/delegate/rethrow) is not supported; recompile \
+     with the standard exception-handling model (try_table)";
 
 fn section_order_rank(section_id: u8) -> u8 {
     match section_id {
@@ -116,14 +128,16 @@ fn section_order_rank(section_id: u8) -> u8 {
         SECTION_FUNCTION => 3,
         4 => 4, // table
         SECTION_MEMORY => 5,
-        SECTION_GLOBAL => 6,
-        SECTION_EXPORT => 7,
-        8 => 8,   // start
-        9 => 9,   // element
-        12 => 10, // data_count is ordered before code
-        SECTION_CODE => 11,
-        11 => 12, // data
-        SECTION_TAG => 13,
+        // Tag section (exception-handling proposal): ordered after memory,
+        // before global — where real toolchains place it.
+        SECTION_TAG => 6,
+        SECTION_GLOBAL => 7,
+        SECTION_EXPORT => 8,
+        8 => 9,    // start
+        9 => 10,   // element
+        12 => 11,  // data_count is ordered before code
+        SECTION_CODE => 12,
+        11 => 13,  // data
         other => other,
     }
 }
@@ -905,10 +919,9 @@ fn validate_instruction_stream(
                 skip_leb128(code, &mut pos);
                 st.set_unreachable();
             }
-            0x09 => {
-                skip_leb128(code, &mut pos);
-                st.set_unreachable();
-            }
+            // Legacy exception-handling block opcodes (try/catch/catch_all/
+            // rethrow) — not supported; reject rather than silently mis-decode.
+            0x06 | 0x07 | 0x09 | 0x19 => return Err(LEGACY_EH_UNSUPPORTED.into()),
             0x0A => {
                 st.pop(1, "throw_ref")?;
                 st.set_unreachable();
@@ -998,9 +1011,8 @@ fn validate_instruction_stream(
                     st.set_unreachable();
                 }
             }
-            0x18 => {
-                skip_leb128(code, &mut pos); // legacy delegate
-            }
+            // Legacy `delegate` — not supported (see LEGACY_EH_UNSUPPORTED).
+            0x18 => return Err(LEGACY_EH_UNSUPPORTED.into()),
             0x1A => st.pop(1, "drop")?,
             0x1B => {
                 st.pop(3, "select")?;
@@ -1376,10 +1388,14 @@ fn decode_standard_wasm(
     elem_sec: &[u8],
     code_sec: &[u8],
     data_sec: &[u8],
+    tag_sec: &[u8],
 ) -> Result<Vec<Chunk>, String> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
     let func_type_indices = parse_function_section(func_sec);
+    // Exception tags: each references a function type whose params are the
+    // tag's payload; the arity lets `throw`/`catch` bind the right count.
+    let tag_arities = parse_tag_section(tag_sec, &types);
 
     // Parse imports
     let imports = parse_import_section(import_sec);
@@ -1462,6 +1478,7 @@ fn decode_standard_wasm(
             uses_memory64,
             uses_table64,
             &types,
+            &tag_arities,
         );
         chunk.result_arity = result_arity;
         chunk.memory_min_pages = memory_min_pages.clone();
@@ -1503,6 +1520,41 @@ fn decode_standard_wasm(
     Ok(chunks)
 }
 
+/// A pending catch clause of a `try_table` being decoded: the byte position of
+/// its offset placeholder (patched with the handler position at the try's
+/// `end`) and the spec catch label `L` it branches to.
+struct EhClause {
+    offset_pos: usize,
+    label: u32,
+}
+
+/// Per-source-block bookkeeping for the translate pass. `emitted_span` is how
+/// many WASM blocks this one source block expands to in the emitted chunk: 1
+/// for a plain block/loop/if, 2 for a `try_table` (which we wrap in an outer
+/// `$skip` block so normal completion can branch past the catch trampolines).
+/// The extra emitted level shifts `br` depths for branches that exit the try
+/// region, so [`emitted_br_depth`] remaps every source `br`.
+struct LabelInfo {
+    emitted_span: u32,
+    /// Present while decoding a `try_table` body; drives trampoline emission
+    /// at the matching `end`.
+    eh: Option<Vec<EhClause>>,
+}
+
+/// Translate a source `br N` (targets the label `n` levels out) into the
+/// emitted branch depth, accounting for `$skip` wrappers inserted around any
+/// `try_table` between here and the target. A source block's identity in the
+/// emitted stream is its *primary* WASM block (the `try_table`/`block`/`loop`
+/// itself); the `$skip` wrapper is an OUTER extra level. So branching to the
+/// block `n` levels out crosses the full emitted span of the `n` innermost
+/// blocks and lands on the target's primary block. When no try_tables are on
+/// the stack every span is 1 and this is the identity.
+fn emitted_br_depth(label_stack: &[LabelInfo], n: u32) -> u32 {
+    let k = label_stack.len();
+    let n = (n as usize).min(k.saturating_sub(1));
+    label_stack[k - n..k].iter().map(|i| i.emitted_span).sum()
+}
+
 /// Translate WASM opcodes to our internal Chunk format.
 /// Builds a proper constant pool and adjusts local indices.
 fn translate_wasm_to_chunk(
@@ -1514,13 +1566,24 @@ fn translate_wasm_to_chunk(
     uses_memory64: bool,
     uses_table64: bool,
     types: &[(Vec<u8>, Vec<u8>)],
+    tag_arities: &[u8],
 ) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
     chunk.local_count = arity as u16 + wasm_local_count as u16;
 
+    // Import the module's exception tags by a stable name so every function
+    // chunk resolves the same tag index to the SAME load-time entity (a
+    // `throw $t` in one function is caught by a `catch $t` in another). Build
+    // a wasm-tag-index → chunk-tag-index map for `throw`/`try_table` decode.
+    let tag_map: Vec<u16> = tag_arities
+        .iter()
+        .enumerate()
+        .map(|(i, &ar)| chunk.import_exception_tag(format!("wasm:import:tag:{i}"), ar))
+        .collect();
+
     let mut pos = 0;
-    let mut label_stack: Vec<()> = Vec::new();
+    let mut label_stack: Vec<LabelInfo> = Vec::new();
 
     while pos < wasm.len() {
         let byte = wasm[pos];
@@ -1533,19 +1596,70 @@ fn translate_wasm_to_chunk(
                 chunk.emit_op(Op::RETHROW, 0);
                 read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
             }
+            // throw tagidx (0x08) — raise the tag with its payload on the stack.
+            0x08 => {
+                let (wasm_tag, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let chunk_tag = tag_map
+                    .get(wasm_tag as usize)
+                    .copied()
+                    .unwrap_or(wasm_tag as u16);
+                chunk.emit_op_u16(Op::THROW, chunk_tag, 0);
+            }
+            // throw_ref (0x0A) — re-raise the exnref on the stack.
+            0x0A => chunk.emit_op(Op::THROW_REF, 0),
+            // try_table blocktype catch* (0x1F) — WASM 3.0 structured EH.
+            // Decode the up-front catch-clause vector, wrap the try_table in a
+            // `$skip` block, and record each clause's spec target label; the
+            // matching `end` emits the trampolines (see 0x0B).
+            0x1F => {
+                let result_count = read_block_result_count(wasm, &mut pos);
+                let (clause_count, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let mut pairs: Vec<(u8, u16)> = Vec::with_capacity(clause_count as usize);
+                let mut labels: Vec<u32> = Vec::with_capacity(clause_count as usize);
+                for _ in 0..clause_count {
+                    // kind: 0=catch 1=catch_ref 2=catch_all 3=catch_all_ref
+                    // (identical to the VM CATCH_KIND_* values).
+                    let kind = wasm.get(pos).copied().unwrap_or(2);
+                    pos += 1;
+                    let chunk_tag = if kind == 0x00 || kind == 0x01 {
+                        let (wt, _) = read_leb128_u32(&wasm[pos..]);
+                        skip_leb128(wasm, &mut pos);
+                        tag_map.get(wt as usize).copied().unwrap_or(wt as u16)
+                    } else {
+                        0
+                    };
+                    let (label, _) = read_leb128_u32(&wasm[pos..]);
+                    skip_leb128(wasm, &mut pos);
+                    pairs.push((kind, chunk_tag));
+                    labels.push(label);
+                }
+                chunk.emit_block_typed(0, result_count); // $skip wrapper
+                let offsets = chunk.emit_try_table_clauses(&pairs, 0);
+                let clauses: Vec<EhClause> = offsets
+                    .into_iter()
+                    .zip(labels)
+                    .map(|(offset_pos, label)| EhClause { offset_pos, label })
+                    .collect();
+                label_stack.push(LabelInfo {
+                    emitted_span: 2,
+                    eh: Some(clauses),
+                });
+            }
 
             // block blocktype — forward jump target
             0x02 => {
                 let result_count = read_block_result_count(wasm, &mut pos);
                 chunk.emit_block_typed(0, result_count);
-                label_stack.push(());
+                label_stack.push(LabelInfo { emitted_span: 1, eh: None });
             }
 
             // loop blocktype — backward jump target
             0x03 => {
                 let result_count = read_block_result_count(wasm, &mut pos);
                 chunk.emit_loop_typed(0, result_count);
-                label_stack.push(());
+                label_stack.push(LabelInfo { emitted_span: 1, eh: None });
             }
 
             // if blocktype — conditional block
@@ -1556,7 +1670,7 @@ fn translate_wasm_to_chunk(
                 } else {
                     chunk.emit_if_value(0);
                 }
-                label_stack.push(());
+                label_stack.push(LabelInfo { emitted_span: 1, eh: None });
             }
 
             // else
@@ -1566,22 +1680,51 @@ fn translate_wasm_to_chunk(
 
             // end
             0x0B => {
-                let _ = label_stack.pop();
-                chunk.emit_end(0);
+                match label_stack.pop() {
+                    // A `try_table` body's `end`: close the VM try_table, then
+                    // build the catch trampolines. Normal completion branches
+                    // past them to the enclosing `$skip` wrapper; on a caught
+                    // exception the VM jumps to a trampoline `br L` that
+                    // forwards to the spec target label (L=0 exits the region).
+                    Some(LabelInfo {
+                        eh: Some(clauses), ..
+                    }) => {
+                        chunk.emit_end(0); // close try_table (body done)
+                        chunk.emit_br(0, 0); // normal path → $skip (now innermost)
+                        for clause in &clauses {
+                            // Patch this clause's forward offset to the handler.
+                            let here = chunk.current_offset();
+                            let jump = here as i32 - (clause.offset_pos as i32 + 2);
+                            chunk.code[clause.offset_pos] = (jump >> 8) as u8;
+                            chunk.code[clause.offset_pos + 1] = (jump & 0xff) as u8;
+                            // Trampoline: spec `catch … L` → `br L`. The `$skip`
+                            // wrapper (innermost here) makes L=0 exit the region;
+                            // deeper labels add the wrapper level + remap.
+                            let tramp = if clause.label == 0 {
+                                0
+                            } else {
+                                1 + emitted_br_depth(&label_stack, clause.label - 1)
+                            };
+                            chunk.emit_br(tramp, 0);
+                        }
+                        chunk.emit_end(0); // close $skip
+                    }
+                    _ => chunk.emit_end(0),
+                }
             }
 
-            // br N — branch to Nth enclosing label
+            // br N — branch to Nth enclosing label (depth remapped for $skip)
             0x0C => {
                 let (depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_br(depth, 0);
+                chunk.emit_br(emitted_br_depth(&label_stack, depth), 0);
             }
 
             // br_if N — conditional branch
             0x0D => {
                 let (depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_br_if(depth, 0);
+                chunk.emit_br_if(emitted_br_depth(&label_stack, depth), 0);
             }
             0x0E => {
                 // br_table — branch table
@@ -1591,11 +1734,11 @@ fn translate_wasm_to_chunk(
                 for _ in 0..count {
                     let (depth, _) = read_leb128_u32(&wasm[pos..]);
                     skip_leb128(wasm, &mut pos);
-                    depths.push(depth);
+                    depths.push(emitted_br_depth(&label_stack, depth));
                 }
                 let (default_depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_br_table(&depths, default_depth, 0);
+                chunk.emit_br_table(&depths, emitted_br_depth(&label_stack, default_depth), 0);
             }
             0x0F => chunk.emit_op(Op::RETURN, 0),
             0x18 => {
@@ -2476,6 +2619,33 @@ fn read_leb128_u64_local(data: &[u8]) -> (u64, usize) {
         shift += 7;
     }
     (result, pos)
+}
+
+/// Parse the tag section (id 13). Each tag entry is `attribute(u8, 0x00 =
+/// exception) + type_idx(leb)`; the tag's payload arity is the referenced
+/// function type's parameter count. Returns arity per tag, in index order.
+fn parse_tag_section(data: &[u8], types: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let mut pos = 0;
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    let mut arities = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        if pos >= data.len() {
+            break;
+        }
+        pos += 1; // attribute byte (0x00)
+        let (type_idx, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let arity = types
+            .get(type_idx as usize)
+            .map(|(params, _)| params.len() as u8)
+            .unwrap_or(0);
+        arities.push(arity);
+    }
+    arities
 }
 
 fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
