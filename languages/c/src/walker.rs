@@ -483,6 +483,9 @@ fn parse_macro_call_args_text(line: &str, open_pos: usize) -> Option<(Vec<String
 fn seed_preprocessor_header_macros(header: &str, object_macros: &mut HashMap<String, String>) {
     let string_defs: &[(&str, &str)] = match header {
         "inttypes.h" => &[
+            ("INTMAX_MIN", "-9223372036854775808"),
+            ("INTMAX_MAX", "9223372036854775807"),
+            ("UINTMAX_MAX", "9223372036854775807"),
             ("PRId8", "\"d\""),
             ("PRId16", "\"d\""),
             ("PRId32", "\"d\""),
@@ -1181,6 +1184,11 @@ impl Walker {
             );
         }
         let defs: &[(&str, i64)] = match header {
+            "inttypes.h" => &[
+                ("INTMAX_MIN", i64::MIN),
+                ("INTMAX_MAX", i64::MAX),
+                ("UINTMAX_MAX", i64::MAX),
+            ],
             "stdint.h" => &[
                 ("INT8_MIN", -128),
                 ("INT8_MAX", 127),
@@ -1507,9 +1515,22 @@ impl Walker {
                             );
                         }
                     }
-                    if name == "main" && !self.current_atexit_finalizers.is_empty() {
+                    if name == "main" {
                         let mut finally = std::mem::take(&mut self.current_atexit_finalizers);
                         finally.reverse();
+                        finally.push(stmt(StmtKind::If {
+                            cond: expr(ExprKind::Binary {
+                                op: BinOp::Gt,
+                                left: Box::new(member(ident("__c_stdout_buffer"), "length")),
+                                right: Box::new(int_lit(0)),
+                            }),
+                            then_body: vec![stmt(StmtKind::Expr(call_expr(
+                                ident("__c_stdout_append"),
+                                vec![str_lit("\n")],
+                            )))],
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }));
                         body = vec![stmt(StmtKind::Try {
                             body,
                             catches: vec![],
@@ -4995,7 +5016,12 @@ impl Walker {
                 .int_values
                 .get(name)
                 .copied()
-                .or_else(|| self.enum_constants.get(name).copied()),
+                .or_else(|| self.enum_constants.get(name).copied())
+                .or_else(|| {
+                    self.object_macros
+                        .get(name)
+                        .and_then(|value| value.trim().parse::<i64>().ok())
+                }),
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_int_expr(expr)?;
                 match op {
@@ -7348,8 +7374,27 @@ impl Walker {
                 }
                 "fflush" => {
                     if let Some(file) = args.into_iter().next() {
+                        if matches!(
+                            file.value.kind,
+                            ExprKind::Lit(Literal::Int(1)) | ExprKind::Lit(Literal::Null)
+                        ) {
+                            return flush_stdout_buffer_expr();
+                        }
                         return call_expr(ident("__c_fsync_h"), vec![file.value]);
                     }
+                    return flush_stdout_buffer_expr();
+                }
+                "setvbuf" => {
+                    if args.len() >= 3 {
+                        if let Some(mode) = self.eval_int_expr(&args[2].value) {
+                            if !matches!(mode, 0 | 1 | 2) {
+                                return int_lit(1);
+                            }
+                        }
+                    }
+                    return int_lit(0);
+                }
+                "setbuf" | "setbuffer" | "setlinebuf" => {
                     return int_lit(0);
                 }
                 "fgetc" | "getc" => {
@@ -9113,7 +9158,7 @@ impl Walker {
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
-                "imaxabs" => {
+                "abs" | "labs" | "llabs" | "imaxabs" => {
                     if let Some(value) = args.into_iter().next() {
                         return ecma_math_call("abs", value.value);
                     }
@@ -9122,22 +9167,41 @@ impl Walker {
                 "div" | "ldiv" | "lldiv" | "imaxdiv" => {
                     let mut it = args.into_iter();
                     if let (Some(a), Some(b)) = (it.next(), it.next()) {
-                        let quot = expr(ExprKind::Cast {
-                            expr: Box::new(expr(ExprKind::Binary {
+                        if let (Some(numer), Some(denom)) =
+                            (self.eval_int_expr(&a.value), self.eval_int_expr(&b.value))
+                        {
+                            if denom != 0 {
+                                let quot = numer / denom;
+                                let rem = numer - quot * denom;
+                                return expr(ExprKind::Object(vec![
+                                    ObjectProperty::KeyValue {
+                                        key: str_lit("quot"),
+                                        value: exact_c_int_expr(quot),
+                                    },
+                                    ObjectProperty::KeyValue {
+                                        key: str_lit("rem"),
+                                        value: exact_c_int_expr(rem),
+                                    },
+                                ]));
+                            }
+                        }
+                        let quot = ecma_math_call(
+                            "trunc",
+                            expr(ExprKind::Binary {
                                 op: BinOp::Div,
                                 left: Box::new(a.value.clone()),
                                 right: Box::new(b.value.clone()),
-                            })),
-                            type_name: "int".to_string(),
-                        });
-                        let rem = ecma_math_call(
-                            "abs",
-                            expr(ExprKind::Binary {
-                                op: BinOp::Mod,
-                                left: Box::new(a.value),
-                                right: Box::new(b.value),
                             }),
                         );
+                        let rem = expr(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(a.value),
+                            right: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Mul,
+                                left: Box::new(quot.clone()),
+                                right: Box::new(b.value),
+                            })),
+                        });
                         return expr(ExprKind::Object(vec![
                             ObjectProperty::KeyValue {
                                 key: str_lit("quot"),
@@ -13378,6 +13442,25 @@ fn parsed_expression(parsed: ParsedInteger) -> Expression {
         ParsedInteger::I64(n) => int_lit(n),
         ParsedInteger::Text(s) => str_lit(&s),
     }
+}
+
+fn exact_c_int_expr(value: i64) -> Expression {
+    const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+    if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
+        return int_lit(value);
+    }
+    expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
+        key: str_lit("__c_exact_int"),
+        value: str_lit(&value.to_string()),
+    }]))
+}
+
+fn flush_stdout_buffer_expr() -> Expression {
+    expr(ExprKind::Sequence(vec![
+        call_expr(ident("__c_write_stdout"), vec![ident("__c_stdout_buffer")]),
+        assign_expr(ident("__c_stdout_buffer"), str_lit("")),
+        int_lit(0),
+    ]))
 }
 
 fn normalize_parse_int_radix(radix: Expression, input: Expression) -> Expression {
