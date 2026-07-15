@@ -3796,8 +3796,56 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
                 if let ExprKind::Ident(class_name) = expr.kind.clone() {
                     if matches!(class_name.as_str(), "DateTime" | "Duration" | "Uri" | "List") {
-                        expr = Expression::ident(&format!("{}.{}", class_name, name));
-                        if class_name == "Duration" && name == "zero" {
+                        let static_name = format!("{}.{}", class_name, name);
+                        expr = Expression::ident(&static_name);
+                        let static_args = if let Some(args) = call_args {
+                            Some(args)
+                        } else if has_call {
+                            Some(Vec::new())
+                        } else {
+                            None
+                        };
+                        if let Some(mut args) = static_args {
+                            if static_name == "RegExp" {
+                                args = normalize_regexp_args(args);
+                            } else if static_name == "Duration" {
+                                args = normalize_duration_args(args);
+                            } else if static_name == "Uri.parse" {
+                                if let Some(text) = args.first().and_then(|arg| literal_string(&arg.value)) {
+                                    expr = dart_uri_expr(DartUri::parse(&text));
+                                    continue;
+                                }
+                            } else if static_name == "Uri.http" || static_name == "Uri.https" {
+                                if args.len() >= 2 {
+                                    if let (Some(authority), Some(path)) =
+                                        (literal_string(&args[0].value), literal_string(&args[1].value))
+                                    {
+                                        let https = static_name == "Uri.https";
+                                        let query = args.get(2).and_then(|arg| query_string_from_expr(&arg.value));
+                                        let port = args.get(3).and_then(|arg| literal_number_string(&arg.value));
+                                        expr = dart_uri_expr(DartUri::from_parts(
+                                            if https { "https" } else { "http" },
+                                            &authority,
+                                            &path,
+                                            query.as_deref(),
+                                            None,
+                                            port.as_deref(),
+                                        ));
+                                        continue;
+                                    }
+                                }
+                            } else if static_name == "Uri.file" {
+                                if let Some(path) = args.first().and_then(|arg| literal_string(&arg.value)) {
+                                    expr = dart_uri_expr(DartUri::from_file(&path));
+                                    continue;
+                                }
+                            }
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(expr),
+                                args,
+                                optional: false,
+                            });
+                        } else if class_name == "Duration" && name == "zero" {
                             expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(expr),
                                 args: Vec::new(),
@@ -4364,11 +4412,14 @@ impl DartUri {
         if rel.starts_with('/') {
             out.path = rel.to_string();
         } else {
-            let base_dir = self
-                .path
-                .rsplit_once('/')
-                .map(|(head, _)| format!("{}/", head))
-                .unwrap_or_else(|| "/".to_string());
+            let base_dir = if rel.starts_with("../") && !self.path.ends_with('/') {
+                format!("{}/", self.path)
+            } else {
+                self.path
+                    .rsplit_once('/')
+                    .map(|(head, _)| format!("{}/", head))
+                    .unwrap_or_else(|| "/".to_string())
+            };
             out.path = format!("{}{}", base_dir, rel);
         }
         out.path = normalize_path_text(&out.path);

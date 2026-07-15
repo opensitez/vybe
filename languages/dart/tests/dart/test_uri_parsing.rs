@@ -424,7 +424,7 @@ dart_cases! {
   var resolved = base.resolve('../d');
   print(resolved.path);
 }"#,
-        ["/a/b/d"]
+        ["/a/d"]
     };
 
     uri_resolve_uri_object => {

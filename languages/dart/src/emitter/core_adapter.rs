@@ -333,6 +333,7 @@ fn wrap_url(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, url, line);
     obj_new(&mut chunks[current], line);
     set_string(&mut chunks[current], "__type", "Uri", line);
+    set_bool(&mut chunks[current], "__dart_uri_marker", true, line);
     core_wasm::dup(&mut chunks[current], line);
     get_url_prop(&mut chunks[current], url, "protocol", line);
     chunks[current].emit_string_const(":", line);
