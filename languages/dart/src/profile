@@ -122,6 +122,8 @@ toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 
 codeUnitAt    = { emit = "common:str_char_code_at",    min_args = 1, max_args = 1 }
 isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }
 isNotEmpty    = { emit = "common:dart.is_not_empty",   min_args = 0, max_args = 0 }
+isEven        = { emit = "common:dart.is_even",        min_args = 0, max_args = 0 }
+isOdd         = { emit = "common:dart.is_odd",         min_args = 0, max_args = 0 }
 compareTo     = { emit = "common:str_compare",         min_args = 1, max_args = 1 }
 replaceFirst  = { emit = "host:ecma:string:replace",   min_args = 2, max_args = 2 }
 

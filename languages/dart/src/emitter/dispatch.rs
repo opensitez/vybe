@@ -11,6 +11,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.is_not_empty" => {
             crate::emitter::string_adapter::emit_dart_is_not_empty(chunks, current, line)
         }
+        "dart.is_even" => {
+            crate::emitter::string_adapter::emit_dart_is_even(chunks, current, line)
+        }
+        "dart.is_odd" => {
+            crate::emitter::string_adapter::emit_dart_is_odd(chunks, current, line)
+        }
         "dart.replace_first" => {
             crate::emitter::string_adapter::emit_dart_replace_first(chunks, current, line)
         }

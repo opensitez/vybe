@@ -615,7 +615,7 @@ switch_expr_case = {
     pattern ~ when_guard? ~ "=>" ~ assignment_expression
 }
 
-when_guard = { when_kw ~ expression }
+when_guard = { when_kw ~ assignment_expression }
 
 // ── Patterns (Dart 3) ───────────────────────────────────────────────────────
 
@@ -632,16 +632,20 @@ primary_pattern = {
     | object_pattern
     | null_pattern
     | bool_pattern
+    | variable_pattern
     | constant_pattern
 }
 
 wildcard_pattern = { "_" ~ !(ASCII_ALPHANUMERIC | "_") }
+variable_pattern = { var_kw ~ ident_name }
 
 relational_pattern = {
     ("<=" | ">=" | "<" | ">" | "==" | "!=") ~ assignment_expression
 }
 
-list_pattern = { "[" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ "]" }
+list_pattern = { "[" ~ (list_pattern_element ~ ("," ~ list_pattern_element)*)? ~ ","? ~ "]" }
+list_pattern_element = { rest_pattern | pattern }
+rest_pattern = { "..." ~ var_kw? ~ ident_name }
 
 map_pattern = { "{" ~ (map_pattern_entry ~ ("," ~ map_pattern_entry)*)? ~ ","? ~ "}" }
 map_pattern_entry = { assignment_expression ~ ":" ~ pattern }
@@ -656,10 +660,12 @@ null_pattern = { null_kw }
 bool_pattern = { true_kw | false_kw }
 
 constant_pattern = {
-    numeric_literal
+    signed_numeric_pattern
+    | numeric_literal
     | string_literal
     | ident_name ~ (ident_name)?   // type + variable binding, or plain identifier constant
 }
+signed_numeric_pattern = { "-" ~ numeric_literal }
 
 // ── Record / parenthesized expression ───────────────────────────────────────
 

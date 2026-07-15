@@ -249,7 +249,7 @@ void main() {
   };
   print(greeting);
 }"#,
-        ["Hello Ann"]
+        ["Hi Ann"]
     };
 
     switch_expr_yields_string_returned_from_function => {

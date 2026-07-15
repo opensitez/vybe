@@ -42,6 +42,7 @@ use super::{DartParser, Rule};
 use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use std::collections::HashMap;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
@@ -2671,34 +2672,44 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::switch_expression => {
             let mut inner = pair.into_inner();
             let subject = walk_expression(inner.next().ok_or("switch expr: missing subject")?)?;
-            let mut arms = Vec::new();
+            let mut arms: Vec<(Expression, Expression)> = Vec::new();
             for p in inner {
                 if p.as_rule() == Rule::switch_expr_case {
                     let mut case_inner = p.into_inner();
-                    // pattern ~ when_guard? ~ "=>" ~ assignment_expression
-                    let _pattern = case_inner.next(); // pattern — simplified
+                    let pattern = case_inner
+                        .next()
+                        .ok_or("switch expr: missing pattern")?;
+                    let mut analysis = analyze_dart_pattern(pattern, &subject)?;
                     let mut body_expr = None;
                     for cp in case_inner {
                         match cp.as_rule() {
-                            Rule::when_guard => {} // guards — discard for now
+                            Rule::when_guard => {
+                                if let Some(guard_pair) = cp
+                                    .into_inner()
+                                    .find(|p| p.as_rule() == Rule::assignment_expression)
+                                {
+                                    let guard = substitute_pattern_bindings(
+                                        walk_expression(guard_pair)?,
+                                        &analysis.bindings,
+                                    );
+                                    analysis.cond = and_expr(analysis.cond, guard);
+                                }
+                            }
                             Rule::assignment_expression => {
-                                body_expr = Some(walk_expression(cp)?);
+                                body_expr = Some(substitute_pattern_bindings(
+                                    walk_expression(cp)?,
+                                    &analysis.bindings,
+                                ));
                             }
                             _ => {}
                         }
                     }
                     if let Some(body) = body_expr {
-                        arms.push(MatchArm {
-                            conditions: Some(vec![Expression::null()]), // simplified pattern
-                            body,
-                        });
+                        arms.push((analysis.cond, body));
                     }
                 }
             }
-            Ok(ExprKind::Match {
-                subject: Box::new(subject),
-                arms,
-            })
+            Ok(lower_switch_expr_arms(arms).kind)
         }
 
         // ── Paren / record expression ───────────────────────────────────
@@ -2903,6 +2914,453 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             pair.as_str()
         )),
     }
+}
+
+struct DartPatternAnalysis {
+    cond: Expression,
+    bindings: HashMap<String, Expression>,
+}
+
+fn lower_switch_expr_arms(arms: Vec<(Expression, Expression)>) -> Expression {
+    let mut fallback = Expression::null();
+    for (cond, body) in arms.into_iter().rev() {
+        fallback = Expression::new(ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(body),
+            else_: Box::new(fallback),
+        });
+    }
+    fallback
+}
+
+fn analyze_dart_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    match pair.as_rule() {
+        Rule::pattern => {
+            let mut inner = pair.into_inner();
+            let first = inner.next().ok_or("pattern: empty")?;
+            let mut acc = analyze_dart_pattern(first, subject)?;
+            while let Some(op) = inner.next() {
+                let rhs_pair = inner.next().ok_or("pattern: missing rhs")?;
+                let rhs = analyze_dart_pattern(rhs_pair, subject)?;
+                acc.cond = match op.as_str() {
+                    "&&" => and_expr(acc.cond, rhs.cond),
+                    _ => or_expr(acc.cond, rhs.cond),
+                };
+                acc.bindings.extend(rhs.bindings);
+            }
+            Ok(acc)
+        }
+        Rule::primary_pattern => {
+            let inner = pair.into_inner().next().ok_or("primary pattern: empty")?;
+            analyze_dart_pattern(inner, subject)
+        }
+        Rule::wildcard_pattern => Ok(pattern_cond(Expression::bool(true))),
+        Rule::variable_pattern => {
+            let mut bindings = HashMap::new();
+            if let Some(name) = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::ident_name)
+                .map(|p| p.as_str().to_string())
+            {
+                if name != "_" {
+                    bindings.insert(name, subject.clone());
+                }
+            }
+            Ok(DartPatternAnalysis {
+                cond: Expression::bool(true),
+                bindings,
+            })
+        }
+        Rule::null_pattern => Ok(pattern_cond(eq_expr(subject.clone(), Expression::null()))),
+        Rule::bool_pattern => {
+            let value = pair.as_str().trim() == "true";
+            Ok(pattern_cond(eq_expr(subject.clone(), Expression::bool(value))))
+        }
+        Rule::constant_pattern => analyze_constant_pattern(pair, subject),
+        Rule::signed_numeric_pattern => {
+            let n = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::numeric_literal)
+                .ok_or("signed numeric pattern: missing literal")?;
+            let lit = Expression::new(walk_expr_kind(n)?);
+            Ok(pattern_cond(eq_expr(
+                subject.clone(),
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(lit),
+                }),
+            )))
+        }
+        Rule::relational_pattern => {
+            let op_src = pair.as_str().trim_start();
+            let op = if op_src.starts_with("<=") {
+                BinOp::LtEq
+            } else if op_src.starts_with(">=") {
+                BinOp::GtEq
+            } else if op_src.starts_with("==") {
+                BinOp::Eq
+            } else if op_src.starts_with("!=") {
+                BinOp::NotEq
+            } else if op_src.starts_with('<') {
+                BinOp::Lt
+            } else {
+                BinOp::Gt
+            };
+            let rhs = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::assignment_expression)
+                .map(walk_expression)
+                .transpose()?
+                .unwrap_or_else(Expression::null);
+            Ok(pattern_cond(Expression::new(ExprKind::Binary {
+                op,
+                left: Box::new(subject.clone()),
+                right: Box::new(rhs),
+            })))
+        }
+        Rule::list_pattern => analyze_list_pattern(pair, subject),
+        Rule::map_pattern => analyze_map_pattern(pair, subject),
+        Rule::record_pattern => analyze_record_pattern(pair, subject),
+        Rule::object_pattern => analyze_object_pattern(pair, subject),
+        _ => Ok(pattern_cond(eq_expr(
+            subject.clone(),
+            walk_expression(pair)?,
+        ))),
+    }
+}
+
+fn analyze_constant_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    if children.len() == 2
+        && children.iter().all(|p| p.as_rule() == Rule::ident_name)
+        && children[0]
+            .as_str()
+            .chars()
+            .next()
+            .map(|ch| ch.is_ascii_uppercase())
+            .unwrap_or(false)
+    {
+        let mut bindings = HashMap::new();
+        let name = children[1].as_str().to_string();
+        if name != "_" {
+            bindings.insert(name, subject.clone());
+        }
+        return Ok(DartPatternAnalysis {
+            cond: Expression::bool(true),
+            bindings,
+        });
+    }
+    let value = children
+        .into_iter()
+        .next()
+        .map(|child| {
+            if child.as_rule() == Rule::signed_numeric_pattern {
+                let n = child
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::numeric_literal)
+                    .ok_or("signed numeric pattern: missing literal")?;
+                let lit = Expression::new(walk_expr_kind(n)?);
+                Ok(Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(lit),
+                }))
+            } else {
+                walk_expression(child)
+            }
+        })
+        .transpose()?
+        .unwrap_or_else(Expression::null);
+    Ok(pattern_cond(eq_expr(subject.clone(), value)))
+}
+
+fn analyze_list_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    let elements: Vec<Pair<Rule>> = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::list_pattern_element)
+        .collect();
+    let rest_pos = elements.iter().position(|p| {
+        p.clone()
+            .into_inner()
+            .next()
+            .map(|c| c.as_rule() == Rule::rest_pattern)
+            .unwrap_or(false)
+    });
+    let fixed_count = elements.len() - usize::from(rest_pos.is_some());
+    let mut out = pattern_cond(if rest_pos.is_some() {
+        cmp_expr(dart_length(subject.clone()), BinOp::GtEq, Expression::int(fixed_count as i64))
+    } else {
+        eq_expr(dart_length(subject.clone()), Expression::int(fixed_count as i64))
+    });
+
+    let mut index = 0usize;
+    for elem in elements {
+        let child = elem.into_inner().next().ok_or("list pattern: empty element")?;
+        if child.as_rule() == Rule::rest_pattern {
+            if let Some(name) = child
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::ident_name)
+                .map(|p| p.as_str().to_string())
+            {
+                if name != "_" {
+                    out.bindings
+                        .insert(name, dart_method_call(subject.clone(), "sublist", vec![Expression::int(index as i64)]));
+                }
+            }
+            continue;
+        }
+        let item = Expression::new(ExprKind::Index {
+            object: Box::new(subject.clone()),
+            index: Box::new(Expression::int(index as i64)),
+            null_safe: false,
+        });
+        let part = analyze_dart_pattern(child, &item)?;
+        out.cond = and_expr(out.cond, part.cond);
+        out.bindings.extend(part.bindings);
+        index += 1;
+    }
+    Ok(out)
+}
+
+fn analyze_map_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    let mut out = pattern_cond(Expression::bool(true));
+    for entry in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::map_pattern_entry)
+    {
+        let mut inner = entry.into_inner();
+        let key = walk_expression(inner.next().ok_or("map pattern: missing key")?)?;
+        let value_pat = inner.next().ok_or("map pattern: missing value")?;
+        out.cond = and_expr(
+            out.cond,
+            dart_method_call(subject.clone(), "containsKey", vec![key.clone()]),
+        );
+        let value = Expression::new(ExprKind::Index {
+            object: Box::new(subject.clone()),
+            index: Box::new(key),
+            null_safe: false,
+        });
+        let part = analyze_dart_pattern(value_pat, &value)?;
+        out.cond = and_expr(out.cond, part.cond);
+        out.bindings.extend(part.bindings);
+    }
+    Ok(out)
+}
+
+fn analyze_record_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    let mut out = pattern_cond(Expression::bool(true));
+    let mut index = 0usize;
+    for field in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::record_pattern_field)
+    {
+        let children: Vec<Pair<Rule>> = field.into_inner().collect();
+        let (target, pat) = if children.len() == 2 {
+            (
+                Expression::new(ExprKind::Member {
+                    object: Box::new(subject.clone()),
+                    field: children[0].as_str().to_string(),
+                    null_safe: false,
+                }),
+                children[1].clone(),
+            )
+        } else {
+            let target = Expression::new(ExprKind::Index {
+                object: Box::new(subject.clone()),
+                index: Box::new(Expression::int(index as i64)),
+                null_safe: false,
+            });
+            index += 1;
+            (target, children[0].clone())
+        };
+        let part = analyze_dart_pattern(pat, &target)?;
+        out.cond = and_expr(out.cond, part.cond);
+        out.bindings.extend(part.bindings);
+    }
+    Ok(out)
+}
+
+fn analyze_object_pattern(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<DartPatternAnalysis, String> {
+    let mut out = pattern_cond(Expression::bool(true));
+    for field in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::object_pattern_field)
+    {
+        let mut inner = field.into_inner();
+        let name = inner
+            .next()
+            .ok_or("object pattern: missing field")?
+            .as_str()
+            .to_string();
+        let pat = inner.next().ok_or("object pattern: missing pattern")?;
+        let target = Expression::new(ExprKind::Member {
+            object: Box::new(subject.clone()),
+            field: name,
+            null_safe: false,
+        });
+        let part = analyze_dart_pattern(pat, &target)?;
+        out.cond = and_expr(out.cond, part.cond);
+        out.bindings.extend(part.bindings);
+    }
+    Ok(out)
+}
+
+fn substitute_pattern_bindings(mut expr: Expression, bindings: &HashMap<String, Expression>) -> Expression {
+    substitute_pattern_bindings_in_place(&mut expr, bindings);
+    expr
+}
+
+fn substitute_pattern_bindings_in_place(expr: &mut Expression, bindings: &HashMap<String, Expression>) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(replacement) = bindings.get(name) {
+                *expr = replacement.clone();
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            substitute_pattern_bindings_in_place(left, bindings);
+            substitute_pattern_bindings_in_place(right, bindings);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Cast { expr: inner, .. } => substitute_pattern_bindings_in_place(inner, bindings),
+        ExprKind::Ternary { cond, then, else_ } => {
+            substitute_pattern_bindings_in_place(cond, bindings);
+            substitute_pattern_bindings_in_place(then, bindings);
+            substitute_pattern_bindings_in_place(else_, bindings);
+        }
+        ExprKind::Member { object, .. } => substitute_pattern_bindings_in_place(object, bindings),
+        ExprKind::Index { object, index, .. } => {
+            substitute_pattern_bindings_in_place(object, bindings);
+            substitute_pattern_bindings_in_place(index, bindings);
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            substitute_pattern_bindings_in_place(callee, bindings);
+            for arg in args {
+                substitute_pattern_bindings_in_place(&mut arg.value, bindings);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            substitute_pattern_bindings_in_place(target, bindings);
+            substitute_pattern_bindings_in_place(value, bindings);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                substitute_pattern_bindings_in_place(&mut item.value, bindings);
+                if let Some(key) = &mut item.key {
+                    substitute_pattern_bindings_in_place(key, bindings);
+                }
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        substitute_pattern_bindings_in_place(key, bindings);
+                        substitute_pattern_bindings_in_place(value, bindings);
+                    }
+                    ObjectProperty::Spread(value) => substitute_pattern_bindings_in_place(value, bindings),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                substitute_pattern_bindings_in_place(item, bindings);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                substitute_pattern_bindings_in_place(value, bindings);
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(value) | InterpolPart::Formatted(value, _) => {
+                        substitute_pattern_bindings_in_place(value, bindings)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Match { subject, arms } => {
+            substitute_pattern_bindings_in_place(subject, bindings);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        substitute_pattern_bindings_in_place(condition, bindings);
+                    }
+                }
+                substitute_pattern_bindings_in_place(&mut arm.body, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pattern_cond(cond: Expression) -> DartPatternAnalysis {
+    DartPatternAnalysis {
+        cond,
+        bindings: HashMap::new(),
+    }
+}
+
+fn eq_expr(left: Expression, right: Expression) -> Expression {
+    cmp_expr(left, BinOp::Eq, right)
+}
+
+fn cmp_expr(left: Expression, op: BinOp, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn and_expr(left: Expression, right: Expression) -> Expression {
+    cmp_expr(left, BinOp::And, right)
+}
+
+fn or_expr(left: Expression, right: Expression) -> Expression {
+    cmp_expr(left, BinOp::Or, right)
+}
+
+fn dart_length(value: Expression) -> Expression {
+    dart_method_call(value, "length", Vec::new())
+}
+
+fn dart_method_call(object: Expression, name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: name.to_string(),
+            null_safe: false,
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════

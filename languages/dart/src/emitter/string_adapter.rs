@@ -11,14 +11,30 @@ use vybe_bytecode::opcode::Op;
 
 /// Dart `s.isEmpty` — true iff length == 0. Stack: [s] → [bool].
 pub fn emit_dart_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    strings::emit_length(&mut chunks[current], line);
+    emit_dart_length(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 /// Dart `s.isNotEmpty` — true iff length != 0. Stack: [s] → [bool].
 pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    strings::emit_length(&mut chunks[current], line);
+    emit_dart_length(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+}
+
+/// Dart `n.isEven` — true iff `n % 2 == 0`. Stack: [n] → [bool].
+pub fn emit_dart_is_even(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    chunks[current].emit_op(Op::I32_REM_S, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+}
+
+/// Dart `n.isOdd` — true iff `n % 2 != 0`. Stack: [n] → [bool].
+pub fn emit_dart_is_odd(chunks: &mut [Chunk], current: usize, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    chunks[current].emit_op(Op::I32_REM_S, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
 }
