@@ -19,9 +19,7 @@
 //! | `externref`                 | ✅ used as universal value representation |
 //! | `funcref` via table         | ✅ emitted in element section (chunks → funcref table) |
 //! | `ref.null extern`           | ✅ `Op::NULL` → `0xD0 0x6F` |
-//! | `ref.null func`             | ✅ `Op::NULL_FUNC` → `0xD0 0x70` |
-//! | `ref.null any`              | ✅ `Op::NULL_ANY` → `0xD0 0x6E` |
-//! | `ref.null none`             | ✅ `Op::NULL_NONE` → `0xD0 0x71` |
+//! | `ref.null func/any/none`    | via core `Op::NULL` (typed `NULL_*` opcodes removed as dead — every null is `Value::Null`) |
 //! | `ref.is_null`               | ✅ `Op::REF_IS_NULL` → `0xD1` |
 //! | `ref.func N`                | ✅ (spec-compliant) `Op::REF_FUNC` emits `i32.const N; box_i32` and relies on `call_indirect` to dispatch against the funcref-typed table. The module validates on any engine because (a) the element section populates the funcref table with genuine `ref.func` expressions and (b) `call_indirect tableidx typeidx` legitimately consumes an i32 index. We don't use the `0xD2` instruction on the stack — that would require funcref-typed locals, which in turn requires a `Value` ABI refactor. |
 //! | `table.get` / `table.set`   | ✅ `Op::TABLE_GET` / `Op::TABLE_SET` → core `0x25` / `0x26` with tableidx |

@@ -13,24 +13,11 @@
 //!
 //! ## Spec coverage
 //!
-//! | Op                   | Imported | Emitter wires it? |
-//! |----------------------|----------|-------------------|
-//! | `test`               | ✅        | ✅ `REF_IS_STRING`, `REF_TYPEOF` |
-//! | `cast`               | ✅        | ✅ `STR_CAST` |
-//! | `concat`             | ✅        | ✅ `STR_CONCAT` |
-//! | `equals`             | ✅        | ✅ `STR_EQUALS` |
-//! | `compare`            | ✅        | ✅ `STR_COMPARE` |
-//! | `length`             | ✅        | ✅ `STR_LENGTH` |
-//! | `charCodeAt`         | ✅        | ✅ `STR_CHAR_CODE_AT` |
-//! | `codePointAt`        | ✅        | ✅ `STR_CODE_POINT_AT` |
-//! | `fromCharCode`       | ✅        | ✅ `STR_FROM_CHAR_CODE` |
-//! | `fromCodePoint`      | ✅        | ✅ `STR_FROM_CODE_POINT` |
-//! | `substring`          | ✅        | ✅ `STR_SUBSTRING`, `STR_SLICE` |
-//! | `intoCharCodeArray`  | ✅        | ✅ `STR_INTO_CHAR_CODES` |
-//! | `fromCharCodeArray`  | ✅        | ✅ `STR_FROM_CHAR_CODES` |
-//!
-//! Plus, from the js-primitive-builtins extension:
-//! | `fromI32`, `fromU32`, `fromI64`, `fromU64`, `fromF64` | ✅ | ✅ `STR_FROM_*` |
+//! Imports declared: `test`, `cast`, `concat`, `equals`, `compare`,
+//! `length`, `charCodeAt`, `codePointAt`, `fromCharCode`, `fromCodePoint`,
+//! `substring`, `intoCharCodeArray`, `fromCharCodeArray`. Plus, from the
+//! js-primitive-builtins extension: `fromI32`, `fromU32`, `fromI64`,
+//! `fromU64`, `fromF64`. See `IMPORTS` below for the authoritative list.
 
 use crate::encoding::*;
 

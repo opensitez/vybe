@@ -105,30 +105,11 @@ pub fn encode_memory_section() -> Vec<u8> {
 }
 
 pub fn module_uses_memory64(chunks: &[Chunk]) -> bool {
-    for chunk in chunks {
-        let mut ip = 0;
-        while ip + 3 < chunk.code.len() {
-            let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
-            let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            let Some(op) = Op::decode(g, s) else {
-                ip += 4;
-                continue;
-            };
-            if op == Op::I64_MEMORY_SIZE
-                || op == Op::I64_MEMORY_GROW
-                || op == Op::I32_LOAD_64
-                || op == Op::I64_LOAD_64
-                || op == Op::F64_LOAD_64
-                || op == Op::I32_STORE_64
-                || op == Op::I64_STORE_64
-                || op == Op::F64_STORE_64
-            {
-                return true;
-            }
-            ip += crate::writer::code::opcode_size(op, &chunk.code, ip);
-        }
-    }
-    false
+    // Memory64-ness is a property of the memory's declared index type
+    // (`memory_is_64`), not of any opcode — memory64 adds no new opcodes.
+    chunks
+        .iter()
+        .any(|c| c.memory_is_64.iter().any(|&is64| is64))
 }
 
 /// Memory-section encoder with explicit limits and `shared` flag.
@@ -376,54 +357,6 @@ pub fn emit_unbox_bool(
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
 ) {
     emit_import_call(body, rt_idx, "wasm:js-boolean", "cast");
-}
-
-/// String format of an i32 via `wasm:js-string.fromI32`. Consumes i32,
-/// produces externref (a JS string). Mirrors `String(n)` in JS.
-pub fn emit_str_from_i32(
-    body: &mut Vec<u8>,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "fromI32");
-}
-
-/// Unsigned-i32 → string via `wasm:js-string.fromU32`.
-pub fn emit_str_from_u32(
-    body: &mut Vec<u8>,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "fromU32");
-}
-
-/// i64 → string via `wasm:js-string.fromI64`.
-pub fn emit_str_from_i64(
-    body: &mut Vec<u8>,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "fromI64");
-}
-
-/// Unsigned-i64 → string via `wasm:js-string.fromU64`.
-pub fn emit_str_from_u64(
-    body: &mut Vec<u8>,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "fromU64");
-}
-
-/// f64 → string via `wasm:js-string.fromF64`. Matches `String(n)` when
-/// `n` is a finite JS Number.
-pub fn emit_str_from_f64(
-    body: &mut Vec<u8>,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "fromF64");
-}
-
-/// Validating string cast — `wasm:js-string.cast`. Traps if the value
-/// isn't a string. Equivalent to `(stringref) <: anyref` in spec terms.
-pub fn emit_str_cast(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
-    emit_import_call(body, rt_idx, "wasm:js-string", "cast");
 }
 
 /// Symbol identity check — `wasm:js-symbol.equals`. Consumes two

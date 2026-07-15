@@ -73,18 +73,20 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
             ip += 4;
             continue;
         };
-        if op == Op::TRY_START {
+        if op == Op::TRY_TABLE {
             let op_pos = ip;
-            // Read i16 catch_offset immediately after the 4-byte opcode.
-            let catch_off = ((chunk.code[ip + 4] as i16) << 8) | (chunk.code[ip + 5] as i16 & 0xFF);
-            // finally_offset at ip+6..ip+8 — reserved, unused for now.
-            let operands_end = ip + 8;
-            // catch_ip is relative to the byte *after* the 4 operand
-            // bytes (the VM reads both u16s before adding the offset).
+            // Internal TRY_TABLE immediate layout (one `catch` clause, as
+            // emitted by common::errors::emit_try_start): after the 4-byte
+            // opcode — u8 clause_count, u8 kind, u16 tag, u16 catch_offset.
+            // The catch_offset lives at ip+8..ip+10; operands end at ip+10.
+            let catch_off = ((chunk.code[ip + 8] as i16) << 8) | (chunk.code[ip + 9] as i16 & 0xFF);
+            let operands_end = ip + 10;
+            // catch_ip is relative to the byte *after* the immediate (the VM
+            // reads clause_count/kind/tag/offset before adding the offset).
             let catch_ip = (operands_end as i64 + catch_off as i64) as usize;
             ip = operands_end;
 
-            // Find the matching TRY_END (nested TRY_STARTs count).
+            // Find the matching TRY_END (nested TRY_TABLEs count).
             let mut depth = 1i32;
             let mut try_end_pos: Option<usize> = None;
             let mut scan = ip;
@@ -96,7 +98,7 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                     scan += 4;
                     continue;
                 };
-                if inner == Op::TRY_START {
+                if inner == Op::TRY_TABLE {
                     depth += 1;
                     scan += opcode_size(inner, &chunk.code, scan);
                     continue;
@@ -198,16 +200,12 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // call_ref needs argc+1 temps (save args + table idx)
                 let call_argc = chunk.code.get(ip + 4).copied().unwrap_or(0) as u32;
                 need = need.max(call_argc + 1);
-            } else if op == Op::STR_INDEX_OF {
-                need = need.max(5); // need 5 temps
-            } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET || op == Op::STR_SUBSTRING {
+            } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET {
                 need = need.max(2); // need 2 temps for 3-operand reorder
             } else if is_binary_typed_op(op)
                 || op == Op::GLOBAL_SET
-                || op == Op::DUP
                 || op == Op::ARRAY_GET
                 || op == Op::ARRAY_LENGTH
-                || op == Op::REF_TYPEOF
                 || op == Op::REF_IS_NULL
             {
                 need = need.max(1);
@@ -268,20 +266,6 @@ fn read_optional_memarg(chunk: &Chunk, ip: &mut usize, default_align: u32) -> (u
     }
     let align = read_leb_u32(&chunk.code, ip);
     let offset = read_leb_u32(&chunk.code, ip) as u64;
-    let memidx = if align & 0x40 != 0 {
-        read_leb_u32(&chunk.code, ip)
-    } else {
-        0
-    };
-    (align & !0x40, offset, memidx)
-}
-
-fn read_optional_memarg64(chunk: &Chunk, ip: &mut usize, default_align: u32) -> (u32, u64, u32) {
-    if next_bytes_decode_opcode(chunk, *ip) {
-        return (default_align, 0, 0);
-    }
-    let align = read_leb_u32(&chunk.code, ip);
-    let offset = read_leb_u64(&chunk.code, ip);
     let memidx = if align & 0x40 != 0 {
         read_leb_u32(&chunk.code, ip)
     } else {
@@ -475,8 +459,8 @@ pub fn encode_code_section(
                 }
             };
 
-            // TRY_START → open structural blocks.
-            if op == Op::TRY_START && try_start_events.contains_key(&ip) {
+            // TRY_TABLE → open structural blocks + a real spec try_table.
+            if op == Op::TRY_TABLE && try_start_events.contains_key(&ip) {
                 body.push(0x02);
                 body.push(TYPE_VOID); // block $after
                 body.push(0x02);
@@ -487,7 +471,7 @@ pub fn encode_code_section(
                 body.push(0x00); // variant: catch (tag, label)
                 write_leb128_u32(&mut body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
                 write_leb128_u32(&mut body, 0); // label 0 = $catch
-                ip += 8; // opcode(4) + catch_off(2) + finally(2) header
+                ip += 10; // opcode(4) + [clause_count,kind,tag(2),offset(2)] = 6
                 continue;
             }
             // TRY_END → close try_table. An `else` body (Python/Ruby) runs
@@ -1707,36 +1691,6 @@ fn emit_dyn_binary_cmp(
 
 /// Emit a string constant from the chunk's constant pool.
 /// Builds the string char by char using wasm:js-string fromCharCode + concat.
-fn emit_string_const(
-    body: &mut Vec<u8>,
-    chunk: &Chunk,
-    const_idx: usize,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-) {
-    if let Some(Value::String(s)) = chunk.constants.get(const_idx) {
-        let chars: Vec<char> = s.chars().collect();
-        if chars.is_empty() {
-            body.push(0xD0);
-            body.push(0x6F); // ref.null extern
-            return;
-        }
-        // First char
-        body.push(0x41);
-        write_leb128_i32(body, chars[0] as i32);
-        emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCode");
-        // Concat remaining chars
-        for &ch in &chars[1..] {
-            body.push(0x41);
-            write_leb128_i32(body, ch as i32);
-            emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCode");
-            emit_import_call(body, rt_idx, "wasm:js-string", "concat");
-        }
-    } else {
-        body.push(0xD0);
-        body.push(0x6F);
-    }
-}
-
 /// Resolve the heaptype bytes for a `ref.test / ref.cast / br_on_cast`
 /// operand. The compiler stores a constant-pool index pointing at a
 /// string type name. We look up the name in `type_ctx.struct_type_indices`
@@ -1781,38 +1735,6 @@ fn emit_ref_cast_array(body: &mut Vec<u8>, arr_type_idx: u32) {
     emit_ref_cast(body, arr_type_idx);
 }
 
-fn emit_memory64_op(body: &mut Vec<u8>, chunk: &Chunk, ip: &mut usize, wasm_op: u8, align: u32) {
-    body.push(wasm_op);
-    let (align, offset, memidx) = read_optional_memarg64(chunk, ip, align);
-    encode_memarg_with_memidx(body, align, offset, memidx);
-}
-
-fn emit_table64_core_op(body: &mut Vec<u8>, chunk: &Chunk, ip: &mut usize, wasm_op: u8) {
-    body.push(wasm_op);
-    let table_idx = chunk.code.get(*ip).copied().unwrap_or(0);
-    *ip += 1;
-    write_leb128_u32(body, table_idx as u32);
-}
-
-fn emit_table64_fc_op(
-    body: &mut Vec<u8>,
-    chunk: &Chunk,
-    ip: &mut usize,
-    subopcode: u8,
-    has_two_indices: bool,
-) {
-    body.push(0xFC);
-    write_leb128_u32(body, subopcode as u32);
-    let table_idx = chunk.code.get(*ip).copied().unwrap_or(0);
-    *ip += 1;
-    write_leb128_u32(body, table_idx as u32);
-    if has_two_indices {
-        let second_idx = chunk.code.get(*ip).copied().unwrap_or(table_idx);
-        *ip += 1;
-        write_leb128_u32(body, second_idx as u32);
-    }
-}
-
 /// Emit a VM-internal op (prefix 0xFF) — lowered to WASM equivalents or runtime calls.
 fn emit_vm_internal_op(
     body: &mut Vec<u8>,
@@ -1855,402 +1777,17 @@ fn emit_vm_internal_op(
             body.push(0xD0);
             body.push(HT_EXTERN);
         }
-        _ if op == Op::NULL_FUNC => {
-            body.push(0xD0);
-            body.push(HT_FUNC);
-        }
-        _ if op == Op::NULL_ANY => {
-            body.push(0xD0);
-            body.push(HT_ANY);
-        }
-        _ if op == Op::NULL_NONE => {
-            body.push(0xD0);
-            body.push(HT_NONE);
-        }
-        _ if op == Op::UNDEFINED => {
-            // `global.get $js_undefined` — returns the JS host's `undefined`
-            // singleton (distinct from `ref.null extern`). The import is
-            // declared in sections.rs; its index is fixed by JS_GLOBAL_UNDEFINED.
-            body.push(0x23);
-            write_leb128_u32(body, crate::writer::sections::JS_GLOBAL_UNDEFINED);
-        }
-        _ if op == Op::SYMBOL => {
-            // Skip the const index; emit a stub externref. Symbol identity
-            // is a VM-only concept without a `wasm:js-symbol` constructor
-            // import, so we lose identity across the boundary.
-            let _ = read_u16(&chunk.code, ip);
-            body.push(0xD0);
-            body.push(0x6F);
-        }
-        _ if op == Op::BIGINT => {
-            // Skip the const index; emit a boxed i64 so host JS sees a
-            // number (closest standard value without a bigint constructor).
-            let idx = read_u16(&chunk.code, ip);
-            let n = chunk
-                .constants
-                .get(idx as usize)
-                .map(|v| match v {
-                    Value::I64(n) => *n,
-                    Value::I32(n) => *n as i64,
-                    _ => 0,
-                })
-                .unwrap_or(0);
-            body.push(0x42);
-            write_leb128_i64(body, n);
-            // box i64 as i32 (truncate high bits) — acceptable for typical bigint uses
-            body.push(0xA7); // i32.wrap_i64
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_UNDEFINED => {
-            emit_import_call(body, rt_idx, "wasm:js-undefined", "test");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_SYMBOL => {
-            emit_import_call(body, rt_idx, "wasm:js-symbol", "test");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_BIGINT => {
-            emit_import_call(body, rt_idx, "wasm:js-bigint", "test");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_I32 => {
-            crate::writer::sections::emit_test_i32(body, rt_idx);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_U32 => {
-            crate::writer::sections::emit_test_u32(body, rt_idx);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::NUM_BOX_U32 => {
-            // Top of stack is a boxed i32 — unbox, rebox as u32 for the host.
-            emit_unbox_i32(body, rt_idx);
-            crate::writer::sections::emit_box_u32(body, rt_idx);
-        }
-        _ if op == Op::NUM_UNBOX_U32 => {
-            crate::writer::sections::emit_unbox_u32(body, rt_idx);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::BOOL_CAST => {
-            crate::writer::sections::emit_unbox_bool(body, rt_idx);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::STR_CAST => {
-            crate::writer::sections::emit_str_cast(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_I32 => {
-            emit_unbox_i32(body, rt_idx);
-            crate::writer::sections::emit_str_from_i32(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_U32 => {
-            emit_unbox_i32(body, rt_idx);
-            crate::writer::sections::emit_str_from_u32(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_I64 => {
-            // i64 is stored boxed as i32 in our ABI; widen via extend_s.
-            emit_unbox_i32(body, rt_idx);
-            body.push(0xAC); // i64.extend_i32_s
-            crate::writer::sections::emit_str_from_i64(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_U64 => {
-            emit_unbox_i32(body, rt_idx);
-            body.push(0xAD); // i64.extend_i32_u
-            crate::writer::sections::emit_str_from_u64(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_F64 => {
-            emit_unbox_f64(body, rt_idx);
-            crate::writer::sections::emit_str_from_f64(body, rt_idx);
-        }
-        _ if op == Op::SYMBOL_EQ => {
-            crate::writer::sections::emit_symbol_equals(body, rt_idx);
-            emit_box_i32(body, rt_idx);
-        }
 
         // ── Typed stack-switching helpers ────────────────────────────────
         // These VM-internal typed helpers lower to the real proposal bytes.
         // The untyped stack-switching opcodes themselves live in core 0xE0..=0xE6
         // and are emitted by `emit_core_op` above.
-        _ if op == Op::CONT_NEW_TYPED => {
-            let _ = read_u16(&chunk.code, ip);
-            body.push(crate::writer::proposals::stack_switching::OP_CONT_NEW);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-        }
-        _ if op == Op::SUSPEND_TYPED => {
-            let tag_idx = read_u16(&chunk.code, ip);
-            body.push(crate::writer::proposals::stack_switching::OP_SUSPEND);
-            let wasm_tag_idx = chunk
-                .continuation_tags
-                .get(tag_idx as usize)
-                .and_then(|tag| {
-                    type_ctx
-                        .continuation_tag_indices
-                        .get(&crate::writer::types::continuation_tag_key(tag))
-                        .copied()
-                })
-                .unwrap_or(1);
-            write_leb128_u32(body, wasm_tag_idx);
-        }
-        _ if op == Op::RESUME_TYPED => {
-            let _ = read_u16(&chunk.code, ip);
-            body.push(crate::writer::proposals::stack_switching::OP_RESUME);
-            write_leb128_u32(body, type_ctx.continuation_type_idx);
-            emit_stack_switch_handlers(body, chunk, op_start);
-        }
-        _ if op == Op::TRUE => {
-            // `global.get $js_true` — produces an actual JS `true` boolean,
-            // not a boxed `1` (which previously confused `typeof` on the
-            // host side). See js-primitive-builtins proposal for globals.
-            body.push(0x23);
-            write_leb128_u32(body, crate::writer::sections::JS_GLOBAL_TRUE);
-        }
-        _ if op == Op::FALSE => {
-            body.push(0x23);
-            write_leb128_u32(body, crate::writer::sections::JS_GLOBAL_FALSE);
-        }
-        _ if op == Op::I32_CONST_0 => {
-            body.push(0x41);
-            write_leb128_i32(body, 0);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::I32_CONST_1 => {
-            body.push(0x41);
-            write_leb128_i32(body, 1);
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::F64_CONST_0 => {
-            body.push(0x44);
-            body.extend_from_slice(&0.0f64.to_le_bytes());
-            emit_box_f64(body, rt_idx);
-        }
         _ if op == Op::CALL_IMPORT => {
             let import_idx = read_u16(&chunk.code, ip);
             let _argc = chunk.code[*ip];
             *ip += 1;
             body.push(0x10);
             write_leb128_u32(body, import_idx as u32);
-        }
-        _ if op == Op::BR_IF_FALSE => {
-            // Legacy flat jump — skip operand, emit nop
-            // (compiler should use structured BR_IF instead)
-            let _offset = read_i16(&chunk.code, ip);
-            body.push(0x01); // nop
-        }
-        _ if op == Op::BR_IF_NULL => {
-            let _offset = read_i16(&chunk.code, ip);
-            body.push(0x01); // nop
-        }
-
-        // ── String ops → wasm:js-string builtins (standard WASM proposal) ──
-        _ if op == Op::STR_CONCAT => emit_import_call(body, rt_idx, "wasm:js-string", "concat"),
-        _ if op == Op::STR_EQUALS => {
-            emit_import_call(body, rt_idx, "wasm:js-string", "equals");
-            emit_box_i32(body, rt_idx); // i32 → externref
-        }
-        _ if op == Op::STR_COMPARE => {
-            emit_import_call(body, rt_idx, "wasm:js-string", "compare");
-            emit_box_i32(body, rt_idx); // i32 → externref
-        }
-        _ if op == Op::STR_LENGTH => {
-            // (externref) → i32 → need to box result
-            emit_import_call(body, rt_idx, "wasm:js-string", "length");
-            emit_box_i32(body, rt_idx); // i32 → externref
-        }
-        _ if op == Op::STR_CHAR_CODE_AT => {
-            // Stack: [externref_str, externref_idx] → need (externref, i32)
-            // TOS is idx — unbox it in place
-            emit_unbox_i32(body, rt_idx); // externref_idx → i32. Stack: [str, i32]
-            emit_import_call(body, rt_idx, "wasm:js-string", "charCodeAt");
-            emit_box_i32(body, rt_idx); // i32 result → externref
-        }
-        _ if op == Op::STR_FROM_CHAR_CODE => {
-            // (externref) → need (i32)
-            emit_unbox_i32(body, rt_idx);
-            emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCode");
-            // result is externref (string) — no conversion needed
-        }
-        _ if op == Op::STR_FROM_CODE_POINT => {
-            // (externref codepoint) → (i32)
-            emit_unbox_i32(body, rt_idx);
-            emit_import_call(body, rt_idx, "wasm:js-string", "fromCodePoint");
-        }
-        _ if op == Op::STR_CODE_POINT_AT => {
-            // Stack: [externref_str, externref_idx] → (externref, i32)
-            emit_unbox_i32(body, rt_idx);
-            emit_import_call(body, rt_idx, "wasm:js-string", "codePointAt");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::STR_INTO_CHAR_CODES => {
-            // Into-array variant: we drop the target-array arg and simply
-            // call intoCharCodeArray on (str, str itself, 0) as a placeholder
-            // — the common JS toolchains expect the caller to pass a
-            // preallocated Int16Array. In our runtime the receiving array
-            // is created on the VM side (STR_INTO_CHAR_CODES opcode); the
-            // emitted .wasm is equivalent to a noop that returns the string
-            // length. Using `length` keeps a valid signature without needing
-            // a real array reference here.
-            emit_import_call(body, rt_idx, "wasm:js-string", "length");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::STR_FROM_CHAR_CODES => {
-            // Expect: [externref_array]. We forward to fromCharCodeArray
-            // with (array, 0, -1) — the host will interpret -1 as "to end".
-            body.push(0x41);
-            write_leb128_i32(body, 0);
-            body.push(0x41);
-            write_leb128_i32(body, -1);
-            emit_import_call(body, rt_idx, "wasm:js-string", "fromCharCodeArray");
-        }
-        _ if op == Op::STR_SUBSTRING => {
-            // Stack: [externref_str, externref_start, externref_end]
-            // Need: [externref_str, i32_start, i32_end]
-            // Save end, unbox start (but start is below end on stack)
-            // Simpler: save end to temp, save start to temp+1, keep str,
-            // restore start as i32, restore end as i32
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx); // save end
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 1); // save start
-            // Stack: [externref_str]
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 1); // restore start
-            emit_unbox_i32(body, rt_idx); // → i32
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx); // restore end
-            emit_unbox_i32(body, rt_idx); // → i32
-            emit_import_call(body, rt_idx, "wasm:js-string", "substring");
-        }
-        // String ops not in wasm:js-string → stub: drop args, return first arg or null
-        _ if op == Op::STR_INDEX_OF => {
-            // Stack: [externref_str, externref_substr]
-            // Inline indexOf: for i=0 to len-sublen, check substring(i, i+sublen) == substr
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx); // $t0 = substr
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 1); // $t1 = str
-            // Get substr length
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx); // substr
-            emit_import_call(body, rt_idx, "wasm:js-string", "length"); // → i32
-            emit_box_i32(body, rt_idx);
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 2); // $t2 = sublen (boxed)
-            // Get str length
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 1); // str
-            emit_import_call(body, rt_idx, "wasm:js-string", "length"); // → i32
-            emit_box_i32(body, rt_idx);
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 3); // $t3 = strlen (boxed)
-            // i = 0 (boxed)
-            body.push(0x41);
-            write_leb128_i32(body, 0);
-            emit_box_i32(body, rt_idx);
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 4); // $t4 = i (boxed)
-            // block $exit (result externref) { loop $search (void) { ... } }
-            body.push(0x02);
-            body.push(TYPE_EXTERNREF); // block (result externref)
-            body.push(0x03);
-            body.push(0x40); // loop (void)
-            // if i > limit, push -1 and break
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 4);
-            emit_unbox_i32(body, rt_idx);
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 3);
-            emit_unbox_i32(body, rt_idx);
-            body.push(0x4A); // i32.gt_s
-            body.push(0x04);
-            body.push(0x40); // if (void) — past limit
-            body.push(0x41);
-            write_leb128_i32(body, -1);
-            emit_box_i32(body, rt_idx);
-            body.push(0x0C);
-            write_leb128_u32(body, 2); // br block (if=0, loop=1, block=2)
-            body.push(0x0B); // end if
-            // substring(str, i, i + sublen)
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 1); // str
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 4);
-            emit_unbox_i32(body, rt_idx); // i → i32
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 4);
-            emit_unbox_i32(body, rt_idx); // i → i32
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 2);
-            emit_unbox_i32(body, rt_idx); // sublen → i32
-            body.push(0x6A); // i32.add → i + sublen
-            emit_import_call(body, rt_idx, "wasm:js-string", "substring"); // (str, i, i+sublen) → string
-            // Compare with substr
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx); // substr
-            emit_import_call(body, rt_idx, "wasm:js-string", "equals"); // → i32
-            body.push(0x04);
-            body.push(0x40); // if (void)
-            // Found: push i (boxed) and break to $exit
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 4); // i (already boxed)
-            body.push(0x0C);
-            write_leb128_u32(body, 2); // br $exit (depth: if=0, loop=1, block=2)
-            body.push(0x0B); // end if
-            // i++
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx + 4);
-            emit_unbox_i32(body, rt_idx);
-            body.push(0x41);
-            write_leb128_i32(body, 1);
-            body.push(0x6A); // i32.add
-            emit_box_i32(body, rt_idx);
-            body.push(0x21);
-            write_leb128_u32(body, temp_idx + 4); // save i
-            body.push(0x0C);
-            write_leb128_u32(body, 0); // br $search (loop)
-            body.push(0x0B); // end loop
-            // Not found: push -1 (boxed)
-            body.push(0x41);
-            write_leb128_i32(body, -1);
-            emit_box_i32(body, rt_idx);
-            body.push(0x0B); // end block
-            // Result: externref (i or -1, boxed)
-        }
-        // Binary string ops (2 args → 1 result): drop second, keep first
-        _ if op == Op::STR_LAST_INDEX_OF
-            || op == Op::STR_STARTS_WITH
-            || op == Op::STR_ENDS_WITH
-            || op == Op::STR_CONTAINS
-            || op == Op::STR_SPLIT
-            || op == Op::STR_REPEAT =>
-        {
-            body.push(0x1A); // drop second arg, keep first as result
-        }
-        // Ternary string ops (3 args → 1 result): drop two, keep first
-        _ if op == Op::STR_SLICE
-            || op == Op::STR_REPLACE
-            || op == Op::STR_PAD_START
-            || op == Op::STR_PAD_END =>
-        {
-            body.push(0x1A);
-            body.push(0x1A); // drop 2, keep first
-        }
-        // Unary string ops (1 arg → 1 result): keep as-is
-        _ if op == Op::STR_CHAR_AT
-            || op == Op::STR_TO_UPPER
-            || op == Op::STR_TO_LOWER
-            || op == Op::STR_TRIM
-            || op == Op::STR_TRIM_START
-            || op == Op::STR_TRIM_END
-            || op == Op::STR_REVERSE =>
-        {
-            // pass through — input externref becomes output externref
-            body.push(0x01); // nop
-        }
-        _ if op == Op::STR_CONCAT_N => {
-            let n = chunk.code[*ip];
-            *ip += 1;
-            // Concat N strings: chain wasm:js-string concat calls
-            for _ in 1..n {
-                emit_import_call(body, rt_idx, "wasm:js-string", "concat");
-            }
         }
 
         // Phase E: the 9  ARRAY_* opcodes (PUSH/POP/SLICE/
@@ -2259,255 +1796,21 @@ fn emit_vm_internal_op(
         // compile to  CALL_IMPORTs directly via
         // .
 
-        // ── Type introspection → wasm:js-* test builtins ──
-        _ if op == Op::REF_IS_STRING => {
-            emit_import_call(body, rt_idx, "wasm:js-string", "test");
-            emit_box_i32(body, rt_idx); // i32 result → externref
-        }
-        _ if op == Op::REF_IS_NUMBER => {
-            emit_import_call(body, rt_idx, "wasm:js-number", "test");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_IS_BOOL => {
-            emit_import_call(body, rt_idx, "wasm:js-boolean", "test");
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::REF_TYPEOF => {
-            // typeof: check types using wasm:js-* test builtins
-            // Returns type name as externref string
-            // Check: null → "undefined", number → "number", string → "string", boolean → "boolean", else "object"
-            body.push(0x22);
-            write_leb128_u32(body, temp_idx); // tee value to temp
-            // Check null first
-            body.push(0xD1); // ref.is_null → i32
-            body.push(0x04);
-            body.push(TYPE_EXTERNREF); // if null (result externref)
-            // Build "undefined" via fromCharCode sequence — too verbose
-            // Simpler: use fromI32(0) as a sentinel for "undefined"
-            // Actually, the caller compares with STR_EQUALS against known strings.
-            // Since we can't create string constants here, use the number test
-            // to return a type tag that STR_EQUALS will compare.
-            // Better approach: use a chain of if/else returning distinct constants.
-            // The chunk's constant pool has the strings we need.
-            // Find "number" in constants
-            let mut number_val = None;
-            let mut string_val = None;
-            for (ci, c) in chunk.constants.iter().enumerate() {
-                if let Value::String(s) = c {
-                    match s.as_ref() {
-                        "number" => number_val = Some(ci),
-                        "string" => string_val = Some(ci),
-                        _ => {}
-                    }
-                }
-            }
-            // null → return "undefined" placeholder (ref.null extern for now)
-            body.push(0xD0);
-            body.push(0x6F); // ref.null extern = "undefined"
-            body.push(0x05); // else (not null)
-            // Check if number
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx); // value
-            emit_import_call(body, rt_idx, "wasm:js-number", "test"); // → i32
-            body.push(0x04);
-            body.push(TYPE_EXTERNREF); // if number (result externref)
-            // Return "number" constant if available, else boxed tag
-            if let Some(ci) = number_val {
-                // Emit the string constant from the chunk's pool
-                emit_string_const(body, chunk, ci, rt_idx);
-            } else {
-                body.push(0x41);
-                write_leb128_i32(body, 1);
-                emit_box_i32(body, rt_idx);
-            }
-            body.push(0x05); // else (not number)
-            // Check if string
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx);
-            emit_import_call(body, rt_idx, "wasm:js-string", "test");
-            body.push(0x04);
-            body.push(TYPE_EXTERNREF); // if string
-            if let Some(ci) = string_val {
-                emit_string_const(body, chunk, ci, rt_idx);
-            } else {
-                body.push(0x41);
-                write_leb128_i32(body, 2);
-                emit_box_i32(body, rt_idx);
-            }
-            body.push(0x05); // else
-            // Default: "object"
-            body.push(0x41);
-            write_leb128_i32(body, 3);
-            emit_box_i32(body, rt_idx);
-            body.push(0x0B); // end if string
-            body.push(0x0B); // end if number
-            body.push(0x0B); // end if null
-        }
-        _ if op == Op::REF_IS_OBJECT || op == Op::REF_IS_FUNC || op == Op::REF_IS_ARRAY => {
-            // TODO: proper type checks
-            body.push(0x1A); // drop value
-            body.push(0x41);
-            write_leb128_i32(body, 0); // push false (i32 0)
-            emit_box_i32(body, rt_idx);
-        }
         // Stack ops
-        _ if op == Op::DUP => {
-            // Duplicate TOS: local.tee $temp, local.get $temp
-            body.push(0x22);
-            write_leb128_u32(body, temp_idx); // local.tee $temp
-            body.push(0x20);
-            write_leb128_u32(body, temp_idx); // local.get $temp
-        }
-        // Exception handling
-        _ if op == Op::TRY_START => {
-            let _ = read_u16(&chunk.code, ip);
-            let _ = read_u16(&chunk.code, ip);
+        // Exception handling — a TRY_TABLE not recognised as a structural
+        // region (should not happen for compiler output) is skipped as a nop.
+        _ if op == Op::TRY_TABLE => {
+            *ip += 6; // skip immediate: clause_count, kind, tag(2), offset(2)
             body.push(0x01);
-        } // nop for now
+        }
         _ if op == Op::TRY_END => {
             body.push(0x01);
         } // nop for now
         // Spread — TODO: inline impl
-        _ if op == Op::SPREAD => {
-            body.push(0x01);
-        } // nop
         // Set timer — TODO: needs host import (not stdlib)
-        _ if op == Op::SET_TIMER => {
-            body.push(0x01);
-        } // nop
         // Upvalue get/set — closures use WASM function references
-        _ if op == Op::UPVALUE_GET => {
-            let _idx = chunk.code[*ip];
-            *ip += 1;
-            // TODO: proper closure/upvalue via WASM funcref + tables
-            body.push(0xD0);
-            body.push(0x6F); // ref.null extern (placeholder)
-        }
-        _ if op == Op::UPVALUE_SET => {
-            let _idx = chunk.code[*ip];
-            *ip += 1;
-            // TODO: proper closure/upvalue via WASM funcref + tables
-            // drop the value being set
-            body.push(0x1A); // drop
-            body.push(0xD0);
-            body.push(0x6F); // ref.null extern (placeholder return)
-        }
         // Memory64 reuses the standard memory instruction bytes. The i64
         // address shape is carried by the memory type in the binary format.
-        _ if op == Op::I64_MEMORY_SIZE => {
-            body.push(Op::MEMORY_SIZE.sub() as u8);
-            let memidx = read_optional_memidx_immediate(chunk, ip);
-            write_leb128_u32(body, memidx);
-        }
-        _ if op == Op::I64_MEMORY_GROW => {
-            body.push(Op::MEMORY_GROW.sub() as u8);
-            let memidx = read_optional_memidx_immediate(chunk, ip);
-            write_leb128_u32(body, memidx);
-        }
-        _ if op == Op::I64_MEMORY_COPY => {
-            body.push(0xFC);
-            write_leb128_u32(body, Op::MEMORY_COPY.sub() as u32);
-            let dst_mem = read_optional_memidx_immediate(chunk, ip);
-            let src_mem = read_optional_memidx_immediate(chunk, ip);
-            write_leb128_u32(body, dst_mem);
-            write_leb128_u32(body, src_mem);
-        }
-        _ if op == Op::I64_MEMORY_FILL => {
-            body.push(0xFC);
-            write_leb128_u32(body, Op::MEMORY_FILL.sub() as u32);
-            let memidx = read_optional_memidx_immediate(chunk, ip);
-            write_leb128_u32(body, memidx);
-        }
-        _ if op == Op::I32_LOAD_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD.sub() as u8, 2)
-        }
-        _ if op == Op::I64_LOAD_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD.sub() as u8, 3)
-        }
-        _ if op == Op::F32_LOAD_64 => {
-            emit_memory64_op(body, chunk, ip, Op::F32_LOAD.sub() as u8, 2)
-        }
-        _ if op == Op::F64_LOAD_64 => {
-            emit_memory64_op(body, chunk, ip, Op::F64_LOAD.sub() as u8, 3)
-        }
-        _ if op == Op::I32_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_S.sub() as u8, 0)
-        }
-        _ if op == Op::I32_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD8_U.sub() as u8, 0)
-        }
-        _ if op == Op::I32_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_S.sub() as u8, 1)
-        }
-        _ if op == Op::I32_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_LOAD16_U.sub() as u8, 1)
-        }
-        _ if op == Op::I64_LOAD8_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_S.sub() as u8, 0)
-        }
-        _ if op == Op::I64_LOAD8_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD8_U.sub() as u8, 0)
-        }
-        _ if op == Op::I64_LOAD16_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_S.sub() as u8, 1)
-        }
-        _ if op == Op::I64_LOAD16_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD16_U.sub() as u8, 1)
-        }
-        _ if op == Op::I64_LOAD32_S_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_S.sub() as u8, 2)
-        }
-        _ if op == Op::I64_LOAD32_U_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_LOAD32_U.sub() as u8, 2)
-        }
-        _ if op == Op::I32_STORE_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_STORE.sub() as u8, 2)
-        }
-        _ if op == Op::I64_STORE_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE.sub() as u8, 3)
-        }
-        _ if op == Op::F32_STORE_64 => {
-            emit_memory64_op(body, chunk, ip, Op::F32_STORE.sub() as u8, 2)
-        }
-        _ if op == Op::F64_STORE_64 => {
-            emit_memory64_op(body, chunk, ip, Op::F64_STORE.sub() as u8, 3)
-        }
-        _ if op == Op::I32_STORE8_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_STORE8.sub() as u8, 0)
-        }
-        _ if op == Op::I32_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I32_STORE16.sub() as u8, 1)
-        }
-        _ if op == Op::I64_STORE8_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE8.sub() as u8, 0)
-        }
-        _ if op == Op::I64_STORE16_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE16.sub() as u8, 1)
-        }
-        _ if op == Op::I64_STORE32_64 => {
-            emit_memory64_op(body, chunk, ip, Op::I64_STORE32.sub() as u8, 2)
-        }
-        _ if op == Op::TABLE_GET_64 => {
-            emit_table64_core_op(body, chunk, ip, Op::TABLE_GET.sub() as u8)
-        }
-        _ if op == Op::TABLE_SET_64 => {
-            emit_table64_core_op(body, chunk, ip, Op::TABLE_SET.sub() as u8)
-        }
-        _ if op == Op::TABLE_INIT_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_INIT.sub() as u8, true)
-        }
-        _ if op == Op::TABLE_COPY_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_COPY.sub() as u8, true)
-        }
-        _ if op == Op::TABLE_GROW_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_GROW.sub() as u8, false)
-        }
-        _ if op == Op::TABLE_SIZE_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_SIZE.sub() as u8, false)
-        }
-        _ if op == Op::TABLE_FILL_64 => {
-            emit_table64_fc_op(body, chunk, ip, Op::TABLE_FILL.sub() as u8, false)
-        }
         // Set type ID — GC type stamps handled by WASM GC type system
         _ if op == Op::SET_TYPE_ID => {
             body.push(0x01);

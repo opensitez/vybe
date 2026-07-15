@@ -215,12 +215,9 @@ pub fn build_type_context(
             if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
                 if matches!(op,
                     o if o == vybe_bytecode::opcode::Op::CONT_NEW
-                      || o == vybe_bytecode::opcode::Op::CONT_NEW_TYPED
                       || o == vybe_bytecode::opcode::Op::CONT_BIND
                       || o == vybe_bytecode::opcode::Op::SUSPEND
-                      || o == vybe_bytecode::opcode::Op::SUSPEND_TYPED
                       || o == vybe_bytecode::opcode::Op::RESUME
-                      || o == vybe_bytecode::opcode::Op::RESUME_TYPED
                       || o == vybe_bytecode::opcode::Op::RESUME_THROW
                       || o == vybe_bytecode::opcode::Op::SWITCH
                 ) {

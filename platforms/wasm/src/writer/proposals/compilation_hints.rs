@@ -207,7 +207,7 @@ fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
         if op == Op::LOOP {
             in_loop += 1;
         }
-        if op == Op::TRY_START {
+        if op == Op::TRY_TABLE {
             in_handler += 1;
         }
         if op == Op::END && in_loop > 0 {

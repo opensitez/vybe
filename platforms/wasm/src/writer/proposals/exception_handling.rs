@@ -87,7 +87,7 @@ pub fn module_uses_exceptions(chunks: &[Chunk]) -> bool {
             if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
                 if op == vybe_bytecode::opcode::Op::THROW
                     || op == vybe_bytecode::opcode::Op::THROW_REF
-                    || op == vybe_bytecode::opcode::Op::TRY_START
+                    || op == vybe_bytecode::opcode::Op::TRY_TABLE
                 {
                     return true;
                 }

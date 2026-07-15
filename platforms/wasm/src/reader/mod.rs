@@ -864,7 +864,7 @@ fn validate_instruction_stream(
     elem_count: usize,
     has_data_count_section: bool,
     uses_memory64: bool,
-    _uses_table64: bool,
+    uses_table64: bool,
 ) -> Result<(), String> {
     let mut pos = 0;
     let mut st = ArityStack::new(result_arity);
@@ -1389,10 +1389,20 @@ fn decode_standard_wasm(
     let exports = parse_export_section(export_sec);
     let mut memory_min_pages = parse_imported_memory_min_pages(import_sec);
     memory_min_pages.extend(parse_memory_section(memory_sec));
+    // Per-memory 64-bit index type, aligned with memory_min_pages (imported
+    // memories first — treated as 32-bit — then declared section memories).
+    let declared_is_64 = parse_memory_is_64(memory_sec);
+    let imported_mem_count = memory_min_pages.len().saturating_sub(declared_is_64.len());
+    let mut memory_is_64 = vec![false; imported_mem_count];
+    memory_is_64.extend(declared_is_64);
     let mut memory_max_pages = parse_imported_memory_max_pages(import_sec);
     memory_max_pages.extend(parse_memory_max_section(memory_sec));
     let mut table_min_sizes = parse_imported_table_min_sizes(import_sec);
     table_min_sizes.extend(parse_table_section(table_sec));
+    let declared_table_is_64 = parse_table_is_64(table_sec);
+    let imported_table_count = table_min_sizes.len().saturating_sub(declared_table_is_64.len());
+    let mut table_is_64 = vec![false; imported_table_count];
+    table_is_64.extend(declared_table_is_64);
     let (data_segments, active_data_segments) = parse_data_segments(data_sec)?;
     let (elem_segments, active_elem_segments) = parse_element_segments(elem_sec)?;
     let uses_memory64 = section_uses_memory64(memory_sec);
@@ -1456,7 +1466,9 @@ fn decode_standard_wasm(
         chunk.result_arity = result_arity;
         chunk.memory_min_pages = memory_min_pages.clone();
         chunk.memory_max_pages = memory_max_pages.clone();
+        chunk.memory_is_64 = memory_is_64.clone();
         chunk.table_min_sizes = table_min_sizes.clone();
+        chunk.table_is_64 = table_is_64.clone();
         chunk.data_segments = data_segments.clone();
         chunk.elem_segments = elem_segments.clone();
         chunk.active_data_segments = active_data_segments.clone();
@@ -1477,7 +1489,9 @@ fn decode_standard_wasm(
     }
     script.memory_min_pages = memory_min_pages;
     script.memory_max_pages = memory_max_pages;
+    script.memory_is_64 = memory_is_64;
     script.table_min_sizes = table_min_sizes;
+    script.table_is_64 = table_is_64;
     script.data_segments = data_segments;
     script.elem_segments = elem_segments;
     script.active_data_segments = active_data_segments;
@@ -1763,277 +1777,171 @@ fn translate_wasm_to_chunk(
             // Memory — ALL load/store opcodes
             0x28 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_LOAD_64
-                    } else {
-                        Op::I32_LOAD
-                    },
+                    Op::I32_LOAD,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x29 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD_64
-                    } else {
-                        Op::I64_LOAD
-                    },
+                    Op::I64_LOAD,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2A => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::F32_LOAD_64
-                    } else {
-                        Op::F32_LOAD
-                    },
+                    Op::F32_LOAD,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2B => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::F64_LOAD_64
-                    } else {
-                        Op::F64_LOAD
-                    },
+                    Op::F64_LOAD,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2C => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_LOAD8_S_64
-                    } else {
-                        Op::I32_LOAD8_S
-                    },
+                    Op::I32_LOAD8_S,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2D => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_LOAD8_U_64
-                    } else {
-                        Op::I32_LOAD8_U
-                    },
+                    Op::I32_LOAD8_U,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2E => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_LOAD16_S_64
-                    } else {
-                        Op::I32_LOAD16_S
-                    },
+                    Op::I32_LOAD16_S,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x2F => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_LOAD16_U_64
-                    } else {
-                        Op::I32_LOAD16_U
-                    },
+                    Op::I32_LOAD16_U,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x30 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD8_S_64
-                    } else {
-                        Op::I64_LOAD8_S
-                    },
+                    Op::I64_LOAD8_S,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x31 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD8_U_64
-                    } else {
-                        Op::I64_LOAD8_U
-                    },
+                    Op::I64_LOAD8_U,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x32 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD16_S_64
-                    } else {
-                        Op::I64_LOAD16_S
-                    },
+                    Op::I64_LOAD16_S,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x33 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD16_U_64
-                    } else {
-                        Op::I64_LOAD16_U
-                    },
+                    Op::I64_LOAD16_U,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x34 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD32_S_64
-                    } else {
-                        Op::I64_LOAD32_S
-                    },
+                    Op::I64_LOAD32_S,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x35 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_LOAD32_U_64
-                    } else {
-                        Op::I64_LOAD32_U
-                    },
+                    Op::I64_LOAD32_U,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x36 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_STORE_64
-                    } else {
-                        Op::I32_STORE
-                    },
+                    Op::I32_STORE,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x37 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_STORE_64
-                    } else {
-                        Op::I64_STORE
-                    },
+                    Op::I64_STORE,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x38 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::F32_STORE_64
-                    } else {
-                        Op::F32_STORE
-                    },
+                    Op::F32_STORE,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x39 => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::F64_STORE_64
-                    } else {
-                        Op::F64_STORE
-                    },
+                    Op::F64_STORE,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3A => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_STORE8_64
-                    } else {
-                        Op::I32_STORE8
-                    },
+                    Op::I32_STORE8,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3B => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I32_STORE16_64
-                    } else {
-                        Op::I32_STORE16
-                    },
+                    Op::I32_STORE16,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3C => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_STORE8_64
-                    } else {
-                        Op::I64_STORE8
-                    },
+                    Op::I64_STORE8,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3D => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_STORE16_64
-                    } else {
-                        Op::I64_STORE16
-                    },
+                    Op::I64_STORE16,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3E => {
                 chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_STORE32_64
-                    } else {
-                        Op::I64_STORE32
-                    },
+                    Op::I64_STORE32,
                     0,
                 );
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3F => {
-                chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_MEMORY_SIZE
-                    } else {
-                        Op::MEMORY_SIZE
-                    },
-                    0,
-                );
+                chunk.emit_op(Op::MEMORY_SIZE, 0);
                 read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
             }
             0x40 => {
-                chunk.emit_op(
-                    if uses_memory64 {
-                        Op::I64_MEMORY_GROW
-                    } else {
-                        Op::MEMORY_GROW
-                    },
-                    0,
-                );
+                chunk.emit_op(Op::MEMORY_GROW, 0);
                 read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
             }
 
@@ -2123,11 +2031,7 @@ fn translate_wasm_to_chunk(
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 chunk.emit_op_u8(
-                    if uses_table64 {
-                        Op::TABLE_GET_64
-                    } else {
-                        Op::TABLE_GET
-                    },
+                    Op::TABLE_GET,
                     idx as u8,
                     0,
                 );
@@ -2136,11 +2040,7 @@ fn translate_wasm_to_chunk(
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 chunk.emit_op_u8(
-                    if uses_table64 {
-                        Op::TABLE_SET_64
-                    } else {
-                        Op::TABLE_SET
-                    },
+                    Op::TABLE_SET,
                     idx as u8,
                     0,
                 );
@@ -2184,26 +2084,12 @@ fn translate_wasm_to_chunk(
                         chunk.emit_op_u8(Op::DATA_DROP, data_idx as u8, 0);
                     }
                     0x0A => {
-                        chunk.emit_op(
-                            if uses_memory64 {
-                                Op::I64_MEMORY_COPY
-                            } else {
-                                Op::MEMORY_COPY
-                            },
-                            0,
-                        );
+                        chunk.emit_op(Op::MEMORY_COPY, 0);
                         read_emit_optional_memidx(&mut chunk, wasm, &mut pos); // dst memory
                         read_emit_optional_memidx(&mut chunk, wasm, &mut pos); // src memory
                     }
                     0x0B => {
-                        chunk.emit_op(
-                            if uses_memory64 {
-                                Op::I64_MEMORY_FILL
-                            } else {
-                                Op::MEMORY_FILL
-                            },
-                            0,
-                        );
+                        chunk.emit_op(Op::MEMORY_FILL, 0);
                         read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
                     }
                     0x0C => {
@@ -2212,11 +2098,7 @@ fn translate_wasm_to_chunk(
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         chunk.emit_op(
-                            if uses_table64 {
-                                Op::TABLE_INIT_64
-                            } else {
-                                Op::TABLE_INIT
-                            },
+                            Op::TABLE_INIT,
                             0,
                         );
                         chunk.emit(elem_idx as u8, 0);
@@ -2233,11 +2115,7 @@ fn translate_wasm_to_chunk(
                         let (src_table, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         chunk.emit_op(
-                            if uses_table64 {
-                                Op::TABLE_COPY_64
-                            } else {
-                                Op::TABLE_COPY
-                            },
+                            Op::TABLE_COPY,
                             0,
                         );
                         chunk.emit(dst_table as u8, 0);
@@ -2247,11 +2125,7 @@ fn translate_wasm_to_chunk(
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         chunk.emit_op_u8(
-                            if uses_table64 {
-                                Op::TABLE_GROW_64
-                            } else {
-                                Op::TABLE_GROW
-                            },
+                            Op::TABLE_GROW,
                             table_idx as u8,
                             0,
                         );
@@ -2260,11 +2134,7 @@ fn translate_wasm_to_chunk(
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         chunk.emit_op_u8(
-                            if uses_table64 {
-                                Op::TABLE_SIZE_64
-                            } else {
-                                Op::TABLE_SIZE
-                            },
+                            Op::TABLE_SIZE,
                             table_idx as u8,
                             0,
                         );
@@ -2273,11 +2143,7 @@ fn translate_wasm_to_chunk(
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         chunk.emit_op_u8(
-                            if uses_table64 {
-                                Op::TABLE_FILL_64
-                            } else {
-                                Op::TABLE_FILL
-                            },
+                            Op::TABLE_FILL,
                             table_idx as u8,
                             0,
                         );
@@ -2880,6 +2746,41 @@ fn parse_table_section(data: &[u8]) -> Vec<u64> {
     tables
 }
 
+/// Per-memory index type from the memory section: `true` = 64-bit. Aligns
+/// with `parse_memory_section`. The VM reads this (via `chunk.memory_is_64`)
+/// to decide load/store address width — memory64 adds no new opcodes.
+fn parse_memory_is_64(data: &[u8]) -> Vec<bool> {
+    if data.is_empty() {
+        return vec![];
+    }
+    let mut pos = 0;
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        if pos >= data.len() {
+            break;
+        }
+        let flags = data[pos];
+        pos += 1;
+        let is_memory64 = flags & 0x04 != 0;
+        let has_max = flags & 0x01 != 0;
+        out.push(is_memory64);
+        // Skip min (and max if present), width per index type, to reach the
+        // next entry.
+        for _ in 0..(1 + usize::from(has_max)) {
+            if is_memory64 {
+                let (_, r) = read_leb128_u64_local(&data[pos..]);
+                pos += r;
+            } else {
+                let (_, r) = read_leb128_u32(&data[pos..]);
+                pos += r;
+            }
+        }
+    }
+    out
+}
+
 fn section_uses_memory64(data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
@@ -2904,6 +2805,33 @@ fn section_uses_memory64(data: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Per-table index type from the table section: `true` = 64-bit (table64).
+/// Aligns with `parse_table_section`. table64 adds no new opcodes.
+fn parse_table_is_64(data: &[u8]) -> Vec<bool> {
+    if data.is_empty() {
+        return vec![];
+    }
+    let mut pos = 0;
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        if pos + 1 >= data.len() {
+            break;
+        }
+        pos += 1; // element type
+        let flags = data[pos];
+        pos += 1;
+        out.push(flags & 0x04 != 0);
+        let has_max = flags & 0x01 != 0;
+        skip_leb128(data, &mut pos);
+        if has_max {
+            skip_leb128(data, &mut pos);
+        }
+    }
+    out
 }
 
 fn section_uses_table64(data: &[u8]) -> bool {
