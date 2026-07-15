@@ -240,7 +240,11 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    pub(super) fn emit_python_contains_from_locals(&mut self, container_slot: u16, needle_slot: u16) {
+    pub(super) fn emit_python_contains_from_locals(
+        &mut self,
+        container_slot: u16,
+        needle_slot: u16,
+    ) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, container_slot);
         fn_call!(self, "wasm:js-string", "test", 1);
@@ -535,10 +539,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_lt,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_lt, line
                     );
                     return;
                 }
@@ -576,10 +580,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_gt,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_gt, line
                     );
                     return;
                 }
@@ -617,10 +621,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_le,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_le, line
                     );
                     return;
                 }
@@ -658,10 +662,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_ge,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_ge, line
                     );
                     return;
                 }
@@ -706,10 +710,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_lt,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_lt, line
                     );
                 } else if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
@@ -731,10 +735,10 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).relational_compare.unwrap()(
-                        self.chunk(),
-                        crate::emitter::ops::emit_dyn_gt,
-                        line,
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .relational_compare
+                        .unwrap()(
+                        self.chunk(), crate::emitter::ops::emit_dyn_gt, line
                     );
                 } else if self.profile.name == "pascal" {
                     self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
@@ -871,11 +875,9 @@ impl Compiler {
                 if self.uses_proxy {
                     self.emit_u16(Op::LOCAL_GET, t_y);
                     self.emit_u16(Op::LOCAL_GET, t_x);
-                    vybe_plugin::registry::hooks(&self.profile.name).proxy_has.unwrap()(
-                        &mut self.chunks,
-                        self.current,
-                        l,
-                    );
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .proxy_has
+                        .unwrap()(&mut self.chunks, self.current, l);
                     return;
                 }
 
@@ -1152,7 +1154,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn assign_target_matches_expr(&self, target: &Expression, expr: &Expression) -> bool {
+    pub(super) fn assign_target_matches_expr(
+        &self,
+        target: &Expression,
+        expr: &Expression,
+    ) -> bool {
         match (&target.kind, &expr.kind) {
             (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
             (

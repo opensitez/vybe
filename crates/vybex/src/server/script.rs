@@ -7,10 +7,9 @@
 //! through the `ResponseMessage` channel owned by the `RequestContext`
 //! and is assembled into a hyper response by `response_stream`.
 //!
-//! Languages that don't yet have a server adapter (everything besides
-//! PHP in Phase 1) will get their CLI-style output. The PHP adapter
-//! that routes `echo` through `vybe:http/response.write` lands in the
-//! next slice.
+//! CLI-style stdout from scripts is bound to the HTTP response body for
+//! request handling. Language-level buffering (PHP `ob_*`, etc.) happens
+//! before bytes reach the WASI stdout stream.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -160,38 +159,29 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     // uniformly. PHP's `$_SERVER['REQUEST_METHOD']` lands here.
     inject_superglobals(&mut vm, &ctx);
 
-    // SAPI-style output override: re-register `wasi:cli/log` (what PHP `echo`,
-    // JS `console.log`, and most language `print` calls compile to) to write
-    // to the HTTP response body when a request context is installed. Mirrors
-    // how PHP's real `sapi_module->ub_write` is swapped per SAPI. The
-    // default stderr path stays for anything that reaches the fn with no
-    // context (e.g., inside a callback on a bare thread).
+    // SAPI-style stdout override: bind the WASI stdout stream to the HTTP
+    // response body for this request. PHP `echo`/`print` and other normal
+    // script output should use stdout; diagnostics stay on logging/stderr.
     vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(|_ctx, args| {
-            // PHP echo emits one call per argument with arity 1, so we don't
-            // join with spaces here — each call writes its single arg verbatim.
-            // Semantics: "no newline, no joining" matches real PHP `echo`.
-            let mut buf = Vec::<u8>::new();
-            for a in args {
-                match a {
-                    vybe_bytecode::Value::String(s) => buf.extend_from_slice(s.as_bytes()),
-                    other => buf.extend_from_slice(format!("{}", other).as_bytes()),
+        "wasi:cli/stdout",
+        "write-via-stream",
+        Box::new(|host_ctx, args| {
+            let stream_val = args.first().cloned().unwrap_or(vybe_bytecode::Value::Null);
+            let bytes = host_ctx.stream_drain(&stream_val);
+            if !bytes.is_empty() {
+                match vybe_host::with_context(|c| {
+                    c.response.lock().unwrap().write_bytes(bytes.clone());
+                }) {
+                    Some(()) => {}
+                    None => {
+                        use std::io::Write;
+                        let _ = std::io::stdout().write_all(&bytes);
+                    }
                 }
             }
-            match vybe_host::with_context(|c| {
-                c.response.lock().unwrap().write_bytes(buf.clone());
-            }) {
-                Some(()) => {} // wrote to response
-                None => {
-                    // CLI fallback — mirrors original console::register behavior
-                    // (println per log call).
-                    let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-                    println!("{}", parts.join(" "));
-                }
-            }
-            vybe_bytecode::Value::Null
+            let (fut, fut_id) = host_ctx.create_future();
+            host_ctx.resolve_future(fut_id, vybe_bytecode::Value::Null);
+            fut
         }),
     );
 

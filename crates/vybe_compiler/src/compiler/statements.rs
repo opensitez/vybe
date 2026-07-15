@@ -7,7 +7,6 @@
 use super::*;
 
 impl Compiler {
-
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         self.line = stmt.span.start_line;
         match &stmt.kind {
@@ -3979,7 +3978,10 @@ impl Compiler {
     /// the value. Used by `let { a: { b: { c } } } = ...` and friends.
     /// Defines locals at every leaf ident — call sites must already be
     /// in the right scope.
-    pub(super) fn compile_destructure_bind(&mut self, pattern: &BindingPattern) -> Result<(), String> {
+    pub(super) fn compile_destructure_bind(
+        &mut self,
+        pattern: &BindingPattern,
+    ) -> Result<(), String> {
         match pattern {
             BindingPattern::Ident(name) => {
                 let slot = self.define_local(name);
@@ -4328,18 +4330,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set_bool.unwrap()(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
+                        vybe_plugin::registry::hooks(&self.profile.name)
+                            .proxy_set_bool
+                            .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set.unwrap()(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
+                        vybe_plugin::registry::hooks(&self.profile.name)
+                            .proxy_set
+                            .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP); // adapter leaves [value] on stack
                     }
                     return Ok(());
@@ -4847,18 +4845,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set_bool.unwrap()(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
+                        vybe_plugin::registry::hooks(&self.profile.name)
+                            .proxy_set_bool
+                            .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_plugin::registry::hooks(&self.profile.name).proxy_set.unwrap()(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
+                        vybe_plugin::registry::hooks(&self.profile.name)
+                            .proxy_set
+                            .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
                     }
                     return Ok(());

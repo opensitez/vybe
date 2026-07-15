@@ -3,7 +3,9 @@
 //! Extracted from `compiler/calls.rs` (`impl Compiler`).
 
 use super::*;
-use crate::compiler::calls::{terminal_type_name, strip_generic_suffix, extract_generic_type_name, resolve_receiver_type_hint};
+use crate::compiler::calls::{
+    extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name,
+};
 
 impl Compiler {
     pub(super) fn try_compile_dotnet_guid_try_parse(
@@ -632,7 +634,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn resolve_reflection_type_array_expr(&self, expr: &Expression) -> Option<Vec<String>> {
+    pub(super) fn resolve_reflection_type_array_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<Vec<String>> {
         match &expr.kind {
             ExprKind::Array(items) => items
                 .iter()
@@ -643,7 +648,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn resolve_reflection_invoke_args(&self, expr: &Expression) -> Option<Vec<Argument>> {
+    pub(super) fn resolve_reflection_invoke_args(
+        &self,
+        expr: &Expression,
+    ) -> Option<Vec<Argument>> {
         match &expr.kind {
             ExprKind::Lit(Literal::Null) => Some(Vec::new()),
             ExprKind::Array(items) => Some(
@@ -656,7 +664,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn resolve_reflection_string_member_expr(&self, expr: &Expression) -> Option<String> {
+    pub(super) fn resolve_reflection_string_member_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<String> {
         let ExprKind::Member { object, field, .. } = &expr.kind else {
             return None;
         };
@@ -715,7 +726,10 @@ impl Compiler {
         ])))
     }
 
-    pub(super) fn compile_reflection_type_array(&mut self, type_names: &[String]) -> Result<(), String> {
+    pub(super) fn compile_reflection_type_array(
+        &mut self,
+        type_names: &[String],
+    ) -> Result<(), String> {
         let line = self.line;
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         for type_name in type_names {
@@ -845,7 +859,10 @@ impl Compiler {
             .collect()
     }
 
-    pub(super) fn compile_reflection_attribute_instance(&mut self, attr: &Expression) -> Result<(), String> {
+    pub(super) fn compile_reflection_attribute_instance(
+        &mut self,
+        attr: &Expression,
+    ) -> Result<(), String> {
         let ExprKind::New { class, args } = &attr.kind else {
             return self.compile_expr(attr);
         };
@@ -880,7 +897,10 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn compile_reflection_attribute_array(&mut self, attrs: &[Expression]) -> Result<(), String> {
+    pub(super) fn compile_reflection_attribute_array(
+        &mut self,
+        attrs: &[Expression],
+    ) -> Result<(), String> {
         let line = self.line;
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         for attr in attrs {
@@ -1487,7 +1507,10 @@ impl Compiler {
         Ok(true)
     }
 
-    pub(super) fn canonical_enum_type_from_runtime_type(&self, expr: &Expression) -> Option<String> {
+    pub(super) fn canonical_enum_type_from_runtime_type(
+        &self,
+        expr: &Expression,
+    ) -> Option<String> {
         let ExprKind::Lit(Literal::Str(type_name)) = &expr.kind else {
             return None;
         };
@@ -1993,5 +2016,4 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
     // Lambda compilation
     // ════════════════════════════════════════════════════════════════════════
-
 }

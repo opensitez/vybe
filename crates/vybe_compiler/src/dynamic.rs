@@ -5,14 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use vybe_bytecode::chunk::Chunk;
-use vybe_bytecode::chunk::Import;
-use vybe_bytecode::opcode::{Op, OperandFormat};
-use vybe_bytecode::value::{Function, Object, ObjectKind};
-use vybe_bytecode::{HostContext, ImportTarget, VM, Value};
 use crate::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
 use crate::compiler::HostImportMetadata;
 use crate::languages::{self, Language};
+use vybe_bytecode::chunk::Chunk;
+use vybe_bytecode::chunk::Import;
+use vybe_bytecode::value::{Function, Object, ObjectKind};
+use vybe_bytecode::{HostContext, ImportTarget, Value, VM};
 use vybe_host::{Capabilities, Capability};
 
 thread_local! {
@@ -482,7 +481,7 @@ impl PhpIncludeRuntime {
         let language = languages::find_by_name("php")
             .ok_or_else(|| "php language profile missing".to_string())?;
         let bundle = bundle_from_source(source, language, resolved_path.clone());
-        let mut compiled = self.compile_dynamic_php(vm, &bundle, &entry)?;
+        let compiled = self.compile_dynamic_php(vm, &bundle, &entry)?;
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
@@ -493,20 +492,17 @@ impl PhpIncludeRuntime {
             .first()
             .map(|chunk| chunk.imports.clone())
             .unwrap_or_default();
-        let (merged_active_imports, child_import_remap) =
-            merge_imports(&self.active_imports, &child_active_imports);
-        remap_import_operands(&mut compiled.chunks, &child_import_remap)?;
-        let merged_active_resolved_imports = resolve_imports(vm, &merged_active_imports)?;
+        let child_active_resolved_imports = resolve_imports(vm, &child_active_imports)?;
         let saved_active_imports =
-            std::mem::replace(&mut self.active_imports, merged_active_imports);
+            std::mem::replace(&mut self.active_imports, child_active_imports);
         let saved_active_resolved_imports = std::mem::replace(
             &mut self.active_resolved_imports,
-            merged_active_resolved_imports.clone(),
+            child_active_resolved_imports.clone(),
         );
 
         self.current_paths.push(canonical_path.clone());
         let result = vm
-            .run_linked(compiled.chunks, merged_active_resolved_imports)
+            .run_linked_nested(compiled.chunks, child_active_resolved_imports)
             .map_err(|err| err.to_string());
         self.current_paths.pop();
         self.active_imports = saved_active_imports;
@@ -637,9 +633,7 @@ impl JsDynamicRuntime {
                 {
                     for d in declarations {
                         let mut names = std::collections::HashSet::new();
-                        crate::compiler::collect_binding_pattern_names_pub(
-                            &d.pattern, &mut names,
-                        );
+                        crate::compiler::collect_binding_pattern_names_pub(&d.pattern, &mut names);
                         var_names.extend(names);
                     }
                     if let Some(off) =
@@ -886,7 +880,10 @@ impl JsDynamicRuntime {
                 let copy = match v {
                     Value::Object(obj) => {
                         let o = obj.lock().unwrap();
-                        !matches!(o.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+                        !matches!(
+                            o.kind,
+                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                        )
                     }
                     _ => true,
                 };
@@ -919,7 +916,11 @@ impl JsDynamicRuntime {
         // language whose eval'd code uses an explicit top-level `return`) uses
         // the script's return value; `exec`/others return that value too.
         let result = match completion_capture {
-            Some(name) => eval_vm.globals.get(name).cloned().unwrap_or(Value::Undefined),
+            Some(name) => eval_vm
+                .globals
+                .get(name)
+                .cloned()
+                .unwrap_or(Value::Undefined),
             None => run_result,
         };
 
@@ -1539,87 +1540,14 @@ fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, Str
     Ok(resolved)
 }
 
-fn merge_imports(active_imports: &[Import], child_imports: &[Import]) -> (Vec<Import>, Vec<u16>) {
-    let mut merged = active_imports.to_vec();
-    let mut remap = Vec::with_capacity(child_imports.len());
-
-    for child in child_imports {
-        let index = merged
-            .iter()
-            .position(|active| active.module == child.module && active.name == child.name)
-            .unwrap_or_else(|| {
-                merged.push(child.clone());
-                merged.len() - 1
-            });
-        remap.push(index as u16);
-    }
-
-    (merged, remap)
-}
-
-fn remap_import_operands(chunks: &mut [Chunk], remap: &[u16]) -> Result<(), String> {
-    for chunk in chunks {
-        let code = &mut chunk.code;
-        let mut ip = 0;
-        while ip < code.len() {
-            if ip + 3 >= code.len() {
-                break;
-            }
-            let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
-            let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-            let Some(op) = Op::decode(group, sub) else {
-                ip += 4;
-                continue;
-            };
-            if op == Op::CALL_IMPORT && ip + 5 < code.len() {
-                let old_idx = ((code[ip + 4] as u16) << 8) | (code[ip + 5] as u16);
-                let Some(&new_idx) = remap.get(old_idx as usize) else {
-                    return Err(format!(
-                        "dynamic include import remap missing entry for index {old_idx}"
-                    ));
-                };
-                code[ip + 4] = (new_idx >> 8) as u8;
-                code[ip + 5] = (new_idx & 0xff) as u8;
-            }
-            ip += 4;
-            match op.operand_format() {
-                OperandFormat::Closure => {
-                    ip += 2 + 1;
-                    if ip > 0 && ip - 1 < code.len() {
-                        let uv_count = code[ip - 1] as usize;
-                        ip += uv_count * 2;
-                    }
-                }
-                OperandFormat::BrTable => {
-                    if ip < code.len() {
-                        let count = code[ip] as usize;
-                        ip += 2 + count;
-                    }
-                }
-                OperandFormat::TryTable => {
-                    if ip < code.len() {
-                        let count = code[ip] as usize;
-                        ip += 1 + count * 3;
-                    }
-                }
-                format => {
-                    ip += format.fixed_size();
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{JsDynamicRuntime, RuntimeCompilerService, ensure_js_runtime_registered};
-    use vybe_bytecode::{VM, Value};
+    use super::{ensure_js_runtime_registered, JsDynamicRuntime, RuntimeCompilerService};
+    use vybe_bytecode::{Value, VM};
 
     struct DynamicSmokeCase {
         language: &'static str,

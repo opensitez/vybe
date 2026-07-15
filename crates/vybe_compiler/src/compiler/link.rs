@@ -149,6 +149,51 @@ impl Compiler {
         }
     }
 
+    pub(super) fn predeclare_function_names(&mut self, body: &[Statement]) {
+        for stmt in body {
+            let StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                is_generator,
+                ..
+            } = &stmt.kind
+            else {
+                continue;
+            };
+
+            let cname = self.canon(name);
+            self.defined_globals.insert(cname.clone());
+            self.defined_functions.insert(cname.clone());
+            if *is_generator && self.profile.buffered_iterator_methods {
+                self.generator_functions.insert(cname.clone());
+            }
+            self.function_param_modes
+                .entry(cname.clone())
+                .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
+            self.function_param_types
+                .entry(cname.clone())
+                .or_insert_with(|| params.iter().map(|param| param.type_hint.clone()).collect());
+            self.function_min_arity
+                .entry(cname.clone())
+                .or_insert_with(|| {
+                    params
+                        .iter()
+                        .take_while(|param| param.default.is_none() && !param.is_rest)
+                        .count()
+                });
+            self.function_signatures
+                .entry(cname.clone())
+                .or_default()
+                .push(CallSignature::from_params(params));
+            if let Some(return_type) = return_type.as_ref() {
+                self.function_return_types
+                    .entry(cname)
+                    .or_insert_with(|| return_type.clone());
+            }
+        }
+    }
+
     pub(super) fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
         let mut fields = Vec::new();
         let mut instance_member_names = Vec::new();
@@ -232,7 +277,11 @@ impl Compiler {
             });
     }
 
-    pub(super) fn register_module_static_container(&mut self, module_name: &str, members: &[ClassMember]) {
+    pub(super) fn register_module_static_container(
+        &mut self,
+        module_name: &str,
+        members: &[ClassMember],
+    ) {
         let mut module_static_fields: Vec<String> = Vec::new();
         let mut module_static_field_types: HashMap<String, String> = HashMap::new();
         let mut module_static_methods: Vec<String> = Vec::new();
@@ -555,5 +604,4 @@ impl Compiler {
             _ => format!("{}{}", target, suffix),
         }
     }
-
 }

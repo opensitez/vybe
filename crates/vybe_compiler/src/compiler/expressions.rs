@@ -14,12 +14,9 @@ impl Compiler {
     fn emit_constructor_global_ref(&mut self, ctor_global: &str, autoload_name: &str) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_plugin::registry::hooks(&self.profile.name).constructor_ref_autoload.unwrap()(
-                self.chunk(),
-                ctor_global,
-                autoload_name,
-                line,
-            );
+            vybe_plugin::registry::hooks(&self.profile.name)
+                .constructor_ref_autoload
+                .unwrap()(self.chunk(), ctor_global, autoload_name, line);
         } else {
             let idx = self.str_const(ctor_global);
             self.emit_u16(Op::GLOBAL_GET, idx);
@@ -36,7 +33,9 @@ impl Compiler {
     ) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_plugin::registry::hooks(&self.profile.name).dynamic_constructor_ref_autoload.unwrap()(
+            vybe_plugin::registry::hooks(&self.profile.name)
+                .dynamic_constructor_ref_autoload
+                .unwrap()(
                 self.chunk(),
                 primary_ctor_global,
                 fallback_ctor_global,
@@ -1840,11 +1839,9 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
-                        &mut self.chunks,
-                        self.current,
-                        line,
-                    );
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .proxy_get
+                        .unwrap()(&mut self.chunks, self.current, line);
                     return Ok(());
                 }
 
@@ -2814,11 +2811,9 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
-                        &mut self.chunks,
-                        self.current,
-                        line,
-                    );
+                    vybe_plugin::registry::hooks(&self.profile.name)
+                        .proxy_get
+                        .unwrap()(&mut self.chunks, self.current, line);
                 } else if self.profile.dynamic_member_access && *null_safe {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_index_obj");
@@ -3166,19 +3161,13 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         inst!(self, recipes::is_object);
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
 
                         let kind_key = self.str_const("__ref_kind");
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::STRUCT_GET, kind_key);
-                        self.emit_const(Value::String(Arc::from("cell")));
-                        {
-                            let line = self.line;
-                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                        }
+                        self.emit_string_eq_literal("cell");
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -3282,10 +3271,10 @@ impl Compiler {
                             self.compile_expr(&args[0].value)?;
                             self.compile_expr(&args[1].value)?;
                             let line = self.line;
-                            vybe_plugin::registry::hooks(&self.profile.name).proxy_create.unwrap()(
-                                &mut self.chunks,
-                                self.current,
-                                line,
+                            vybe_plugin::registry::hooks(&self.profile.name)
+                                .proxy_create
+                                .unwrap()(
+                                &mut self.chunks, self.current, line
                             );
                             return Ok(());
                         }
@@ -4242,7 +4231,7 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                // Track dynamic key in __keys (stringified)
+                                                     // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4422,9 +4411,9 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                            // Track key — host fn checks if it's a
-                            // Symbol and routes to `__sym_keys` so
-                            // Object.keys excludes it (ECMA-262 §7.3.22).
+                                                 // Track key — host fn checks if it's a
+                                                 // Symbol and routes to `__sym_keys` so
+                                                 // Object.keys excludes it (ECMA-262 §7.3.22).
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                             let track_idx = self.import("ecma:object", "trackKey");

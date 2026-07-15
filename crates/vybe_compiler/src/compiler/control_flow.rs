@@ -540,6 +540,34 @@ impl Compiler {
         matches!(field, "__ref_kind" | "__base" | "__idx" | "__value")
     }
 
+    pub(super) fn emit_string_slot_eq_literal(&mut self, slot: u16, literal: &str) {
+        self.emit_u16(Op::LOCAL_GET, slot);
+        let test = self.import("wasm:js-string", "test");
+        self.emit_host_call(test, 1);
+        let line = self.line;
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_const(Value::String(Arc::from(literal)));
+        let eq = self.import("wasm:js-string", "equals");
+        self.emit_host_call(eq, 2);
+        self.chunk().emit_else(line);
+        self.emit_const(Value::I32(0));
+        self.chunk().emit_end(line);
+    }
+
+    pub(super) fn emit_string_eq_literal(&mut self, literal: &str) {
+        let slot = self.define_local("__string_eq_candidate");
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit_string_slot_eq_literal(slot, literal);
+    }
+
+    pub(super) fn emit_raw_string_slot_eq_literal(&mut self, slot: u16, literal: &str) {
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_const(Value::String(Arc::from(literal)));
+        let eq = self.import("wasm:js-string", "equals");
+        self.emit_host_call(eq, 2);
+    }
+
     pub(super) fn emit_autoderef_pointer_cell(&mut self) {
         let obj_slot = self.define_local("__ref_autoderef_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -547,20 +575,14 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         inst!(self, recipes::is_object);
         let obj_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), obj_line);
         self.chunk().emit_if(obj_line);
 
         let kind_key = self.str_const("__ref_kind");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::STRUCT_GET, kind_key);
-        self.emit_const(Value::String(Arc::from("cell")));
-        {
-            let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        }
+        self.emit_string_eq_literal("cell");
         let cell_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), cell_line);
         self.chunk().emit_if(cell_line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
@@ -568,13 +590,8 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::STRUCT_GET, kind_key);
-        self.emit_const(Value::String(Arc::from("carray")));
-        {
-            let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        }
+        self.emit_string_eq_literal("carray");
         let carray_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), carray_line);
         self.chunk().emit_if(carray_line);
 
         let base_key = self.str_const("__base");
@@ -588,18 +605,12 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, base_slot);
         inst!(self, recipes::is_object);
         let base_obj_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), base_obj_line);
         self.chunk().emit_if(base_obj_line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::STRUCT_GET, kind_key);
-        self.emit_const(Value::String(Arc::from("cell")));
-        {
-            let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        }
+        self.emit_string_eq_literal("cell");
         let base_cell_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), base_cell_line);
         self.chunk().emit_if(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
@@ -694,7 +705,14 @@ impl Compiler {
                 }
             }
         }
-        let slot = self.scopes.last_mut().unwrap().define(name);
+        let slot = if self.is_php_profile() && name.starts_with('$') {
+            self.scopes
+                .last_mut()
+                .unwrap()
+                .define_at_function_scope(name, None)
+        } else {
+            self.scopes.last_mut().unwrap().define(name)
+        };
         let high = self.scopes.last().unwrap().next_slot;
         let cur = self.current;
         if high > self.chunks[cur].local_count {
@@ -736,7 +754,7 @@ impl Compiler {
         self.emit_host_call(str_test, 1);
         self.chunk().emit_if(line); // string key → skip wrap
         self.chunk().emit_else(line); // non-string → wrap
-        // if idx < 0: idx = arr.length + idx
+                                      // if idx < 0: idx = arr.length + idx
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         self.emit_const(Value::I32(0));
         {
@@ -766,7 +784,7 @@ impl Compiler {
         self.chunk().patch_block(block_p);
         self.label_depth -= 1;
         self.chunk().emit_end(line); // close the string-key guard `if`
-        // Re-push [arr, idx_norm] for the caller's emit_get.
+                                     // Re-push [arr, idx_norm] for the caller's emit_get.
         self.emit_u16(Op::LOCAL_GET, arr_slot);
         self.emit_u16(Op::LOCAL_GET, idx_slot);
     }
@@ -843,7 +861,10 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn emit_return_through_finally(&mut self, result_count: usize) -> Result<(), String> {
+    pub(super) fn emit_return_through_finally(
+        &mut self,
+        result_count: usize,
+    ) -> Result<(), String> {
         // Preferred path: a single-value return that must cross only
         // `try_table` joins (no `using`/dispose, no ref-out packing) routes
         // through the innermost join — `finally` runs OUTSIDE the handler, then
@@ -983,7 +1004,10 @@ impl Compiler {
         self.chunk().emit_br(depth, line);
     }
 
-    pub(super) fn emit_continue_through_finally(&mut self, label: Option<&str>) -> Result<(), String> {
+    pub(super) fn emit_continue_through_finally(
+        &mut self,
+        label: Option<&str>,
+    ) -> Result<(), String> {
         let target_ctx = if let Some(lbl) = label {
             self.loops
                 .iter()
@@ -1049,11 +1073,17 @@ impl Compiler {
                 }
             }
         }
-        let slot = self
-            .scopes
-            .last_mut()
-            .unwrap()
-            .define_typed(name, type_hint);
+        let slot = if self.is_php_profile() && name.starts_with('$') {
+            self.scopes
+                .last_mut()
+                .unwrap()
+                .define_at_function_scope(name, type_hint)
+        } else {
+            self.scopes
+                .last_mut()
+                .unwrap()
+                .define_typed(name, type_hint)
+        };
         let high = self.scopes.last().unwrap().next_slot;
         let cur = self.current;
         if high > self.chunks[cur].local_count {

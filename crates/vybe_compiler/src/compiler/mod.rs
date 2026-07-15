@@ -32,36 +32,36 @@ macro_rules! fn_call {
     }};
 }
 
-mod calls;
-mod php_lang;
-mod scope;
-mod dotnet_calls;
-mod lambdas;
-mod builtins;
-mod overloads;
-mod link;
-mod metadata;
-mod control_flow;
-mod emit_helpers;
 mod arrays;
-mod type_inference;
 mod bindings;
+mod builtins;
+mod calls;
 mod class_context;
-mod statements;
-mod operators;
-mod classes;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
+mod classes;
+mod control_flow;
+mod dotnet_calls;
+mod emit_helpers;
 mod events;
 mod expressions;
+mod lambdas;
+mod link;
+mod metadata;
+mod operators;
+mod overloads;
+mod php_lang;
 mod resolver;
+mod scope;
+mod statements;
+mod type_inference;
 
 use crate::ast::*;
+use crate::compiler::scope::Scope;
 use crate::emitter as common;
 #[allow(unused_imports)]
 use crate::emitter::instructions as inst;
 use crate::emitter::loops::LoopState;
 use crate::profile::*;
-use crate::compiler::scope::Scope;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use vybe_bytecode::chunk::Import as BytecodeImport;
@@ -2355,6 +2355,7 @@ impl Compiler {
         }
 
         self.predeclare_type_names(&merged_body, None);
+        self.predeclare_function_names(&merged_body);
         self.predeclare_interface_signatures_in_body(&merged_body);
 
         // Pre-collect every rest-parameter arity in the program so call-site
@@ -2457,7 +2458,6 @@ impl Compiler {
             host_imports,
         })
     }
-
 }
 
 /// Merge `Partial Class` declarations sharing the same name into one.
@@ -2589,27 +2589,26 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
     if !walk(body, &mut arity, &mut saw_any) {
         return None;
     }
-    if saw_any { arity } else { None }
+    if saw_any {
+        arity
+    } else {
+        None
+    }
 }
 
 fn is_hoisted_deconstruction_block(stmts: &[Statement]) -> bool {
     let call_stmt = match stmts {
-        [
-            Statement {
-                kind: StmtKind::Expr(expr),
-                ..
-            },
-        ] => expr,
-        [
-            Statement {
-                kind: StmtKind::VarDecl { .. },
-                ..
-            },
-            Statement {
-                kind: StmtKind::Expr(expr),
-                ..
-            },
-        ] => expr,
+        [Statement {
+            kind: StmtKind::Expr(expr),
+            ..
+        }] => expr,
+        [Statement {
+            kind: StmtKind::VarDecl { .. },
+            ..
+        }, Statement {
+            kind: StmtKind::Expr(expr),
+            ..
+        }] => expr,
         _ => return false,
     };
 

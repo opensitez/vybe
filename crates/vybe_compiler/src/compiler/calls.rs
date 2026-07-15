@@ -4588,13 +4588,12 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            let receiver_is_java_member_apply =
-                self.profile.name == "java"
-                    && field == "apply"
-                    && matches!(
-                        object.kind,
-                        ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
-                    );
+            let receiver_is_java_member_apply = self.profile.name == "java"
+                && field == "apply"
+                && matches!(
+                    object.kind,
+                    ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
+                );
             if self.profile.has_function_prototype_bind
                 && !self.direct_receiver_has_own_pending_method(object, field)
                 && !receiver_is_java_member_apply
@@ -4897,9 +4896,8 @@ impl Compiler {
                 || (receiver_is_direct
                     && receiver_is_user_type
                     && self.defined_class_methods.contains(&canon_field));
-            let java_member_apply = self.profile.name == "java"
-                && receiver_is_direct
-                && field == "apply";
+            let java_member_apply =
+                self.profile.name == "java" && receiver_is_direct && field == "apply";
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -6417,88 +6415,88 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 } else {
-                let lookup = self.import("ecma:value", "getMethodForCall");
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                self.emit_host_call(lookup, 2);
-                let lookup_slot = self.define_local("__js_lookup_fn");
-                self.emit_u16(Op::LOCAL_SET, lookup_slot);
-                let spread_args = args.iter().any(|arg| arg.spread);
-                let spread_call_args = if spread_args {
-                    Some(self.compile_call_args_array(args, "js_dispatch_lookup_spread")?)
-                } else {
-                    None
-                };
-                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                if !spread_args {
-                    for (index, arg) in arg_exprs.iter().enumerate() {
-                        self.compile_expr(arg)?;
-                        let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
-                        self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        arg_slots.push(arg_slot);
-                    }
-                }
-                self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                self.emit(Op::REF_IS_NULL);
-                let line = self.line;
-                self.chunk().emit_if(line);
-                if let Some((args_slot, known_len)) = spread_call_args {
-                    self.emit_js_invoke_method_from_args_array(
-                        obj_tmp,
-                        method_name.as_str(),
-                        args_slot,
-                        known_len,
-                    );
-                } else {
-                    let invoke = self.import("ecma:value", "invokeMethod");
+                    let lookup = self.import("ecma:value", "getMethodForCall");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for slot in &arg_slots {
-                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    self.emit_host_call(lookup, 2);
+                    let lookup_slot = self.define_local("__js_lookup_fn");
+                    self.emit_u16(Op::LOCAL_SET, lookup_slot);
+                    let spread_args = args.iter().any(|arg| arg.spread);
+                    let spread_call_args = if spread_args {
+                        Some(self.compile_call_args_array(args, "js_dispatch_lookup_spread")?)
+                    } else {
+                        None
+                    };
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    if !spread_args {
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot = self.define_local(&format!("__js_lookup_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            arg_slots.push(arg_slot);
+                        }
                     }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                }
-                self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                fn_call!(self, "wasm:js-undefined", "test", 1);
-                let line = self.line;
-                self.chunk().emit_if(line);
-                if let Some((args_slot, known_len)) = spread_call_args {
-                    self.emit_js_invoke_method_from_args_array(
-                        obj_tmp,
-                        method_name.as_str(),
-                        args_slot,
-                        known_len,
-                    );
-                } else {
-                    let invoke = self.import("ecma:value", "invokeMethod");
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for slot in &arg_slots {
-                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_js_invoke_method_from_args_array(
+                            obj_tmp,
+                            method_name.as_str(),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        let invoke = self.import("ecma:value", "invokeMethod");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
+                        self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
                     }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                }
-                self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.chunk().emit_else(line);
-                if let Some((args_slot, known_len)) = spread_call_args {
-                    self.emit_call_ref_with_args_array(
-                        lookup_slot,
-                        Some(obj_tmp),
-                        args_slot,
-                        known_len,
-                    );
-                } else {
-                    self.emit_call_ref_with_bound_js_this_arg_slots(
-                        lookup_slot,
-                        obj_tmp,
-                        &arg_slots,
-                    );
-                }
-                self.emit_u16(Op::LOCAL_SET, js_result_slot);
-                self.chunk().emit_end(line);
-                self.chunk().emit_end(line);
+                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_js_invoke_method_from_args_array(
+                            obj_tmp,
+                            method_name.as_str(),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        let invoke = self.import("ecma:value", "invokeMethod");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
+                        self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                    self.chunk().emit_else(line);
+                    if let Some((args_slot, known_len)) = spread_call_args {
+                        self.emit_call_ref_with_args_array(
+                            lookup_slot,
+                            Some(obj_tmp),
+                            args_slot,
+                            known_len,
+                        );
+                    } else {
+                        self.emit_call_ref_with_bound_js_this_arg_slots(
+                            lookup_slot,
+                            obj_tmp,
+                            &arg_slots,
+                        );
+                    }
+                    self.emit_u16(Op::LOCAL_SET, js_result_slot);
+                    self.chunk().emit_end(line);
+                    self.chunk().emit_end(line);
                 }
                 self.chunk().emit_end(line);
                 self.emit_u16(Op::LOCAL_GET, js_result_slot);
@@ -7516,21 +7514,13 @@ impl Compiler {
                             self.emit(Op::REF_IS_NULL);
                             let line = self.line;
                             self.chunk().emit_if(line);
-                            self.emit_js_lookup_or_invoke_method_call(
-                                obj_tmp,
-                                field,
-                                &arg_slots,
-                            )?;
+                            self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                             self.chunk().emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, fn_tmp);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let line = self.line;
                             self.chunk().emit_if(line);
-                            self.emit_js_lookup_or_invoke_method_call(
-                                obj_tmp,
-                                field,
-                                &arg_slots,
-                            )?;
+                            self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                             self.chunk().emit_else(line);
                             self.emit_call_ref_with_bound_js_this_arg_slots(
                                 fn_tmp, obj_tmp, &arg_slots,
@@ -8403,7 +8393,10 @@ impl Compiler {
             let canon_name = self.canon(name);
             let is_direct_global = self.defined_globals.contains(&canon_name)
                 || self.defined_functions.contains(&canon_name);
-            if !is_local {
+            if self.is_php_profile() && self.defined_functions.contains(&canon_name) {
+                let php_fn_idx = self.str_const(&format!("__php_func${}", canon_name));
+                self.emit_u16(Op::GLOBAL_GET, php_fn_idx);
+            } else if !is_local {
                 if is_direct_global {
                     self.emit_var_get(name);
                 } else if let Some(module_name) = self.enum_members.get(&canon_name).cloned() {
@@ -8834,5 +8827,4 @@ impl Compiler {
 
         Ok(())
     }
-
 }

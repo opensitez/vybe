@@ -355,5 +355,4 @@ impl Compiler {
                 self.resolve_fortran_overload_target_with_fallback(overloads, arg_exprs, false)
             })
     }
-
 }

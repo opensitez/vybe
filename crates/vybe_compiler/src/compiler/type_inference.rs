@@ -855,5 +855,4 @@ impl Compiler {
             _ => false,
         }
     }
-
 }

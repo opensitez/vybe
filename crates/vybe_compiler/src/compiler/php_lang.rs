@@ -1,8 +1,8 @@
-use vybe_ast::{ExprKind, Expression, Literal};
 use crate::compiler::*;
-use vybe_emitter as common;
 use std::sync::Arc;
+use vybe_ast::{ExprKind, Expression, Literal};
 use vybe_bytecode::{Op, Value};
+use vybe_emitter as common;
 
 #[derive(Clone, Copy)]
 enum BufferedGeneratorStepMode {
@@ -623,13 +623,8 @@ impl Compiler {
                 .functions
                 .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
         };
-        self.emit_const(Value::String(Arc::from("string")));
-        {
-            let line = self.line;
-            vybe_emitter::ops::emit_dyn_eq(self.chunk(), line);
-        };
+        self.emit_string_eq_literal("string");
         let line = self.line;
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -647,17 +642,11 @@ impl Compiler {
             self.emit(Op::I32_EQZ);
             let line = self.line;
             self.chunk().emit_if(line);
-            self.emit_u16(Op::LOCAL_GET, callee_name_slot);
-            self.emit_const(Value::String(Arc::from(lowered_name.as_str())));
-            {
-                let line = self.line;
-                vybe_emitter::ops::emit_dyn_eq(self.chunk(), line);
-            };
+            self.emit_raw_string_slot_eq_literal(callee_name_slot, lowered_name.as_str());
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
 
-            let idx = self.str_const(&function_name);
+            let idx = self.str_const(&format!("__php_func${}", function_name));
             self.emit_u16(Op::GLOBAL_GET, idx);
             self.emit_u16(Op::LOCAL_SET, callee_slot);
             self.emit_const(Value::I32(1));
@@ -835,11 +824,7 @@ impl Compiler {
         self.emit(Op::ARRAY_LENGTH);
         {
             let l = self.line;
-            vybe_emitter::instructions::core_wasm::i32_const(
-                &mut self.chunks[self.current],
-                l,
-                0,
-            );
+            vybe_emitter::instructions::core_wasm::i32_const(&mut self.chunks[self.current], l, 0);
         };
         {
             let line = self.line;

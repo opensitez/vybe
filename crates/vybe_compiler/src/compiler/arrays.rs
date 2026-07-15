@@ -326,7 +326,10 @@ impl Compiler {
         Ok(binding)
     }
 
-    pub(super) fn emit_vb_fixed_array_initializer(&mut self, bounds: &[Expression]) -> Result<(), String> {
+    pub(super) fn emit_vb_fixed_array_initializer(
+        &mut self,
+        bounds: &[Expression],
+    ) -> Result<(), String> {
         let line = self.line;
         if bounds.is_empty() {
             self.emit(Op::NULL);
@@ -666,7 +669,10 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn coerce_c_value_for_type_hint(&mut self, type_hint: Option<&str>) -> Result<(), String> {
+    pub(super) fn coerce_c_value_for_type_hint(
+        &mut self,
+        type_hint: Option<&str>,
+    ) -> Result<(), String> {
         // Dynamically-typed languages infer a type *hint* for dispatch only and
         // must never mutate the value: e.g. JS `let t = true` infers "bool", and
         // C-style value coercion (`_Bool` → i32 0/1, int-width truncation) would
@@ -778,5 +784,4 @@ impl Compiler {
         }
         Ok(())
     }
-
 }

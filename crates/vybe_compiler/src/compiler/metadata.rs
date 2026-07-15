@@ -114,7 +114,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn collect_reflection_stmt(&mut self, stmt: &Statement, parent_runtime_name: Option<&str>) {
+    pub(super) fn collect_reflection_stmt(
+        &mut self,
+        stmt: &Statement,
+        parent_runtime_name: Option<&str>,
+    ) {
         match &stmt.kind {
             StmtKind::ClassDecl {
                 name,
@@ -339,7 +343,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn extract_attribute_usage(&self, decorators: &[Expression]) -> AttributeUsageMetadata {
+    pub(super) fn extract_attribute_usage(
+        &self,
+        decorators: &[Expression],
+    ) -> AttributeUsageMetadata {
         let mut usage = AttributeUsageMetadata::default();
 
         for decorator in decorators {
@@ -476,7 +483,10 @@ impl Compiler {
         Some(self.reflection_runtime_type_name(&raw_name, None))
     }
 
-    pub(super) fn unpack_param_decorator_carrier(&self, expr: &Expression) -> Option<(usize, Expression)> {
+    pub(super) fn unpack_param_decorator_carrier(
+        &self,
+        expr: &Expression,
+    ) -> Option<(usize, Expression)> {
         let ExprKind::New { class, args } = &expr.kind else {
             return None;
         };
@@ -739,7 +749,11 @@ impl Compiler {
         ))
     }
 
-    pub(super) fn js_member_storage_name_for_class(&self, owner_class: &str, field: &str) -> String {
+    pub(super) fn js_member_storage_name_for_class(
+        &self,
+        owner_class: &str,
+        field: &str,
+    ) -> String {
         self.js_private_member_storage_name_for_class(owner_class, field)
             .unwrap_or_else(|| self.canon(field))
     }
@@ -751,7 +765,11 @@ impl Compiler {
             .unwrap_or_else(|| self.canon(field))
     }
 
-    pub(super) fn js_member_storage_name_for_receiver(&self, receiver: &Expression, field: &str) -> String {
+    pub(super) fn js_member_storage_name_for_receiver(
+        &self,
+        receiver: &Expression,
+        field: &str,
+    ) -> String {
         if !self.profile.supports_private_fields || !field.starts_with('#') {
             return self.js_member_storage_name(field);
         }
@@ -877,26 +895,23 @@ impl Compiler {
         }
         let self_kw = self.profile.self_keyword.as_str();
         match &receiver.kind {
-            ExprKind::This => self
-                .current_class
-                .as_deref()
-                .and_then(|class_name| {
-                    self.visible_instance_field_storage_name_for_class(class_name, field)
-                }),
+            ExprKind::This => self.current_class.as_deref().and_then(|class_name| {
+                self.visible_instance_field_storage_name_for_class(class_name, field)
+            }),
             ExprKind::Super => self
                 .current_class
                 .as_deref()
                 .and_then(|class_name| self.pending_classes.get(&self.canon(class_name)))
                 .and_then(|pending| pending.parent.clone())
-                .and_then(|parent| self.visible_instance_field_storage_name_for_class(&parent, field)),
+                .and_then(|parent| {
+                    self.visible_instance_field_storage_name_for_class(&parent, field)
+                }),
             ExprKind::Ident(name)
                 if name == self_kw || name == "$this" || name.eq_ignore_ascii_case(self_kw) =>
             {
-                self.current_class
-                    .as_deref()
-                    .and_then(|class_name| {
-                        self.visible_instance_field_storage_name_for_class(class_name, field)
-                    })
+                self.current_class.as_deref().and_then(|class_name| {
+                    self.visible_instance_field_storage_name_for_class(class_name, field)
+                })
             }
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)

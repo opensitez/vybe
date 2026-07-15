@@ -251,7 +251,8 @@ impl Compiler {
         } else {
             cname
         };
-        let idx = self.global_name_const_idx(&cname);
+        let global_key = self.php_variable_global_key(name, &cname);
+        let idx = self.global_name_const_idx(&global_key);
 
         // ECMA-262 §9.1.1.4.6 / §13.3.2.1 GetValue: reading an *unresolvable*
         // reference (a name bound nowhere in the scope chain or on the global
@@ -558,13 +559,14 @@ impl Compiler {
             return;
         }
         // Global — canonicalize name for case-insensitive languages
+        let global_key = self.php_variable_global_key(name, &cname);
         if self.scopes.len() == 1 {
-            self.defined_globals.insert(cname.clone());
+            self.defined_globals.insert(global_key.clone());
         }
         if self.binding_uses_pointer_cell(name) {
             let value_slot = self.define_local("__ref_global_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
-            let idx = self.global_name_const_idx(&cname);
+            let idx = self.global_name_const_idx(&global_key);
             self.emit_u16(Op::GLOBAL_GET, idx);
             common::references::emit_cell_store(
                 &mut self.chunks,
@@ -575,7 +577,7 @@ impl Compiler {
             self.emit(Op::DROP);
             return;
         }
-        let idx = self.global_name_const_idx(&cname);
+        let idx = self.global_name_const_idx(&global_key);
         self.emit_u16(Op::GLOBAL_SET, idx);
     }
 
@@ -674,5 +676,4 @@ impl Compiler {
         }
         None
     }
-
 }

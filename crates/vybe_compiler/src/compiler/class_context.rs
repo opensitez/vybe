@@ -131,7 +131,9 @@ impl Compiler {
         }
         self.current_class
             .as_deref()
-            .and_then(|class_name| self.visible_instance_field_storage_name_for_class(class_name, name))
+            .and_then(|class_name| {
+                self.visible_instance_field_storage_name_for_class(class_name, name)
+            })
             .is_some()
     }
 
@@ -399,12 +401,11 @@ impl Compiler {
                 .map(ToString::to_string)
                 .collect(),
             ExprKind::This => vec![self.profile.self_keyword.clone()],
-            ExprKind::Super => vec![
-                self.profile
-                    .base_keyword
-                    .clone()
-                    .unwrap_or_else(|| "super".into()),
-            ],
+            ExprKind::Super => vec![self
+                .profile
+                .base_keyword
+                .clone()
+                .unwrap_or_else(|| "super".into())],
             ExprKind::Member { object, field, .. } => {
                 let mut parts = self.flatten_member_chain(object);
                 parts.push(field.clone());
@@ -429,5 +430,4 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
     // Statement compilation
     // ════════════════════════════════════════════════════════════════════════
-
 }

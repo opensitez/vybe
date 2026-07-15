@@ -164,6 +164,18 @@ impl Compiler {
         }
     }
 
+    pub(crate) fn php_variable_global_key(&self, name: &str, canon: &str) -> String {
+        if self.is_php_profile() && name.starts_with('$') {
+            if name.starts_with("$_") {
+                name.to_string()
+            } else {
+                format!("__php_var_{canon}")
+            }
+        } else {
+            canon.to_string()
+        }
+    }
+
     /// True if `name` is a class the program actually declares. A real class
     /// of a built-in exception name (e.g. PHP's prelude `LogicException`,
     /// `RuntimeException`, …) must go through the ordinary class emitter, NOT
@@ -343,7 +355,11 @@ impl Compiler {
             .then_some(ctor_name)
     }
 
-    pub(super) fn emit_fortran_allocated_array(&mut self, dim_slots: &[u16], ctor_name: Option<&str>) {
+    pub(super) fn emit_fortran_allocated_array(
+        &mut self,
+        dim_slots: &[u16],
+        ctor_name: Option<&str>,
+    ) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_GET, dim_slots[0]);
         common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
@@ -488,7 +504,12 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_global_map_get_into_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
+    pub(super) fn emit_global_map_get_into_local(
+        &mut self,
+        map_name: &str,
+        key_slot: u16,
+        value_slot: u16,
+    ) {
         let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
@@ -497,7 +518,12 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, value_slot);
     }
 
-    pub(super) fn emit_global_map_set_from_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
+    pub(super) fn emit_global_map_set_from_local(
+        &mut self,
+        map_name: &str,
+        key_slot: u16,
+        value_slot: u16,
+    ) {
         let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
@@ -507,7 +533,12 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
-    pub(super) fn emit_global_map_set_const(&mut self, map_name: &str, key_slot: u16, value: Value) {
+    pub(super) fn emit_global_map_set_const(
+        &mut self,
+        map_name: &str,
+        key_slot: u16,
+        value: Value,
+    ) {
         let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
@@ -597,7 +628,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_record_assign_values_from_local(&mut self, values_slot: u16, variables: &[String]) {
+    pub(super) fn emit_record_assign_values_from_local(
+        &mut self,
+        values_slot: u16,
+        variables: &[String],
+    ) {
         for (index, variable) in variables.iter().enumerate() {
             self.emit_u16(Op::LOCAL_GET, values_slot);
             self.emit_const(Value::F64(index as f64));
@@ -607,7 +642,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_record_rewrite_field_format(&mut self, field_format: Option<&RecordFieldFormat>) {
+    pub(super) fn emit_record_rewrite_field_format(
+        &mut self,
+        field_format: Option<&RecordFieldFormat>,
+    ) {
         let Some(field_format) = field_format else {
             return;
         };
@@ -629,7 +667,11 @@ impl Compiler {
         len.trim().parse::<i32>().ok().filter(|len| *len >= 0)
     }
 
-    pub(super) fn emit_vb_fixed_string_adjust_from_stack(&mut self, target_len: i32, align_right: bool) {
+    pub(super) fn emit_vb_fixed_string_adjust_from_stack(
+        &mut self,
+        target_len: i32,
+        align_right: bool,
+    ) {
         let line = self.line;
         let value_slot = self.define_local("__vb_fixed_string_value");
         let to_string = self.import("ecma:string", "String");
@@ -856,5 +898,4 @@ impl Compiler {
             || bare.ends_with("[]")
             || normalized.ends_with("()")
     }
-
 }

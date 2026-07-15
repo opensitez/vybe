@@ -19,10 +19,10 @@
 //! by porting each pass of `compile_class` to read `NormalClass`
 //! fields directly.
 
-use vybe_plugin::class_normalize::types::*;
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use crate::compiler::class_normalize::{access_from_visibility, from_method_stmt};
 use crate::compiler::Compiler;
+use vybe_plugin::class_normalize::types::*;
 
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to

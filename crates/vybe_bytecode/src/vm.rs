@@ -1682,7 +1682,14 @@ impl VM {
         }
         self.chunks.extend(adjusted);
 
-        // Use pre-resolved import table, adjusting ChunkFn indices by offset
+        // Use pre-resolved import table, adjusting ChunkFn indices by offset.
+        // Nested dynamic runs temporarily replace this table; restore the
+        // caller's table before returning to its dispatch loop.
+        let saved_import_table = if nested {
+            Some(self.import_table.clone())
+        } else {
+            None
+        };
         self.import_table.clear();
         for target in resolved_imports {
             match target {
@@ -1762,6 +1769,9 @@ impl VM {
             // semantics — see `invoke_callback`).
             let result = self.execute_until(saved_frame_depth + 1);
             self.stack.truncate(saved_stack_len);
+            if let Some(import_table) = saved_import_table {
+                self.import_table = import_table;
+            }
             result
         } else {
             self.execute()
@@ -1779,7 +1789,7 @@ impl VM {
         self.stack.clear();
         self.frames.clear();
         let script_idx = self.chunks.len(); // offset for new chunks
-        // Offset ref_func indices in the new chunks so they point to correct positions
+                                            // Offset ref_func indices in the new chunks so they point to correct positions
         let mut adjusted = chunks;
         if script_idx > 0 {
             for chunk in &mut adjusted {

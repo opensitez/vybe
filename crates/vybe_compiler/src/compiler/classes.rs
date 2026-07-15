@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
-use crate::compiler::ArrayBindingMetadata;
 use crate::compiler::scope::UpvalueDesc;
+use crate::compiler::ArrayBindingMetadata;
 
 impl Compiler {
     fn fixed_array_zero_expr(type_hint: &str) -> Option<Expression> {
@@ -1061,6 +1061,11 @@ impl Compiler {
         }
         let idx = self.str_const(name);
         self.emit_u16(Op::GLOBAL_SET, idx);
+        if self.is_php_profile() {
+            self.emit_var_get(name);
+            let php_fn_idx = self.str_const(&format!("__php_func${}", name));
+            self.emit_u16(Op::GLOBAL_SET, php_fn_idx);
+        }
 
         if self.profile.has_function_prototype_bind {
             let line = self.line;
@@ -1216,16 +1221,17 @@ impl Compiler {
                 let mut instance_member_names: Vec<String> = Vec::new();
                 let mut fields: Vec<String> = Vec::new();
                 let mut field_storage_names: HashMap<String, String> = HashMap::new();
-                let field_storage_slot_name = |compiler: &Self, owner_class: &str, field_name: &str| {
-                    let field_canon = compiler.canon(field_name);
-                    if compiler.profile.field_hiding
-                        && compiler.field_hides_ancestor(nested_parent.as_deref(), &field_canon)
-                    {
-                        format!("__hide_{}${}", compiler.canon(owner_class), field_canon)
-                    } else {
-                        compiler.js_member_storage_name_for_class(owner_class, field_name)
-                    }
-                };
+                let field_storage_slot_name =
+                    |compiler: &Self, owner_class: &str, field_name: &str| {
+                        let field_canon = compiler.canon(field_name);
+                        if compiler.profile.field_hiding
+                            && compiler.field_hides_ancestor(nested_parent.as_deref(), &field_canon)
+                        {
+                            format!("__hide_{}${}", compiler.canon(owner_class), field_canon)
+                        } else {
+                            compiler.js_member_storage_name_for_class(owner_class, field_name)
+                        }
+                    };
                 // (method-return-type key, return type) — registered so a
                 // chained call `outer.first().next()` compiled in a sibling
                 // method (before this nested type is compiled) can infer the
@@ -1342,8 +1348,7 @@ impl Compiler {
                                        method_names: &std::collections::HashSet<String>|
          -> String {
             let canon = compiler.canon(field_name);
-            if compiler.profile.separate_property_method_namespace
-                && method_names.contains(&canon)
+            if compiler.profile.separate_property_method_namespace && method_names.contains(&canon)
             {
                 format!("__prop${}", canon)
             } else {
@@ -1401,7 +1406,8 @@ impl Compiler {
             // the runtime reads/writes through auto-emitted __get_/__set_
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon = field_storage_slot_name(self, auto_field_name, &colliding_method_names);
+                let pname_canon =
+                    field_storage_slot_name(self, auto_field_name, &colliding_method_names);
                 if pname_canon != self.canon(auto_field_name) {
                     field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
                 }

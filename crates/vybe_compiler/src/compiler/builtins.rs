@@ -87,7 +87,11 @@ impl Compiler {
     // Builtins (profile-driven)
     // ════════════════════════════════════════════════════════════════════════
 
-    pub(super) fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
+    pub(super) fn try_compile_builtin(
+        &mut self,
+        name: &str,
+        args: &[&Expression],
+    ) -> Result<bool, String> {
         let line = self.line;
 
         if self.profile.has_ecma_globals && name == "Object.groupBy" && args.len() == 2 {
@@ -751,12 +755,9 @@ impl Compiler {
             for arg in args {
                 self.compile_expr(arg)?;
             }
-            vybe_plugin::registry::hooks(&self.profile.name).str_getcsv.unwrap()(
-                &mut self.chunks,
-                self.current,
-                args.len() as u8,
-                line,
-            );
+            vybe_plugin::registry::hooks(&self.profile.name)
+                .str_getcsv
+                .unwrap()(&mut self.chunks, self.current, args.len() as u8, line);
             return Ok(true);
         }
         if self.profile.name == "fortran" && name.eq_ignore_ascii_case("this_image") {
@@ -791,11 +792,9 @@ impl Compiler {
                         // other member read (the dotted form normalizes to
                         // __len__ and would otherwise bypass §10.5.8).
                         self.emit_const(Value::String(Arc::from("length")));
-                        vybe_plugin::registry::hooks(&self.profile.name).proxy_get.unwrap()(
-                            &mut self.chunks,
-                            self.current,
-                            line,
-                        );
+                        vybe_plugin::registry::hooks(&self.profile.name)
+                            .proxy_get
+                            .unwrap()(&mut self.chunks, self.current, line);
                     } else {
                         let length_key = self.str_const("length");
                         self.emit_u16(Op::STRUCT_GET, length_key);
@@ -1252,7 +1251,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_builtin_opcode(&mut self, op_name: &str, args: &[&Expression]) -> Result<(), String> {
+    pub(super) fn emit_builtin_opcode(
+        &mut self,
+        op_name: &str,
+        args: &[&Expression],
+    ) -> Result<(), String> {
         let line = self.line;
         match op_name {
             "abs" => {
@@ -1601,11 +1604,10 @@ impl Compiler {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                vybe_plugin::registry::hooks(&self.profile.name).str_getcsv.unwrap()(
-                    &mut self.chunks,
-                    self.current,
-                    args.len() as u8,
-                    line,
+                vybe_plugin::registry::hooks(&self.profile.name)
+                    .str_getcsv
+                    .unwrap()(
+                    &mut self.chunks, self.current, args.len() as u8, line
                 );
             }
             "str_repeat" => {
@@ -1940,7 +1942,11 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn emit_intrinsic(&mut self, name: &str, args: &[&Expression]) -> Result<(), String> {
+    pub(super) fn emit_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[&Expression],
+    ) -> Result<(), String> {
         let line = self.line;
         match name {
             "cstr" => {
