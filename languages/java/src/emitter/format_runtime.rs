@@ -186,7 +186,7 @@ fn neg_inf() -> Expression {
 /// injected prelude functions). NOT `"" + x`: the dynamic add coerces
 /// Bool→1 and Null→0.
 fn to_str(x: Expression) -> Expression {
-    call("__java_string_format", vec![str_lit("%s"), x])
+    call("__j_to_str", vec![x])
 }
 
 fn assign(target: Expression, value: Expression) -> Statement {
@@ -1377,6 +1377,22 @@ pub fn prelude() -> Vec<Statement> {
             fld("a", "pattern"),
             fld("b", "pattern"),
         ))],
+    ));
+
+    out.push(function_stmt(
+        "__j_to_str",
+        vec!["x"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, typeof_expr(ident("x")), str_lit("string")),
+                vec![ret(ident("x"))],
+                None,
+            ),
+            ret(call(
+                "__java_string_format",
+                vec![str_lit("%s"), ident("x")],
+            )),
+        ],
     ));
 
     // __j_print(x): buffer, flush each completed line (its own '\n'
@@ -4215,12 +4231,233 @@ fn string_fns() -> Vec<Statement> {
     out.push(function_stmt(
         "__j_char_is_defined",
         vec!["c"],
-        vec![ret(call("__j_char_is_valid_code_point", vec![ident("c")]))],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            ret(binary(
+                BinOp::And,
+                call("__j_char_is_valid_code_point", vec![ident("n")]),
+                binary(BinOp::NotEq, ident("n"), int_lit(65535)),
+            )),
+        ],
     ));
     out.push(function_stmt(
         "__j_char_get_type",
         vec!["c"],
-        vec![ret(int_lit(1))],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(65)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(90)),
+                ),
+                vec![ret(int_lit(1))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(97)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(122)),
+                ),
+                vec![ret(int_lit(2))],
+                None,
+            ),
+            if_stmt(
+                call("__j_char_is_digit", vec![ident("n")]),
+                vec![ret(int_lit(9))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("n"), int_lit(32)),
+                vec![ret(int_lit(12))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("n"), int_lit(8232)),
+                vec![ret(int_lit(13))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("n"), int_lit(36)),
+                vec![ret(int_lit(26))],
+                None,
+            ),
+            ret(int_lit(0)),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_java_identifier_start",
+        vec!["c"],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            ret(binary(
+                BinOp::Or,
+                call("__j_char_is_letter", vec![ident("n")]),
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, ident("n"), int_lit(36)),
+                    binary(BinOp::Eq, ident("n"), int_lit(95)),
+                ),
+            )),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_java_identifier_part",
+        vec!["c"],
+        vec![ret(binary(
+            BinOp::Or,
+            call("__j_char_is_java_identifier_start", vec![ident("c")]),
+            call("__j_char_is_digit", vec![ident("c")]),
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_unicode_identifier_start",
+        vec!["c"],
+        vec![ret(call("__j_char_is_letter", vec![ident("c")]))],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_unicode_identifier_part",
+        vec!["c"],
+        vec![ret(binary(
+            BinOp::Or,
+            call("__j_char_is_unicode_identifier_start", vec![ident("c")]),
+            binary(
+                BinOp::Or,
+                call("__j_char_is_digit", vec![ident("c")]),
+                binary(
+                    BinOp::Eq,
+                    call("__java_char_ord", vec![ident("c")]),
+                    int_lit(95),
+                ),
+            ),
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_iso_control",
+        vec!["c"],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            ret(binary(
+                BinOp::Or,
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(0)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(31)),
+                ),
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(127)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(159)),
+                ),
+            )),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_mirrored",
+        vec!["c"],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            ret(binary(
+                BinOp::Or,
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, ident("n"), int_lit(40)),
+                    binary(BinOp::Eq, ident("n"), int_lit(41)),
+                ),
+                binary(
+                    BinOp::Or,
+                    binary(
+                        BinOp::Or,
+                        binary(BinOp::Eq, ident("n"), int_lit(91)),
+                        binary(BinOp::Eq, ident("n"), int_lit(93)),
+                    ),
+                    binary(
+                        BinOp::Or,
+                        binary(BinOp::Eq, ident("n"), int_lit(123)),
+                        binary(BinOp::Eq, ident("n"), int_lit(125)),
+                    ),
+                ),
+            )),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_char_to_title_case",
+        vec!["c"],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(97)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(122)),
+                ),
+                vec![ret(call(
+                    "__j_from_char_code",
+                    vec![binary(BinOp::Sub, ident("n"), int_lit(32))],
+                ))],
+                None,
+            ),
+            ret(ident("c")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_char_is_surrogate_pair",
+        vec!["hi", "lo"],
+        vec![ret(binary(
+            BinOp::And,
+            call("__j_char_is_high_surrogate", vec![ident("hi")]),
+            call("__j_char_is_low_surrogate", vec![ident("lo")]),
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_char_unicode_block_of",
+        vec!["c"],
+        vec![
+            var_decl("n", call("__java_char_ord", vec![ident("c")])),
+            if_stmt(
+                binary(BinOp::LtEq, ident("n"), int_lit(127)),
+                vec![ret(str_lit("BASIC_LATIN"))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(880)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(1023)),
+                ),
+                vec![ret(str_lit("GREEK"))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(1024)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(1279)),
+                ),
+                vec![ret(str_lit("CYRILLIC"))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(9472)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(9599)),
+                ),
+                vec![ret(str_lit("BOX_DRAWING"))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("n"), int_lit(12352)),
+                    binary(BinOp::LtEq, ident("n"), int_lit(12447)),
+                ),
+                vec![ret(str_lit("HIRAGANA"))],
+                None,
+            ),
+            ret(str_lit("UNKNOWN")),
+        ],
     ));
     out.push(function_stmt(
         "__j_char_digit",
@@ -5249,6 +5486,11 @@ fn thread_fns() -> Vec<Statement> {
         "__j_thread_join",
         vec!["t"],
         vec![
+            if_stmt(
+                binary(BinOp::Eq, ident("t"), ident("__j_current_thread")),
+                vec![ret(null_lit())],
+                None,
+            ),
             if_stmt(
                 binary(BinOp::Eq, fld("t", "alive"), bool_lit(true)),
                 vec![stmt(StmtKind::Expr(call(

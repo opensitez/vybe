@@ -31,12 +31,14 @@ thread_local! {
     static JAVA_NESTED_TYPE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_ENUM_VALUES: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     static JAVA_RECORD_COMPONENTS: RefCell<HashMap<String, HashSet<String>>> = RefCell::new(HashMap::new());
+    static JAVA_CURRENT_CLASS_STACK: RefCell<Vec<String>> = RefCell::new(Vec::new());
     // Locals declared with a PrintStream type — their method calls route
     // through the __j_* PrintStream runtime like `System.out` itself.
     static JAVA_PRINTSTREAM_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     // Locals declared as StringBuilder/StringBuffer — their method calls
     // route through the __j_sb_* runtime (emitter/format_runtime.rs).
     static JAVA_SB_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_STRING_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_SCANNER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -46,6 +48,11 @@ thread_local! {
     static JAVA_THREAD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_THREAD_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_THREAD_TARGETS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
+    static JAVA_RUNNABLE_TARGETS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
+    static JAVA_THREAD_UNSAFE_TARGETS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_RUNNABLE_UNSAFE_TARGETS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_STATIC_FIELD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_STATIC_FIELD_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static JAVA_RUNNABLE_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_FUNCTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_FUNCTIONAL_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
@@ -80,8 +87,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_NESTED_TYPE_NAMES.with(|names| names.borrow_mut().clear());
     JAVA_ENUM_VALUES.with(|values| values.borrow_mut().clear());
     JAVA_RECORD_COMPONENTS.with(|components| components.borrow_mut().clear());
+    JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow_mut().clear());
     JAVA_PRINTSTREAM_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SB_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_STRING_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().clear());
@@ -91,6 +100,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_THREAD_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_THREAD_TYPES.with(|vars| vars.borrow_mut().clear());
     JAVA_THREAD_TARGETS.with(|targets| targets.borrow_mut().clear());
+    JAVA_RUNNABLE_TARGETS.with(|targets| targets.borrow_mut().clear());
+    JAVA_THREAD_UNSAFE_TARGETS.with(|targets| targets.borrow_mut().clear());
+    JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow_mut().clear());
+    JAVA_STATIC_FIELD_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_STATIC_FIELD_TYPES.with(|types| types.borrow_mut().clear());
     JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_FUNCTIONAL_TYPES.with(|types| types.borrow_mut().clear());
@@ -473,7 +487,7 @@ fn rewrite_static_import_expr(
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             rewrite_static_import_expr(callee, singles, on_demand, declared);
-            for arg in args {
+            for arg in &mut *args {
                 rewrite_static_import_expr(&mut arg.value, singles, on_demand, declared);
             }
         }
@@ -671,7 +685,7 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::class_body => {
-                members = walk_class_body(p)?;
+                members = walk_class_body_with_owner(p, Some(&name))?;
             }
             _ => {}
         }
@@ -797,7 +811,17 @@ fn inject_java_exception_stamps(
 }
 
 fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    walk_class_body_with_owner(pair, None)
+}
+
+fn walk_class_body_with_owner(
+    pair: Pair<Rule>,
+    owner: Option<&str>,
+) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
+    if let Some(owner) = owner {
+        JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow_mut().push(owner.to_string()));
+    }
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::constructor_declaration => members.push(walk_constructor(p)?),
@@ -806,6 +830,28 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             }
             Rule::field_declaration => {
                 for m in walk_field(p)? {
+                    if let (
+                        Some(owner),
+                        ClassMember::Field {
+                            name,
+                            type_hint,
+                            modifiers,
+                            ..
+                        },
+                    ) = (owner, &m)
+                    {
+                        if modifiers.is_static {
+                            let key = format!("{owner}.{name}");
+                            JAVA_STATIC_FIELD_VARS.with(|vars| {
+                                vars.borrow_mut().insert(key.clone());
+                            });
+                            if let Some(type_hint) = type_hint {
+                                JAVA_STATIC_FIELD_TYPES.with(|types| {
+                                    types.borrow_mut().insert(key, type_hint.clone());
+                                });
+                            }
+                        }
+                    }
                     members.push(m);
                 }
             }
@@ -859,6 +905,11 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
             Rule::annotation => {}
             _ => {}
         }
+    }
+    if owner.is_some() {
+        JAVA_CURRENT_CLASS_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
     }
     Ok(members)
 }
@@ -1813,6 +1864,12 @@ fn walk_var_declarator(
     }
     if type_hint
         .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "String")
+    {
+        JAVA_STRING_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
         .is_some_and(|hint| hint.contains("StringJoiner"))
     {
         JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
@@ -1980,6 +2037,24 @@ fn walk_var_declarator(
     }
 
     if let Some(init_expr) = &init {
+        if matches!(type_hint.as_deref(), Some("Runnable" | "java.lang.Runnable"))
+        {
+            JAVA_RUNNABLE_TARGETS.with(|targets| {
+                targets.borrow_mut().insert(name.clone(), init_expr.clone());
+            });
+            if java_thread_target_is_unsafe(init_expr, &HashSet::new()) {
+                JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| {
+                    targets.borrow_mut().insert(name.clone());
+                });
+            }
+        }
+        if matches!(type_hint.as_deref(), Some("Runnable" | "java.lang.Runnable"))
+            && java_thread_target_is_unsafe(init_expr, &HashSet::new())
+        {
+            JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| {
+                targets.borrow_mut().insert(name.clone());
+            });
+        }
         if let ExprKind::Call { callee, args, .. } = &init_expr.kind {
             if matches!(&callee.kind, ExprKind::Ident(c) if c == "__j_thread_new") {
                 if let Some(target) = args.first() {
@@ -1988,6 +2063,11 @@ fn walk_var_declarator(
                             .borrow_mut()
                             .insert(name.clone(), target.value.clone());
                     });
+                    if java_thread_target_is_unsafe(&target.value, &HashSet::new()) {
+                        JAVA_THREAD_UNSAFE_TARGETS.with(|targets| {
+                            targets.borrow_mut().insert(name.clone());
+                        });
+                    }
                 }
             }
         }
@@ -1995,7 +2075,10 @@ fn walk_var_declarator(
 
     let emitted_type_hint = if type_hint
         .as_deref()
-        .is_some_and(|hint| java_numeric_width_fn(hint).is_some())
+        .is_some_and(|hint| {
+            java_numeric_width_fn(hint).is_some()
+                || matches!(java_type_simple_name(hint), "char" | "Character")
+        })
     {
         None
     } else {
@@ -3012,10 +3095,18 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 let expr = walk_expression(operand)?;
                 let ty = cast_type.as_str();
                 if let Some(callee) = java_numeric_cast_fn(ty) {
-                    Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(callee)),
-                        args: vec![Argument::positional(expr)],
-                        optional: false,
+                    Ok(Expression::new(ExprKind::Cast {
+                        type_name: java_type_simple_name(ty).to_string(),
+                        expr: Box::new(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(callee)),
+                            args: vec![Argument::positional(expr)],
+                            optional: false,
+                        })),
+                    }))
+                } else if java_type_simple_name(ty) == "char" {
+                    Ok(Expression::new(ExprKind::Cast {
+                        type_name: "char".to_string(),
+                        expr: Box::new(expr),
                     }))
                 } else {
                     Ok(expr)
@@ -3236,6 +3327,9 @@ fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
                     "Double.parseDouble" | "Double.valueOf" | "Float.parseFloat" | "Float.valueOf"
                 )
         ),
+        ExprKind::Cast { type_name, .. } => {
+            matches!(java_type_simple_name(type_name), "double" | "Double" | "float" | "Float")
+        }
         ExprKind::Binary {
             op, left, right, ..
         } if matches!(
@@ -3248,6 +3342,13 @@ fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
         ExprKind::Unary { expr, .. } => is_java_double_arithmetic_expr(expr),
         _ => false,
     }
+}
+
+fn java_expr_is_long_value(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Cast { type_name, .. } if matches!(java_type_simple_name(type_name), "long" | "Long")
+    )
 }
 
 fn java_print_arg(arg: Argument) -> Argument {
@@ -3283,7 +3384,7 @@ fn java_numeric_cast_fn(ty: &str) -> Option<&'static str> {
     match ty {
         "byte" | "Byte" => Some("__j_byte"),
         "short" | "Short" => Some("__j_short"),
-        "int" | "long" | "Integer" | "Long" | "char" | "Character" => Some("__java_trunc_cast"),
+        "int" | "long" | "Integer" | "Long" => Some("__java_trunc_cast"),
         _ => None,
     }
 }
@@ -3418,6 +3519,9 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
         match chain.as_rule() {
             Rule::method_call_suffix => {
                 let mut ci = chain.into_inner().peekable();
+                if ci.peek().map(|x| x.as_rule()) == Some(Rule::type_args) {
+                    ci.next();
+                }
                 let method_name = ci
                     .next()
                     .ok_or("method call: missing name")?
@@ -3714,6 +3818,85 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
+    if method == "map" && args.len() == 1 && java_optional_receiver(&receiver) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_map")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if method == "flatMap" && args.len() == 1 && java_optional_receiver(&receiver) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_flat_map")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if method == "ifPresentOrElse" && args.len() == 2 && java_optional_receiver(&receiver) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_if_present_or_else")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if method == "isEmpty" && args.is_empty() && java_optional_receiver(&receiver) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_is_empty")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if method == "or" && args.len() == 1 && java_optional_receiver(&receiver) {
+        let call_supplier = matches!(&args[0].value.kind, ExprKind::Lambda { .. });
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(if call_supplier {
+                "__java_optional_or_get"
+            } else {
+                "__java_optional_or"
+            })),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if method == "stream" && args.is_empty() && java_optional_receiver(&receiver) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_stream")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if method == "equals" && args.len() == 1 && java_optional_receiver(&receiver) {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_equals")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
+    if method == "toString" && args.is_empty() && java_optional_receiver(&receiver) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_optional_to_string")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
     if method == "get" && args.is_empty() && java_optional_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_stream_optional_get")),
@@ -3756,6 +3939,28 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
+    if let ExprKind::Ident(name) = &receiver.kind {
+        if let Some((class_name, type_name)) = java_current_static_field_type(name) {
+            if java_type_is_semaphore(Some(&type_name)) {
+                if let Some(internal) = java_semaphore_method_name(&method) {
+                    let mut call_args = vec![Argument::positional(Expression::new(
+                        ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        },
+                    ))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+        }
+    }
+
     let thread_receiver = match &receiver.kind {
         ExprKind::Ident(n) => JAVA_THREAD_VARS.with(|vars| vars.borrow().contains(n.as_str())),
         ExprKind::Call { callee, .. } => {
@@ -3765,27 +3970,25 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     };
     if thread_receiver {
         if method == "start" {
-            let mut call_args = vec![Argument::positional(receiver.clone())];
-            if let ExprKind::Ident(n) = &receiver.kind {
-                if let Some(target) =
-                    JAVA_THREAD_TARGETS.with(|targets| targets.borrow().get(n).cloned())
-                {
-                    call_args.push(Argument::positional(target));
-                    return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__j_thread_start_with")),
-                        args: call_args,
-                        optional: false,
-                    });
-                }
-            }
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_thread_start")),
-                args: call_args,
+                args: vec![Argument::positional(receiver.clone())],
                 optional: false,
             });
         }
         let prelude_fn = match method.as_str() {
-            "join" => Some("__j_thread_join"),
+            "join" => {
+                let unsafe_target = match &receiver.kind {
+                    ExprKind::Ident(name) => JAVA_THREAD_UNSAFE_TARGETS
+                        .with(|targets| targets.borrow().contains(name)),
+                    _ => false,
+                };
+                Some(if unsafe_target {
+                    "__j_thread_join"
+                } else {
+                    "__java_thread_join"
+                })
+            }
             "isAlive" => Some("__j_thread_is_alive"),
             "getName" => Some("__j_thread_get_name"),
             "setName" => Some("__j_thread_set_name"),
@@ -3937,6 +4140,15 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 });
             }
         }
+    }
+    if method == "of"
+        && java_expr_dotted_name(&receiver).as_deref() == Some("Character.UnicodeBlock")
+    {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
+            args,
+            optional: false,
+        });
     }
     // StringBuilder/StringBuffer receivers → the __j_sb_* runtime
     // (emitter/format_runtime.rs; the builder stores its text in
@@ -4128,6 +4340,21 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
+    if method == "compareTo"
+        && (matches!(&receiver.kind, ExprKind::Lit(Literal::Str(_)))
+            || matches!(&receiver.kind, ExprKind::Ident(n) if JAVA_STRING_VARS.with(|vars| vars.borrow().contains(n.as_str())))
+            || matches!(&receiver.kind, ExprKind::New { class, .. } if matches!(&class.kind, ExprKind::Ident(name) if name == "String"))
+            || matches!(&receiver.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_string_value_of" || name == "__j_sb_to_string")))
+    {
+        let mut call_args = vec![Argument::positional(receiver)];
+        call_args.extend(args);
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_string_compare_to")),
+            args: call_args,
+            optional: false,
+        });
+    }
+
     let string_prelude_fn = match method.as_str() {
         "split" if args.len() == 2 => Some("__j_string_split_n"),
         "split" => Some("__j_string_split"),
@@ -4135,7 +4362,6 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         "codePointBefore" => Some("__j_string_code_point_before"),
         "codePointCount" => Some("__j_string_code_point_count"),
         "offsetByCodePoints" => Some("__j_string_offset_by_code_points"),
-        "compareTo" => Some("__j_string_compare_to"),
         "regionMatches" if args.len() == 4 => Some("__j_string_region_matches"),
         "regionMatches" if args.len() == 5 => Some("__j_string_region_matches_ignore"),
         "getBytes" => Some("__j_string_get_bytes"),
@@ -4699,6 +4925,17 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 optional: false,
             });
         }
+        if java_type_simple_name(&type_name) == "Optional"
+            && method == "of"
+            && args.len() == 1
+            && java_expr_is_long_value(&args[0].value)
+        {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_optional_of_long")),
+                args,
+                optional: false,
+            });
+        }
         if java_type_simple_name(&type_name) == "NumberFormat" && method == "getCurrencyInstance" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_df_currency")),
@@ -4841,6 +5078,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 });
             }
         }
+        if type_name == "Character.UnicodeBlock" && method == "of" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
+                args,
+                optional: false,
+            });
+        }
         if type_name.contains('.') {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
@@ -4914,6 +5158,17 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             if type_name == "BigDecimal" && method == "valueOf" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_bd_new")),
+                    args,
+                    optional: false,
+                });
+            }
+            if type_name == "Optional"
+                && method == "of"
+                && args.len() == 1
+                && java_expr_is_long_value(&args[0].value)
+            {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_optional_of_long")),
                     args,
                     optional: false,
                 });
@@ -5017,6 +5272,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         optional: false,
                     });
                 }
+            }
+            if type_name == "Character.UnicodeBlock" && method == "of" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
+                    args,
+                    optional: false,
+                });
             }
             let dotted = format!("{}.{}", type_name, method);
             return Expression::new(ExprKind::Call {
@@ -5450,6 +5712,14 @@ fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
         "reverseBytes" => Some("__j_char_reverse_bytes"),
         "isDefined" => Some("__j_char_is_defined"),
         "getType" => Some("__j_char_get_type"),
+        "isJavaIdentifierStart" => Some("__j_char_is_java_identifier_start"),
+        "isJavaIdentifierPart" => Some("__j_char_is_java_identifier_part"),
+        "isUnicodeIdentifierStart" => Some("__j_char_is_unicode_identifier_start"),
+        "isUnicodeIdentifierPart" => Some("__j_char_is_unicode_identifier_part"),
+        "isISOControl" => Some("__j_char_is_iso_control"),
+        "isMirrored" => Some("__j_char_is_mirrored"),
+        "toTitleCase" => Some("__j_char_to_title_case"),
+        "isSurrogatePair" => Some("__j_char_is_surrogate_pair"),
         _ => None,
     }
 }
@@ -5505,8 +5775,21 @@ fn java_optional_receiver(receiver: &Expression) -> bool {
             ExprKind::Ident(name)
                 if matches!(
                     name.as_str(),
-                    "Optional.empty" | "Optional.of" | "Optional.ofNullable"
+                    "Optional.empty"
+                        | "Optional.of"
+                        | "Optional.ofNullable"
+                        | "__java_optional_filter"
+                        | "__java_optional_map"
+                        | "__java_optional_flat_map"
+                        | "__java_optional_or"
+                        | "__java_optional_or_get"
+                        | "__java_stream_find_first"
+                        | "__java_stream_min"
+                        | "__java_stream_max"
                 )
+        ) || matches!(
+            &callee.kind,
+            ExprKind::Member { field, .. } if matches!(field.as_str(), "findFirst" | "findAny" | "min" | "max")
         ),
         _ => false,
     }
@@ -6010,6 +6293,16 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
+                if matches!(
+                    class_name.as_str(),
+                    "Semaphore" | "java.util.concurrent.Semaphore"
+                ) {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_semaphore_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
                 return Ok(Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident(&class_name)),
                     args,
@@ -6481,6 +6774,32 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
 
     let obj_expr = Expression::ident(&obj_name);
     if method == "new" {
+        if let Some(element_type) = obj_name.strip_suffix("[]") {
+            let callee = match element_type {
+                "boolean" => "__new_bool_array",
+                "byte" | "short" | "int" | "long" | "char" => "__new_int_array",
+                _ => "__new_array",
+            };
+            return Ok(Expression::new(ExprKind::Lambda {
+                params: vec![Param {
+                    name: "__size__".to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(callee)),
+                    args: vec![Argument::positional(Expression::ident("__size__"))],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: vec![],
+            }));
+        }
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
                 name: "__args__".to_string(),
@@ -6523,6 +6842,80 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             ],
             optional: false,
         })));
+    }
+
+    if matches!((obj_name.as_str(), method.as_str()), ("Integer", "sum") | ("Long", "sum")) {
+        return Ok(java_two_arg_lambda(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::ident("__a__")),
+            right: Box::new(Expression::ident("__b__")),
+        })));
+    }
+
+    if obj_name == "String" && method == "concat" {
+        return Ok(java_two_arg_lambda(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_string_concat")),
+            args: vec![
+                Argument::positional(Expression::ident("__a__")),
+                Argument::positional(Expression::ident("__b__")),
+            ],
+            optional: false,
+        })));
+    }
+
+    if matches!(obj_name.as_str(), "Objects" | "java.util.Objects")
+        && method == "requireNonNull"
+    {
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::ident("__value__"))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
+    if matches!(obj_name.as_str(), "Optional" | "java.util.Optional") && method == "empty" {
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("Optional.empty")),
+                args: vec![],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
+    }
+
+    if matches!(obj_name.as_str(), "Optional" | "java.util.Optional") && method == "isPresent" {
+        return Ok(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: "__value__".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_optional_is_present")),
+                args: vec![Argument::positional(Expression::ident("__value__"))],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }));
     }
 
     if obj_name == "Math" || obj_name == "StrictMath" {
@@ -6649,11 +7042,41 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             | ("String", "isEmpty")
             | ("String", "isBlank")
             | ("Integer", "intValue")
+            | ("Long", "intValue")
             | ("Long", "longValue")
             | ("Double", "doubleValue")
             | ("Double", "intValue")
             | ("Collection", "stream")
+            | ("java.util.Collection", "stream")
     ) {
+        let direct_callee = match (obj_name.as_str(), method.as_str()) {
+            ("String", "length") => Some("__j_str_length"),
+            ("String", "trim") | ("String", "strip") => Some("__j_str_trim"),
+            ("String", "toUpperCase") => Some("__j_str_to_upper"),
+            ("String", "toLowerCase") => Some("__j_str_to_lower"),
+            _ => None,
+        };
+        if let Some(callee) = direct_callee {
+            return Ok(Expression::new(ExprKind::Lambda {
+                params: vec![Param {
+                    name: "__value__".to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(callee)),
+                    args: vec![Argument::positional(Expression::ident("__value__"))],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: vec![],
+            }));
+        }
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
                 name: "__value__".to_string(),
@@ -6677,6 +7100,58 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             is_async: false,
             captures: vec![],
         }));
+    }
+
+    if obj_name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_')
+    {
+        if method == "add" {
+            return Ok(Expression::new(ExprKind::Lambda {
+                params: vec![Param {
+                    name: "__value__".to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&obj_name)),
+                        field: method,
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(Expression::ident("__value__"))],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: vec![],
+            }));
+        }
+
+        if matches!(
+            method.as_str(),
+            "length" | "toUpperCase" | "toLowerCase" | "trim" | "strip" | "getValue"
+        ) {
+            return Ok(Expression::new(ExprKind::Lambda {
+                params: vec![],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&obj_name)),
+                        field: method,
+                        null_safe: false,
+                    })),
+                    args: vec![],
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: vec![],
+            }));
+        }
     }
 
     Ok(Expression::new(ExprKind::Member {
@@ -6829,6 +7304,8 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                 i64::from_str_radix(&s[2..], 16).unwrap_or(0)
             } else if s.starts_with("0b") || s.starts_with("0B") {
                 i64::from_str_radix(&s[2..], 2).unwrap_or(0)
+            } else if s.len() > 1 && s.starts_with('0') {
+                i64::from_str_radix(&s[1..], 8).unwrap_or(0)
             } else {
                 s.parse::<i64>().unwrap_or(0)
             };
@@ -6839,15 +7316,35 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             let s = s.trim_end_matches(|c| c == 'l' || c == 'L');
             let v = if s.starts_with("0x") || s.starts_with("0X") {
                 i64::from_str_radix(&s[2..], 16).unwrap_or(0)
+            } else if s.starts_with("0b") || s.starts_with("0B") {
+                i64::from_str_radix(&s[2..], 2).unwrap_or(0)
+            } else if s.len() > 1 && s.starts_with('0') {
+                i64::from_str_radix(&s[1..], 8).unwrap_or(0)
             } else {
                 s.parse::<i64>().unwrap_or(0)
             };
-            Ok(Expression::int(v))
+            Ok(Expression::new(ExprKind::Cast {
+                type_name: "long".to_string(),
+                expr: Box::new(Expression::int(v)),
+            }))
         }
         Rule::float_literal => {
             let s = inner.as_str().replace('_', "");
+            let type_name = if s.ends_with('f') || s.ends_with('F') {
+                Some("float")
+            } else {
+                None
+            };
             let s = s.trim_end_matches(|c| matches!(c, 'f' | 'F' | 'd' | 'D'));
-            Ok(Expression::float(s.parse().unwrap_or(0.0)))
+            let expr = Expression::float(s.parse().unwrap_or(0.0));
+            if let Some(type_name) = type_name {
+                Ok(Expression::new(ExprKind::Cast {
+                    type_name: type_name.to_string(),
+                    expr: Box::new(expr),
+                }))
+            } else {
+                Ok(expr)
+            }
         }
         Rule::char_literal => {
             let s = inner.as_str();
@@ -6984,6 +7481,11 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
                 rewrite_java_thread_bare_calls_stmt(nested);
             }
         }
+        StmtKind::FunctionDecl { body, .. } => {
+            for nested in body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+        }
         StmtKind::If {
             cond,
             then_body,
@@ -7031,6 +7533,31 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
                 rewrite_java_thread_bare_calls_stmt(nested);
             }
         }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for nested in body {
+                rewrite_java_thread_bare_calls_stmt(nested);
+            }
+            for catch in catches {
+                for nested in &mut catch.body {
+                    rewrite_java_thread_bare_calls_stmt(nested);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    rewrite_java_thread_bare_calls_stmt(nested);
+                }
+            }
+            if let Some(finally) = finally {
+                for nested in finally {
+                    rewrite_java_thread_bare_calls_stmt(nested);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -7039,26 +7566,25 @@ fn rewrite_java_thread_bare_calls_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             rewrite_java_thread_bare_calls_expr(callee);
-            for arg in args {
+            for arg in &mut *args {
                 rewrite_java_thread_bare_calls_expr(&mut arg.value);
             }
             if let ExprKind::Ident(name) = &callee.kind {
-                if matches!(
-                    name.as_str(),
-                    "getName"
-                        | "setName"
-                        | "getPriority"
-                        | "setPriority"
-                        | "isAlive"
-                        | "interrupt"
-                        | "isInterrupted"
-                        | "join"
-                ) {
-                    *callee = Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::new(ExprKind::This)),
-                        field: name.clone(),
-                        null_safe: false,
-                    }));
+                let prelude_fn = match name.as_str() {
+                    "start" => Some("__j_thread_start"),
+                    "join" => Some("__j_thread_join"),
+                    "isAlive" => Some("__j_thread_is_alive"),
+                    "getName" => Some("__j_thread_get_name"),
+                    "setName" => Some("__j_thread_set_name"),
+                    "getPriority" => Some("__j_thread_get_priority"),
+                    "setPriority" => Some("__j_thread_set_priority"),
+                    "interrupt" => Some("__j_thread_interrupt"),
+                    "isInterrupted" => Some("__j_thread_is_interrupted"),
+                    _ => None,
+                };
+                if let Some(prelude_fn) = prelude_fn {
+                    *callee = Box::new(Expression::ident(prelude_fn));
+                    args.insert(0, Argument::positional(Expression::new(ExprKind::This)));
                 }
             }
         }
@@ -8403,7 +8929,7 @@ fn rewrite_java_inner_outer_refs_expr(
             };
         }
         ExprKind::Call { callee, args, .. } => {
-            for arg in args {
+            for arg in &mut *args {
                 rewrite_java_inner_outer_refs_expr(
                     &mut arg.value,
                     owner_name,
@@ -8663,15 +9189,53 @@ fn rewrite_java_tostring_stmts(
                         _ => None,
                     })
                     .collect();
+                let field_types: HashMap<String, String> = members
+                    .iter()
+                    .filter_map(|member| match member {
+                        ClassMember::Field {
+                            name, type_hint, ..
+                        } => type_hint.as_ref().map(|t| (name.clone(), t.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                JAVA_STATIC_FIELD_VARS.with(|vars| {
+                    let mut vars = vars.borrow_mut();
+                    for member in members.iter() {
+                        if let ClassMember::Field {
+                            name: field_name,
+                            modifiers,
+                            type_hint,
+                            ..
+                        } = member
+                        {
+                            if modifiers.is_static {
+                                vars.insert(format!("{name}.{field_name}"));
+                                if let Some(type_hint) = type_hint {
+                                    JAVA_STATIC_FIELD_TYPES.with(|types| {
+                                        types.borrow_mut().insert(
+                                            format!("{name}.{field_name}"),
+                                            type_hint.clone(),
+                                        );
+                                    });
+                                }
+                            }
+                        }
+                    }
+                });
                 for member in members {
                     match member {
                         ClassMember::Constructor { params, body, .. } => {
-                            let mut local_types = params
+                            let mut local_types: HashMap<String, String> = params
                                 .iter()
                                 .filter_map(|p| {
                                     p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
                                 })
                                 .collect();
+                            local_types.extend(
+                                field_types
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), ty.clone())),
+                            );
                             rewrite_java_tostring_stmts(
                                 body,
                                 tostring_classes,
@@ -8683,12 +9247,17 @@ fn rewrite_java_tostring_stmts(
                         ClassMember::Method(method) => {
                             if let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind {
                                 rewrite_java_double_field_prints(body, &double_fields);
-                                let mut local_types = params
+                                let mut local_types: HashMap<String, String> = params
                                     .iter()
                                     .filter_map(|p| {
                                         p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
                                     })
                                     .collect();
+                                local_types.extend(
+                                    field_types
+                                        .iter()
+                                        .map(|(name, ty)| (name.clone(), ty.clone())),
+                                );
                                 rewrite_java_tostring_stmts(
                                     body,
                                     tostring_classes,
@@ -9655,7 +10224,9 @@ fn rewrite_java_tostring_expr(
                         }
                         if let Some(internal) = java_map_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
-                            new_args.push(Argument::positional((**object).clone()));
+                            let receiver = java_static_field_receiver(object, current_class)
+                                .unwrap_or_else(|| (**object).clone());
+                            new_args.push(Argument::positional(receiver));
                             new_args.extend(args.iter().cloned());
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
@@ -9762,6 +10333,8 @@ fn rewrite_java_tostring_expr(
                             "add" | "offer" => Some("__java_queue_add"),
                             "poll" | "remove" if args.is_empty() => Some("__java_queue_poll"),
                             "peek" | "element" => Some("__java_queue_peek"),
+                            "getFirst" | "peekFirst" => Some("__java_stack_first_element"),
+                            "getLast" | "peekLast" => Some("__java_stack_last_element"),
                             "push" => Some("__java_deque_push"),
                             "pop" => Some("__java_deque_pop"),
                             "remove" if args.len() == 1 => Some("__java_set_remove"),
@@ -9947,6 +10520,30 @@ fn rewrite_java_tostring_expr(
         }
         ExprKind::Unary { expr: inner, .. } => {
             rewrite_java_tostring_expr(inner, tostring_classes, enum_values, current_class, locals);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            let mut lambda_locals = locals.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    lambda_locals.insert(param.name.clone(), type_hint.clone());
+                }
+            }
+            match body {
+                LambdaBody::Expr(inner) => rewrite_java_tostring_expr(
+                    inner,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    &lambda_locals,
+                ),
+                LambdaBody::Block(stmts) => rewrite_java_tostring_stmts(
+                    stmts,
+                    tostring_classes,
+                    enum_values,
+                    current_class,
+                    &mut lambda_locals,
+                ),
+            }
         }
         ExprKind::IsType {
             expr: inner,
@@ -10313,6 +10910,7 @@ fn java_type_is_map(type_name: Option<&str>) -> bool {
             | "HashMap"
             | "IdentityHashMap"
             | "LinkedHashMap"
+            | "ConcurrentHashMap"
             | "WeakHashMap"
             | "TreeMap"
             | "SortedMap"
@@ -10383,6 +10981,27 @@ fn java_type_is_queue_or_deque(type_name: Option<&str>) -> bool {
         java_type_simple_name(type_name),
         "Queue" | "Deque" | "ArrayDeque" | "LinkedList"
     )
+}
+
+fn java_type_is_semaphore(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "Semaphore"
+}
+
+fn java_semaphore_method_name(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "availablePermits" => "__java_semaphore_available",
+        "acquire" | "acquireUninterruptibly" => "__java_semaphore_acquire",
+        "release" => "__java_semaphore_release",
+        "tryAcquire" => "__java_semaphore_try_acquire",
+        "drainPermits" => "__java_semaphore_drain",
+        "hasQueuedThreads" => "__java_semaphore_has_queued",
+        "getQueueLength" => "__java_semaphore_queue_length",
+        "isFair" => "__java_semaphore_is_fair",
+        _ => return None,
+    })
 }
 
 fn java_properties_method_name(method: &str) -> Option<&'static str> {
@@ -11015,7 +11634,7 @@ fn normalize_java_class_tree_with_members(
             } => {
                 let mut names = class_members.get(name).cloned().unwrap_or_default();
                 merge_java_inherited_member_names(&mut names, parents, class_members, class_parents);
-                normalize_java_class_members(members, &names);
+                normalize_java_class_members(members, name, &names, class_members);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
                         normalize_java_class_tree_with_members(
@@ -11030,7 +11649,7 @@ fn normalize_java_class_tree_with_members(
                 name, body_members, ..
             } => {
                 let names = class_members.get(name).cloned().unwrap_or_default();
-                normalize_java_class_members(body_members, &names);
+                normalize_java_class_members(body_members, name, &names, class_members);
                 for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
                         normalize_java_class_tree_with_members(
@@ -11063,7 +11682,16 @@ fn merge_java_inherited_member_names(
         }
         if let Some(parent_names) = class_members.get(&parent) {
             names.fields.extend(parent_names.fields.iter().cloned());
+            names.field_types.extend(
+                parent_names
+                    .field_types
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.clone())),
+            );
             names.methods.extend(parent_names.methods.iter().cloned());
+            names
+                .static_methods
+                .extend(parent_names.static_methods.iter().cloned());
         }
         if let Some(parent_parents) = class_parents.get(&parent) {
             stack.extend(parent_parents.iter().cloned());
@@ -12257,9 +12885,12 @@ fn normalize_java_anonymous_class_expr(
                 if let Some(parent_names) = class_members.get(parent_name) {
                     names.fields.extend(parent_names.fields.iter().cloned());
                     names.methods.extend(parent_names.methods.iter().cloned());
+                    names
+                        .static_methods
+                        .extend(parent_names.static_methods.iter().cloned());
                 }
             }
-            normalize_java_class_members(members, &names);
+            normalize_java_class_members(members, "", &names, class_members);
             normalize_java_anonymous_class_members(members, class_members);
         }
         ExprKind::FunctionExpr(func) => normalize_java_anonymous_class_stmt(func, class_members),
@@ -12329,7 +12960,18 @@ fn java_parent_expr_name(expr: &Expression) -> Option<&str> {
 #[derive(Clone, Default)]
 struct JavaClassMemberNames {
     fields: std::collections::HashSet<String>,
+    field_types: HashMap<String, String>,
     methods: std::collections::HashSet<String>,
+    static_methods: std::collections::HashSet<String>,
+    instance_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
+    static_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
+}
+
+#[derive(Clone)]
+struct JavaOverloadTarget {
+    mangled_name: String,
+    param_types: Vec<String>,
+    return_type: Option<String>,
 }
 
 impl JavaClassMemberNames {
@@ -12340,6 +12982,15 @@ impl JavaClassMemberNames {
                 ClassMember::Field {
                     name, modifiers, ..
                 } if !modifiers.is_static => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let field_types = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Field {
+                    name, type_hint, ..
+                } => type_hint.as_ref().map(|t| (name.clone(), t.clone())),
                 _ => None,
             })
             .collect();
@@ -12355,20 +13006,73 @@ impl JavaClassMemberNames {
                 _ => None,
             })
             .collect();
-        Self { fields, methods }
+        let static_methods = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Method(func) => match &func.kind {
+                    StmtKind::FunctionDecl {
+                        name, modifiers, ..
+                    } if modifiers.is_static => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let instance_overloads = java_collect_overload_targets(members, false);
+        let static_overloads = java_collect_overload_targets(members, true);
+        Self {
+            fields,
+            field_types,
+            methods,
+            static_methods,
+            instance_overloads,
+            static_overloads,
+        }
     }
 }
 
-fn normalize_java_class_members(members: &mut [ClassMember], names: &JavaClassMemberNames) {
-    if names.fields.is_empty() && names.methods.is_empty() {
+fn normalize_java_class_members(
+    members: &mut [ClassMember],
+    class_name: &str,
+    names: &JavaClassMemberNames,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+) {
+    if names.fields.is_empty() && names.methods.is_empty() && names.static_methods.is_empty() {
         return;
     }
+
+    let current_class = if class_name.is_empty() {
+        None
+    } else {
+        Some(class_name)
+    };
+    normalize_java_overload_names(members);
 
     for member in members {
         match member {
             ClassMember::Constructor { params, body, .. } => {
                 let mut locals = params.iter().map(|p| p.name.clone()).collect();
-                normalize_java_stmts(body, &names.fields, &names.methods, &mut locals);
+                let mut local_types: HashMap<String, String> = params
+                    .iter()
+                    .filter_map(|p| p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone())))
+                    .collect();
+                local_types.extend(
+                    names
+                        .field_types
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), ty.clone())),
+                );
+                normalize_java_stmts(
+                    body,
+                    &names.fields,
+                    &names.methods,
+                    &names.static_methods,
+                    &names.static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals,
+                    &mut local_types,
+                );
             }
             ClassMember::Method(func) => {
                 if let StmtKind::FunctionDecl {
@@ -12378,11 +13082,43 @@ fn normalize_java_class_members(members: &mut [ClassMember], names: &JavaClassMe
                     ..
                 } = &mut func.kind
                 {
-                    if modifiers.is_static {
-                        continue;
-                    }
                     let mut locals = params.iter().map(|p| p.name.clone()).collect();
-                    normalize_java_stmts(body, &names.fields, &names.methods, &mut locals);
+                    let mut local_types: HashMap<String, String> = params
+                        .iter()
+                        .filter_map(|p| p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone())))
+                        .collect();
+                    local_types.extend(
+                        names
+                            .field_types
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.clone())),
+                    );
+                    if modifiers.is_static {
+                        let empty = std::collections::HashSet::new();
+                        normalize_java_stmts(
+                            body,
+                            &empty,
+                            &empty,
+                            &names.static_methods,
+                            &names.static_overloads,
+                            class_members,
+                            current_class,
+                            &mut locals,
+                            &mut local_types,
+                        );
+                    } else {
+                        normalize_java_stmts(
+                            body,
+                            &names.fields,
+                            &names.methods,
+                            &names.static_methods,
+                            &names.static_overloads,
+                            class_members,
+                            current_class,
+                            &mut locals,
+                            &mut local_types,
+                        );
+                    }
                 }
             }
             _ => {}
@@ -12390,34 +13126,655 @@ fn normalize_java_class_members(members: &mut [ClassMember], names: &JavaClassMe
     }
 }
 
+fn java_collect_overload_targets(
+    members: &[ClassMember],
+    want_static: bool,
+) -> HashMap<String, Vec<JavaOverloadTarget>> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for member in members {
+        let ClassMember::Method(func) = member else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            name, ..
+        } = &func.kind
+        else {
+            continue;
+        };
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+
+    let mut overloads: HashMap<String, Vec<JavaOverloadTarget>> = HashMap::new();
+    for member in members {
+        let ClassMember::Method(func) = member else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            name,
+            params,
+            modifiers,
+            return_type,
+            ..
+        } = &func.kind
+        else {
+            continue;
+        };
+        if modifiers.is_static != want_static || counts.get(name).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        let param_types: Vec<String> = params
+            .iter()
+            .map(|param| java_overload_type_key(param.type_hint.as_deref().unwrap_or("Object")))
+            .collect();
+        overloads
+            .entry(name.clone())
+            .or_default()
+            .push(JavaOverloadTarget {
+                mangled_name: java_overload_mangled_name(name, &param_types),
+                param_types,
+                return_type: return_type.clone(),
+            });
+    }
+    overloads
+}
+
+fn normalize_java_overload_names(members: &mut [ClassMember]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for member in members.iter() {
+        let ClassMember::Method(func) = member else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            name, ..
+        } = &func.kind
+        else {
+            continue;
+        };
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+
+    for member in members.iter_mut() {
+        let ClassMember::Method(func) = member else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            name,
+            params,
+            ..
+        } = &mut func.kind
+        else {
+            continue;
+        };
+        if counts.get(name).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        let original = name.clone();
+        let param_types: Vec<String> = params
+            .iter()
+            .map(|param| java_overload_type_key(param.type_hint.as_deref().unwrap_or("Object")))
+            .collect();
+        *name = java_overload_mangled_name(&original, &param_types);
+    }
+}
+
+fn java_overload_mangled_name(name: &str, param_types: &[String]) -> String {
+    format!(
+        "{}__java_{}",
+        name,
+        if param_types.is_empty() {
+            "void".to_string()
+        } else {
+            param_types.join("_")
+        }
+    )
+}
+
+fn java_overload_type_key(type_hint: &str) -> String {
+    let simple = type_hint
+        .trim()
+        .trim_end_matches("[]")
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_hint)
+        .trim();
+    match simple {
+        "Integer" => "int".to_string(),
+        "Double" => "double".to_string(),
+        "Float" => "float".to_string(),
+        "Long" => "long".to_string(),
+        "Short" => "short".to_string(),
+        "Byte" => "byte".to_string(),
+        "Boolean" => "boolean".to_string(),
+        "Character" => "char".to_string(),
+        "String" => "string".to_string(),
+        other => other
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>()
+            .to_ascii_lowercase(),
+    }
+}
+
+fn java_expr_overload_type(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => Some("int".to_string()),
+        ExprKind::Lit(Literal::Float(_)) => Some("double".to_string()),
+        ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
+        ExprKind::Lit(Literal::Bool(_)) => Some("boolean".to_string()),
+        ExprKind::Lit(Literal::Char(_)) => Some("char".to_string()),
+        ExprKind::Cast { type_name, .. } => Some(java_overload_type_key(type_name)),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => java_expr_overload_type(expr),
+        _ => None,
+    }
+}
+
+fn select_java_overload_target<'a>(
+    method: &str,
+    args: &[Argument],
+    overloads: &'a HashMap<String, Vec<JavaOverloadTarget>>,
+) -> Option<&'a JavaOverloadTarget> {
+    let targets = overloads.get(method)?;
+    let arg_types: Option<Vec<String>> = args
+        .iter()
+        .map(|arg| java_expr_overload_type(&arg.value))
+        .collect();
+    let arg_types = arg_types?;
+    if let Some(target) = targets
+        .iter()
+        .find(|target| target.param_types == arg_types)
+    {
+        return Some(target);
+    }
+    targets
+        .iter()
+        .find(|target| java_overload_args_match_with_char_fallback(&target.param_types, args))
+}
+
+fn java_overload_args_match_with_char_fallback(param_types: &[String], args: &[Argument]) -> bool {
+    param_types.len() == args.len()
+        && param_types
+            .iter()
+            .zip(args.iter())
+            .all(|(param_type, arg)| match java_expr_overload_type(&arg.value) {
+                Some(arg_type) if &arg_type == param_type => true,
+                Some(arg_type) if arg_type == "string" && param_type == "char" => {
+                    matches!(&arg.value.kind, ExprKind::Lit(Literal::Str(s)) if s.chars().count() == 1)
+                }
+                _ => false,
+            })
+}
+
+fn java_overload_return_cast_type(return_type: Option<&str>) -> Option<String> {
+    match return_type.map(java_type_simple_name) {
+        Some("double") | Some("Double") => Some("double".to_string()),
+        Some("float") | Some("Float") => Some("float".to_string()),
+        _ => None,
+    }
+}
+
+fn java_overload_receiver_type(
+    object: &Expression,
+    local_types: &HashMap<String, String>,
+) -> Option<String> {
+    match &object.kind {
+        ExprKind::Ident(name) => local_types.get(name).cloned(),
+        ExprKind::This => None,
+        ExprKind::New { class, .. } => java_expr_dotted_name(class),
+        _ => None,
+    }
+}
+
+fn java_static_field_receiver(object: &Expression, current_class: Option<&str>) -> Option<Expression> {
+    let class_name = current_class?;
+    let ExprKind::Ident(field_name) = &object.kind else {
+        return None;
+    };
+    let key = format!("{class_name}.{field_name}");
+    let is_static = JAVA_STATIC_FIELD_VARS.with(|vars| vars.borrow().contains(&key));
+    if !is_static {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(class_name)),
+        field: field_name.clone(),
+        null_safe: false,
+    }))
+}
+
+fn java_static_field_type(object: &Expression) -> Option<String> {
+    let ExprKind::Member {
+        object: class,
+        field,
+        ..
+    } = &object.kind
+    else {
+        return None;
+    };
+    let ExprKind::Ident(class_name) = &class.kind else {
+        return None;
+    };
+    let key = format!("{class_name}.{field}");
+    JAVA_STATIC_FIELD_TYPES.with(|types| types.borrow().get(&key).cloned())
+}
+
+fn java_current_static_field_type(field_name: &str) -> Option<(String, String)> {
+    let class_name =
+        JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow().last().cloned())?;
+    let key = format!("{class_name}.{field_name}");
+    JAVA_STATIC_FIELD_TYPES
+        .with(|types| types.borrow().get(&key).cloned())
+        .map(|ty| (class_name, ty))
+}
+
+fn java_receiver_type(object: &Expression, local_types: &HashMap<String, String>) -> Option<String> {
+    java_overload_receiver_type(object, local_types).or_else(|| java_static_field_type(object))
+}
+
+fn java_lookup_class_members<'a>(
+    class_members: &'a std::collections::HashMap<String, JavaClassMemberNames>,
+    type_name: &str,
+) -> Option<&'a JavaClassMemberNames> {
+    let simple = java_type_simple_name(type_name);
+    class_members.get(type_name).or_else(|| class_members.get(simple))
+}
+
+fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => locals.contains(name),
+        ExprKind::Lambda { params, body, .. } => {
+            let mut nested = locals.clone();
+            for param in params {
+                nested.remove(&param.name);
+            }
+            match body {
+                LambdaBody::Expr(inner) => java_expr_reads_any_local(inner, &nested),
+                LambdaBody::Block(stmts) => stmts.iter().any(|stmt| java_stmt_reads_any_local(stmt, &nested)),
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            java_expr_reads_any_local(callee, locals)
+                || args.iter().any(|arg| java_expr_reads_any_local(&arg.value, locals))
+        }
+        ExprKind::Member { object, .. } => java_expr_reads_any_local(object, locals),
+        ExprKind::Index { object, index, .. } => {
+            java_expr_reads_any_local(object, locals) || java_expr_reads_any_local(index, locals)
+        }
+        ExprKind::Unary { expr, .. } => java_expr_reads_any_local(expr, locals),
+        ExprKind::Binary { left, right, .. } => {
+            java_expr_reads_any_local(left, locals) || java_expr_reads_any_local(right, locals)
+        }
+        ExprKind::Assign { target, value, .. } => {
+            java_expr_reads_any_local(target, locals) || java_expr_reads_any_local(value, locals)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_expr_reads_any_local(cond, locals)
+                || java_expr_reads_any_local(then, locals)
+                || java_expr_reads_any_local(else_, locals)
+        }
+        ExprKind::New { class, args, .. } => {
+            java_expr_reads_any_local(class, locals)
+                || args.iter().any(|arg| java_expr_reads_any_local(&arg.value, locals))
+        }
+        ExprKind::Array(items) => items.iter().any(|item| {
+            item.key.as_ref().is_some_and(|key| java_expr_reads_any_local(key, locals))
+                || java_expr_reads_any_local(&item.value, locals)
+        }),
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, value } => {
+                java_expr_reads_any_local(key, locals) || java_expr_reads_any_local(value, locals)
+            }
+            ObjectProperty::Spread(value) => java_expr_reads_any_local(value, locals),
+            ObjectProperty::Shorthand(name) => locals.contains(name),
+            _ => true,
+        }),
+        ExprKind::Sequence(exprs) => exprs.iter().any(|expr| java_expr_reads_any_local(expr, locals)),
+        _ => false,
+    }
+}
+
+fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => java_expr_reads_any_local(expr, locals),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(|init| java_expr_reads_any_local(init, locals))),
+        StmtKind::Block(stmts) => stmts.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            java_expr_reads_any_local(cond, locals)
+                || then_body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || elifs.iter().any(|(cond, body)| {
+                    java_expr_reads_any_local(cond, locals)
+                        || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
+        }
+        StmtKind::While { cond, body, .. } => {
+            java_expr_reads_any_local(cond, locals)
+                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+        }
+        StmtKind::For { init, cond, update, body } => {
+            init.as_ref().is_some_and(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || cond.as_ref().is_some_and(|expr| java_expr_reads_any_local(expr, locals))
+                || update.as_ref().is_some_and(|expr| java_expr_reads_any_local(expr, locals))
+                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            java_expr_reads_any_local(iter, locals)
+                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+        }
+        StmtKind::Try { body, catches, finally, .. } => {
+            body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || catches
+                    .iter()
+                    .any(|catch| catch.body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
+        }
+        StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) => false,
+        _ => false,
+    }
+}
+
+fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -> bool {
+    match &target.kind {
+        ExprKind::Ident(name) => JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name)),
+        ExprKind::Lambda { .. } => java_expr_reads_any_local(target, locals),
+        _ => false,
+    }
+}
+
+fn java_resolve_runnable_target(target: Expression) -> Expression {
+    if let ExprKind::Ident(name) = &target.kind {
+        if let Some(resolved) = JAVA_RUNNABLE_TARGETS.with(|targets| targets.borrow().get(name).cloned()) {
+            return resolved;
+        }
+    }
+    target
+}
+
+fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(callee);
+            for arg in args {
+                java_rewrite_spawned_thread_sleep_expr(&mut arg.value);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_thread_sleep") {
+                *callee = Box::new(Expression::ident("__java_thread_sleep"));
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(inner) => java_rewrite_spawned_thread_sleep_expr(inner),
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+        },
+        ExprKind::Member { object, .. } => java_rewrite_spawned_thread_sleep_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(object);
+            java_rewrite_spawned_thread_sleep_expr(index);
+        }
+        ExprKind::Unary { expr, .. } => java_rewrite_spawned_thread_sleep_expr(expr),
+        ExprKind::Binary { left, right, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(left);
+            java_rewrite_spawned_thread_sleep_expr(right);
+        }
+        ExprKind::Assign { target, value } => {
+            java_rewrite_spawned_thread_sleep_expr(target);
+            java_rewrite_spawned_thread_sleep_expr(value);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_rewrite_spawned_thread_sleep_expr(cond);
+            java_rewrite_spawned_thread_sleep_expr(then);
+            java_rewrite_spawned_thread_sleep_expr(else_);
+        }
+        ExprKind::New { class, args, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(class);
+            for arg in args {
+                java_rewrite_spawned_thread_sleep_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    java_rewrite_spawned_thread_sleep_expr(key);
+                }
+                java_rewrite_spawned_thread_sleep_expr(&mut item.value);
+            }
+        }
+        ExprKind::Sequence(exprs) => {
+            for expr in exprs {
+                java_rewrite_spawned_thread_sleep_expr(expr);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            java_rewrite_spawned_thread_sleep_expr(expr);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    java_rewrite_spawned_thread_sleep_expr(init);
+                }
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for stmt in stmts {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            java_rewrite_spawned_thread_sleep_expr(cond);
+            for stmt in then_body {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+            for (cond, body) in elifs {
+                java_rewrite_spawned_thread_sleep_expr(cond);
+                for stmt in body {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(cond);
+            for stmt in body {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                java_rewrite_spawned_thread_sleep_stmt(init);
+            }
+            if let Some(cond) = cond {
+                java_rewrite_spawned_thread_sleep_expr(cond);
+            }
+            if let Some(update) = update {
+                java_rewrite_spawned_thread_sleep_expr(update);
+            }
+            for stmt in body {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            java_rewrite_spawned_thread_sleep_expr(iter);
+            for stmt in body {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally, .. } => {
+            for stmt in body {
+                java_rewrite_spawned_thread_sleep_stmt(stmt);
+            }
+            for catch in catches {
+                for stmt in &mut catch.body {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+            if let Some(body) = finally {
+                for stmt in body {
+                    java_rewrite_spawned_thread_sleep_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn normalize_java_stmts(
     stmts: &mut [Statement],
     fields: &std::collections::HashSet<String>,
     methods: &std::collections::HashSet<String>,
+    static_methods: &std::collections::HashSet<String>,
+    static_overloads: &HashMap<String, Vec<JavaOverloadTarget>>,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    current_class: Option<&str>,
     locals: &mut std::collections::HashSet<String>,
+    local_types: &mut HashMap<String, String>,
 ) {
     for stmt in stmts {
         match &mut stmt.kind {
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
                     if let Some(init) = &mut decl.init {
-                        normalize_java_expr(init, fields, methods, locals, false);
+                        normalize_java_expr(
+                            init,
+                            fields,
+                            methods,
+                            static_methods,
+                            static_overloads,
+                            class_members,
+                            current_class,
+                            locals,
+                            local_types,
+                            false,
+                        );
+                        if let BindingPattern::Ident(name) = &decl.pattern {
+                            if matches!(
+                                decl.type_hint.as_deref(),
+                                Some("Runnable" | "java.lang.Runnable")
+                            ) {
+                                JAVA_RUNNABLE_TARGETS.with(|targets| {
+                                    targets.borrow_mut().insert(name.clone(), init.clone());
+                                });
+                                if java_thread_target_is_unsafe(init, locals) {
+                                    JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| {
+                                        targets.borrow_mut().insert(name.clone());
+                                    });
+                                }
+                            }
+                            if let ExprKind::Call { callee, args, .. } = &init.kind {
+                                if matches!(&callee.kind, ExprKind::Ident(c) if c == "__j_thread_new")
+                                {
+                                    if let Some(target) = args.first() {
+                                        JAVA_THREAD_TARGETS.with(|targets| {
+                                            targets
+                                                .borrow_mut()
+                                                .insert(name.clone(), target.value.clone());
+                                        });
+                                        if java_thread_target_is_unsafe(&target.value, locals) {
+                                            JAVA_THREAD_UNSAFE_TARGETS.with(|targets| {
+                                                targets.borrow_mut().insert(name.clone());
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     collect_binding_names(&decl.pattern, locals);
+                    collect_binding_types(&decl.pattern, decl.type_hint.as_deref(), local_types);
                 }
             }
             StmtKind::Assign { targets, value } => {
-                normalize_java_expr(value, fields, methods, locals, false);
+                normalize_java_expr(
+                    value,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
                 for target in &mut *targets {
-                    normalize_java_expr(target, fields, methods, locals, true);
+                    normalize_java_expr(
+                        target,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        locals,
+                        local_types,
+                        true,
+                    );
                 }
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                normalize_java_expr(value, fields, methods, locals, false);
-                normalize_java_expr(target, fields, methods, locals, true);
+                normalize_java_expr(
+                    value,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                normalize_java_expr(
+                    target,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    true,
+                );
             }
             StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-                normalize_java_expr(expr, fields, methods, locals, false);
+                normalize_java_expr(
+                    expr,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
             }
             StmtKind::If {
                 cond,
@@ -12425,22 +13782,166 @@ fn normalize_java_stmts(
                 elifs,
                 else_body,
             } => {
-                normalize_java_expr(cond, fields, methods, locals, false);
-                normalize_java_stmts(then_body, fields, methods, &mut locals.clone());
+                normalize_java_expr(
+                    cond,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                normalize_java_stmts(
+                    then_body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
                 for (elif_cond, elif_body) in elifs {
-                    normalize_java_expr(elif_cond, fields, methods, locals, false);
-                    normalize_java_stmts(elif_body, fields, methods, &mut locals.clone());
+                    normalize_java_expr(
+                        elif_cond,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        locals,
+                        local_types,
+                        false,
+                    );
+                    normalize_java_stmts(
+                        elif_body,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
                 }
                 if let Some(else_body) = else_body {
-                    normalize_java_stmts(else_body, fields, methods, &mut locals.clone());
+                    normalize_java_stmts(
+                        else_body,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
                 }
             }
             StmtKind::While { cond, body, .. } => {
-                normalize_java_expr(cond, fields, methods, locals, false);
-                normalize_java_stmts(body, fields, methods, &mut locals.clone());
+                normalize_java_expr(
+                    cond,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
             }
             StmtKind::Block(body) => {
-                normalize_java_stmts(body, fields, methods, &mut locals.clone());
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
+                for catch in catches {
+                    let mut catch_locals = locals.clone();
+                    if let Some(name) = &catch.var_name {
+                        catch_locals.insert(name.clone());
+                    }
+                    normalize_java_stmts(
+                        &mut catch.body,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut catch_locals,
+                        &mut local_types.clone(),
+                    );
+                }
+                if let Some(else_body) = else_body {
+                    normalize_java_stmts(
+                        else_body,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
+                }
+                if let Some(finally) = finally {
+                    normalize_java_stmts(
+                        finally,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
+                }
             }
             _ => {}
         }
@@ -12475,11 +13976,51 @@ fn collect_binding_names(pattern: &BindingPattern, locals: &mut std::collections
     }
 }
 
+fn collect_binding_types(
+    pattern: &BindingPattern,
+    type_hint: Option<&str>,
+    local_types: &mut HashMap<String, String>,
+) {
+    let Some(type_hint) = type_hint else {
+        return;
+    };
+    match pattern {
+        BindingPattern::Ident(name) => {
+            local_types.insert(name.clone(), type_hint.to_string());
+        }
+        BindingPattern::Object(props) => {
+            for prop in props {
+                if let Some(value) = &prop.value {
+                    collect_binding_types(value, Some(type_hint), local_types);
+                }
+            }
+        }
+        BindingPattern::Array(elems) => {
+            for elem in elems {
+                match elem {
+                    ArrayPatternElem::Pattern(pattern, _) => {
+                        collect_binding_types(pattern, Some(type_hint), local_types);
+                    }
+                    ArrayPatternElem::Rest(name) => {
+                        local_types.insert(name.clone(), type_hint.to_string());
+                    }
+                    ArrayPatternElem::Hole => {}
+                }
+            }
+        }
+    }
+}
+
 fn normalize_java_expr(
     expr: &mut Expression,
     fields: &std::collections::HashSet<String>,
     methods: &std::collections::HashSet<String>,
+    static_methods: &std::collections::HashSet<String>,
+    static_overloads: &HashMap<String, Vec<JavaOverloadTarget>>,
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    current_class: Option<&str>,
     locals: &std::collections::HashSet<String>,
+    local_types: &HashMap<String, String>,
     is_assignment_target: bool,
 ) {
     match &mut expr.kind {
@@ -12491,9 +14032,123 @@ fn normalize_java_expr(
                 null_safe: false,
             };
         }
+        ExprKind::Ident(name)
+            if !locals.contains(name)
+                && current_class.is_some()
+                && JAVA_STATIC_FIELD_VARS.with(|vars| {
+                    vars.borrow()
+                        .contains(&format!("{}.{}", current_class.unwrap_or_default(), name))
+                }) =>
+        {
+            let class_name = current_class.unwrap_or_default();
+            let field = name.clone();
+            expr.kind = ExprKind::Member {
+                object: Box::new(Expression::ident(class_name)),
+                field,
+                null_safe: false,
+            };
+        }
         ExprKind::Call { callee, args, .. } => {
-            for arg in args {
-                normalize_java_expr(&mut arg.value, fields, methods, locals, false);
+            for arg in args.iter_mut() {
+                normalize_java_expr(
+                    &mut arg.value,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+            }
+            if matches!(
+                &callee.kind,
+                ExprKind::Ident(name) if matches!(name.as_str(), "__j_print" | "__j_println")
+            ) {
+                if let Some(first) = args.get_mut(0) {
+                    *first = java_print_arg(first.clone());
+                }
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_thread_start")
+                && args.len() == 1
+            {
+                if let ExprKind::Ident(thread_name) = &args[0].value.kind {
+                    let unsafe_target = JAVA_THREAD_UNSAFE_TARGETS
+                        .with(|targets| targets.borrow().contains(thread_name));
+                    if unsafe_target {
+                        return;
+                    }
+                    if let Some(mut target) =
+                        JAVA_THREAD_TARGETS.with(|targets| targets.borrow().get(thread_name).cloned())
+                    {
+                        target = java_resolve_runnable_target(target);
+                        java_rewrite_spawned_thread_sleep_expr(&mut target);
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__java_thread_start_with")),
+                            args: vec![args[0].clone(), Argument::positional(target)],
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if let Some(type_name) = java_expr_dotted_name(object) {
+                    if let Some(class_names) = java_lookup_class_members(class_members, &type_name) {
+                        if let Some(target) =
+                            select_java_overload_target(field, args, &class_names.static_overloads)
+                        {
+                            *field = target.mangled_name.clone();
+                            if let Some(type_name) =
+                                java_overload_return_cast_type(target.return_type.as_deref())
+                            {
+                                let inner = expr.clone();
+                                *expr = Expression::new(ExprKind::Cast {
+                                    type_name,
+                                    expr: Box::new(inner),
+                                });
+                            }
+                            return;
+                        }
+                    }
+                }
+                if let Some(receiver_type) = java_overload_receiver_type(object, local_types) {
+                    if let Some(class_names) = java_lookup_class_members(class_members, &receiver_type)
+                    {
+                        if let Some(target) = select_java_overload_target(
+                            field,
+                            args,
+                            &class_names.instance_overloads,
+                        ) {
+                            *field = target.mangled_name.clone();
+                            if let Some(type_name) =
+                                java_overload_return_cast_type(target.return_type.as_deref())
+                            {
+                                let inner = expr.clone();
+                                *expr = Expression::new(ExprKind::Cast {
+                                    type_name,
+                                    expr: Box::new(inner),
+                                });
+                            }
+                            return;
+                        }
+                    }
+                }
+                if java_type_is_semaphore(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_semaphore_method_name(field) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
             }
             if let ExprKind::Ident(name) = &callee.kind {
                 if methods.contains(name) && !locals.contains(name) {
@@ -12505,8 +14160,42 @@ fn normalize_java_expr(
                     };
                     return;
                 }
+                if static_methods.contains(name) && !locals.contains(name) {
+                    if let Some(class_name) = current_class {
+                        let target = select_java_overload_target(name, args, static_overloads);
+                        let method = target
+                            .map(|target| target.mangled_name.clone())
+                            .unwrap_or_else(|| name.clone());
+                        callee.kind = ExprKind::Member {
+                            object: Box::new(Expression::ident(class_name)),
+                            field: method,
+                            null_safe: false,
+                        };
+                        if let Some(type_name) = target.and_then(|target| {
+                            java_overload_return_cast_type(target.return_type.as_deref())
+                        }) {
+                            let inner = expr.clone();
+                            *expr = Expression::new(ExprKind::Cast {
+                                type_name,
+                                expr: Box::new(inner),
+                            });
+                        }
+                        return;
+                    }
+                }
             }
-            normalize_java_expr(callee, fields, methods, locals, false);
+            normalize_java_expr(
+                callee,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
         }
         ExprKind::Member { object, .. } => {
             if let Some(type_name) = java_qualified_static_type(object) {
@@ -12515,33 +14204,200 @@ fn normalize_java_expr(
                     return;
                 }
             }
-            normalize_java_expr(object, fields, methods, locals, false);
+            normalize_java_expr(
+                object,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
         }
         ExprKind::Index { object, index, .. } => {
-            normalize_java_expr(object, fields, methods, locals, false);
-            normalize_java_expr(index, fields, methods, locals, false);
+            normalize_java_expr(
+                object,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                index,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
         }
         ExprKind::Binary { left, right, .. } => {
-            normalize_java_expr(left, fields, methods, locals, false);
-            normalize_java_expr(right, fields, methods, locals, false);
+            normalize_java_expr(
+                left,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                right,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
         }
         ExprKind::Unary { expr: inner, .. } => {
-            normalize_java_expr(inner, fields, methods, locals, is_assignment_target);
+            normalize_java_expr(
+                inner,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                is_assignment_target,
+            );
             rewrite_java_this_field_update(expr);
         }
         ExprKind::Assign { target, value } => {
-            normalize_java_expr(value, fields, methods, locals, false);
-            normalize_java_expr(target, fields, methods, locals, true);
+            normalize_java_expr(
+                value,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                target,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                true,
+            );
             rewrite_java_this_field_assign(expr);
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            normalize_java_expr(cond, fields, methods, locals, false);
-            normalize_java_expr(then, fields, methods, locals, false);
-            normalize_java_expr(else_, fields, methods, locals, false);
+            normalize_java_expr(
+                cond,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                then,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                else_,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
         }
         ExprKind::Array(elems) => {
             for elem in elems {
-                normalize_java_expr(&mut elem.value, fields, methods, locals, false);
+                normalize_java_expr(
+                    &mut elem.value,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+            }
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            let mut lambda_locals = locals.clone();
+            let mut lambda_types = local_types.clone();
+            for param in params {
+                lambda_locals.insert(param.name.clone());
+                if let Some(type_hint) = &param.type_hint {
+                    lambda_types.insert(param.name.clone(), type_hint.clone());
+                }
+            }
+            match body {
+                LambdaBody::Expr(inner) => normalize_java_expr(
+                    inner,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &lambda_locals,
+                    &lambda_types,
+                    false,
+                ),
+                LambdaBody::Block(stmts) => normalize_java_stmts(
+                    stmts,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut lambda_locals,
+                    &mut lambda_types,
+                ),
             }
         }
         _ => {}

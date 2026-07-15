@@ -41,9 +41,24 @@ print               = { emit = "common:java.print_no_newline",   min_args = 0, m
 printf              = { emit = "common:java.printf",             min_args = 1, max_args = 255 }
 __java_field_set    = { emit = "common:java.field_set",           min_args = 3, max_args = 3 }
 __java_field_inc    = { emit = "common:java.field_inc",           min_args = 3, max_args = 3 }
+__java_semaphore_new = { emit = "common:java.semaphore_new",      min_args = 1, max_args = 2 }
+__java_semaphore_available = { emit = "common:java.semaphore_available", min_args = 1, max_args = 1 }
+__java_semaphore_acquire = { emit = "common:java.semaphore_acquire", min_args = 1, max_args = 2 }
+__java_semaphore_release = { emit = "common:java.semaphore_release", min_args = 1, max_args = 2 }
+__java_semaphore_try_acquire = { emit = "common:java.semaphore_try_acquire", min_args = 1, max_args = 4 }
+__java_semaphore_drain = { emit = "common:java.semaphore_drain", min_args = 1, max_args = 1 }
+__java_semaphore_has_queued = { emit = "common:java.semaphore_has_queued", min_args = 1, max_args = 1 }
+__java_semaphore_queue_length = { emit = "common:java.semaphore_queue_length", min_args = 1, max_args = 1 }
+__java_semaphore_is_fair = { emit = "common:java.semaphore_is_fair", min_args = 1, max_args = 1 }
+__java_thread_start_with = { emit = "common:java.thread_start_with", min_args = 2, max_args = 2 }
+__java_thread_join = { emit = "common:java.thread_join", min_args = 1, max_args = 1 }
+__java_thread_sleep = { emit = "common:java.thread_sleep", min_args = 1, max_args = 1 }
 __j_btoa            = { emit = "host:ecma:string:btoa",           min_args = 1, max_args = 1 }
 __j_atob            = { emit = "host:ecma:string:atob",           min_args = 1, max_args = 1 }
 __j_str_length      = { emit = "common:strings.length",           min_args = 1, max_args = 1 }
+__j_str_trim        = { emit = "common:strings.trim",             min_args = 1, max_args = 1 }
+__j_str_to_upper    = { emit = "common:strings.to_upper",         min_args = 1, max_args = 1 }
+__j_str_to_lower    = { emit = "common:strings.to_lower",         min_args = 1, max_args = 1 }
 __j_objects_equals  = { emit = "common:object.equals",            min_args = 2, max_args = 2 }
 __j_objects_is_null = { emit = "common:object.is_null",           min_args = 1, max_args = 1 }
 __j_objects_non_null = { emit = "common:object.non_null",         min_args = 1, max_args = 1 }
@@ -85,6 +100,8 @@ __j_object_notify_all = { emit = "common:threading.monitor_notify_all", min_args
 "java.util.UUID.nameUUIDFromBytes" = { emit = "common:java.uuid_name_from_bytes", min_args = 1, max_args = 1 }
 "BitSet.valueOf"        = { emit = "common:java.bitset_value_of", min_args = 1, max_args = 1 }
 "java.util.BitSet.valueOf" = { emit = "common:java.bitset_value_of", min_args = 1, max_args = 1 }
+"ConcurrentHashMap.newKeySet" = { emit = "common:java.hash_set_new", min_args = 0, max_args = 0 }
+"java.util.concurrent.ConcurrentHashMap.newKeySet" = { emit = "common:java.hash_set_new", min_args = 0, max_args = 0 }
 __java_enum_set_none_of = { emit = "common:java.enum_set_none_of", min_args = 1, max_args = 1 }
 __java_enum_set_all_of = { emit = "common:java.enum_set_all_of", min_args = 1, max_args = 1 }
 __java_enum_set_of = { emit = "common:java.enum_set_of", min_args = 1, max_args = 255 }
@@ -267,7 +284,18 @@ __java_map_size = { emit = "common:java.map_size", min_args = 1, max_args = 1 }
 __java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_args = 1 }
 __java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
 __java_map_key_set_remove = { emit = "common:java.map_key_set_remove", min_args = 2, max_args = 2 }
+__java_optional_of_long = { emit = "common:java.optional_of_long", min_args = 1, max_args = 1 }
 __java_optional_filter = { emit = "common:java.optional_filter", min_args = 2, max_args = 2 }
+__java_optional_map = { emit = "common:java.optional_map", min_args = 2, max_args = 2 }
+__java_optional_flat_map = { emit = "common:java.optional_flat_map", min_args = 2, max_args = 2 }
+__java_optional_if_present_or_else = { emit = "common:java.optional_if_present_or_else", min_args = 3, max_args = 3 }
+__java_optional_is_present = { emit = "common:java.optional_is_present", min_args = 1, max_args = 1 }
+__java_optional_is_empty = { emit = "common:java.optional_is_empty", min_args = 1, max_args = 1 }
+__java_optional_or = { emit = "common:java.optional_or", min_args = 2, max_args = 2 }
+__java_optional_or_get = { emit = "common:java.optional_or_get", min_args = 2, max_args = 2 }
+__java_optional_stream = { emit = "common:java.optional_stream", min_args = 1, max_args = 1 }
+__java_optional_equals = { emit = "common:java.optional_equals", min_args = 2, max_args = 2 }
+__java_optional_to_string = { emit = "common:java.optional_to_string", min_args = 1, max_args = 1 }
 __java_sorted_map_key_set = { emit = "common:java.sorted_map_key_set", min_args = 1, max_args = 1 }
 __java_sorted_map_first_key = { emit = "common:java.sorted_map_first_key", min_args = 1, max_args = 1 }
 __java_sorted_map_last_key = { emit = "common:java.sorted_map_last_key", min_args = 1, max_args = 1 }
@@ -562,12 +590,22 @@ __java_string_join = { emit = "common:java.string_join",   min_args = 2, max_arg
 "Collectors.joining"       = { emit = "common:java.collectors_joining",  min_args = 0, max_args = 3 }
 "Collectors.toList"        = { emit = "common:java.collectors_to_list",  min_args = 0, max_args = 0 }
 "Collectors.toSet"         = { emit = "common:java.collectors_to_set",   min_args = 0, max_args = 0 }
+"Collectors.toUnmodifiableList" = { emit = "common:java.collectors_to_list",  min_args = 0, max_args = 0 }
+"Collectors.toUnmodifiableSet"  = { emit = "common:java.collectors_to_set",   min_args = 0, max_args = 0 }
+"Collectors.toCollection"  = { emit = "common:java.collectors_to_collection", min_args = 1, max_args = 1 }
 "Collectors.counting"      = { emit = "common:java.collectors_counting", min_args = 0, max_args = 0 }
 "Collectors.summingInt"    = { emit = "common:java.collectors_summing_int", min_args = 1, max_args = 1 }
+"Collectors.summingLong"   = { emit = "common:java.collectors_summing_int", min_args = 1, max_args = 1 }
+"Collectors.summingDouble" = { emit = "common:java.collectors_summing_int", min_args = 1, max_args = 1 }
 "Collectors.averagingInt"  = { emit = "common:java.collectors_averaging_int", min_args = 1, max_args = 1 }
+"Collectors.averagingLong" = { emit = "common:java.collectors_averaging_int", min_args = 1, max_args = 1 }
+"Collectors.averagingDouble" = { emit = "common:java.collectors_averaging_int", min_args = 1, max_args = 1 }
 "Collectors.toMap"         = { emit = "common:java.collectors_to_map",   min_args = 2, max_args = 2 }
+"Collectors.toUnmodifiableMap" = { emit = "common:java.collectors_to_map", min_args = 2, max_args = 2 }
 "Collectors.mapping"       = { emit = "common:java.collectors_mapping",  min_args = 2, max_args = 2 }
 "Collectors.filtering"     = { emit = "common:java.collectors_filtering", min_args = 2, max_args = 2 }
+"Collectors.collectingAndThen" = { emit = "common:java.collectors_collecting_and_then", min_args = 2, max_args = 2 }
+"Collectors.reducing"      = { emit = "common:java.collectors_reducing", min_args = 1, max_args = 3 }
 "Collectors.groupingBy"    = { emit = "common:java.collectors_grouping_by", min_args = 1, max_args = 2 }
 "Collectors.partitioningBy" = { emit = "common:java.collectors_partitioning_by", min_args = 1, max_args = 2 }
 "Collectors.minBy"         = { emit = "common:java.collectors_min_by", min_args = 1, max_args = 1 }
@@ -737,8 +775,11 @@ retainAll     = { emit = "common:java.retain_all",       min_args = 1, max_args 
 removeIf      = { emit = "common:java.list_remove_if",   min_args = 1, max_args = 1 }
 clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
 get           = { emit = "common:java.get",              min_args = 1, max_args = 1 }
+getFirst      = { emit = "common:java.peek_first",       min_args = 0, max_args = 0 }
+getLast       = { emit = "common:java.peek_last",        min_args = 0, max_args = 0 }
 set           = { emit = "common:java.list_set",         min_args = 1, max_args = 2 }
 size          = { emit = "common:java.size",             min_args = 0, max_args = 0 }
+mappingCount  = { emit = "common:java.size",             min_args = 0, max_args = 0 }
 subList       = { emit = "common:java.sub_list",         min_args = 2, max_args = 2 }
 sort          = { emit = "common:java.list_sort",        min_args = 0, max_args = 1 }
 iterator      = { emit = "common:java.list_iterator",    min_args = 0, max_args = 0 }
@@ -807,7 +848,7 @@ skip          = { emit = "common:java.stream_skip",      min_args = 1, max_args 
 takeWhile     = { emit = "common:java.stream_take_while", min_args = 1, max_args = 1 }
 dropWhile     = { emit = "common:java.stream_drop_while", min_args = 1, max_args = 1 }
 collect       = { emit = "common:java.stream_collect",   min_args = 1, max_args = 1 }
-toArray       = { emit = "noop",                         min_args = 0, max_args = 1 }
+toArray       = { emit = "common:java.stream_to_array",  min_args = 0, max_args = 1 }
 toList        = { emit = "noop",                         min_args = 0, max_args = 0 }
 build         = { emit = "noop",                         min_args = 0, max_args = 0 }
 boxed         = { emit = "noop",                         min_args = 0, max_args = 0 }
@@ -829,6 +870,25 @@ getCount      = { emit = "common:java.stream_count",     min_args = 0, max_args 
 getMax        = { emit = "common:java.stream_max_value", min_args = 0, max_args = 0 }
 getAverage    = { emit = "common:java.stream_average_value", min_args = 0, max_args = 0 }
 forEach       = { emit = "common:java.stream_for_each",  min_args = 1, max_args = 1 }
+forEachKey    = { emit = "common:java.concurrent_for_each_key", min_args = 2, max_args = 2 }
+forEachValue  = { emit = "common:java.concurrent_for_each_value", min_args = 2, max_args = 2 }
+reduceKeys    = { emit = "common:java.concurrent_reduce_keys", min_args = 2, max_args = 2 }
+reduceValues  = { emit = "common:java.concurrent_reduce_values", min_args = 2, max_args = 2 }
+reduceEntries = { emit = "common:java.concurrent_reduce_entries", min_args = 2, max_args = 2 }
+searchKeys    = { emit = "common:java.concurrent_search_keys", min_args = 2, max_args = 2 }
+searchValues  = { emit = "common:java.concurrent_search_values", min_args = 2, max_args = 2 }
+searchEntries = { emit = "common:java.concurrent_search_entries", min_args = 2, max_args = 2 }
+
+# Semaphore
+availablePermits = { emit = "common:java.semaphore_available", min_args = 0, max_args = 0 }
+acquire       = { emit = "common:java.semaphore_acquire", min_args = 0, max_args = 1 }
+acquireUninterruptibly = { emit = "common:java.semaphore_acquire", min_args = 0, max_args = 1 }
+release       = { emit = "common:java.semaphore_release", min_args = 0, max_args = 1 }
+tryAcquire    = { emit = "common:java.semaphore_try_acquire", min_args = 0, max_args = 3 }
+drainPermits  = { emit = "common:java.semaphore_drain", min_args = 0, max_args = 0 }
+hasQueuedThreads = { emit = "common:java.semaphore_has_queued", min_args = 0, max_args = 0 }
+getQueueLength = { emit = "common:java.semaphore_queue_length", min_args = 0, max_args = 0 }
+isFair        = { emit = "common:java.semaphore_is_fair", min_args = 0, max_args = 0 }
 
 # Stack
 push          = { emit = "common:java.stack_push",       min_args = 1, max_args = 1 }
@@ -977,6 +1037,8 @@ TreeSet       = ["common", "java.sorted_set_new"]
 PriorityQueue = ["common", "java.priority_queue_new"]
 TreeMap       = ["common", "java.sorted_map_new"]
 HashMap       = ["common", "java.hash_map_new"]
+ConcurrentHashMap = ["common", "java.concurrent_hash_map_new"]
+Semaphore     = ["common", "java.semaphore_new"]
 IdentityHashMap = ["common", "java.identity_hash_map_new"]
 "java.util.TreeSet"       = ["common", "java.sorted_set_new"]
 "java.util.ArrayDeque"    = ["common", "java.mutable_list_of"]
@@ -991,6 +1053,8 @@ Hashtable     = ["common", "java.hash_map_new"]
 Properties    = ["common", "java.hash_map_new"]
 "java.util.TreeMap"       = ["common", "java.sorted_map_new"]
 "java.util.HashMap"       = ["common", "java.hash_map_new"]
+"java.util.concurrent.ConcurrentHashMap" = ["common", "java.concurrent_hash_map_new"]
+"java.util.concurrent.Semaphore" = ["common", "java.semaphore_new"]
 "java.util.IdentityHashMap" = ["common", "java.identity_hash_map_new"]
 "java.util.LinkedHashMap" = ["common", "java.linked_hash_map_new"]
 "java.util.WeakHashMap"   = ["common", "java.hash_map_new"]

@@ -195,6 +195,13 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_len(chunks, current, line);
 }
 
+pub fn emit_to_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        let generator_slot = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, generator_slot, line);
+    }
+}
+
 pub fn emit_sum(chunks: &mut [Chunk], current: usize, line: u32) {
     // `Stream.sum()` — fold the array with `+`, via the shared for-in scaffold.
     let arr = chunks[current].alloc_scratch(1);
@@ -531,6 +538,8 @@ pub fn emit_collect(chunks: &mut [Chunk], current: usize, line: u32) {
     let collector_slot = chunks[current].alloc_scratch(1);
     let array_slot = chunks[current].alloc_scratch(1);
     let joined_slot = chunks[current].alloc_scratch(1);
+    let prefix_slot = chunks[current].alloc_scratch(1);
+    let suffix_slot = chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, collector_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
@@ -552,11 +561,16 @@ pub fn emit_collect(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
     chunks[current].emit_i32_const(2, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, joined_slot, line);
-    super::string_adapter::emit_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, prefix_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
     chunks[current].emit_i32_const(3, line);
     collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, suffix_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, prefix_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, joined_slot, line);
+    super::string_adapter::emit_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, suffix_slot, line);
     super::string_adapter::emit_concat(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
@@ -629,6 +643,18 @@ fn emit_collect_non_joining(
     );
     chunks[current].emit_else(line);
 
+    emit_collector_kind_eq(chunks, current, collector_slot, "toCollection", line);
+    chunks[current].emit_if(line);
+    emit_collect_to_collection(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
+
     emit_collector_kind_eq(chunks, current, collector_slot, "mapping", line);
     chunks[current].emit_if(line);
     emit_collect_mapping(
@@ -644,6 +670,30 @@ fn emit_collect_non_joining(
     emit_collector_kind_eq(chunks, current, collector_slot, "filtering", line);
     chunks[current].emit_if(line);
     emit_collect_filtering(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
+
+    emit_collector_kind_eq(chunks, current, collector_slot, "collectingAndThen", line);
+    chunks[current].emit_if(line);
+    emit_collect_collecting_and_then(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
+
+    emit_collector_kind_eq(chunks, current, collector_slot, "reducing", line);
+    chunks[current].emit_if(line);
+    emit_collect_reducing(
         chunks,
         current,
         collector_slot,
@@ -679,19 +729,6 @@ fn emit_collect_non_joining(
     );
     chunks[current].emit_else(line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "groupingBy", line);
-    chunks[current].emit_if(line);
-    emit_collect_grouping(
-        chunks,
-        current,
-        collector_slot,
-        array_slot,
-        result_slot,
-        false,
-        line,
-    );
-    chunks[current].emit_else(line);
-
     emit_collector_kind_eq(chunks, current, collector_slot, "partitioningBy", line);
     chunks[current].emit_if(line);
     emit_collect_grouping(
@@ -705,9 +742,24 @@ fn emit_collect_non_joining(
     );
     chunks[current].emit_else(line);
 
+    emit_collector_kind_eq(chunks, current, collector_slot, "groupingBy", line);
+    chunks[current].emit_if(line);
+    emit_collect_grouping(
+        chunks,
+        current,
+        collector_slot,
+        array_slot,
+        result_slot,
+        false,
+        line,
+    );
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -795,7 +847,7 @@ fn emit_collect_to_map(
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_mapper_slot, line);
 
-    vybe_emitter::dict::emit_new(chunks, current, line);
+    collections::emit_map_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     collections::emit_len(chunks, current, line);
@@ -824,7 +876,62 @@ fn emit_collect_to_map(
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    vybe_emitter::dict::emit_set(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    increment_index(chunks, current, index_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+}
+
+fn emit_collect_to_collection(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    array_slot: u16,
+    result_slot: u16,
+    line: u32,
+) {
+    let supplier_slot = chunks[current].alloc_scratch(1);
+    let index_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let value_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, supplier_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    super::list_adapter::emit_add(chunks, current, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     increment_index(chunks, current, index_slot, line);
     chunks[current].emit_br(0, line);
@@ -890,6 +997,112 @@ fn emit_collect_filtering(
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 }
 
+fn emit_collect_collecting_and_then(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    array_slot: u16,
+    result_slot: u16,
+    line: u32,
+) {
+    let downstream_slot = chunks[current].alloc_scratch(1);
+    let finisher_slot = chunks[current].alloc_scratch(1);
+    let intermediate_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, downstream_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(2, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, finisher_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, downstream_slot, line);
+    emit_collect_downstream_simple(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, intermediate_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, finisher_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, intermediate_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+}
+
+fn emit_collect_reducing(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    array_slot: u16,
+    result_slot: u16,
+    line: u32,
+) {
+    let first_slot = chunks[current].alloc_scratch(1);
+    let second_slot = chunks[current].alloc_scratch(1);
+    let third_slot = chunks[current].alloc_scratch(1);
+    let mapped_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(2, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
+    emit_reduce(chunks, current, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(3, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(2, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, second_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+    emit_reduce(chunks, current, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(2, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, second_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(3, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, third_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, second_slot, line);
+    emit_map(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, third_slot, line);
+    emit_reduce(chunks, current, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 fn emit_collect_min_max_by(
     chunks: &mut [Chunk],
     current: usize,
@@ -916,6 +1129,11 @@ fn emit_collect_grouping(
     preseed_partitions: bool,
     line: u32,
 ) {
+    if preseed_partitions {
+        emit_collect_partitioning(chunks, current, collector_slot, array_slot, result_slot, line);
+        return;
+    }
+
     let classifier_slot = chunks[current].alloc_scratch(1);
     let downstream_slot = chunks[current].alloc_scratch(1);
     let index_slot = chunks[current].alloc_scratch(1);
@@ -933,31 +1151,8 @@ fn emit_collect_grouping(
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, downstream_slot, line);
 
-    vybe_emitter::dict::emit_new(chunks, current, line);
+    collections::emit_map_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-
-    if preseed_partitions {
-        emit_downstream_is_counting(chunks, current, downstream_slot, line);
-        chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-        chunks[current].emit_bool_const(true, line);
-        chunks[current].emit_i32_const(0, line);
-        vybe_emitter::dict::emit_set(chunks, current, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-        chunks[current].emit_bool_const(false, line);
-        chunks[current].emit_i32_const(0, line);
-        vybe_emitter::dict::emit_set(chunks, current, line);
-        chunks[current].emit_else(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-        chunks[current].emit_bool_const(true, line);
-        collections::emit_array_new(chunks, current, 0, line);
-        vybe_emitter::dict::emit_set(chunks, current, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-        chunks[current].emit_bool_const(false, line);
-        collections::emit_array_new(chunks, current, 0, line);
-        vybe_emitter::dict::emit_set(chunks, current, line);
-        chunks[current].emit_end(line);
-    }
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     collections::emit_len(chunks, current, line);
@@ -982,6 +1177,14 @@ fn emit_collect_grouping(
     chunks[current].emit_op_u16(Op::LOCAL_GET, classifier_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    if preseed_partitions {
+        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_bool_const(true, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_bool_const(false, line);
+        chunks[current].emit_end(line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     emit_downstream_is_counting(chunks, current, downstream_slot, line);
@@ -1006,6 +1209,127 @@ fn emit_collect_grouping(
     chunks[current].patch_loop(outer_loop);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer_block);
+}
+
+fn emit_collect_partitioning(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    array_slot: u16,
+    result_slot: u16,
+    line: u32,
+) {
+    let classifier_slot = chunks[current].alloc_scratch(1);
+    let downstream_slot = chunks[current].alloc_scratch(1);
+    let index_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let value_slot = chunks[current].alloc_scratch(1);
+    let true_slot = chunks[current].alloc_scratch(1);
+    let false_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, classifier_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
+    chunks[current].emit_i32_const(2, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, downstream_slot, line);
+
+    emit_downstream_is_counting(chunks, current, downstream_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, true_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, false_slot, line);
+    chunks[current].emit_else(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, true_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, false_slot, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, classifier_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_partition_bucket_add(chunks, current, downstream_slot, true_slot, value_slot, line);
+    chunks[current].emit_else(line);
+    emit_partition_bucket_add(chunks, current, downstream_slot, false_slot, value_slot, line);
+    chunks[current].emit_end(line);
+
+    increment_index(chunks, current, index_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    emit_collector_kind_eq(chunks, current, downstream_slot, "toSet", line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, true_slot, line);
+    emit_distinct(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, true_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, false_slot, line);
+    emit_distinct(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, false_slot, line);
+    chunks[current].emit_end(line);
+
+    collections::emit_map_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, true_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, false_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_partition_bucket_add(
+    chunks: &mut [Chunk],
+    current: usize,
+    downstream_slot: u16,
+    bucket_slot: u16,
+    value_slot: u16,
+    line: u32,
+) {
+    emit_downstream_is_counting(chunks, current, downstream_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bucket_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bucket_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bucket_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_downstream_is_counting(
@@ -1042,7 +1366,8 @@ fn emit_group_count_step(
     chunks[current].emit_op_u16(Op::LOCAL_GET, bucket_slot, line);
     chunks[current].emit_i32_const(1, line);
     vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
-    vybe_emitter::dict::emit_set(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 fn emit_group_list_step(
@@ -1068,7 +1393,8 @@ fn emit_group_list_step(
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bucket_slot, line);
-    vybe_emitter::dict::emit_set(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 
     emit_collector_kind_eq(chunks, current, downstream_slot, "filtering", line);

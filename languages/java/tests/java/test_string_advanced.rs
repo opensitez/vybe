@@ -206,13 +206,13 @@ fn substring_full_range_equals_original_text() {
 #[test]
 fn compare_to_empty_string_is_greater_than_empty() {
     let out = run_main(r#"System.out.println("a".compareTo(""));"#);
-    assert_eq!(out, vec!["97"]);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn compare_to_shorter_prefix_is_less_than_extension() {
     let out = run_main(r#"System.out.println("app".compareTo("apple"));"#);
-    assert_eq!(out, vec!["-1"]);
+    assert_eq!(out, vec!["-2"]);
 }
 
 #[test]

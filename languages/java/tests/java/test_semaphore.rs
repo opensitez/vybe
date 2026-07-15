@@ -491,5 +491,5 @@ fn semaphore_bounded_pool_acquire_release_cycle() {
     let out = run_main(
         "java.util.concurrent.Semaphore pool = new java.util.concurrent.Semaphore(1); pool.acquire(); pool.release(); pool.acquire(); System.out.println(pool.tryAcquire()); pool.release();",
     );
-    assert_eq!(out, vec!["true"]);
+    assert_eq!(out, vec!["false"]);
 }

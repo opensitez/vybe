@@ -148,8 +148,8 @@ fn overload_float_and_double_are_distinct_targets() {
 #[test]
 fn overload_void_print_int_vs_string() {
     let types = r#"
-        static void print(int n) { System.out.println(\"i\" + n); }
-        static void print(String s) { System.out.println(\"s\" + s); }
+        static void print(int n) { System.out.println("i" + n); }
+        static void print(String s) { System.out.println("s" + s); }
     "#;
     let out = run_in_main("print(3); print(\"ok\");", types);
     assert_eq!(out, vec!["i3", "sok"]);
@@ -171,8 +171,8 @@ fn overload_pick_max_for_int_and_double_pairs() {
 #[test]
 fn overload_format_one_int_vs_two_ints() {
     let types = r#"
-        static String format(int a) { return \"(\" + a + \")\"; }
-        static String format(int a, int b) { return \"[\" + a + \",\" + b + \"]\"; }
+        static String format(int a) { return "(" + a + ")"; }
+        static String format(int a, int b) { return "[" + a + "," + b + "]"; }
     "#;
     let out = run_in_main(
         "System.out.println(format(4)); System.out.println(format(4, 5));",

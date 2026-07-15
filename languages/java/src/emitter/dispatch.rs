@@ -973,6 +973,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.collectors_to_set" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "toSet", 0, line);
         }
+        "java.collectors_to_collection" => {
+            super::stream_adapter::emit_collector_tag(chunks, current, "toCollection", 1, line);
+        }
         "java.collectors_counting" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "counting", 0, line);
         }
@@ -990,6 +993,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.collectors_filtering" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "filtering", 2, line);
+        }
+        "java.collectors_collecting_and_then" => {
+            super::stream_adapter::emit_collector_tag(chunks, current, "collectingAndThen", 2, line);
+        }
+        "java.collectors_reducing" => {
+            super::stream_adapter::emit_collector_tag(chunks, current, "reducing", argc, line);
         }
         "java.collectors_min_by" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "minBy", 1, line);
@@ -1029,6 +1038,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.stream_count" => {
             super::stream_adapter::emit_count(chunks, current, line);
+        }
+        "java.stream_to_array" => {
+            super::stream_adapter::emit_to_array(chunks, current, argc, line);
         }
         "java.stream_sum" => {
             super::stream_adapter::emit_sum(chunks, current, line);
@@ -1183,11 +1195,74 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.hash_map_new" => {
             super::list_adapter::emit_hash_map_new(chunks, current, argc, line);
         }
+        "java.concurrent_hash_map_new" => {
+            super::list_adapter::emit_concurrent_hash_map_new(chunks, current, argc, line);
+        }
         "java.identity_hash_map_new" => {
             super::list_adapter::emit_identity_hash_map_new(chunks, current, argc, line);
         }
         "java.linked_hash_map_new" => {
             super::list_adapter::emit_linked_hash_map_new(chunks, current, argc, line);
+        }
+        "java.concurrent_for_each_key" => {
+            super::list_adapter::emit_concurrent_for_each(chunks, current, 0, line);
+        }
+        "java.concurrent_for_each_value" => {
+            super::list_adapter::emit_concurrent_for_each(chunks, current, 1, line);
+        }
+        "java.concurrent_reduce_keys" => {
+            super::list_adapter::emit_concurrent_reduce(chunks, current, 0, line);
+        }
+        "java.concurrent_reduce_values" => {
+            super::list_adapter::emit_concurrent_reduce(chunks, current, 1, line);
+        }
+        "java.concurrent_reduce_entries" => {
+            super::list_adapter::emit_concurrent_reduce(chunks, current, 2, line);
+        }
+        "java.concurrent_search_keys" => {
+            super::list_adapter::emit_concurrent_search(chunks, current, 0, line);
+        }
+        "java.concurrent_search_values" => {
+            super::list_adapter::emit_concurrent_search(chunks, current, 1, line);
+        }
+        "java.concurrent_search_entries" => {
+            super::list_adapter::emit_concurrent_search(chunks, current, 2, line);
+        }
+        "java.semaphore_new" => {
+            super::list_adapter::emit_semaphore_new(chunks, current, argc, line);
+        }
+        "java.semaphore_available" => {
+            super::list_adapter::emit_semaphore_available(chunks, current, line);
+        }
+        "java.semaphore_acquire" => {
+            super::list_adapter::emit_semaphore_acquire(chunks, current, argc, line);
+        }
+        "java.semaphore_release" => {
+            super::list_adapter::emit_semaphore_release(chunks, current, argc, line);
+        }
+        "java.semaphore_try_acquire" => {
+            super::list_adapter::emit_semaphore_try_acquire(chunks, current, argc, line);
+        }
+        "java.semaphore_drain" => {
+            super::list_adapter::emit_semaphore_drain(chunks, current, line);
+        }
+        "java.semaphore_has_queued" => {
+            super::list_adapter::emit_semaphore_has_queued(chunks, current, line);
+        }
+        "java.semaphore_queue_length" => {
+            super::list_adapter::emit_semaphore_queue_length(chunks, current, line);
+        }
+        "java.semaphore_is_fair" => {
+            super::list_adapter::emit_semaphore_is_fair(chunks, current, line);
+        }
+        "java.thread_start_with" => {
+            super::list_adapter::emit_java_thread_start_with(chunks, current, line);
+        }
+        "java.thread_join" => {
+            super::list_adapter::emit_java_thread_join(chunks, current, line);
+        }
+        "java.thread_sleep" => {
+            super::list_adapter::emit_java_thread_sleep(chunks, current, line);
         }
         "java.get" => {
             if argc <= 1 {
@@ -1613,6 +1688,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.optional_of" => {
             super::optional_adapter::emit_of(chunks, current, line);
         }
+        "java.optional_of_long" => {
+            super::optional_adapter::emit_of_long(chunks, current, line);
+        }
         "java.optional_of_nullable" => {
             super::optional_adapter::emit_of_nullable(chunks, current, line);
         }
@@ -1633,14 +1711,32 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.optional_filter" => {
             super::optional_adapter::emit_filter(chunks, current, line);
         }
+        "java.optional_map" => {
+            super::optional_adapter::emit_map(chunks, current, line);
+        }
+        "java.optional_flat_map" => {
+            super::optional_adapter::emit_flat_map(chunks, current, line);
+        }
+        "java.optional_if_present_or_else" => {
+            super::optional_adapter::emit_if_present_or_else(chunks, current, line);
+        }
+        "java.optional_is_empty" => {
+            super::optional_adapter::emit_is_empty(chunks, current, line);
+        }
+        "java.optional_or" | "java.optional_or_get" => {
+            super::optional_adapter::emit_or(chunks, current, name == "java.optional_or_get", line);
+        }
+        "java.optional_stream" => {
+            super::optional_adapter::emit_stream(chunks, current, line);
+        }
+        "java.optional_equals" => {
+            super::optional_adapter::emit_equals(chunks, current, line);
+        }
+        "java.optional_to_string" => {
+            super::optional_adapter::emit_to_string(chunks, current, line);
+        }
         "java.optional_or_else_throw" => {
-            host::emit(
-                &mut chunks[current],
-                "ecma:optional",
-                "orElseThrow",
-                1,
-                line,
-            );
+            super::optional_adapter::emit_or_else_throw(chunks, current, argc > 1, line);
         }
 
         // ── Object utilities ──────────────────────────────────────────────

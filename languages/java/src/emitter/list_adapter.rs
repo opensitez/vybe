@@ -1,9 +1,12 @@
 //! Java collection overloads composed from the shared ECMA array surface.
 
+use std::sync::Arc;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
 use vybe_emitter::{
     collections,
+    functions::create_function_chunk,
     instructions::{core_wasm, host},
 };
 
@@ -107,6 +110,13 @@ const DESCENDING_MAP_KEY: &str = "__java_descending_map";
 const DESCENDING_SET_KEY: &str = "__java_descending_set";
 const ACCESS_ORDER_MAP_KEY: &str = "__java_access_order_map";
 const IDENTITY_MAP_KEY: &str = "__java_identity_map";
+const CONCURRENT_MAP_KEY: &str = "__java_concurrent_map";
+const SEMAPHORE_PERMITS_KEY: &str = "__java_semaphore_permits";
+const SEMAPHORE_FAIR_KEY: &str = "__java_semaphore_fair";
+const SEMAPHORE_QUEUED_KEY: &str = "__java_semaphore_queued";
+const SEMAPHORE_CELLS_KEY: &str = "__java_semaphore_cells";
+const JAVA_THREAD_HANDLE_KEY: &str = "__java_thread_handle";
+const JAVA_THREAD_ALIVE_KEY: &str = "alive";
 const IDENTITY_KEY_PROP: &str = "__java_identity_key";
 const IDENTITY_NEXT_KEY: &str = "__java_identity_next";
 const VECTOR_CAPACITY_KEY: &str = "__java_vector_capacity";
@@ -887,6 +897,7 @@ pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let key = chunks[current].alloc_scratch(1);
     let map = chunks[current].alloc_scratch(1);
     let result = chunks[current].alloc_scratch(1);
+    let numeric_bool_key = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], key, line);
     set(&mut chunks[current], map, line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
@@ -901,6 +912,29 @@ pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_end(line);
     set(&mut chunks[current], result, line);
+    get(&mut chunks[current], result, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "test", 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], key, line);
+    host::emit(&mut chunks[current], "wasm:js-boolean", "cast", 1, line);
+    set(&mut chunks[current], numeric_bool_key, line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], numeric_bool_key, line);
+    host::emit(&mut chunks[current], "ecma:map", "has", 2, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], map, line);
+    get(&mut chunks[current], numeric_bool_key, line);
+    host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
+    set(&mut chunks[current], result, line);
+    get(&mut chunks[current], numeric_bool_key, line);
+    set(&mut chunks[current], key, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     emit_touch_access_order_map(chunks, current, map, key, line);
     get(&mut chunks[current], result, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -916,6 +950,18 @@ pub fn emit_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunks[current].emit_op(Op::DROP, line);
     }
     collections::emit_map_new(chunks, current, line);
+}
+
+pub fn emit_concurrent_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_hash_map_new(chunks, current, argc, line);
+    let map = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], map, line);
+    get(&mut chunks[current], map, line);
+    chunks[current].emit_string_const(CONCURRENT_MAP_KEY, line);
+    chunks[current].emit_bool_const(true, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], map, line);
 }
 
 pub fn emit_identity_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1012,6 +1058,11 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], map, line);
     get(&mut chunks[current], key, line);
     set(&mut chunks[current], original_key, line);
+    get_object_prop(chunks, current, map, CONCURRENT_MAP_KEY, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_throw_if_null(chunks, current, key, line);
+    chunks[current].emit_end(line);
     emit_canonicalize_map_key(chunks, current, map, key, line);
     emit_throw_if_immutable_map(chunks, current, map, line);
     get(&mut chunks[current], map, line);
@@ -1679,6 +1730,489 @@ pub fn emit_map_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+fn emit_concurrent_items(chunks: &mut [Chunk], current: usize, map: u16, mode: u8, line: u32) {
+    get(&mut chunks[current], map, line);
+    match mode {
+        0 => host::emit(&mut chunks[current], "ecma:map", "keys", 1, line),
+        1 => host::emit(&mut chunks[current], "ecma:map", "values", 1, line),
+        _ => host::emit(&mut chunks[current], "ecma:map", "entries", 1, line),
+    }
+}
+
+pub fn emit_concurrent_for_each(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
+    let callback = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let items = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], callback, line);
+    chunks[current].emit_op(Op::DROP, line);
+    set(&mut chunks[current], map, line);
+    emit_concurrent_items(chunks, current, map, mode, line);
+    set(&mut chunks[current], items, line);
+    get(&mut chunks[current], items, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], items, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], item, line);
+    get(&mut chunks[current], callback, line);
+    get(&mut chunks[current], item, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_concurrent_reduce(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
+    let reducer = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let items = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let acc = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], reducer, line);
+    chunks[current].emit_op(Op::DROP, line);
+    set(&mut chunks[current], map, line);
+    emit_concurrent_items(chunks, current, map, mode, line);
+    set(&mut chunks[current], items, line);
+    get(&mut chunks[current], items, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    get(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], items, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], acc, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], reducer, line);
+    get(&mut chunks[current], acc, line);
+    get(&mut chunks[current], items, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    set(&mut chunks[current], acc, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], acc, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_concurrent_search(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
+    let searcher = chunks[current].alloc_scratch(1);
+    let map = chunks[current].alloc_scratch(1);
+    let items = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let found = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], searcher, line);
+    chunks[current].emit_op(Op::DROP, line);
+    set(&mut chunks[current], map, line);
+    emit_concurrent_items(chunks, current, map, mode, line);
+    set(&mut chunks[current], items, line);
+    get(&mut chunks[current], items, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::NULL, line);
+    set(&mut chunks[current], found, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], searcher, line);
+    get(&mut chunks[current], items, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    set(&mut chunks[current], found, line);
+    get(&mut chunks[current], found, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], found, line);
+}
+
+pub fn emit_semaphore_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let fair = chunks[current].alloc_scratch(1);
+    let permits = chunks[current].alloc_scratch(1);
+    match argc {
+        0 => {
+            chunks[current].emit_bool_const(false, line);
+            set(&mut chunks[current], fair, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            set(&mut chunks[current], permits, line);
+        }
+        1 => {
+            chunks[current].emit_bool_const(false, line);
+            set(&mut chunks[current], fair, line);
+            set(&mut chunks[current], permits, line);
+        }
+        _ => {
+            set(&mut chunks[current], fair, line);
+            set(&mut chunks[current], permits, line);
+        }
+    }
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    let sem = chunks[current].alloc_scratch(1);
+    let cells = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    set(&mut chunks[current], cells, line);
+    get(&mut chunks[current], cells, line);
+    chunks[current].emit_string_const("__shared_int32_len", line);
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], cells, line);
+    chunks[current].emit_string_const("0", line);
+    get(&mut chunks[current], permits, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], cells, line);
+    chunks[current].emit_string_const("1", line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    set_object_prop_from_local(chunks, current, sem, SEMAPHORE_CELLS_KEY, cells, line);
+    set_object_prop_from_local(chunks, current, sem, SEMAPHORE_PERMITS_KEY, permits, line);
+    set_object_prop_from_local(chunks, current, sem, SEMAPHORE_FAIR_KEY, fair, line);
+    set_object_prop_i32(chunks, current, sem, SEMAPHORE_QUEUED_KEY, 0, line);
+    get(&mut chunks[current], sem, line);
+}
+
+pub fn emit_semaphore_available(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    emit_semaphore_get_permits(chunks, current, sem, line);
+}
+
+fn emit_semaphore_take_args(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    timed: bool,
+    line: u32,
+) -> (u16, u16) {
+    if timed && argc >= 4 {
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op(Op::DROP, line);
+    } else if timed && argc == 3 {
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op(Op::DROP, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+    } else if argc <= 1 {
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+    }
+    let permits = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], permits, line);
+    let sem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    (sem, permits)
+}
+
+fn emit_semaphore_get_permits(chunks: &mut [Chunk], current: usize, sem: u16, line: u32) {
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    host::emit(&mut chunks[current], "ecma:atomics", "load", 2, line);
+}
+
+fn emit_semaphore_set_permits_from_top(chunks: &mut [Chunk], current: usize, sem: u16, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    get(&mut chunks[current], value, line);
+    host::emit(&mut chunks[current], "ecma:atomics", "store", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    set_object_prop_from_local(chunks, current, sem, SEMAPHORE_PERMITS_KEY, value, line);
+}
+
+fn emit_semaphore_get_queued(chunks: &mut [Chunk], current: usize, sem: u16, line: u32) {
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    host::emit(&mut chunks[current], "ecma:atomics", "load", 2, line);
+}
+
+fn emit_semaphore_atomic_add_cell(
+    chunks: &mut [Chunk],
+    current: usize,
+    sem: u16,
+    cell: i32,
+    delta: i32,
+    line: u32,
+) {
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, cell);
+    core_wasm::i32_const(&mut chunks[current], line, delta.abs());
+    let op = if delta >= 0 { "add" } else { "sub" };
+    host::emit(&mut chunks[current], "ecma:atomics", op, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_dyn_sub(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_emitter::ops::emit_dyn_neg(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+}
+
+pub fn emit_semaphore_acquire(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (sem, permits) = emit_semaphore_take_args(chunks, current, argc, false, line);
+    let available = chunks[current].alloc_scratch(1);
+    let observed = chunks[current].alloc_scratch(1);
+    let queued = chunks[current].alloc_scratch(1);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, queued, line);
+
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    emit_semaphore_get_permits(chunks, current, sem, line);
+    set(&mut chunks[current], available, line);
+    get(&mut chunks[current], available, line);
+    get(&mut chunks[current], permits, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    get(&mut chunks[current], available, line);
+    get(&mut chunks[current], available, line);
+    get(&mut chunks[current], permits, line);
+    emit_dyn_sub(chunks, current, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:atomics",
+        "compareExchange",
+        4,
+        line,
+    );
+    set(&mut chunks[current], observed, line);
+    get(&mut chunks[current], observed, line);
+    get(&mut chunks[current], available, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queued, line);
+    chunks[current].emit_if_value(line);
+    emit_semaphore_atomic_add_cell(chunks, current, sem, 1, -1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_br(3, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queued, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_semaphore_atomic_add_cell(chunks, current, sem, 1, 1, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, queued, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_f64_const(5.0, line);
+    vybe_emitter::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_semaphore_release(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (sem, permits) = emit_semaphore_take_args(chunks, current, argc, false, line);
+    get_object_prop(chunks, current, sem, SEMAPHORE_CELLS_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    get(&mut chunks[current], permits, line);
+    host::emit(&mut chunks[current], "ecma:atomics", "add", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_semaphore_try_acquire(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (sem, permits) = emit_semaphore_take_args(chunks, current, argc, argc >= 3, line);
+    emit_semaphore_get_permits(chunks, current, sem, line);
+    get(&mut chunks[current], permits, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_semaphore_get_permits(chunks, current, sem, line);
+    get(&mut chunks[current], permits, line);
+    emit_dyn_sub(chunks, current, line);
+    emit_semaphore_set_permits_from_top(chunks, current, sem, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_semaphore_drain(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sem = chunks[current].alloc_scratch(1);
+    let permits = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    emit_semaphore_get_permits(chunks, current, sem, line);
+    set(&mut chunks[current], permits, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    emit_semaphore_set_permits_from_top(chunks, current, sem, line);
+    get(&mut chunks[current], permits, line);
+}
+
+pub fn emit_semaphore_has_queued(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    emit_semaphore_get_queued(chunks, current, sem, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+pub fn emit_semaphore_queue_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    emit_semaphore_get_queued(chunks, current, sem, line);
+}
+
+pub fn emit_semaphore_is_fair(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], sem, line);
+    get_object_prop(chunks, current, sem, SEMAPHORE_FAIR_KEY, line);
+}
+
+pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let target = chunks[current].alloc_scratch(1);
+    let thread = chunks[current].alloc_scratch(1);
+    let task = chunks[current].alloc_scratch(1);
+
+    set(&mut chunks[current], target, line);
+    set(&mut chunks[current], thread, line);
+
+    get(&mut chunks[current], thread, line);
+    chunks[current].emit_string_const(JAVA_THREAD_ALIVE_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(&mut chunks[current], thread, line);
+    chunks[current].emit_string_const("__target", line);
+    get(&mut chunks[current], target, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let mut worker = create_function_chunk("__java_thread_worker", 1);
+    let current_key = worker.add_constant(Value::String(Arc::from("__j_current_thread")));
+    let run_key = worker.add_constant(Value::String(Arc::from("__j_runnable_run")));
+    let target_key = worker.add_constant(Value::String(Arc::from("__target")));
+    worker.emit_op_u16(Op::LOCAL_GET, 0, line);
+    worker.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    worker.emit_op_u16(Op::GLOBAL_GET, run_key, line);
+    worker.emit_op_u16(Op::LOCAL_GET, 0, line);
+    worker.emit_op_u16(Op::STRUCT_GET, target_key, line);
+    worker.emit_op_u8(Op::CALL_REF, 1, line);
+    worker.emit_op(Op::RETURN, line);
+    worker.local_count = 1;
+    chunks.push(worker);
+    let worker_idx = chunks.len() - 1;
+
+    get(&mut chunks[current], thread, line);
+    chunks[current].emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
+    chunks[current].emit(0, line);
+    chunks[current].emit_op(Op::THREAD_SPAWN, line);
+    set(&mut chunks[current], task, line);
+
+    get(&mut chunks[current], thread, line);
+    chunks[current].emit_string_const(JAVA_THREAD_HANDLE_KEY, line);
+    get(&mut chunks[current], task, line);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    chunks[current].emit_f64_const(1.0, line);
+    vybe_emitter::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_java_thread_join(chunks: &mut [Chunk], current: usize, line: u32) {
+    let thread = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], thread, line);
+
+    get_object_prop(chunks, current, thread, JAVA_THREAD_HANDLE_KEY, line);
+    vybe_emitter::threading::emit_thread_join(&mut chunks[current], line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(&mut chunks[current], thread, line);
+    chunks[current].emit_string_const(JAVA_THREAD_ALIVE_KEY, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_java_thread_sleep(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    chunks[current].emit_f64_const(25.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    vybe_emitter::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
     chunks[current].emit_op(Op::NULL, line);
 }
 

@@ -429,7 +429,7 @@ chain_suffix = {
     | index_suffix
 }
 
-method_call_suffix  = { "." ~ ident_name ~ type_args? ~ "(" ~ argument_list? ~ ")" }
+method_call_suffix  = { "." ~ type_args? ~ ident_name ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 call_suffix         = { type_args? ~ "(" ~ argument_list? ~ ")" }
 member_access_suffix = { "." ~ ident_or_keyword }
 index_suffix        = { "[" ~ expression ~ "]" }
@@ -478,8 +478,11 @@ array_creation = {
 class_literal = { type_ref ~ "." ~ "class" }
 
 method_reference = {
-    qualified_name ~ "::" ~ (ident_name | "new")
+    method_reference_target ~ "::" ~ method_reference_method
 }
+method_reference_target = { method_reference_array_target | qualified_name }
+method_reference_array_target = { (primitive_type | qualified_name) ~ dim_suffix+ }
+method_reference_method = { "new" | ident_name }
 
 super_method_call = { "super" ~ "." ~ ident_name ~ "(" ~ argument_list? ~ ")" }
 super_constructor_call = { "super" ~ "(" ~ argument_list? ~ ")" ~ ";" }
