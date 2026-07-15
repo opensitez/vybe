@@ -39,14 +39,21 @@ pub fn register() {
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: Some(tree_register::register_namespace_tree),
     });
-    vybe_plugin::registry::register_hooks("php", vybe_plugin::registry::LanguageHooks {
-        relational_compare: Some(emitter::relational_adapter::emit_relational_compare),
-        constructor_ref_autoload: Some(emitter::autoload_adapter::emit_constructor_ref_with_autoload),
-        dynamic_constructor_ref_autoload: Some(emitter::autoload_adapter::emit_dynamic_constructor_ref_with_autoload),
-        normalize_source: Some(normalize_source_for_parser),
-        str_getcsv: Some(emitter::string_adapter::emit_str_getcsv),
-        ..Default::default()
-    });
+    vybe_plugin::registry::register_hooks(
+        "php",
+        vybe_plugin::registry::LanguageHooks {
+            relational_compare: Some(emitter::relational_adapter::emit_relational_compare),
+            constructor_ref_autoload: Some(
+                emitter::autoload_adapter::emit_constructor_ref_with_autoload,
+            ),
+            dynamic_constructor_ref_autoload: Some(
+                emitter::autoload_adapter::emit_dynamic_constructor_ref_with_autoload,
+            ),
+            normalize_source: Some(normalize_source_for_parser),
+            str_getcsv: Some(emitter::string_adapter::emit_str_getcsv),
+            ..Default::default()
+        },
+    );
 }
 
 /// This crate as a [`vybe_plugin::Plugin`] — its `init` registers the

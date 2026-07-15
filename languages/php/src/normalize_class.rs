@@ -261,19 +261,17 @@ mod tests {
     }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(vybe_ast::Statement::new(
-            StmtKind::FunctionDecl {
-                name: src_name.into(),
-                params: vec![],
-                return_type: None,
-                body: vec![],
-                modifiers: Modifiers::default(),
-                handles: vec![],
-                is_async: false,
-                is_generator: false,
-                is_sub: false,
-            },
-        )))
+        ClassMember::Method(Box::new(vybe_ast::Statement::new(StmtKind::FunctionDecl {
+            name: src_name.into(),
+            params: vec![],
+            return_type: None,
+            body: vec![],
+            modifiers: Modifiers::default(),
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        })))
     }
 
     #[test]

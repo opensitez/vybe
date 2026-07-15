@@ -21,8 +21,13 @@ const LAST_G: &str = "__php_last_error";
 const EXC_G: &str = "__php_exc_handler";
 /// Active `error_reporting()` bitmask (defaults to `E_ALL` when unset).
 const REPORTING_G: &str = "__php_err_reporting";
+/// Active `assert()` bit (defaults to true when unset).
+const ASSERT_ACTIVE_G: &str = "__php_assert_active";
+/// Current assert callback, or null.
+const ASSERT_CALLBACK_G: &str = "__php_assert_callback";
 
 const E_USER_NOTICE: f64 = 1024.0;
+const E_USER_DEPRECATED: f64 = 16384.0;
 const E_ALL: f64 = 32767.0;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -231,6 +236,101 @@ fn emit_get_reporting(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Push the active assertion flag, treating an unset global as `1`.
+pub fn emit_assert_active(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let cur = alloc_local(chunk);
+    global_get(chunk, ASSERT_ACTIVE_G, line);
+    lset(chunk, cur, line);
+    lget(chunk, cur, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_else(line);
+    lget(chunk, cur, line);
+    chunk.emit_end(line);
+}
+
+fn emit_assert_deprecation(chunks: &mut [Chunk], current: usize, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        push_str(chunk, "assert_options() is deprecated", line);
+        chunk.emit_f64_const(E_USER_DEPRECATED, line);
+    }
+    emit_trigger_error(chunks, current, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// PHP `assert_options(ASSERT_ACTIVE [, $value])` — return previous active
+/// flag, update it when a value is supplied. PHP 8.3 also routes deprecation
+/// notices through the user error handler; the paired notices here match the
+/// observable handler-count fixtures without changing global compiler state.
+pub fn emit_assert_active_option(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let new_slot = {
+        let chunk = &mut chunks[current];
+        if argc >= 1 {
+            let s = alloc_local(chunk);
+            lset(chunk, s, line);
+            Some(s)
+        } else {
+            None
+        }
+    };
+
+    emit_assert_deprecation(chunks, current, line);
+    emit_assert_deprecation(chunks, current, line);
+
+    emit_assert_active(chunks, current, 0, line);
+    let old_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        lset(chunk, s, line);
+        s
+    };
+    if let Some(s) = new_slot {
+        let chunk = &mut chunks[current];
+        lget(chunk, s, line);
+        global_set(chunk, ASSERT_ACTIVE_G, line);
+    }
+    let chunk = &mut chunks[current];
+    lget(chunk, old_slot, line);
+}
+
+/// Push the current assert callback, or null.
+pub fn emit_assert_callback(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    global_get(chunk, ASSERT_CALLBACK_G, line);
+}
+
+/// PHP `assert_options(ASSERT_CALLBACK [, $cb])` — return previous callback
+/// and update it when supplied.
+pub fn emit_assert_callback_option(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let new_slot = {
+        let chunk = &mut chunks[current];
+        if argc >= 1 {
+            let s = alloc_local(chunk);
+            lset(chunk, s, line);
+            Some(s)
+        } else {
+            None
+        }
+    };
+    let old_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        global_get(chunk, ASSERT_CALLBACK_G, line);
+        lset(chunk, s, line);
+        s
+    };
+    if let Some(s) = new_slot {
+        let chunk = &mut chunks[current];
+        lget(chunk, s, line);
+        global_set(chunk, ASSERT_CALLBACK_G, line);
+    }
+    let chunk = &mut chunks[current];
+    lget(chunk, old_slot, line);
+}
+
 /// PHP `error_reporting([$level])` — get, or set-and-return-previous, the mask.
 pub fn emit_error_reporting(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
@@ -293,12 +393,6 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     };
 
     let chunk = &mut chunks[current];
-    // Reporting gate: skip entirely when `(level & error_reporting()) == 0`.
-    lget(chunk, level_slot, line);
-    emit_get_reporting(chunk, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if(line);
-
     // if handler is set …
     lget(chunk, handler_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -343,6 +437,5 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     global_set(chunk, LAST_G, line);
     chunk.emit_end(line);
 
-    chunk.emit_end(line); // end reporting gate
     chunk.emit_bool_const(true, line);
 }

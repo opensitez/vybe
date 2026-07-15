@@ -38,88 +38,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP array helpers ──────────────────────────────────────
         // Index-based loops + ECMA array/object ops. PHP `array` ≡
         // `Map` (assoc) or `Array` (sequential).
-        "php.echo" => {
-            use vybe_bytecode::opcode::Op;
-            let write_idx = chunks[current].add_import("wasi:cli/stdout", "write-via-stream");
-            let rd_slot = chunks[current].alloc_scratch(1);
-            let wr_slot = chunks[current].alloc_scratch(1);
-            // All args are already on the stack. Save them in reverse order,
-            // then write each one.
-            let mut slots = Vec::with_capacity(argc as usize);
-            for _ in 0..argc {
-                let s = chunks[current].alloc_scratch(1);
-                chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
-                slots.push(s);
-            }
-            slots.reverse();
-            for s in slots {
-                let val_slot = s;
-                vybe_emitter::io::emit_write_stdout_with_imports(
-                    &mut chunks[current],
-                    write_idx,
-                    rd_slot,
-                    wr_slot,
-                    line,
-                    |chunk| {
-                        chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-                    },
-                );
-            }
-        }
-        "php.print_expr" => {
-            use vybe_bytecode::opcode::Op;
-            let write_idx = chunks[current].add_import("wasi:cli/stdout", "write-via-stream");
-            let val_slot = chunks[current].alloc_scratch(1);
-            let rd_slot = chunks[current].alloc_scratch(1);
-            let wr_slot = chunks[current].alloc_scratch(1);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
-            vybe_emitter::io::emit_write_stdout_with_imports(
-                &mut chunks[current],
-                write_idx,
-                rd_slot,
-                wr_slot,
-                line,
-                |chunk| {
-                    chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-                },
-            );
-            chunks[current].emit_i32_const(1, line);
-        }
+        "php.echo" => super::output_adapter::emit_php_echo(chunks, current, argc, line),
+        "php.print_expr" => super::output_adapter::emit_php_print_expr(chunks, current, line),
         "php.compare_gt" => {
-            super::numeric_adapter::emit_php_compare_gt(chunks, current, argc, line)
+            let chunk = &mut chunks[current];
+            super::relational_adapter::emit_relational_compare(
+                chunk,
+                vybe_emitter::ops::emit_dyn_gt,
+                line,
+            );
         }
         "php.compare_lt" => {
-            super::numeric_adapter::emit_php_compare_lt(chunks, current, argc, line)
+            let chunk = &mut chunks[current];
+            super::relational_adapter::emit_relational_compare(
+                chunk,
+                vybe_emitter::ops::emit_dyn_lt,
+                line,
+            );
         }
         "php.compare_gte" => {
-            use vybe_bytecode::opcode::Op;
             let chunk = &mut chunks[current];
-            let b_slot = chunk.alloc_scratch(1);
-            let a_slot = chunk.alloc_scratch(1);
-            let number_fn = chunk.add_import("ecma:number", "Number");
-            chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-            chunk.emit_call(number_fn, 1, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            chunk.emit_call(number_fn, 1, line);
-            chunk.emit_op(Op::F64_GE, line);
-            vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+            super::relational_adapter::emit_relational_compare(
+                chunk,
+                vybe_emitter::ops::emit_dyn_ge,
+                line,
+            );
         }
         "php.compare_lte" => {
-            use vybe_bytecode::opcode::Op;
             let chunk = &mut chunks[current];
-            let b_slot = chunk.alloc_scratch(1);
-            let a_slot = chunk.alloc_scratch(1);
-            let number_fn = chunk.add_import("ecma:number", "Number");
-            chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-            chunk.emit_call(number_fn, 1, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            chunk.emit_call(number_fn, 1, line);
-            chunk.emit_op(Op::F64_LE, line);
-            vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+            super::relational_adapter::emit_relational_compare(
+                chunk,
+                vybe_emitter::ops::emit_dyn_le,
+                line,
+            );
         }
         "php.intval" => {
             let num_idx = chunks[current].add_import("ecma:number", "Number");
@@ -191,6 +142,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_fill" => super::array_adapter::emit_array_fill(chunks, current, argc, line),
         "php.array_fill_keys" => {
             super::array_adapter::emit_array_fill_keys(chunks, current, argc, line)
+        }
+        "php.array_search" => super::array_adapter::emit_array_search(chunks, current, argc, line),
+        "php.array_key_exists" => {
+            super::type_guard::guard_arg(
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
+                "TypeError",
+                "array_key_exists(): Argument #2 ($array) must be of type array",
+                line,
+            );
+            super::array_adapter::emit_array_key_exists(chunks, current, argc, line)
         }
         "php.count" => {
             super::type_guard::guard_arg(
@@ -285,6 +250,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_intersect_key" => {
             super::array_adapter::emit_array_intersect_key(chunks, current, argc, line)
         }
+        "php.array_intersect_ukey" => {
+            super::array_adapter::emit_array_intersect_ukey(chunks, current, argc, line)
+        }
+        "php.array_udiff_uassoc" => {
+            super::array_adapter::emit_array_udiff_uassoc(chunks, current, argc, line)
+        }
+        "php.array_uintersect_uassoc" => {
+            super::array_adapter::emit_array_uintersect_uassoc(chunks, current, argc, line)
+        }
         "php.array_replace" => {
             super::array_adapter::emit_array_replace(chunks, current, argc, line)
         }
@@ -303,6 +277,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 line,
             );
             super::array_adapter::emit_iterator_to_array(chunks, current, argc, line)
+        }
+        "php.generator_key" => {
+            super::array_adapter::emit_generator_key(chunks, current, argc, line)
+        }
+        "php.generator_get_return" => {
+            super::array_adapter::emit_generator_get_return(chunks, current, argc, line)
+        }
+        "php.generator_rewind" => {
+            super::array_adapter::emit_generator_rewind(chunks, current, argc, line)
+        }
+        "php.generator_next" => {
+            super::array_adapter::emit_generator_next(chunks, current, argc, line)
+        }
+        "php.generator_current" => {
+            super::array_adapter::emit_generator_current(chunks, current, argc, line)
+        }
+        "php.generator_valid" => {
+            super::array_adapter::emit_generator_valid(chunks, current, argc, line)
         }
         "php.asort" => super::array_adapter::emit_php_asort(chunks, current, argc, line),
         "php.arsort" => super::array_adapter::emit_php_arsort(chunks, current, argc, line),
@@ -329,7 +321,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // can't distinguish the two post-normalization — the fix belongs in the
         // walker. Left unguarded for now.
         "php.implode" => super::array_adapter::emit_php_implode(chunks, current, argc, line),
-        "php.in_array" => super::array_adapter::emit_php_in_array(chunks, current, argc, line),
+        "php.in_array" => {
+            super::type_guard::guard_arg(
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::Array,
+                "TypeError",
+                "in_array(): Argument #2 ($haystack) must be of type array",
+                line,
+            );
+            super::array_adapter::emit_php_in_array(chunks, current, argc, line)
+        }
         "php.obj_to_array" => {
             super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line)
         }
@@ -356,9 +360,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::datetime_adapter::emit_datetime_get_timezone(chunks, current, line)
         }
         "php.datetime_get_offset" => {
-            crate::emitter::datetime_adapter::emit_datetime_get_offset(
-                chunks, current, argc, line,
-            )
+            crate::emitter::datetime_adapter::emit_datetime_get_offset(chunks, current, argc, line)
         }
         "php.datetime_set_timezone" => {
             crate::emitter::datetime_adapter::emit_datetime_set_timezone(chunks, current, line)
@@ -383,20 +385,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::datetime_adapter::emit_datetime_format(chunks, current, line)
         }
         "php.datetime_get_timestamp" => {
-            crate::emitter::datetime_adapter::emit_datetime_get_timestamp(
-                chunks, current, line,
-            )
+            crate::emitter::datetime_adapter::emit_datetime_get_timestamp(chunks, current, line)
         }
         "php.datetime_modify" => {
             crate::emitter::datetime_adapter::emit_datetime_modify(chunks, current, line)
         }
         "php.datetime_immutable_modify" => {
-            crate::emitter::datetime_adapter::emit_datetime_immutable_modify(
-                chunks, current, line,
-            )
+            crate::emitter::datetime_adapter::emit_datetime_immutable_modify(chunks, current, line)
         }
         "php.datetime_diff" => {
-            crate::emitter::datetime_adapter::emit_datetime_diff(chunks, current, line)
+            crate::emitter::datetime_adapter::emit_datetime_diff(chunks, current, argc, line)
         }
         "php.datetime_add" => {
             crate::emitter::datetime_adapter::emit_datetime_add(chunks, current, line)
@@ -405,19 +403,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::datetime_adapter::emit_datetime_sub(chunks, current, line)
         }
         "php.datetime_immutable_add" => {
-            crate::emitter::datetime_adapter::emit_datetime_immutable_add(
-                chunks, current, line,
-            )
+            crate::emitter::datetime_adapter::emit_datetime_immutable_add(chunks, current, line)
         }
         "php.datetime_immutable_sub" => {
-            crate::emitter::datetime_adapter::emit_datetime_immutable_sub(
-                chunks, current, line,
-            )
+            crate::emitter::datetime_adapter::emit_datetime_immutable_sub(chunks, current, line)
         }
         "php.dateinterval_components" => {
-            crate::emitter::datetime_adapter::emit_dateinterval_components(
-                chunks, current, line,
-            )
+            crate::emitter::datetime_adapter::emit_dateinterval_components(chunks, current, line)
         }
         "php.datetime_add_seconds" => {
             crate::emitter::datetime_adapter::emit_datetime_add_seconds(chunks, current, line)
@@ -445,9 +437,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Compose `ecma:date.now/parse/UTC/get*` into PHP-shaped
         // surfaces: `date()`, `strftime()`, `strtotime()`, `mktime()`.
         // Pure bytecode; no PHP-specific host fns.
-        "php.date" => {
-            crate::emitter::datetime_adapter::emit_php_date(chunks, current, argc, line)
-        }
+        "php.date" => crate::emitter::datetime_adapter::emit_php_date(chunks, current, argc, line),
         "php.strftime" => {
             crate::emitter::datetime_adapter::emit_php_strftime(chunks, current, argc, line)
         }
@@ -471,12 +461,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── PHP `$x++` / `$x--` arithmetic ─────────────────────────
         // Composes `ecma:number.parseFloat` for string-numeric coerce.
-        "php.inc" => {
-            crate::emitter::numeric_adapter::emit_php_inc(chunks, current, argc, line)
-        }
-        "php.dec" => {
-            crate::emitter::numeric_adapter::emit_php_dec(chunks, current, argc, line)
-        }
+        "php.inc" => crate::emitter::numeric_adapter::emit_php_inc(chunks, current, argc, line),
+        "php.dec" => crate::emitter::numeric_adapter::emit_php_dec(chunks, current, argc, line),
         "php.int_max" => {
             crate::emitter::numeric_adapter::emit_php_int_max(chunks, current, argc, line)
         }
@@ -508,9 +494,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.loose_eq" => crate::emitter::relational_adapter::emit_php_loose_eq(
             chunks, current, argc, false, line,
         ),
-        "php.loose_ne" => crate::emitter::relational_adapter::emit_php_loose_eq(
-            chunks, current, argc, true, line,
-        ),
+        "php.loose_ne" => {
+            crate::emitter::relational_adapter::emit_php_loose_eq(chunks, current, argc, true, line)
+        }
         "php.rand" => crate::emitter::numeric_adapter::emit_rand(chunks, current, argc, line),
         "php.lcg_value" => {
             crate::emitter::numeric_adapter::emit_lcg_value(chunks, current, argc, line)
@@ -558,15 +544,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // string conv), base_convert (string↔string base conv).
         "php.min" => crate::emitter::math_adapter::emit_php_min(chunks, current, argc, line),
         "php.max" => crate::emitter::math_adapter::emit_php_max(chunks, current, argc, line),
-        "php.decbin" => {
-            crate::emitter::math_adapter::emit_php_decbin(chunks, current, argc, line)
-        }
-        "php.decoct" => {
-            crate::emitter::math_adapter::emit_php_decoct(chunks, current, argc, line)
-        }
-        "php.dechex" => {
-            crate::emitter::math_adapter::emit_php_dechex(chunks, current, argc, line)
-        }
+        "php.decbin" => crate::emitter::math_adapter::emit_php_decbin(chunks, current, argc, line),
+        "php.decoct" => crate::emitter::math_adapter::emit_php_decoct(chunks, current, argc, line),
+        "php.dechex" => crate::emitter::math_adapter::emit_php_dechex(chunks, current, argc, line),
         "php.base_convert" => {
             crate::emitter::math_adapter::emit_php_base_convert(chunks, current, argc, line)
         }
@@ -574,8 +554,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP string helpers ─────────────────────────────────────
         // Char/index loops + ECMA string ops (`ecma:string.indexOf`,
         // `STR_TO_LOWER`, `STR_PAD_*`) and `ecma:string.{encode,decode}URIComponent`.
-        "php.ucwords" => {
-            crate::emitter::string_adapter::emit_ucwords(chunks, current, argc, line)
+        "php.ucwords" => crate::emitter::string_adapter::emit_ucwords(chunks, current, argc, line),
+        "php.strtoupper" => {
+            crate::emitter::string_adapter::emit_strtoupper(chunks, current, argc, line)
         }
         "php.addslashes" => {
             crate::emitter::string_adapter::emit_addslashes(chunks, current, argc, line)
@@ -599,16 +580,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.base64_decode" => {
             crate::emitter::string_adapter::emit_base64_decode(chunks, current, argc, line)
         }
-        "php.explode" => {
-            crate::emitter::string_adapter::emit_explode(chunks, current, argc, line)
-        }
+        "php.explode" => crate::emitter::string_adapter::emit_explode(chunks, current, argc, line),
         "php.sscanf" => vybe_emitter::sprintf::emit_sscanf(chunks, current, argc, line),
         "php.uniqid" => {
             crate::emitter::string_adapter::emit_php_uniqid(chunks, current, argc, line)
         }
-        "php.str_pad" => {
-            crate::emitter::string_adapter::emit_str_pad(chunks, current, argc, line)
-        }
+        "php.str_pad" => crate::emitter::string_adapter::emit_str_pad(chunks, current, argc, line),
         "php.substr_count" => {
             crate::emitter::string_adapter::emit_substr_count(chunks, current, argc, line)
         }
@@ -621,21 +598,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.str_word_count" => {
             crate::emitter::string_adapter::emit_str_word_count(chunks, current, argc, line)
         }
-        "php.var_dump_stringify" => crate::emitter::string_adapter::emit_var_dump_stringify(
-            chunks, current, argc, line,
-        ),
-        "php.strstr" => {
-            crate::emitter::string_adapter::emit_strstr(chunks, current, argc, line)
+        "php.var_dump_stringify" => {
+            crate::emitter::string_adapter::emit_var_dump_stringify(chunks, current, argc, line)
         }
-        "php.stristr" => {
-            crate::emitter::string_adapter::emit_stristr(chunks, current, argc, line)
-        }
+        "php.strstr" => crate::emitter::string_adapter::emit_strstr(chunks, current, argc, line),
+        "php.stristr" => crate::emitter::string_adapter::emit_stristr(chunks, current, argc, line),
         "php.strip_tags" => {
             crate::emitter::string_adapter::emit_strip_tags(chunks, current, argc, line)
         }
-        "php.strrchr" => {
-            crate::emitter::string_adapter::emit_strrchr(chunks, current, argc, line)
-        }
+        "php.strrchr" => crate::emitter::string_adapter::emit_strrchr(chunks, current, argc, line),
         "php.nl2br" => crate::emitter::string_adapter::emit_nl2br(chunks, current, argc, line),
         "php.urlencode" => {
             crate::emitter::string_adapter::emit_urlencode(chunks, current, argc, line)
@@ -660,15 +631,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.html_entity_decode" => crate::emitter::string_adapter::emit_html_entity_decode(
-            chunks, current, argc, line,
-        ),
-        "php.bin2hex" => {
-            crate::emitter::string_adapter::emit_bin2hex(chunks, current, argc, line)
+        "php.html_entity_decode" => {
+            crate::emitter::string_adapter::emit_html_entity_decode(chunks, current, argc, line)
         }
-        "php.hex2bin" => {
-            crate::emitter::string_adapter::emit_hex2bin(chunks, current, argc, line)
-        }
+        "php.bin2hex" => crate::emitter::string_adapter::emit_bin2hex(chunks, current, argc, line),
+        "php.hex2bin" => crate::emitter::string_adapter::emit_hex2bin(chunks, current, argc, line),
         "php.chunk_split" => {
             crate::emitter::string_adapter::emit_chunk_split(chunks, current, argc, line)
         }
@@ -684,9 +651,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.str_getcsv" => {
             crate::emitter::string_adapter::emit_str_getcsv(chunks, current, argc, line)
         }
-        "php.soundex" => {
-            crate::emitter::string_adapter::emit_soundex(chunks, current, argc, line)
-        }
+        "php.soundex" => crate::emitter::string_adapter::emit_soundex(chunks, current, argc, line),
         "php.levenshtein" => {
             crate::emitter::string_adapter::emit_levenshtein(chunks, current, argc, line)
         }
@@ -696,19 +661,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strripos" => {
             crate::emitter::string_adapter::emit_strripos(chunks, current, argc, line)
         }
-        "php.strpos" => {
-            crate::emitter::string_adapter::emit_strpos(chunks, current, argc, line)
-        }
+        "php.strpos" => crate::emitter::string_adapter::emit_strpos(chunks, current, argc, line),
         "php.strtr" => crate::emitter::string_adapter::emit_strtr(chunks, current, argc, line),
         "php.quotemeta" => {
             crate::emitter::string_adapter::emit_quotemeta(chunks, current, argc, line)
         }
-        "php.strspn" => {
-            crate::emitter::string_adapter::emit_strspn(chunks, current, argc, line)
-        }
-        "php.strcspn" => {
-            crate::emitter::string_adapter::emit_strcspn(chunks, current, argc, line)
-        }
+        "php.strspn" => crate::emitter::string_adapter::emit_strspn(chunks, current, argc, line),
+        "php.strcspn" => crate::emitter::string_adapter::emit_strcspn(chunks, current, argc, line),
         "php.strlen" => {
             super::type_guard::guard_arg(
                 chunks,
@@ -747,28 +706,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.str_decrement" => {
             crate::emitter::string_adapter::emit_str_decrement(chunks, current, argc, line)
         }
-        "php.strncmp" => {
-            crate::emitter::string_adapter::emit_strncmp(chunks, current, false, line)
-        }
+        "php.strncmp" => crate::emitter::string_adapter::emit_strncmp(chunks, current, false, line),
         "php.strncasecmp" => {
             crate::emitter::string_adapter::emit_strncmp(chunks, current, true, line)
         }
-        "php.strpbrk" => {
-            crate::emitter::string_adapter::emit_strpbrk(chunks, current, argc, line)
-        }
+        "php.strpbrk" => crate::emitter::string_adapter::emit_strpbrk(chunks, current, argc, line),
         "php.substr_compare" => {
             crate::emitter::string_adapter::emit_substr_compare(chunks, current, argc, line)
         }
         "php.preg_grep" => {
             crate::emitter::string_adapter::emit_preg_grep(chunks, current, argc, line)
         }
-        "php.fnmatch" => {
-            crate::emitter::string_adapter::emit_fnmatch(chunks, current, argc, line)
-        }
+        "php.fnmatch" => crate::emitter::string_adapter::emit_fnmatch(chunks, current, argc, line),
         "php.preg_replace_limited" => {
-            crate::emitter::string_adapter::emit_preg_replace_limited(
-                chunks, current, argc, line,
-            )
+            crate::emitter::string_adapter::emit_preg_replace_limited(chunks, current, argc, line)
         }
         "php.strtok_init" => {
             crate::emitter::string_adapter::emit_strtok_init(chunks, current, argc, line)
@@ -779,6 +730,33 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mb_convert_case" => {
             crate::emitter::string_adapter::emit_mb_convert_case(chunks, current, argc, line)
         }
+        "php.mb_strwidth" => {
+            crate::emitter::string_adapter::emit_mb_strwidth(chunks, current, argc, line)
+        }
+        "php.mb_language" => crate::emitter::string_adapter::emit_mb_setting(
+            chunks,
+            current,
+            argc,
+            "__php_mb_language",
+            "neutral",
+            line,
+        ),
+        "php.mb_regex_encoding" => crate::emitter::string_adapter::emit_mb_setting(
+            chunks,
+            current,
+            argc,
+            "__php_mb_regex_encoding",
+            "UTF-8",
+            line,
+        ),
+        "php.mb_substitute_character" => crate::emitter::string_adapter::emit_mb_setting(
+            chunks,
+            current,
+            argc,
+            "__php_mb_substitute_character",
+            "none",
+            line,
+        ),
         "php.mb_check_enc" => {
             let chunk = &mut chunks[current];
             for _ in 0..argc {
@@ -799,33 +777,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.preg_quote" => {
             crate::emitter::string_adapter::emit_preg_quote(chunks, current, argc, line)
         }
-        "php.trim" => {
-            crate::emitter::string_adapter::emit_php_trim(chunks, current, argc, line)
-        }
-        "php.ltrim" => {
-            crate::emitter::string_adapter::emit_php_ltrim(chunks, current, argc, line)
-        }
-        "php.rtrim" => {
-            crate::emitter::string_adapter::emit_php_rtrim(chunks, current, argc, line)
-        }
-        "php.iconv" => {
-            crate::emitter::string_adapter::emit_php_iconv(chunks, current, argc, line)
-        }
+        "php.trim" => crate::emitter::string_adapter::emit_php_trim(chunks, current, argc, line),
+        "php.ltrim" => crate::emitter::string_adapter::emit_php_ltrim(chunks, current, argc, line),
+        "php.rtrim" => crate::emitter::string_adapter::emit_php_rtrim(chunks, current, argc, line),
+        "php.iconv" => crate::emitter::string_adapter::emit_php_iconv(chunks, current, argc, line),
         "php.preg_split" => {
             crate::emitter::string_adapter::emit_preg_split(chunks, current, argc, line)
         }
         "php.preg_match_all_groups" => {
-            crate::emitter::string_adapter::emit_preg_match_all_groups(
-                chunks, current, argc, line,
-            )
+            crate::emitter::string_adapter::emit_preg_match_all_groups(chunks, current, argc, line)
         }
         "php.preg_match_groups" => {
             crate::emitter::string_adapter::emit_preg_match_groups(chunks, current, argc, line)
         }
         "php.preg_replace_callback" => {
-            crate::emitter::string_adapter::emit_preg_replace_callback(
-                chunks, current, argc, line,
-            )
+            crate::emitter::string_adapter::emit_preg_replace_callback(chunks, current, argc, line)
         }
         "php.clone_helper" => {
             crate::emitter::string_adapter::emit_php_clone(chunks, current, argc, line)
@@ -860,6 +826,43 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_splpriorityqueue" => {
             crate::emitter::spl_adapter::emit_spl_pq_new(chunks, current, argc, line)
         }
+        "php.spl_appenditerator" => {
+            crate::emitter::spl_adapter::emit_append_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_arrayiterator" => {
+            crate::emitter::spl_adapter::emit_array_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_cachingiterator" => {
+            crate::emitter::spl_adapter::emit_caching_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_emptyiterator" => {
+            crate::emitter::spl_adapter::emit_empty_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_infiniteiterator" => {
+            crate::emitter::spl_adapter::emit_infinite_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_iteratoriterator" => {
+            crate::emitter::spl_adapter::emit_iterator_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_multipleiterator" => {
+            crate::emitter::spl_adapter::emit_multiple_iterator_new(chunks, current, argc, line)
+        }
+        "php.spl_recursiveiteratoriterator" => {
+            crate::emitter::spl_adapter::emit_recursive_iterator_iterator_new(
+                chunks, current, argc, line,
+            )
+        }
+        "php.spl_recursivetreeiterator" => {
+            crate::emitter::spl_adapter::emit_recursive_tree_iterator_new(
+                chunks, current, argc, line,
+            )
+        }
+        "php.spl_fileobject" => {
+            crate::emitter::spl_adapter::emit_spl_file_object_new(chunks, current, argc, line)
+        }
+        "php.spl_tempfileobject" => {
+            crate::emitter::spl_adapter::emit_spl_temp_file_object_new(chunks, current, argc, line)
+        }
         "php.spl_splobjectstorage" => crate::emitter::spl_adapter::emit_spl_objectstorage_new(
             chunks,
             current,
@@ -884,6 +887,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
             crate::emitter::array_adapter::emit_php_array_merge(chunks, current, argc, line)
         }
+        "php.array_merge_recursive" => {
+            crate::emitter::array_adapter::emit_array_merge_recursive(chunks, current, argc, line)
+        }
+        "php.array_change_key_case" => {
+            crate::emitter::array_adapter::emit_array_change_key_case(chunks, current, argc, line)
+        }
+        "php.array_udiff" => {
+            crate::emitter::array_adapter::emit_array_udiff(chunks, current, argc, line)
+        }
+        "php.array_uintersect" => {
+            crate::emitter::array_adapter::emit_array_uintersect(chunks, current, argc, line)
+        }
         "php.uniq" => {
             crate::emitter::array_adapter::emit_php_array_unique(chunks, current, argc, line)
         }
@@ -906,6 +921,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_reverse" => {
             crate::emitter::array_adapter::emit_php_array_reverse(chunks, current, argc, line)
         }
+        "php.array_rand" => {
+            crate::emitter::array_adapter::emit_php_array_rand(chunks, current, argc, line)
+        }
         "php.refl_class" => {
             crate::emitter::reflection_adapter::emit_refl_class(chunks, current, argc, line)
         }
@@ -917,6 +935,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.refl_function" => {
             crate::emitter::reflection_adapter::emit_refl_function(chunks, current, argc, line)
+        }
+        "php.refl_constant" => {
+            crate::emitter::reflection_adapter::emit_refl_constant(chunks, current, argc, line)
         }
         "php.weak_ref_create" => {
             crate::emitter::misc_adapter::emit_weak_ref_create(chunks, current, argc, line)
@@ -933,24 +954,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.fiber_resume" => {
             crate::emitter::fiber_adapter::emit_php_fiber_resume(chunks, current, argc, line)
         }
-        "php.fiber_get_return" => crate::emitter::fiber_adapter::emit_php_fiber_get_return(
-            chunks, current, argc, line,
-        ),
-        "php.fiber_is_started" => crate::emitter::fiber_adapter::emit_php_fiber_is_started(
-            chunks, current, argc, line,
-        ),
-        "php.fiber_is_suspended" => {
-            crate::emitter::fiber_adapter::emit_php_fiber_is_suspended(
-                chunks, current, argc, line,
-            )
+        "php.fiber_throw" => {
+            crate::emitter::fiber_adapter::emit_php_fiber_throw(chunks, current, argc, line)
         }
-        "php.fiber_is_running" => crate::emitter::fiber_adapter::emit_php_fiber_is_running(
-            chunks, current, argc, line,
-        ),
+        "php.fiber_get_return" => {
+            crate::emitter::fiber_adapter::emit_php_fiber_get_return(chunks, current, argc, line)
+        }
+        "php.fiber_is_started" => {
+            crate::emitter::fiber_adapter::emit_php_fiber_is_started(chunks, current, argc, line)
+        }
+        "php.fiber_is_suspended" => {
+            crate::emitter::fiber_adapter::emit_php_fiber_is_suspended(chunks, current, argc, line)
+        }
+        "php.fiber_is_running" => {
+            crate::emitter::fiber_adapter::emit_php_fiber_is_running(chunks, current, argc, line)
+        }
         "php.fiber_is_terminated" => {
-            crate::emitter::fiber_adapter::emit_php_fiber_is_terminated(
-                chunks, current, argc, line,
-            )
+            crate::emitter::fiber_adapter::emit_php_fiber_is_terminated(chunks, current, argc, line)
         }
         "php.echo_stringify" => {
             crate::emitter::string_adapter::emit_echo_stringify(chunks, current, argc, line)
@@ -965,15 +985,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.dirname" => {
             crate::emitter::filesystem_adapter::emit_dirname(chunks, current, argc, line)
         }
-        "php.file_get_contents" => crate::emitter::filesystem_adapter::emit_file_get_contents(
-            chunks, current, argc, line,
-        ),
-        "php.file_put_contents" => crate::emitter::filesystem_adapter::emit_file_put_contents(
-            chunks, current, argc, line,
-        ),
-        "php.mkdir" => {
-            crate::emitter::filesystem_adapter::emit_mkdir(chunks, current, argc, line)
+        "php.file_get_contents" => {
+            crate::emitter::filesystem_adapter::emit_file_get_contents(chunks, current, argc, line)
         }
+        "php.file_put_contents" => {
+            crate::emitter::filesystem_adapter::emit_file_put_contents(chunks, current, argc, line)
+        }
+        "php.mkdir" => crate::emitter::filesystem_adapter::emit_mkdir(chunks, current, argc, line),
         "php.file_exists" => {
             crate::emitter::filesystem_adapter::emit_file_exists(chunks, current, argc, line)
         }
@@ -1001,12 +1019,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.unlink" => {
             crate::emitter::filesystem_adapter::emit_unlink(chunks, current, argc, line)
         }
-        "php.file" => {
-            crate::emitter::filesystem_adapter::emit_file(chunks, current, argc, line)
-        }
-        "php.glob" => {
-            crate::emitter::filesystem_adapter::emit_glob(chunks, current, argc, line)
-        }
+        "php.file" => crate::emitter::filesystem_adapter::emit_file(chunks, current, argc, line),
+        "php.glob" => crate::emitter::filesystem_adapter::emit_glob(chunks, current, argc, line),
         "php.dir" => crate::emitter::filesystem_adapter::emit_dir(chunks, current, argc, line),
         "php.dir_read" => {
             crate::emitter::filesystem_adapter::emit_dir_read(chunks, current, argc, line)
@@ -1014,21 +1028,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.dir_close" => {
             crate::emitter::filesystem_adapter::emit_dir_close(chunks, current, argc, line)
         }
-        "php.sys_get_temp_dir" => crate::emitter::filesystem_adapter::emit_sys_get_temp_dir(
-            chunks, current, argc, line,
-        ),
+        "php.sys_get_temp_dir" => {
+            crate::emitter::filesystem_adapter::emit_sys_get_temp_dir(chunks, current, argc, line)
+        }
         "php.realpath" => {
             crate::emitter::filesystem_adapter::emit_realpath(chunks, current, argc, line)
         }
-        "php.copy" => {
-            crate::emitter::filesystem_adapter::emit_copy(chunks, current, argc, line)
-        }
+        "php.copy" => crate::emitter::filesystem_adapter::emit_copy(chunks, current, argc, line),
         "php.rename" => {
             crate::emitter::filesystem_adapter::emit_rename(chunks, current, argc, line)
         }
-        "php.rmdir" => {
-            crate::emitter::filesystem_adapter::emit_rmdir(chunks, current, argc, line)
-        }
+        "php.rmdir" => crate::emitter::filesystem_adapter::emit_rmdir(chunks, current, argc, line),
         "php.is_readable" => {
             crate::emitter::filesystem_adapter::emit_is_readable(chunks, current, argc, line)
         }
@@ -1044,42 +1054,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.tempnam" => {
             crate::emitter::filesystem_adapter::emit_tempnam(chunks, current, argc, line)
         }
-        "php.mime_content_type" => crate::emitter::filesystem_adapter::emit_mime_content_type(
-            chunks, current, argc, line,
-        ),
+        "php.mime_content_type" => {
+            crate::emitter::filesystem_adapter::emit_mime_content_type(chunks, current, argc, line)
+        }
         "php.fileperms" => {
             crate::emitter::filesystem_adapter::emit_fileperms(chunks, current, argc, line)
         }
-        "php.disk_free_space" => crate::emitter::filesystem_adapter::emit_disk_free_space(
-            chunks, current, argc, line,
-        ),
-        "php.disk_total_space" => crate::emitter::filesystem_adapter::emit_disk_total_space(
-            chunks, current, argc, line,
-        ),
-        "php.fopen" => {
-            crate::emitter::filesystem_adapter::emit_fopen(chunks, current, argc, line)
+        "php.disk_free_space" => {
+            crate::emitter::filesystem_adapter::emit_disk_free_space(chunks, current, argc, line)
         }
+        "php.disk_total_space" => {
+            crate::emitter::filesystem_adapter::emit_disk_total_space(chunks, current, argc, line)
+        }
+        "php.fopen" => crate::emitter::filesystem_adapter::emit_fopen(chunks, current, argc, line),
         "php.fwrite" => {
             crate::emitter::filesystem_adapter::emit_fwrite(chunks, current, argc, line)
         }
-        "php.fread" => {
-            crate::emitter::filesystem_adapter::emit_fread(chunks, current, argc, line)
-        }
-        "php.fgets" => {
-            crate::emitter::filesystem_adapter::emit_fgets(chunks, current, argc, line)
-        }
-        "php.fgetc" => {
-            crate::emitter::filesystem_adapter::emit_fgetc(chunks, current, argc, line)
-        }
-        "php.feof" => {
-            crate::emitter::filesystem_adapter::emit_feof(chunks, current, argc, line)
-        }
-        "php.ftell" => {
-            crate::emitter::filesystem_adapter::emit_ftell(chunks, current, argc, line)
-        }
-        "php.fseek" => {
-            crate::emitter::filesystem_adapter::emit_fseek(chunks, current, argc, line)
-        }
+        "php.fread" => crate::emitter::filesystem_adapter::emit_fread(chunks, current, argc, line),
+        "php.fgets" => crate::emitter::filesystem_adapter::emit_fgets(chunks, current, argc, line),
+        "php.fgetc" => crate::emitter::filesystem_adapter::emit_fgetc(chunks, current, argc, line),
+        "php.feof" => crate::emitter::filesystem_adapter::emit_feof(chunks, current, argc, line),
+        "php.ftell" => crate::emitter::filesystem_adapter::emit_ftell(chunks, current, argc, line),
+        "php.fseek" => crate::emitter::filesystem_adapter::emit_fseek(chunks, current, argc, line),
         "php.rewind" => {
             crate::emitter::filesystem_adapter::emit_rewind(chunks, current, argc, line)
         }
@@ -1089,11 +1085,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.fclose" => {
             crate::emitter::filesystem_adapter::emit_fclose(chunks, current, argc, line)
         }
-        "php.stream_get_contents" => {
-            crate::emitter::filesystem_adapter::emit_stream_get_contents(
-                chunks, current, argc, line,
-            )
-        }
+        "php.stream_get_contents" => crate::emitter::filesystem_adapter::emit_stream_get_contents(
+            chunks, current, argc, line,
+        ),
         "php.stream_get_meta_data" => {
             crate::emitter::filesystem_adapter::emit_stream_get_meta_data(
                 chunks, current, argc, line,
@@ -1106,12 +1100,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // and concatenates. `argc` includes the format string; trailing
         // args are packed into a local array indexed by placeholder N.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
-        "php.header" => {
-            crate::emitter::misc_adapter::emit_php_header(chunks, current, argc, line)
+        "php.header" => crate::emitter::misc_adapter::emit_php_header(chunks, current, argc, line),
+        "php.extension_loaded" => {
+            crate::emitter::misc_adapter::emit_php_extension_loaded(chunks, current, argc, line)
         }
-        "php.extension_loaded" => crate::emitter::misc_adapter::emit_php_extension_loaded(
-            chunks, current, argc, line,
-        ),
         "php.phpversion" => {
             crate::emitter::misc_adapter::emit_php_phpversion(chunks, current, argc, line)
         }
@@ -1128,9 +1120,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.empty" => {
-            crate::emitter::misc_adapter::emit_php_empty(chunks, current, argc, line)
-        }
+        "php.empty" => crate::emitter::misc_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => {
             crate::emitter::misc_adapter::emit_php_session_start(chunks, current, argc, line)
         }
@@ -1146,9 +1136,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.unserialize" => {
             crate::emitter::misc_adapter::emit_php_unserialize(chunks, current, argc, line)
         }
-        "php.pdo_new" => {
-            crate::emitter::pdo_adapter::emit_php_pdo_new(chunks, current, argc, line)
-        }
+        "php.pdo_new" => crate::emitter::pdo_adapter::emit_php_pdo_new(chunks, current, argc, line),
         "php.pdo_query" => {
             crate::emitter::pdo_adapter::emit_php_pdo_query(chunks, current, argc, line)
         }
@@ -1164,6 +1152,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.set_error_handler" => {
             super::error_adapter::emit_set_error_handler(chunks, current, argc, line)
         }
+        "php.assert_active" => {
+            super::error_adapter::emit_assert_active(chunks, current, argc, line)
+        }
+        "php.assert_active_option" => {
+            super::error_adapter::emit_assert_active_option(chunks, current, argc, line)
+        }
+        "php.assert_callback" => {
+            super::error_adapter::emit_assert_callback(chunks, current, argc, line)
+        }
+        "php.assert_callback_option" => {
+            super::error_adapter::emit_assert_callback_option(chunks, current, argc, line)
+        }
         "php.restore_error_handler" => {
             super::error_adapter::emit_restore_error_handler(chunks, current, argc, line)
         }
@@ -1176,6 +1176,25 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.error_clear_last" => {
             super::error_adapter::emit_error_clear_last(chunks, current, argc, line)
         }
+        "php.ob_start" => super::output_adapter::emit_ob_start(chunks, current, argc, line),
+        "php.ob_get_clean" => super::output_adapter::emit_ob_get_clean(chunks, current, argc, line),
+        "php.ob_get_contents" => {
+            super::output_adapter::emit_ob_get_contents(chunks, current, argc, line)
+        }
+        "php.ob_end_clean" => super::output_adapter::emit_ob_end_clean(chunks, current, argc, line),
+        "php.ob_end_flush" => super::output_adapter::emit_ob_end_flush(chunks, current, argc, line),
+        "php.ob_get_level" => super::output_adapter::emit_ob_get_level(chunks, current, argc, line),
+        "php.ob_clean" => super::output_adapter::emit_ob_clean(chunks, current, argc, line),
+        "php.ob_get_length" => {
+            super::output_adapter::emit_ob_get_length(chunks, current, argc, line)
+        }
+        "php.ob_implicit_flush" => {
+            super::output_adapter::emit_ob_implicit_flush(chunks, current, argc, line)
+        }
+        "php.ob_list_handlers" => {
+            super::output_adapter::emit_ob_list_handlers(chunks, current, argc, line)
+        }
+        "php.ob_gzhandler" => super::output_adapter::emit_ob_gzhandler(chunks, current, argc, line),
         "php.error_reporting" => {
             super::error_adapter::emit_error_reporting(chunks, current, argc, line)
         }
@@ -1197,18 +1216,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.pdo_get_attribute" => crate::emitter::pdo_adapter::emit_php_pdo_get_attribute(
-            chunks, current, argc, line,
-        ),
+        "php.pdo_get_attribute" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_get_attribute(chunks, current, argc, line)
+        }
         "php.pdo_quote" => {
             crate::emitter::pdo_adapter::emit_php_pdo_quote(chunks, current, argc, line)
         }
         "php.pdo_error_code" => {
             crate::emitter::pdo_adapter::emit_php_pdo_error_code(chunks, current, argc, line)
         }
-        "php.pdo_last_insert_id" => crate::emitter::pdo_adapter::emit_php_pdo_last_insert_id(
-            chunks, current, argc, line,
-        ),
+        "php.pdo_last_insert_id" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_last_insert_id(chunks, current, argc, line)
+        }
         "php.pdo_error_info" => {
             crate::emitter::pdo_adapter::emit_php_pdo_error_info(chunks, current, argc, line)
         }
@@ -1224,13 +1243,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mysqli_stmt_get_result" => {
             super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line)
         }
-        "php.pdo_set_attribute" => crate::emitter::pdo_adapter::emit_php_pdo_set_attribute(
-            chunks, current, argc, line,
-        ),
+        "php.pdo_set_attribute" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_set_attribute(chunks, current, argc, line)
+        }
         "php.pdo_begin_transaction" => {
-            crate::emitter::pdo_adapter::emit_php_pdo_begin_transaction(
-                chunks, current, argc, line,
-            )
+            crate::emitter::pdo_adapter::emit_php_pdo_begin_transaction(chunks, current, argc, line)
         }
         "php.pdo_commit" => {
             crate::emitter::pdo_adapter::emit_php_pdo_commit(chunks, current, argc, line)
@@ -1248,35 +1265,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.pdo_statement_execute" => {
-            crate::emitter::pdo_adapter::emit_php_pdo_statement_execute(
+        "php.pdo_statement_bind_column" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_bind_column(
                 chunks, current, argc, line,
             )
         }
+        "php.pdo_statement_execute" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_execute(chunks, current, argc, line)
+        }
         "php.pdo_statement_fetch" => {
-            crate::emitter::pdo_adapter::emit_php_pdo_statement_fetch(
-                chunks, current, argc, line,
-            )
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_fetch(chunks, current, argc, line)
         }
         "php.pdo_statement_fetch_all" => {
             crate::emitter::pdo_adapter::emit_php_pdo_statement_fetch_all(
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_report" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_report(chunks, current, argc, line)
-        }
-        "php.mysqli_connect" => crate::emitter::mysqli_adapter::emit_php_mysqli_connect(
-            chunks, current, argc, line,
-        ),
-        "php.mysqli_init" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_init(chunks, current, argc, line)
-        }
-        "php.mysqli_real_connect" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_real_connect(
+        "php.pdo_statement_param_count" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_param_count(
                 chunks, current, argc, line,
             )
         }
+        "php.mysqli_report" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_report(chunks, current, argc, line)
+        }
+        "php.mysqli_connect" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_connect(chunks, current, argc, line)
+        }
+        "php.mysqli_init" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_init(chunks, current, argc, line)
+        }
+        "php.mysqli_real_connect" => crate::emitter::mysqli_adapter::emit_php_mysqli_real_connect(
+            chunks, current, argc, line,
+        ),
         "php.mysqli_connect_errno" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_connect_errno(
                 chunks, current, argc, line,
@@ -1293,16 +1314,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mysqli_query" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_query(chunks, current, argc, line)
         }
-        "php.mysqli_prepare" => crate::emitter::mysqli_adapter::emit_php_mysqli_prepare(
-            chunks, current, argc, line,
-        ),
-        "php.mysqli_select_db" => crate::emitter::mysqli_adapter::emit_php_mysqli_select_db(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_prepare" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_prepare(chunks, current, argc, line)
+        }
+        "php.mysqli_select_db" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_select_db(chunks, current, argc, line)
+        }
         "php.mysqli_set_charset" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_set_charset(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_set_charset(chunks, current, argc, line)
         }
         "php.mysqli_ping" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_ping(chunks, current, argc, line)
@@ -1315,31 +1334,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.mysqli_insert_id" => crate::emitter::mysqli_adapter::emit_php_mysqli_insert_id(
-            chunks, current, argc, line,
-        ),
-        "php.mysqli_num_fields" => crate::emitter::mysqli_adapter::emit_php_mysqli_num_fields(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_insert_id" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_insert_id(chunks, current, argc, line)
+        }
+        "php.mysqli_num_fields" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_num_fields(chunks, current, argc, line)
+        }
         "php.mysqli_fetch_field" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_field(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_field(chunks, current, argc, line)
         }
         "php.mysqli_free_result" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_free_result(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_free_result(chunks, current, argc, line)
         }
-        "php.mysqli_more_results" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_more_results(
-                chunks, current, argc, line,
-            )
-        }
+        "php.mysqli_more_results" => crate::emitter::mysqli_adapter::emit_php_mysqli_more_results(
+            chunks, current, argc, line,
+        ),
         "php.mysqli_next_result" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_next_result(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_next_result(chunks, current, argc, line)
         }
         "php.mysqli_close" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_close(chunks, current, argc, line)
@@ -1365,26 +1376,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "php.mysqli_fetch_array" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_array(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_array(chunks, current, argc, line)
         }
         "php.mysqli_fetch_assoc" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_assoc(
-                chunks, current, argc, line,
-            )
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_assoc(chunks, current, argc, line)
         }
-        "php.mysqli_fetch_object" => {
-            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_object(
-                chunks, current, argc, line,
-            )
-        }
-        "php.mysqli_num_rows" => crate::emitter::mysqli_adapter::emit_php_mysqli_num_rows(
+        "php.mysqli_fetch_object" => crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_object(
             chunks, current, argc, line,
         ),
-        "php.mysqli_fetch_all" => crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_all(
-            chunks, current, argc, line,
-        ),
+        "php.mysqli_num_rows" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_num_rows(chunks, current, argc, line)
+        }
+        "php.mysqli_fetch_all" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_all(chunks, current, argc, line)
+        }
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.

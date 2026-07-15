@@ -47,6 +47,7 @@ case_sensitive = true              # PHP function/class names are case-INSENSITI
                                     # the language as case-sensitive overall and
                                     # rely on user-side normalization.
 string_indexing = "zero_based"
+switch_fallthrough = true           # PHP switch falls through like JS/C unless break/return/throw exits.
 # PHP-specific
 dynamic_add = false                 # `+` is numeric only; `.` is concat
 # Route `class` declarations through common::classes::normalize_class
@@ -66,9 +67,10 @@ uses_normalize_class = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-echo                = { emit = "print",                      min_args = 0, max_args = 255 }
+echo                = { emit = "common:php.echo",            min_args = 0, max_args = 255 }
+__php_echo          = { emit = "common:php.echo",            min_args = 0, max_args = 255 }
 print               = { emit = "print",                      min_args = 1, max_args = 1 }
-print_r             = { emit = "print",                      min_args = 1, max_args = 2 }
+print_r             = { emit = "common:php.print_r",         min_args = 1, max_args = 2 }
 var_dump            = { emit = "print",                      min_args = 1, max_args = 255 }
 printf              = { emit = "intrinsic:php_printf",       min_args = 1, max_args = 255 }
 vprintf             = { emit = "intrinsic:php_vprintf",      min_args = 2, max_args = 2 }
@@ -92,8 +94,9 @@ __php_intdiv        = { emit = "common:php.intdiv",          min_args = 2, max_a
 
 strlen              = { emit = "common:php.strlen",          min_args = 1, max_args = 1 }
 strtolower          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
-strtoupper          = { emit = "common:str_to_upper",        min_args = 1, max_args = 1 }
+strtoupper          = { emit = "common:php.strtoupper",      min_args = 1, max_args = 1 }
 strcmp              = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
+strcasecmp          = { emit = "common:php.strcasecmp",      min_args = 2, max_args = 2 }
 strcoll             = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
@@ -104,6 +107,12 @@ str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
 str_repeat          = { emit = "common:str_repeat",          min_args = 2, max_args = 2 }
 base64_decode       = { emit = "common:php.base64_decode",   min_args = 1, max_args = 2 }
+gzcompress          = { emit = "common:php.gzcompress",      min_args = 1, max_args = 2 }
+gzuncompress        = { emit = "common:php.gzuncompress",    min_args = 1, max_args = 2 }
+gzencode            = { emit = "common:php.gzencode",        min_args = 1, max_args = 2 }
+gzdecode            = { emit = "common:php.gzdecode",        min_args = 1, max_args = 2 }
+gzdeflate           = { emit = "common:php.gzdeflate",       min_args = 1, max_args = 2 }
+gzinflate           = { emit = "common:php.gzinflate",       min_args = 1, max_args = 2 }
 chr                 = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 # PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
@@ -130,7 +139,7 @@ ctype_print         = { emit = "common:php.ctype_print",     min_args = 1, max_a
 ctype_cntrl         = { emit = "common:php.ctype_cntrl",     min_args = 1, max_args = 1 }
 mb_strlen           = { emit = "common:str_length",          min_args = 1, max_args = 2 }
 mb_strtolower       = { emit = "common:str_to_lower",        min_args = 1, max_args = 2 }
-mb_strtoupper       = { emit = "common:str_to_upper",        min_args = 1, max_args = 2 }
+mb_strtoupper       = { emit = "common:php.strtoupper",      min_args = 1, max_args = 2 }
 # `mb_substr` walker-rewritten alongside `substr` (Vybe stores strings
 # as Rust UTF-8 — code-point indexing matches mb_substr semantics).
 strrev              = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
@@ -142,6 +151,13 @@ md5                 = { emit = "common:php.md5",             min_args = 1, max_a
 sha1                = { emit = "common:php.sha1",            min_args = 1, max_args = 1 }
 hash                = { emit = "common:php.hash",            min_args = 2, max_args = 3 }
 hash_hmac           = { emit = "common:php.hash_hmac",       min_args = 3, max_args = 4 }
+hash_algos          = { emit = "common:php.hash_algos",      min_args = 0, max_args = 0 }
+hash_hkdf           = { emit = "common:php.hash_hkdf",       min_args = 3, max_args = 5 }
+hash_pbkdf2         = { emit = "common:php.hash_pbkdf2",     min_args = 4, max_args = 6 }
+md5_file            = { emit = "common:php.md5_file",        min_args = 1, max_args = 2 }
+password_hash       = { emit = "common:php.password_hash",   min_args = 2, max_args = 3 }
+password_verify     = { emit = "common:php.password_verify", min_args = 2, max_args = 2 }
+password_needs_rehash = { emit = "common:php.password_needs_rehash", min_args = 2, max_args = 3 }
 crc32               = { emit = "common:php.crc32",           min_args = 1, max_args = 1 }
 # `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
 # composition. Both the `host:ecma:string:*` methods and the value-method
@@ -197,6 +213,10 @@ mb_detect_encoding  = { emit = "common:php.mb_detect_enc",      min_args = 0, ma
 mb_str_split        = { emit = "common:php.str_split",          min_args = 1, max_args = 2 }
 mb_substr_count     = { emit = "common:php.substr_count",       min_args = 2, max_args = 3 }
 mb_convert_case     = { emit = "common:php.mb_convert_case",    min_args = 2, max_args = 3 }
+mb_strwidth         = { emit = "common:php.mb_strwidth",        min_args = 1, max_args = 2 }
+mb_language         = { emit = "common:php.mb_language",        min_args = 0, max_args = 1 }
+mb_regex_encoding   = { emit = "common:php.mb_regex_encoding",  min_args = 0, max_args = 1 }
+mb_substitute_character = { emit = "common:php.mb_substitute_character", min_args = 0, max_args = 1 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
 # version_compare defined by VERSION_PRELUDE (full pre-release-aware algorithm).
 abs                 = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
@@ -253,7 +273,7 @@ preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, m
 preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
-__php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 1 }
+__php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 2 }
 preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
 preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
 
@@ -389,8 +409,9 @@ end                 = { emit = "common:php.end",                  min_args = 1, 
 array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
 array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
 array_reverse       = { emit = "common:php.array_reverse",         min_args = 1, max_args = 2 }
+array_rand          = { emit = "common:php.array_rand",            min_args = 1, max_args = 2 }
 in_array            = { emit = "common:php.in_array",              min_args = 2, max_args = 3 }
-array_search        = { emit = "intrinsic:php_array_search",       min_args = 2, max_args = 3 }
+array_search        = { emit = "common:php.array_search",          min_args = 2, max_args = 3 }
 array_slice         = { emit = "common:php.array_slice",           min_args = 2, max_args = 4 }
 array_merge         = { emit = "common:php.array_merge",           min_args = 1, max_args = 255 }
 range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
@@ -401,8 +422,14 @@ array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2,
 array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
 array_fill_keys     = { emit = "common:php.array_fill_keys",       min_args = 2, max_args = 2 }
 array_intersect_assoc = { emit = "common:php.array_intersect_assoc", min_args = 2, max_args = 2 }
-array_replace_recursive = { emit = "common:php.array_replace_recursive", min_args = 2, max_args = 2 }
+array_replace_recursive = { emit = "common:php.array_replace_recursive", min_args = 2, max_args = 255 }
 iterator_to_array   = { emit = "common:php.iterator_to_array",     min_args = 1, max_args = 2 }
+__php_gen_key       = { emit = "common:php.generator_key",         min_args = 1, max_args = 1 }
+__php_gen_get_return = { emit = "common:php.generator_get_return", min_args = 1, max_args = 1 }
+__php_gen_rewind    = { emit = "common:php.generator_rewind",      min_args = 1, max_args = 1 }
+__php_gen_next      = { emit = "common:php.generator_next",        min_args = 1, max_args = 1 }
+__php_gen_current   = { emit = "common:php.generator_current",     min_args = 1, max_args = 1 }
+__php_gen_valid     = { emit = "common:php.generator_valid",       min_args = 1, max_args = 1 }
 # These stay on `common:array_*` because they dispatch through
 # `emit_builtin_opcode` which has the variadic-aware per-arg logic
 # (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
@@ -427,8 +454,8 @@ array_is_list        = { emit = "common:php.array_is_list",      min_args = 1, m
 # walker layer (`canonicalize_php_call_args`), so both entries below
 # bind directly to the portable `ecma:object.hasOwn` — identical
 # import to what JS `Object.hasOwn` emits.
-array_key_exists    = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
-key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
+array_key_exists    = { emit = "common:php.array_key_exists",   min_args = 2, max_args = 2 }
+key_exists          = { emit = "common:php.array_key_exists",   min_args = 2, max_args = 2 }
 
 # Sort family — every variant routes through an existing shared
 # runtime helper. PHP arrays normalize to JS arrays/objects so these
@@ -466,6 +493,14 @@ array_diff_key      = { emit = "common:php.array_diff_key",       min_args = 2, 
 array_diff_assoc    = { emit = "common:php.array_diff_assoc",     min_args = 2, max_args = 255 }
 array_intersect_key = { emit = "common:php.array_intersect_key",  min_args = 2, max_args = 255 }
 array_replace       = { emit = "common:php.array_replace",        min_args = 2, max_args = 255 }
+array_merge_recursive = { emit = "common:php.array_merge_recursive", min_args = 2, max_args = 255 }
+array_change_key_case = { emit = "common:php.array_change_key_case", min_args = 1, max_args = 2 }
+array_udiff         = { emit = "common:php.array_udiff",          min_args = 3, max_args = 3 }
+array_uintersect    = { emit = "common:php.array_uintersect",     min_args = 3, max_args = 3 }
+array_udiff_uassoc  = { emit = "common:php.array_udiff_uassoc",   min_args = 4, max_args = 4 }
+array_uintersect_uassoc = { emit = "common:php.array_uintersect_uassoc", min_args = 4, max_args = 4 }
+array_intersect_ukey = { emit = "common:php.array_intersect_ukey", min_args = 3, max_args = 3 }
+array_multisort     = { emit = "common:php.array_multisort",      min_args = 1, max_args = 255 }
 array_count_values  = { emit = "common:php.array_count_values",   min_args = 1, max_args = 1 }
 array_column        = { emit = "common:php.array_column",         min_args = 2, max_args = 3 }
 array_key_first     = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
@@ -620,6 +655,10 @@ phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_a
 # These are runtime configuration calls that don't affect compiled-bytecode
 # behaviour. Stub them so common PHP boilerplate doesn't break at runtime.
 error_reporting     = { emit = "common:php.error_reporting",     min_args = 0, max_args = 1 }
+__php_assert_active = { emit = "common:php.assert_active",        min_args = 0, max_args = 0 }
+__php_assert_active_option = { emit = "common:php.assert_active_option", min_args = 0, max_args = 1 }
+__php_assert_callback = { emit = "common:php.assert_callback",    min_args = 0, max_args = 0 }
+__php_assert_callback_option = { emit = "common:php.assert_callback_option", min_args = 0, max_args = 1 }
 # ini_get/ini_set/ini_alter/ini_restore/ini_get_all/get_cfg_var are defined by
 # INI_FUNCTIONS_PRELUDE (stateful global store); no profile entry so the
 # prelude functions resolve.
@@ -629,6 +668,17 @@ set_exception_handler = { emit = "common:php.set_exception_handler", min_args = 
 trigger_error       = { emit = "common:php.trigger_error",       min_args = 1, max_args = 2 }
 error_get_last      = { emit = "common:php.error_get_last",      min_args = 0, max_args = 0 }
 error_clear_last    = { emit = "common:php.error_clear_last",    min_args = 0, max_args = 0 }
+ob_start            = { emit = "common:php.ob_start",            min_args = 0, max_args = 2 }
+ob_get_clean        = { emit = "common:php.ob_get_clean",        min_args = 0, max_args = 0 }
+ob_get_contents     = { emit = "common:php.ob_get_contents",     min_args = 0, max_args = 0 }
+ob_end_clean        = { emit = "common:php.ob_end_clean",        min_args = 0, max_args = 0 }
+ob_end_flush        = { emit = "common:php.ob_end_flush",        min_args = 0, max_args = 0 }
+ob_get_level        = { emit = "common:php.ob_get_level",        min_args = 0, max_args = 0 }
+ob_clean            = { emit = "common:php.ob_clean",            min_args = 0, max_args = 0 }
+ob_get_length       = { emit = "common:php.ob_get_length",       min_args = 0, max_args = 0 }
+ob_implicit_flush   = { emit = "common:php.ob_implicit_flush",   min_args = 0, max_args = 1 }
+ob_list_handlers    = { emit = "common:php.ob_list_handlers",    min_args = 0, max_args = 0 }
+ob_gzhandler        = { emit = "common:php.ob_gzhandler",        min_args = 1, max_args = 2 }
 register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
 spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 1, max_args = 3 }
 spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }
@@ -700,7 +750,7 @@ mysqli_fetch_all    = { emit = "common:php.mysqli_fetch_all",    min_args = 1, m
 isset               = { emit = "common:php.isset_all",       min_args = 1, max_args = 255 }
 empty               = { emit = "common:php.empty",          min_args = 1, max_args = 1 }
 serialize           = { emit = "common:php.serialize",      min_args = 1, max_args = 1 }
-unserialize         = { emit = "common:php.unserialize",    min_args = 1, max_args = 1 }
+unserialize         = { emit = "common:php.unserialize",    min_args = 1, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # PHP DateTime / DateInterval — bytecode adapters at
@@ -724,7 +774,7 @@ __php_dt_format        = { emit = "common:php.datetime_format",         min_args
 __php_dt_get_timestamp = { emit = "common:php.datetime_get_timestamp",  min_args = 1, max_args = 1 }
 __php_dt_modify        = { emit = "common:php.datetime_modify",         min_args = 2, max_args = 2 }
 __php_dt_imm_modify    = { emit = "common:php.datetime_immutable_modify", min_args = 2, max_args = 2 }
-__php_dt_diff          = { emit = "common:php.datetime_diff",           min_args = 2, max_args = 2 }
+__php_dt_diff          = { emit = "common:php.datetime_diff",           min_args = 2, max_args = 3 }
 __php_dt_add           = { emit = "common:php.datetime_add",            min_args = 2, max_args = 2 }
 __php_dt_sub           = { emit = "common:php.datetime_sub",            min_args = 2, max_args = 2 }
 __php_dt_imm_add       = { emit = "common:php.datetime_immutable_add",  min_args = 2, max_args = 2 }
@@ -763,12 +813,24 @@ __spl_new_splmaxheap           = { emit = "common:php.spl_splmaxheap",          
 __spl_new_splpriorityqueue     = { emit = "common:php.spl_splpriorityqueue",     min_args = 0, max_args = 0 }
 __spl_new_splfixedarray        = { emit = "common:php.spl_splfixedarray",        min_args = 0, max_args = 1 }
 __spl_fixedarray_from_array     = { emit = "common:php.spl_fixedarray_fromarray",  min_args = 1, max_args = 1 }
+__spl_new_appenditerator       = { emit = "common:php.spl_appenditerator",       min_args = 0, max_args = 0 }
+__spl_new_arrayiterator        = { emit = "common:php.spl_arrayiterator",        min_args = 0, max_args = 1 }
+__spl_new_cachingiterator      = { emit = "common:php.spl_cachingiterator",      min_args = 1, max_args = 2 }
+__spl_new_emptyiterator        = { emit = "common:php.spl_emptyiterator",        min_args = 0, max_args = 0 }
+__spl_new_infiniteiterator     = { emit = "common:php.spl_infiniteiterator",     min_args = 1, max_args = 1 }
+__spl_new_iteratoriterator     = { emit = "common:php.spl_iteratoriterator",     min_args = 1, max_args = 1 }
+__spl_new_multipleiterator     = { emit = "common:php.spl_multipleiterator",     min_args = 0, max_args = 1 }
+__spl_new_recursiveiteratoriterator = { emit = "common:php.spl_recursiveiteratoriterator", min_args = 1, max_args = 1 }
+__spl_new_recursivetreeiterator = { emit = "common:php.spl_recursivetreeiterator", min_args = 1, max_args = 1 }
+__spl_new_splfileobject        = { emit = "common:php.spl_fileobject",           min_args = 1, max_args = 4 }
+__spl_new_spltempfileobject    = { emit = "common:php.spl_tempfileobject",       min_args = 0, max_args = 1 }
 __spl_new_splobjectstorage     = { emit = "common:php.spl_splobjectstorage",     min_args = 0, max_args = 0 }
 __spl_new_weakmap              = { emit = "common:php.spl_weakmap",              min_args = 0, max_args = 0 }
-__refl_class                   = { emit = "common:php.refl_class",               min_args = 1, max_args = 8 }
-__refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 5 }
+__refl_class                   = { emit = "common:php.refl_class",               min_args = 1, max_args = 10 }
+__refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 6 }
 __refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 2 }
-__refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 3 }
+__refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 4 }
+__refl_constant                = { emit = "common:php.refl_constant",            min_args = 3, max_args = 3 }
 __weak_ref_create              = { emit = "common:php.weak_ref_create",          min_args = 1, max_args = 1 }
 __php_array_union              = { emit = "common:php.array_union",              min_args = 2, max_args = 2 }
 __php_obj_to_array             = { emit = "common:php.obj_to_array",             min_args = 1, max_args = 1 }
@@ -777,6 +839,7 @@ __php_fiber_new           = { emit = "common:php.fiber_new",           min_args 
 __php_fiber_suspend       = { emit = "common:php.fiber_suspend",       min_args = 0, max_args = 1 }
 __php_fiber_start         = { emit = "common:php.fiber_start",         min_args = 1, max_args = 16 }
 __php_fiber_resume        = { emit = "common:php.fiber_resume",        min_args = 1, max_args = 2 }
+__php_fiber_throw         = { emit = "common:php.fiber_throw",         min_args = 1, max_args = 2 }
 __php_fiber_get_return    = { emit = "common:php.fiber_get_return",    min_args = 1, max_args = 1 }
 __php_fiber_is_started    = { emit = "common:php.fiber_is_started",    min_args = 1, max_args = 1 }
 __php_fiber_is_suspended  = { emit = "common:php.fiber_is_suspended",  min_args = 1, max_args = 1 }
@@ -810,11 +873,13 @@ rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, m
 execute          = { emit = "common:php.pdo_statement_execute",  min_args = 0, max_args = 1 }
 bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2, max_args = 5 }
 bindValue        = { emit = "common:php.pdo_statement_bind_value", min_args = 2, max_args = 4 }
+bindColumn       = { emit = "common:php.pdo_statement_bind_column", min_args = 2, max_args = 5 }
 fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
 fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
 fetchColumn      = { emit = "common:php.pdo_statement_fetch_column", min_args = 0, max_args = 1 }
 rowCount         = { emit = "common:php.pdo_statement_row_count",  min_args = 0, max_args = 0 }
 columnCount      = { emit = "common:php.pdo_statement_column_count", min_args = 0, max_args = 0 }
+paramCount       = { emit = "common:php.pdo_statement_param_count", min_args = 0, max_args = 0 }
 getAttribute     = { emit = "common:php.pdo_get_attribute",       min_args = 1, max_args = 1 }
 quote            = { emit = "common:php.pdo_quote",               min_args = 1, max_args = 2 }
 errorCode        = { emit = "common:php.pdo_error_code",          min_args = 0, max_args = 0 }
@@ -853,7 +918,6 @@ fetch_all        = { emit = "common:php.mysqli_fetch_all",       min_args = 0, m
 # popular as user class methods (`$repo->find(1)`); listing them
 # here would intercept those user methods. Keep this table minimal.
 [array_methods]
-map      = "__array_map"
 filter   = "__array_filter"
 reduce   = "__array_reduce"
 
@@ -888,11 +952,25 @@ reduce   = "__array_reduce"
 "Number.NEGATIVE_INFINITY" = "-Infinity"
 "Number.NaN"            = "NaN"
 "PDO.ATTR_ERRMODE"      = 3
+"PDO.ATTR_DRIVER_NAME"  = 16
+"PDO.ATTR_EMULATE_PREPARES" = 20
 "PDO.ERRMODE_EXCEPTION" = 2
+"PDO.ERRMODE_SILENT"    = 0
 "PDO.PARAM_INT"        = 1
 "PDO.PARAM_STR"        = 2
+"PDO.PARAM_BOOL"       = 5
+"PDO.PARAM_NULL"       = 0
 "PDO.FETCH_ASSOC"       = 2
+"PDO.FETCH_NUM"         = 3
+"PDO.FETCH_BOUND"       = 6
 "PDO.FETCH_COLUMN"      = 7
+"PDO.FETCH_KEY_PAIR"    = 12
+"NumberFormatter.DECIMAL" = 1
+"NumberFormatter.CURRENCY" = 2
+"NumberFormatter.PERCENT" = 3
+"IntlDateFormatter.NONE" = -1
+"IntlDateFormatter.SHORT" = 3
+"Normalizer.FORM_C" = 4
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES — none. PHP namespaces are flattened by the walker.

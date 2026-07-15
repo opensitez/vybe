@@ -12,10 +12,10 @@
 //! `__type` distinguishes `DateTime` / `DateTimeImmutable` /
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
@@ -3073,9 +3073,16 @@ pub fn emit_datetime_immutable_sub(chunks: &mut [Chunk], current: usize, line: u
 /// for the `days` field; tests rely primarily on `days` and integer
 /// month arithmetic.
 ///
-/// Stack: `[dt, other]` → `[interval]`.
-pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, line: u32) {
+/// Stack: `[dt, other, absolute?]` → `[interval]`.
+pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    let absolute_slot = alloc_local(chunk);
+    if argc >= 3 {
+        local_set(chunk, absolute_slot, line);
+    } else {
+        push_const(chunk, Value::Bool(false), line);
+        local_set(chunk, absolute_slot, line);
+    }
     let other_slot = alloc_local(chunk);
     let dt_slot = alloc_local(chunk);
     local_set(chunk, other_slot, line);
@@ -3136,11 +3143,14 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_SUB, line);
     local_set(chunk, day_comp_slot, line);
 
-    // invert = signed < 0 ? 1 : 0
+    // invert = signed < 0 && !absolute
     let invert_slot = alloc_local(chunk);
     local_get(chunk, signed_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::F64_LT, line);
+    local_get(chunk, absolute_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
     local_set(chunk, invert_slot, line);
 
     // Build the DateInterval object.

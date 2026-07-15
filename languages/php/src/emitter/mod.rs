@@ -36,6 +36,7 @@ pub mod math_adapter;
 pub mod misc_adapter;
 pub mod mysqli_adapter;
 pub mod numeric_adapter;
+pub mod output_adapter;
 pub mod pdo_adapter;
 pub mod reflection_adapter;
 pub mod relational_adapter;

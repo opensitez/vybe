@@ -117,11 +117,13 @@ fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 }
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_php::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_php::register);
+    }
     let module = vybe_language_php::parse(src)?;
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
-            .map_err(|e| format!("profile parse failed: {}", e))?;
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
+        .map_err(|e| format!("profile parse failed: {}", e))?;
     vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
 }
 

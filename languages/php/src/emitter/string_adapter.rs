@@ -7,10 +7,10 @@
 //! decodeURIComponent}` / `ecma:number.toFixed`. No PHP-specific
 //! host fns; no JS polyfills.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 // ── Local-slot / push helpers (mirror datetime_adapter) ────────────
 
@@ -60,6 +60,16 @@ fn call_import(
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_call(idx, argc, line);
+}
+
+pub fn emit_strtoupper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    coerce_to_str(chunk, line);
+    let idx = chunk.add_import("ecma:string", "toUpperCase");
+    chunk.emit_call(idx, 1, line);
 }
 
 pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -392,7 +402,7 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
     let _ = chunk;
     vybe_emitter::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
@@ -1750,10 +1760,10 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
 /// PHP `str_word_count(s[, mode[, charlist]])`.
 /// mode 0: count, mode 1: array of words, mode 2: position→word map.
 pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc >= 2 {
-        emit_str_word_count_with_mode(chunks, current, line);
-        return;
-    }
+	if argc >= 2 {
+		emit_str_word_count_with_mode(chunks, current, argc, line);
+		return;
+	}
     let chunk = &mut chunks[current];
     let s_slot = alloc_local(chunk);
     let count_slot = alloc_local(chunk);
@@ -1796,11 +1806,12 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     }
     lset(chunk, code_slot, line);
 
-    // is_sep: whitespace (9..=13, 32) | comma 44 | period 46 | ! 33 | ? 63 | ; 59 | : 58 | hyphen 45
+    // is_sep: whitespace (9..=13, 32) | comma 44 | period 46 | ! 33 | ? 63 | ; 59 | : 58.
+    // PHP counts hyphenated words as one token.
     push_const(chunk, Value::Bool(false), line);
     lset(chunk, is_sep_slot, line);
     for code_val in &[
-        9.0_f64, 10.0, 11.0, 12.0, 13.0, 32.0, 33.0, 44.0, 45.0, 46.0, 58.0, 59.0, 63.0,
+        9.0_f64, 10.0, 11.0, 12.0, 13.0, 32.0, 33.0, 44.0, 46.0, 58.0, 59.0, 63.0,
     ] {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(*code_val), line);
@@ -2299,7 +2310,7 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, width_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
     vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
     // if fits: append; else: push current and start new
     chunk.emit_if(line);
@@ -4609,14 +4620,37 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 /// internals like `__type` aren't carried — acceptable for the
 /// common `clone` test surface where only user fields/methods need
 /// to round-trip.
-pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = alloc_local(chunk);
     let copy_slot = alloc_local(chunk);
     let clone_fn_slot = alloc_local(chunk);
+    let field_keys_slot = alloc_local(chunk);
+
+    if argc >= 2 {
+        lset(chunk, field_keys_slot, line);
+    } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        lset(chunk, field_keys_slot, line);
+    }
 
     // Save original to slot.
     lset(chunk, obj_slot, line);
+
+    lget(chunk, obj_slot, line);
+    crate::emitter::array_adapter::emit_test_object(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "TypeError",
+        "clone expects object",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
 
     // copy = ecma:object.new()
     let _ = chunk;
@@ -4668,6 +4702,61 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     copy_magic(chunk, to_string_key);
     let invoke_key = chunk.add_constant(Value::String(Arc::from("__invoke")));
     copy_magic(chunk, invoke_key);
+
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
+    let val_slot = alloc_local(chunk);
+
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, field_keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+
+    let _ = chunk;
+    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, i_slot, line);
+        lget(chunk, len_slot, line);
+        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    }
+    let _ = &mut chunks[current];
+    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+
+        lget(chunk, field_keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, key_slot, line);
+
+        lget(chunk, obj_slot, line);
+        lget(chunk, key_slot, line);
+        let get_idx = chunk.add_import("ecma:object", "get");
+        chunk.emit_call(get_idx, 2, line);
+        lset(chunk, val_slot, line);
+
+        lget(chunk, val_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        lget(chunk, copy_slot, line);
+        lget(chunk, key_slot, line);
+        lget(chunk, val_slot, line);
+        let set_idx = chunk.add_import("ecma:object", "set");
+        chunk.emit_call(set_idx, 3, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_end(line);
+
+        lget(chunk, i_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        lset(chunk, i_slot, line);
+    }
+    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
 
     // Check for __clone method on the copy.
     lget(chunk, copy_slot, line);
@@ -5759,16 +5848,22 @@ pub fn emit_strripos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 }
 
 // ── str_word_count with mode ──────────────────────────────────────────────
-fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32) {
-    // Stack on entry: [mode, s] (mode TOS, s below) [and optional charlist which we ignore]
-    // Actually, looking at the PHP profile: (s, mode, charlist?) so walker passes s first then mode
-    // But since it's a 2-arg call, TOS = mode, below = s
-    let chunk = &mut chunks[current];
-    let mode_slot = alloc_local(chunk);
-    let s_slot = alloc_local(chunk);
-    lset(chunk, mode_slot, line); // TOS = mode
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
+fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+	// Stack on entry: [s, mode, charlist?]. The charlist is optional and
+	// currently ignored by the simplified splitter, but it still has to be
+	// consumed so mode/string stay in the expected slots.
+	// Actually, looking at the PHP profile: (s, mode, charlist?) so walker passes s first then mode
+	// But since it's a 2-arg call, TOS = mode, below = s
+	let chunk = &mut chunks[current];
+	let mode_slot = alloc_local(chunk);
+	let s_slot = alloc_local(chunk);
+	if argc >= 3 {
+		let charlist_slot = alloc_local(chunk);
+		lset(chunk, charlist_slot, line);
+	}
+	lset(chunk, mode_slot, line); // TOS = mode
+	coerce_to_str(chunk, line);
+	lset(chunk, s_slot, line);
 
     // Split by spaces to get words (simplified; handles basic ASCII word splitting)
     // For mode 1: return words array; mode 2: build pos→word object
@@ -5812,23 +5907,80 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, line: u32
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, word_slot, line);
-    // only push non-empty words
-    lget(chunk, word_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
+	// only push non-empty words
+	lget(chunk, word_slot, line);
+	{
+		let idx = chunk.add_import("wasm:js-string", "length");
+		chunk.emit_call(idx, 1, line);
     }
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, out_slot, line);
-    lget(chunk, word_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_end(line);
+	push_const(chunk, Value::F64(0.0), line);
+	vybe_emitter::ops::emit_dyn_gt(chunk, line);
+	vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+	chunk.emit_if(line);
+	let _ = chunk;
+	if argc >= 3 {
+		let chunk = &mut chunks[current];
+		lget(chunk, word_slot, line);
+		push_str(chunk, "'", line);
+		{
+			let idx = chunk.add_import("ecma:string", "split");
+			chunk.emit_call(idx, 2, line);
+		}
+		let parts_slot = alloc_local(chunk);
+		let part_i_slot = alloc_local(chunk);
+		let part_len_slot = alloc_local(chunk);
+		let part_slot = alloc_local(chunk);
+		lset(chunk, parts_slot, line);
+		lget(chunk, parts_slot, line);
+		chunk.emit_op(Op::ARRAY_LENGTH, line);
+		lset(chunk, part_len_slot, line);
+		push_const(chunk, Value::F64(0.0), line);
+		lset(chunk, part_i_slot, line);
+		let _ = chunk;
+		let part_loop = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+		let chunk = &mut chunks[current];
+		lget(chunk, part_i_slot, line);
+		lget(chunk, part_len_slot, line);
+		vybe_emitter::ops::emit_dyn_lt(chunk, line);
+		let _ = chunk;
+		vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+		let chunk = &mut chunks[current];
+		lget(chunk, parts_slot, line);
+		lget(chunk, part_i_slot, line);
+		chunk.emit_op(Op::ARRAY_GET, line);
+		lset(chunk, part_slot, line);
+		lget(chunk, part_slot, line);
+		{
+			let idx = chunk.add_import("wasm:js-string", "length");
+			chunk.emit_call(idx, 1, line);
+		}
+		push_const(chunk, Value::F64(0.0), line);
+		vybe_emitter::ops::emit_dyn_gt(chunk, line);
+		vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+		chunk.emit_if(line);
+		lget(chunk, out_slot, line);
+		lget(chunk, part_slot, line);
+		let _ = chunk;
+		call_import(chunks, current, "ecma:array", "push", 2, line);
+		chunks[current].emit_op(Op::DROP, line);
+		let chunk = &mut chunks[current];
+		chunk.emit_end(line);
+		lget(chunk, part_i_slot, line);
+		push_const(chunk, Value::F64(1.0), line);
+		chunk.emit_op(Op::F64_ADD, line);
+		lset(chunk, part_i_slot, line);
+		let _ = chunk;
+		vybe_emitter::loops::emit_loop_end(chunks, current, part_loop, line);
+	} else {
+		let chunk = &mut chunks[current];
+		lget(chunk, out_slot, line);
+		lget(chunk, word_slot, line);
+		let _ = chunk;
+		call_import(chunks, current, "ecma:array", "push", 2, line);
+		chunks[current].emit_op(Op::DROP, line);
+	}
+	let chunk = &mut chunks[current];
+	chunk.emit_end(line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -6685,6 +6837,115 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.emit_end(line);
+}
+
+pub fn emit_mb_strwidth(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let s_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let width_slot = alloc_local(chunk);
+    let cp_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, width_slot, line);
+    lget(chunk, s_slot, line);
+    let len_idx = chunk.add_import("wasm:js-string", "length");
+    chunk.emit_call(len_idx, 1, line);
+    lset(chunk, n_slot, line);
+
+    let _ = chunk;
+    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    let cp_idx = chunk.add_import("wasm:js-string", "codePointAt");
+    chunk.emit_call(cp_idx, 2, line);
+    lset(chunk, cp_slot, line);
+
+    lget(chunk, width_slot, line);
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(0x3040 as f64), line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(0x9fff as f64), line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_end(line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, width_slot, line);
+
+    lget(chunk, i_slot, line);
+    lget(chunk, cp_slot, line);
+    push_const(chunk, Value::F64(65535.0), line);
+    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_end(line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    lset(chunk, i_slot, line);
+
+    let _ = chunk;
+    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, width_slot, line);
+}
+
+pub fn emit_mb_setting(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    key: &str,
+    default: &str,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
+    let old_slot = alloc_local(chunk);
+    if argc == 0 {
+        chunk.emit_op_u16(Op::GLOBAL_GET, key_idx, line);
+        chunk.emit_dup(line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_op(Op::DROP, line);
+        push_str(chunk, default, line);
+        chunk.emit_end(line);
+        return;
+    }
+
+    chunk.emit_op_u16(Op::GLOBAL_GET, key_idx, line);
+    chunk.emit_dup(line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_op(Op::DROP, line);
+    push_str(chunk, default, line);
+    chunk.emit_end(line);
+    lset(chunk, old_slot, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, key_idx, line);
+    lget(chunk, old_slot, line);
 }
 
 // ── strpos / mb_strpos ─────────────────────────────────────────────

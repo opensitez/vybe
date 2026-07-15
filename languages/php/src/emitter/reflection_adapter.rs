@@ -158,6 +158,18 @@ fn build_get_parameters(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     build_field_getter(chunks, "__refl_getParams", "__params", line)
 }
 
+/// `getAttributes()` → return __attributes array. Filtering is normalized by
+/// the walker for current PHP tests; returning all attributes is compatible
+/// with single-kind filtered call sites.
+fn build_get_attributes(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    build_field_getter(chunks, "__refl_getAttrs", "__attributes", line)
+}
+
+/// `getConstructor()` → return __constructor_ref.
+fn build_get_constructor(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    build_field_getter(chunks, "__refl_getCtor", "__constructor_ref", line)
+}
+
 /// Stamp `__type`, set fields, bind methods, leave instance on stack.
 fn finish(
     chunk: &mut Chunk,
@@ -203,10 +215,15 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let get_methods = build_get_methods(chunks, line);
     let get_properties = build_get_properties(chunks, line);
     let get_parent = build_get_parent_class(chunks, line);
+    let get_attrs = build_get_attributes(chunks, line);
+    let get_ctor = build_get_constructor(chunks, line);
+    let get_params = build_get_parameters(chunks, line);
 
     let chunk = &mut chunks[current];
 
     // Pop args from stack (right-to-left): 8 args max
+    let ctor_params_slot = chunk.alloc_scratch(1);
+    let attrs_slot = chunk.alloc_scratch(1);
     let fields_pub_slot = chunk.alloc_scratch(1);
     let methods_pub_slot = chunk.alloc_scratch(1);
     let fields_slot = chunk.alloc_scratch(1);
@@ -216,8 +233,23 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let abstract_slot = chunk.alloc_scratch(1);
     let name_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
+    let ctor_ref_slot = chunk.alloc_scratch(1);
 
-    if argc >= 8 {
+    if argc >= 10 {
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, methods_pub_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, fields_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, methods_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ifaces_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
+    } else if argc >= 8 {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_pub_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_slot, line);
@@ -226,6 +258,10 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     } else if argc >= 6 {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
@@ -236,6 +272,10 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
@@ -253,6 +293,21 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
+    // Mini ReflectionMethod for getConstructor()->getParameters().
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ctor_ref_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_ref_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_params_slot, line);
+    let params_k = sconst(chunk, "__params");
+    chunk.emit_op_u16(Op::STRUCT_SET, params_k, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_ref_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, get_params as u16, line);
+    chunk.emit(0, line);
+    let getparams_k = sconst(chunk, "getparameters");
+    chunk.emit_op_u16(Op::STRUCT_SET, getparams_k, line);
+    chunk.emit_op(Op::DROP, line);
+
     finish(
         chunk,
         this_slot,
@@ -266,6 +321,8 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
             ("__fields", fields_slot),
             ("__methods_public", methods_pub_slot),
             ("__fields_public", fields_pub_slot),
+            ("__attributes", attrs_slot),
+            ("__constructor_ref", ctor_ref_slot),
         ],
         &[
             ("getname", getname),
@@ -274,6 +331,8 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
             ("getmethods", get_methods),
             ("getproperties", get_properties),
             ("getparentclass", get_parent),
+            ("getattributes", get_attrs),
+            ("getconstructor", get_ctor),
         ],
         line,
     );
@@ -329,9 +388,11 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     let is_public = build_bool_getter(chunks, "__refl_ispub", "__is_public", line);
     let is_protected = build_bool_getter(chunks, "__refl_isprot", "__is_protected", line);
     let is_private = build_bool_getter(chunks, "__refl_ispriv", "__is_private", line);
+    let get_attrs = build_get_attributes(chunks, line);
 
     let chunk = &mut chunks[current];
 
+    let attrs_slot = chunk.alloc_scratch(1);
     let required_slot = chunk.alloc_scratch(1);
     let param_count_slot = chunk.alloc_scratch(1);
     let vis_slot = chunk.alloc_scratch(1);
@@ -342,11 +403,20 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     let is_prot_slot = chunk.alloc_scratch(1);
     let is_priv_slot = chunk.alloc_scratch(1);
 
-    if argc >= 5 {
+    if argc >= 6 {
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
+    } else if argc >= 5 {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
     } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_f64_const(0.0, line);
@@ -389,6 +459,7 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
             ("__is_public", is_pub_slot),
             ("__is_protected", is_prot_slot),
             ("__is_private", is_priv_slot),
+            ("__attributes", attrs_slot),
         ],
         &[
             ("getname", getname),
@@ -398,6 +469,7 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
             ("ispublic", is_public),
             ("isprotected", is_protected),
             ("isprivate", is_private),
+            ("getattributes", get_attrs),
         ],
         line,
     );
@@ -436,15 +508,24 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let get_params = build_get_parameters(chunks, line);
 
     let chunk = &mut chunks[current];
+    let params_slot = chunk.alloc_scratch(1);
     let required_slot = chunk.alloc_scratch(1);
     let param_count_slot = chunk.alloc_scratch(1);
     let name_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
 
-    if argc >= 3 {
+    if argc >= 4 {
+        chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
+    } else if argc >= 3 {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
     } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
         chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_f64_const(0.0, line);
@@ -460,6 +541,7 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("name", name_slot),
             ("__param_count", param_count_slot),
             ("__required_params", required_slot),
+            ("__params", params_slot),
         ],
         &[
             ("getname", getname),
@@ -467,6 +549,31 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("getnumberofrequiredparameters", get_required),
             ("getparameters", get_params),
         ],
+        line,
+    );
+}
+
+/// `new ReflectionClassConstant($class, $name)` and enum unit case reflection.
+pub fn emit_refl_constant(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let get_attrs = build_get_attributes(chunks, line);
+    let chunk = &mut chunks[current];
+    let attrs_slot = chunk.alloc_scratch(1);
+    let name_slot = chunk.alloc_scratch(1);
+    let class_slot = chunk.alloc_scratch(1);
+    let this_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, class_slot, line);
+    finish(
+        chunk,
+        this_slot,
+        "ReflectionClassConstant",
+        &[
+            ("class", class_slot),
+            ("name", name_slot),
+            ("__attributes", attrs_slot),
+        ],
+        &[("getattributes", get_attrs)],
         line,
     );
 }

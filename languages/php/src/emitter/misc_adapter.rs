@@ -1,5 +1,5 @@
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -1406,10 +1406,14 @@ pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
     call_import(chunks, current, "ecma:json", "stringify", 1, line);
 }
 
-pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let alloc_idx = build_php_alloc_helper(chunks, line);
     let helper_idx = build_php_unserialize_helper(chunks, alloc_idx, line);
     let chunk = &mut chunks[current];
+    if argc > 1 {
+        let _options_slot = alloc_local(chunk);
+        lset(chunk, _options_slot, line);
+    }
     let value_slot = alloc_local(chunk);
     lset(chunk, value_slot, line);
     lget(chunk, value_slot, line);

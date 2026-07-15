@@ -1,16 +1,17 @@
 //! PHP `PDO` / `PDOStatement` object surface. Split out of the former
 //! `database_adapter.rs`; the mysqli surface lives in `mysqli_adapter.rs`.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::{collections, convert};
 use crate::emitter::string_adapter;
+use vybe_emitter::{collections, convert};
 
 const PDO_FETCH_COLUMN: f64 = 7.0;
+const PDO_FETCH_KEY_PAIR: f64 = 12.0;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -230,7 +231,7 @@ fn stamp_pdo_type(chunk: &mut Chunk, conn_slot: u16, line: u32) {
     chunk.emit_end(line);
 }
 
-fn emit_first_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, line: u32) {
+fn emit_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, index: f64, line: u32) {
     let chunk = &mut chunks[current];
     lget(chunk, row_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
@@ -240,9 +241,13 @@ fn emit_first_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, 
 
     lget(chunk, row_slot, line);
     lget(chunk, keys_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
+    push_const(chunk, Value::F64(index), line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_first_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, line: u32) {
+    emit_column_value(chunks, current, row_slot, 0.0, line);
 }
 
 fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -882,6 +887,19 @@ pub fn emit_php_pdo_statement_bind_value(
     emit_php_pdo_statement_bind_common(chunks, current, argc, line);
 }
 
+pub fn emit_php_pdo_statement_bind_column(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for _ in 0..(argc as u16 + 1) {
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(chunk, Value::Bool(true), line);
+}
+
 pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let explicit_params_slot = {
         let chunk = &mut chunks[current];
@@ -1111,6 +1129,76 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
     if let Some(slot) = mode_slot {
         lget(chunk, slot, line);
+        push_const(chunk, Value::F64(PDO_FETCH_KEY_PAIR), line);
+        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if_value(line);
+
+        call_import(chunks, current, "ecma:map", "new", 0, line);
+        let out_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, out_slot, line);
+
+        push_const(chunk, Value::F64(0.0), line);
+        let index_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, index_slot, line);
+
+        lget(chunk, rows_slot, line);
+        collections::emit_len(chunks, current, line);
+        let len_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, len_slot, line);
+
+        let _ = chunk;
+        let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+        let chunk = &mut chunks[current];
+        lget(chunk, index_slot, line);
+        lget(chunk, len_slot, line);
+        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        let _ = chunk;
+        vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+        let chunk = &mut chunks[current];
+
+        lget(chunk, rows_slot, line);
+        lget(chunk, index_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        let row_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, row_slot, line);
+
+        lget(chunk, row_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        vybe_emitter::ops::emit_dyn_not(chunk, line);
+        chunk.emit_if(line);
+        let _ = chunk;
+        emit_column_value(chunks, current, row_slot, 0.0, line);
+        let key_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, key_slot, line);
+        let _ = chunk;
+        emit_column_value(chunks, current, row_slot, 1.0, line);
+        let value_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, value_slot, line);
+        lget(chunk, out_slot, line);
+        lget(chunk, key_slot, line);
+        lget(chunk, value_slot, line);
+        collections::emit_set(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+
+        lget(chunk, index_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        lset(chunk, index_slot, line);
+        let _ = chunk;
+        vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        let chunk = &mut chunks[current];
+        lget(chunk, out_slot, line);
+        chunk.emit_else(line);
+
+        lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_COLUMN), line);
         vybe_emitter::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if_value(line);
@@ -1170,6 +1258,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lget(chunk, out_slot, line);
         chunk.emit_else(line);
         lget(chunk, rows_slot, line);
+        chunk.emit_end(line);
         chunk.emit_end(line);
         return;
     }
@@ -1277,6 +1366,27 @@ pub fn emit_php_pdo_statement_column_count(
     vybe_emitter::collections::emit_array_length(chunk, line);
     chunk.emit_else(line);
     push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+}
+
+/// `$stmt->paramCount()` — placeholder count stamped by the shared
+/// `db_adapter` prepare path. Stack: `[stmt]` → `[n]`.
+pub fn emit_php_pdo_statement_param_count(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    struct_get_key(chunk, "param_count", line);
+    let n_slot = alloc_local(chunk);
+    lset(chunk, n_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_else(line);
+    lget(chunk, n_slot, line);
     chunk.emit_end(line);
 }
 

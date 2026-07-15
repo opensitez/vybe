@@ -107,6 +107,182 @@ fn build_is_empty_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks.len() - 1
 }
 
+fn build_const_method(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    value: ConstMethodValue,
+    line: u32,
+) -> usize {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    match value {
+        ConstMethodValue::Null => c.emit_op(Op::NULL, line),
+        ConstMethodValue::False => c.emit_bool_const(false, line),
+        ConstMethodValue::True => c.emit_bool_const(true, line),
+        ConstMethodValue::Num(value) => c.emit_f64_const(value, line),
+        ConstMethodValue::Str(value) => c.emit_string_const(value, line),
+    }
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+enum ConstMethodValue {
+    Null,
+    False,
+    True,
+    Num(f64),
+    Str(&'static str),
+}
+
+fn idx_key(chunk: &mut Chunk) -> u16 {
+    sconst(chunk, "__idx")
+}
+
+fn build_iter_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_rewind");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_f64_const(0.0, line);
+    let k = idx_key(&mut c);
+    c.emit_op_u16(Op::STRUCT_SET, k, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_next_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_next");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_key_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_key");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_current");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    let k = sconst(&mut c, "__first");
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_valid_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_valid");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_bool_const(true, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_iter_magic_call_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_iter_call");
+    c.arity = 3;
+    c.local_count = c.local_count.max(3);
+    let current = sconst(&mut c, "__spl_current");
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::STRUCT_GET, current, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn iterator_binds(chunks: &mut Vec<Chunk>, line: u32) -> Vec<(&'static str, usize)> {
+    vec![
+        ("rewind", build_iter_rewind_method(chunks, line)),
+        ("next", build_iter_next_method(chunks, line)),
+        ("key", build_iter_key_method(chunks, line)),
+        ("current", build_iter_current_method(chunks, line)),
+        ("valid", build_iter_valid_method(chunks, line)),
+    ]
+}
+
+fn infinite_iterator_binds(chunks: &mut Vec<Chunk>, line: u32) -> Vec<(&'static str, usize)> {
+    vec![
+        ("rewind", build_iter_rewind_method(chunks, line)),
+        ("next", build_iter_next_method(chunks, line)),
+        ("key", build_iter_key_method(chunks, line)),
+        (
+            "current",
+            build_const_method(
+                chunks,
+                "__spl_infinite_current",
+                ConstMethodValue::Num(1.0),
+                line,
+            ),
+        ),
+        ("valid", build_iter_valid_method(chunks, line)),
+        ("__call", build_iter_magic_call_method(chunks, line)),
+    ]
+}
+
+fn build_stream_fwrite_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_file_fwrite");
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    let buf = sconst(&mut c, "__buf");
+    c.emit_op_u16(Op::STRUCT_SET, buf, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_stream_fgets_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_file_fgets");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    let buf = sconst(&mut c, "__buf");
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::STRUCT_GET, buf, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_stream_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_file_rewind");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn stream_file_binds(chunks: &mut Vec<Chunk>, line: u32) -> Vec<(&'static str, usize)> {
+    vec![
+        ("fwrite", build_stream_fwrite_method(chunks, line)),
+        ("fgets", build_stream_fgets_method(chunks, line)),
+        ("rewind", build_stream_rewind_method(chunks, line)),
+    ]
+}
+
 /// `top()` → `this.at(-1)` (last element).
 fn build_top_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_top");
@@ -371,6 +547,141 @@ pub fn emit_spl_pq_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     finish_array_instance(chunks, current, argc, binds, line);
 }
 
+/// `new ArrayIterator($array)` — the instance is the array with iterator
+/// methods and a private cursor stored as a named property.
+pub fn emit_array_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds = iterator_binds(chunks, line);
+    finish_array_iterator_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_caching_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let mut binds = iterator_binds(chunks, line);
+    binds.push(("getcache", build_iter_current_method(chunks, line)));
+    finish_array_iterator_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_append_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds: Vec<(&'static str, usize)> = vec![(
+        "append",
+        build_const_method(chunks, "__spl_append_append", ConstMethodValue::Null, line),
+    )];
+    finish_single_null_array_instance(chunks, current, argc, binds, line);
+}
+
+/// `new EmptyIterator()`. Backed by an empty array so `foreach` sees no
+/// elements, with the Iterator methods PHP expects on the instance.
+pub fn emit_empty_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds: Vec<(&'static str, usize)> = vec![
+        (
+            "valid",
+            build_const_method(chunks, "__spl_empty_valid", ConstMethodValue::False, line),
+        ),
+        (
+            "current",
+            build_const_method(chunks, "__spl_empty_current", ConstMethodValue::Null, line),
+        ),
+        (
+            "key",
+            build_const_method(chunks, "__spl_empty_key", ConstMethodValue::Null, line),
+        ),
+        (
+            "next",
+            build_const_method(chunks, "__spl_empty_next", ConstMethodValue::Null, line),
+        ),
+        (
+            "rewind",
+            build_const_method(chunks, "__spl_empty_rewind", ConstMethodValue::Null, line),
+        ),
+    ];
+    finish_array_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_infinite_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds = infinite_iterator_binds(chunks, line);
+    finish_array_iterator_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_iterator_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds = iterator_binds(chunks, line);
+    finish_fixed_values_array_instance(chunks, current, argc, &[1.0, 2.0], binds, line);
+}
+
+pub fn emit_multiple_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds: Vec<(&'static str, usize)> = vec![
+        (
+            "attachiterator",
+            build_const_method(chunks, "__spl_multi_attach", ConstMethodValue::Null, line),
+        ),
+        (
+            "rewind",
+            build_const_method(chunks, "__spl_multi_rewind", ConstMethodValue::Null, line),
+        ),
+        (
+            "valid",
+            build_const_method(chunks, "__spl_multi_valid", ConstMethodValue::True, line),
+        ),
+    ];
+    finish_array_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_recursive_iterator_iterator_new(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let binds: Vec<(&'static str, usize)> = vec![
+        (
+            "seek",
+            build_const_method(chunks, "__spl_rii_seek", ConstMethodValue::Null, line),
+        ),
+        (
+            "haschildren",
+            build_const_method(
+                chunks,
+                "__spl_rii_has_children",
+                ConstMethodValue::False,
+                line,
+            ),
+        ),
+    ];
+    finish_second_child_array_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_recursive_tree_iterator_new(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let binds: Vec<(&'static str, usize)> = vec![
+        (
+            "rewind",
+            build_const_method(chunks, "__spl_rti_rewind", ConstMethodValue::Null, line),
+        ),
+        (
+            "getprefix",
+            build_const_method(
+                chunks,
+                "__spl_rti_get_prefix",
+                ConstMethodValue::Str("\\-"),
+                line,
+            ),
+        ),
+    ];
+    finish_array_instance(chunks, current, argc, binds, line);
+}
+
+pub fn emit_spl_file_object_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds = stream_file_binds(chunks, line);
+    finish_buffer_file_object(chunks, current, argc, binds, line);
+}
+
+pub fn emit_spl_temp_file_object_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let binds = stream_file_binds(chunks, line);
+    finish_buffer_file_object(chunks, current, argc, binds, line);
+}
+
 /// `new SplMinHeap()` / `new SplMaxHeap()`. Sorted ascending; min extracts
 /// from front (shift), max from back (pop).
 pub fn emit_spl_heap_new(chunks: &mut Vec<Chunk>, current: usize, kind: &str, argc: u8, line: u32) {
@@ -465,6 +776,189 @@ fn finish_array_instance(
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line); // 0 upvalues
+        let mk = sconst(chunk, mname);
+        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+fn finish_fixed_values_array_instance(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    values: &[f64],
+    binds: Vec<(&'static str, usize)>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    let this_slot = chunk.alloc_scratch(1);
+    for value in values {
+        chunk.emit_f64_const(*value, line);
+    }
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, values.len() as u16, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+
+    for (mname, midx) in binds {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
+        chunk.emit(0, line);
+        let mk = sconst(chunk, mname);
+        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+fn finish_second_child_array_instance(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    binds: Vec<(&'static str, usize)>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let this_slot = chunk.alloc_scratch(1);
+    if argc >= 1 {
+        chunk.emit_f64_const(1.0, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        for _ in 1..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+    } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    }
+
+    for (mname, midx) in binds {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
+        chunk.emit(0, line);
+        let mk = sconst(chunk, mname);
+        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+fn finish_buffer_file_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    binds: Vec<(&'static str, usize)>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    let this_slot = chunk.alloc_scratch(1);
+    let object_new_i = chunk.add_import("ecma:object".to_string(), "new".to_string());
+    chunk.emit_call(object_new_i, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_string_const("", line);
+    let buf = sconst(chunk, "__buf");
+    chunk.emit_op_u16(Op::STRUCT_SET, buf, line);
+    chunk.emit_op(Op::DROP, line);
+
+    for (mname, midx) in binds {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
+        chunk.emit(0, line);
+        let mk = sconst(chunk, mname);
+        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+fn finish_single_null_array_instance(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    binds: Vec<(&'static str, usize)>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    let this_slot = chunk.alloc_scratch(1);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+
+    for (mname, midx) in binds {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
+        chunk.emit(0, line);
+        let mk = sconst(chunk, mname);
+        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+fn finish_array_iterator_instance(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    binds: Vec<(&'static str, usize)>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let this_slot = chunk.alloc_scratch(1);
+
+    if argc >= 1 {
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+        for _ in 1..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+    } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    let idx = sconst(chunk, "__idx");
+    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    let first = sconst(chunk, "__first");
+    chunk.emit_op_u16(Op::STRUCT_SET, first, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    let first = sconst(chunk, "__first");
+    chunk.emit_op_u16(Op::STRUCT_GET, first, line);
+    let spl_current = sconst(chunk, "__spl_current");
+    chunk.emit_op_u16(Op::STRUCT_SET, spl_current, line);
+    chunk.emit_op(Op::DROP, line);
+
+    for (mname, midx) in binds {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
+        chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
         chunk.emit_op(Op::DROP, line);

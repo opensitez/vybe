@@ -354,13 +354,33 @@ pub fn emit_filemtime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
 /// PHP `unlink($path)` — bool success/failure via the runtime fs shim.
 pub fn emit_unlink(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    // PHP `unlink($path, $context = null)` — drop optional context arg.
-    if argc >= 2 {
-        chunk.emit_op(Op::DROP, line);
+    {
+        let chunk = &mut chunks[current];
+        // PHP `unlink($path, $context = null)` — drop optional context arg.
+        if argc >= 2 {
+            chunk.emit_op(Op::DROP, line);
+        }
     }
-    let _ = chunk;
     call_import(chunks, current, "wasi:filesystem", "remove", 1, line);
+    let result_slot = {
+        let chunk = &mut chunks[current];
+        let slot = alloc_local(chunk);
+        lset(chunk, slot, line);
+        lget(chunk, slot, line);
+        push_const(chunk, Value::Bool(false), line);
+        vybe_emitter::ops::emit_js_strict_eq(chunk, line);
+        chunk.emit_if(line);
+        push_str(chunk, "unlink failed", line);
+        push_const(chunk, Value::F64(512.0), line);
+        slot
+    };
+    super::error_adapter::emit_trigger_error(chunks, current, 2, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_end(line);
+        lget(chunk, result_slot, line);
+    }
 }
 
 /// PHP `readlink($path)` — Node-aligned readlink surface. Kept here
@@ -1236,6 +1256,29 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lset(chunk, mode_slot, line);
         lset(chunk, path_slot, line);
+
+        lget(chunk, mode_slot, line);
+        push_str(chunk, "r", line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        lget(chunk, path_slot, line);
+        push_str(chunk, "php://", line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
+        lget(chunk, path_slot, line);
+        let exists = chunk.add_import("wasi:filesystem", "exists");
+        chunk.emit_call(exists, 1, line);
+        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+        push_const(chunk, Value::Bool(false), line);
+        chunk.emit_else(line);
+
         // uri = "php://stream/" + uniqid()
         push_str(chunk, "php://stream/", line);
     }
@@ -1263,6 +1306,9 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, stream_slot, line);
         lget(chunk, mode_slot, line);
         struct_set_key(chunk, "__mode", line);
+        lget(chunk, stream_slot, line);
+        push_const(chunk, Value::Bool(true), line);
+        struct_set_key(chunk, "__blocked", line);
 
         // __sink: "stdout" for php://stdout|php://output, "stderr" for
         // php://stderr, else "memory".
@@ -1309,6 +1355,7 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line); // drop map returned by set
         lget(chunk, stream_slot, line);
+        chunk.emit_end(line);
     }
 }
 
@@ -1738,7 +1785,6 @@ pub fn emit_stream_get_meta_data(chunks: &mut [Chunk], current: usize, _argc: u8
         ("seekable", Value::Bool(true)),
         ("unread_bytes", Value::F64(0.0)),
         ("timed_out", Value::Bool(false)),
-        ("blocked", Value::Bool(true)),
         ("eof", Value::Bool(false)),
     ] {
         {
@@ -1750,6 +1796,15 @@ pub fn emit_stream_get_meta_data(chunks: &mut [Chunk], current: usize, _argc: u8
         call_import(chunks, current, "ecma:map", "set", 3, line);
         chunks[current].emit_op(Op::DROP, line);
     }
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, meta_slot, line);
+        push_str(chunk, "blocked", line);
+        lget(chunk, stream_slot, line);
+        struct_get_key(chunk, "__blocked", line);
+    }
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     {
         let chunk = &mut chunks[current];

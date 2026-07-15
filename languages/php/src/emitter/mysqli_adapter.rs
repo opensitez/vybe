@@ -2,8 +2,8 @@
 //! Split out of the former `database_adapter.rs`; the PDO surface lives in
 //! `pdo_adapter.rs`. Both share the same in-memory backend shape.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};

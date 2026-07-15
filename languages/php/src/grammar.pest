@@ -435,8 +435,8 @@ class_constant = {
     // pest commits to type_annotation parsing the only identifier and
     // the rule fails.
     attribute_group* ~ member_modifier* ~ kw_const
-        ~ (type_annotation ~ &(identifier ~ "="))?
-        ~ identifier ~ "=" ~ expression ~ ";"
+        ~ (&(type_annotation ~ method_ident ~ "=") ~ type_annotation)?
+        ~ method_ident ~ "=" ~ expression ~ ";"
 }
 
 property_declaration = {
@@ -499,7 +499,7 @@ enum_member = _{
 }
 
 enum_case = {
-    kw_case ~ identifier ~ ("=" ~ expression)? ~ ";"
+    attribute_group* ~ kw_case ~ identifier ~ ("=" ~ expression)? ~ ";"
 }
 
 // ── Control flow ─────────────────────────────────────────────────────────────
