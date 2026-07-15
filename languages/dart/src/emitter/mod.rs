@@ -11,4 +11,5 @@
 //! routes those names to the `emit_*` functions in this module.
 
 pub mod dispatch;
+pub mod core_adapter;
 pub mod string_adapter;

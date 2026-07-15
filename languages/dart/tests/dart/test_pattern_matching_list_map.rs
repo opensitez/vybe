@@ -460,7 +460,7 @@ dart_cases! {
     _ => 0,
   });
 }"#,
-        ["10"]
+        ["7"]
     };
 
     switch_map_string_values_concat => {

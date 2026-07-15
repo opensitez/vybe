@@ -78,16 +78,18 @@ enum_value = { ident_name ~ ("(" ~ argument_list? ~ ")")? }
 // ── Class ───────────────────────────────────────────────────────────────────
 
 class_declaration = {
-    abstract_kw? ~ "class" ~ ident_name ~ type_params?
+    class_modifier* ~ "class" ~ ident_name ~ type_params?
     ~ extends_clause? ~ with_clause? ~ implements_clause?
     ~ class_body
 }
 
 mixin_declaration = {
-    "mixin" ~ ident_name ~ type_params?
+    mixin_kw ~ class_kw? ~ ident_name ~ type_params?
     ~ on_clause? ~ implements_clause?
     ~ class_body
 }
+
+class_modifier = { abstract_kw | base_kw | final_kw | interface_kw | sealed_kw }
 
 extends_clause = { "extends" ~ type_annotation }
 with_clause = { "with" ~ type_annotation_list }
@@ -322,7 +324,11 @@ var_declarator = { ident_name ~ ("=" ~ assignment_expression)? }
 // ── If ──────────────────────────────────────────────────────────────────────
 
 if_statement = {
-    "if" ~ "(" ~ expression ~ ")" ~ statement ~ else_clause?
+    "if" ~ "(" ~ (if_case_condition | expression) ~ ")" ~ statement ~ else_clause?
+}
+
+if_case_condition = {
+    assignment_expression ~ case_kw ~ pattern ~ when_guard?
 }
 
 else_clause = { "else" ~ statement }
@@ -615,7 +621,7 @@ switch_expr_case = {
     pattern ~ when_guard? ~ "=>" ~ assignment_expression
 }
 
-when_guard = { when_kw ~ assignment_expression }
+when_guard = { when_kw ~ conditional_expression }
 
 // ── Patterns (Dart 3) ───────────────────────────────────────────────────────
 
@@ -816,7 +822,7 @@ interpolated_double_string = {
 }
 dq_open = @{ "\"" }
 dq_interp = { interp_complex | interp_simple }
-dq_chars = @{ ("\\\"" | "\\\\" | "\\$" | (!("\"" | "$" | "\n") ~ ANY))+ }
+dq_chars = @{ ("\\\"" | "\\\\" | "\\$" | "$" ~ !("{" | ASCII_ALPHA | "_") | (!("\"" | "$" | "\n") ~ ANY))+ }
 dq_close = @{ "\"" }
 
 interpolated_single_string = {
@@ -824,7 +830,7 @@ interpolated_single_string = {
 }
 sq_open = @{ "'" }
 sq_interp = { interp_complex | interp_simple }
-sq_chars = @{ ("\\'" | "\\\\" | "\\$" | (!("'" | "$" | "\n") ~ ANY))+ }
+sq_chars = @{ ("\\'" | "\\\\" | "\\$" | "$" ~ !("{" | ASCII_ALPHA | "_") | (!("'" | "$" | "\n") ~ ANY))+ }
 sq_close = @{ "'" }
 
 // ── String interpolation ────────────────────────────────────────────────────
@@ -849,6 +855,7 @@ ident_or_keyword = @{
 // Atomic rules with word-boundary checks for disambiguation
 
 abstract_kw  = @{ "abstract"  ~ !(ASCII_ALPHANUMERIC | "_") }
+base_kw      = @{ "base"      ~ !(ASCII_ALPHANUMERIC | "_") }
 as_kw        = @{ "as"        ~ !(ASCII_ALPHANUMERIC | "_") }
 assert_kw    = @{ "assert"    ~ !(ASCII_ALPHANUMERIC | "_") }
 async_kw     = @{ "async"     ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -898,6 +905,7 @@ rethrow_kw   = @{ "rethrow"   ~ !(ASCII_ALPHANUMERIC | "_") }
 return_kw    = @{ "return"    ~ !(ASCII_ALPHANUMERIC | "_") }
 show_kw      = @{ "show"      ~ !(ASCII_ALPHANUMERIC | "_") }
 static_kw    = @{ "static"    ~ !(ASCII_ALPHANUMERIC | "_") }
+sealed_kw    = @{ "sealed"    ~ !(ASCII_ALPHANUMERIC | "_") }
 super_kw     = @{ "super"     ~ !(ASCII_ALPHANUMERIC | "_") }
 switch_kw    = @{ "switch"    ~ !(ASCII_ALPHANUMERIC | "_") }
 sync_kw      = @{ "sync"      ~ !(ASCII_ALPHANUMERIC | "_") }

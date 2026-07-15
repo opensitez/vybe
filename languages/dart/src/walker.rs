@@ -711,6 +711,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::abstract_kw => modifiers.is_abstract = true,
+            Rule::class_modifier => {
+                if p.into_inner().any(|m| m.as_rule() == Rule::abstract_kw) {
+                    modifiers.is_abstract = true;
+                }
+            }
             Rule::ident_name => {
                 if name.is_empty() {
                     name = p.as_str().to_string();
@@ -1664,9 +1669,36 @@ fn walk_operator(pair: Pair<Rule>) -> Result<ClassMember, String> {
 
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let cond = walk_expression(inner.next().ok_or("if: missing cond")?)?;
+    let cond_pair = inner.next().ok_or("if: missing cond")?;
+    let mut case_bindings = HashMap::new();
+    let cond = if cond_pair.as_rule() == Rule::if_case_condition {
+        let mut parts = cond_pair.into_inner();
+        let subject = walk_expression(parts.next().ok_or("if-case: missing subject")?)?;
+        let mut analysis = analyze_dart_pattern(
+            parts
+                .find(|p| p.as_rule() == Rule::pattern)
+                .ok_or("if-case: missing pattern")?,
+            &subject,
+        )?;
+        if let Some(guard_pair) = parts
+            .find(|p| p.as_rule() == Rule::when_guard)
+            .and_then(|p| p.into_inner().find(|c| c.as_rule() == Rule::conditional_expression))
+        {
+            let guard = substitute_pattern_bindings(walk_expression(guard_pair)?, &analysis.bindings);
+            analysis.cond = and_expr(analysis.cond, guard);
+        }
+        case_bindings = analysis.bindings;
+        analysis.cond
+    } else {
+        walk_expression(cond_pair)?
+    };
     let then_stmt = inner.next().ok_or("if: missing body")?;
-    let then_body = walk_statement_into_body(then_stmt)?;
+    let mut then_body = walk_statement_into_body(then_stmt)?;
+    if !case_bindings.is_empty() {
+        for stmt in then_body.iter_mut() {
+            substitute_pattern_bindings_stmt(stmt, &case_bindings);
+        }
+    }
 
     // else clause
     let else_body = match inner.next() {
@@ -1722,7 +1754,10 @@ fn build_is_type(expr: Expression, type_name: &str) -> Expression {
 }
 
 fn is_dart_zero_arg_getter(name: &str) -> bool {
-    matches!(name, "isEmpty" | "isNotEmpty" | "first" | "last" | "length")
+    matches!(
+        name,
+        "isEmpty" | "isNotEmpty" | "isEven" | "isOdd" | "first" | "last" | "length" | "runes"
+    )
 }
 
 /// Dart record positional field name `$1`/`$2`/… → its 0-based index. Records
@@ -2686,7 +2721,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             Rule::when_guard => {
                                 if let Some(guard_pair) = cp
                                     .into_inner()
-                                    .find(|p| p.as_rule() == Rule::assignment_expression)
+                                    .find(|p| p.as_rule() == Rule::conditional_expression)
                                 {
                                     let guard = substitute_pattern_bindings(
                                         walk_expression(guard_pair)?,
@@ -3227,6 +3262,128 @@ fn substitute_pattern_bindings(mut expr: Expression, bindings: &HashMap<String, 
     expr
 }
 
+fn substitute_pattern_bindings_stmt(stmt: &mut Statement, bindings: &HashMap<String, Expression>) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            substitute_pattern_bindings_in_place(expr, bindings);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    substitute_pattern_bindings_in_place(init, bindings);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                substitute_pattern_bindings_in_place(target, bindings);
+            }
+            substitute_pattern_bindings_in_place(value, bindings);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            substitute_pattern_bindings_in_place(target, bindings);
+            substitute_pattern_bindings_in_place(value, bindings);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            substitute_pattern_bindings_in_place(cond, bindings);
+            for s in then_body {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+            for (elif_cond, body) in elifs {
+                substitute_pattern_bindings_in_place(elif_cond, bindings);
+                for s in body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+            if let Some(body) = else_body {
+                for s in body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init.as_deref_mut() {
+                substitute_pattern_bindings_stmt(init, bindings);
+            }
+            if let Some(cond) = cond {
+                substitute_pattern_bindings_in_place(cond, bindings);
+            }
+            if let Some(update) = update {
+                substitute_pattern_bindings_in_place(update, bindings);
+            }
+            for s in body {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            substitute_pattern_bindings_in_place(iter, bindings);
+            for s in body {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            substitute_pattern_bindings_in_place(cond, bindings);
+            for s in body {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+        }
+        StmtKind::Switch { expr, cases, .. } => {
+            substitute_pattern_bindings_in_place(expr, bindings);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    if let CaseCondition::Value(value) = condition {
+                        substitute_pattern_bindings_in_place(value, bindings);
+                    }
+                }
+                for s in &mut case.body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for s in body {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+            for catch in catches {
+                for s in &mut catch.body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+            if let Some(body) = else_body {
+                for s in body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+            if let Some(body) = finally {
+                for s in body {
+                    substitute_pattern_bindings_stmt(s, bindings);
+                }
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for s in stmts {
+                substitute_pattern_bindings_stmt(s, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn substitute_pattern_bindings_in_place(expr: &mut Expression, bindings: &HashMap<String, Expression>) {
     match &mut expr.kind {
         ExprKind::Ident(name) => {
@@ -3578,6 +3735,45 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
+                if let Some(uri) = dart_uri_from_expr(&expr) {
+                    if name == "normalizePath" && (has_call || call_args.is_some()) {
+                        expr = dart_uri_expr(uri.normalize_path());
+                        continue;
+                    }
+                    if name == "replace" && (has_call || call_args.is_some()) {
+                        expr = dart_uri_expr(uri.replace_with(call_args.clone().unwrap_or_default()));
+                        continue;
+                    }
+                    if name == "resolve" {
+                        if let Some(args) = &call_args {
+                            if let Some(rel) = args.first().and_then(|a| literal_string(&a.value)) {
+                                expr = dart_uri_expr(uri.resolve(&rel));
+                                continue;
+                            }
+                        }
+                    }
+                    if name == "resolveUri" {
+                        if let Some(args) = &call_args {
+                            if let Some(rel) = args.first().and_then(|a| dart_uri_from_expr(&a.value)) {
+                                expr = dart_uri_expr(uri.resolve(&rel.href));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if let ExprKind::Ident(class_name) = expr.kind.clone() {
+                    if matches!(class_name.as_str(), "DateTime" | "Duration" | "Uri" | "List") {
+                        expr = Expression::ident(&format!("{}.{}", class_name, name));
+                        if class_name == "Duration" && name == "zero" {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(expr),
+                                args: Vec::new(),
+                                optional: false,
+                            });
+                        }
+                        continue;
+                    }
+                }
                 // Dart zero-arg getters that map to value-method emitters
                 // need to look like Calls so the value-method dispatch
                 // kicks in. Wrap the bare property access in a Call(0)
@@ -3616,12 +3812,46 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             Rule::call_args => {
                 let ca = chain_inner.into_iter().next().unwrap();
-                let args = ca
+                let mut args = ca
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::argument_list)
                     .map(walk_arguments)
                     .transpose()?
                     .unwrap_or_default();
+                if is_ident_expr(&expr, "RegExp") {
+                    args = normalize_regexp_args(args);
+                } else if is_ident_expr(&expr, "Duration") {
+                    args = normalize_duration_args(args);
+                } else if is_ident_expr(&expr, "Uri.parse") {
+                    if let Some(text) = args.first().and_then(|arg| literal_string(&arg.value)) {
+                        expr = dart_uri_expr(DartUri::parse(&text));
+                        continue;
+                    }
+                } else if is_ident_expr(&expr, "Uri.http") || is_ident_expr(&expr, "Uri.https") {
+                    if args.len() >= 2 {
+                        if let (Some(authority), Some(path)) =
+                            (literal_string(&args[0].value), literal_string(&args[1].value))
+                        {
+                            let https = is_ident_expr(&expr, "Uri.https");
+                            let query = args.get(2).and_then(|arg| query_string_from_expr(&arg.value));
+                            let port = args.get(3).and_then(|arg| literal_number_string(&arg.value));
+                            expr = dart_uri_expr(DartUri::from_parts(
+                                if https { "https" } else { "http" },
+                                &authority,
+                                &path,
+                                query.as_deref(),
+                                None,
+                                port.as_deref(),
+                            ));
+                            continue;
+                        }
+                    }
+                } else if is_ident_expr(&expr, "Uri.file") {
+                    if let Some(path) = args.first().and_then(|arg| literal_string(&arg.value)) {
+                        expr = dart_uri_expr(DartUri::from_file(&path));
+                        continue;
+                    }
+                }
                 expr = Expression::new(ExprKind::Call {
                     callee: Box::new(expr),
                     args,
@@ -3701,6 +3931,551 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(expr.kind)
 }
 
+fn is_ident_expr(expr: &Expression, expected: &str) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if name == expected)
+}
+
+fn literal_bool(expr: &Expression) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn literal_number_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(value.to_string()),
+        ExprKind::Lit(Literal::Float(value)) => Some(format!("{}", value)),
+        _ => None,
+    }
+}
+
+fn normalize_regexp_args(args: Vec<Argument>) -> Vec<Argument> {
+    let mut pattern = None;
+    let mut case_sensitive = true;
+    let mut multi_line = false;
+    let mut unicode = false;
+    let mut dot_all = false;
+
+    for arg in args {
+        match arg.name.as_deref() {
+            Some("caseSensitive") => {
+                if let Some(value) = literal_bool(&arg.value) {
+                    case_sensitive = value;
+                }
+            }
+            Some("multiLine") => {
+                if let Some(value) = literal_bool(&arg.value) {
+                    multi_line = value;
+                }
+            }
+            Some("unicode") => {
+                if let Some(value) = literal_bool(&arg.value) {
+                    unicode = value;
+                }
+            }
+            Some("dotAll") => {
+                if let Some(value) = literal_bool(&arg.value) {
+                    dot_all = value;
+                }
+            }
+            _ if pattern.is_none() => pattern = Some(arg),
+            _ => {}
+        }
+    }
+
+    let mut flags = String::new();
+    if !case_sensitive {
+        flags.push('i');
+    }
+    if multi_line {
+        flags.push('m');
+    }
+    if unicode {
+        flags.push('u');
+    }
+    if dot_all {
+        flags.push('s');
+    }
+
+    let mut out = Vec::new();
+    out.push(pattern.unwrap_or(Argument {
+        value: Expression::new(ExprKind::Lit(Literal::Str(String::new()))),
+        name: None,
+        by_ref: false,
+        spread: false,
+    }));
+    out.push(Argument {
+        value: Expression::new(ExprKind::Lit(Literal::Str(flags))),
+        name: None,
+        by_ref: false,
+        spread: false,
+    });
+    out
+}
+
+fn positional_arg(value: Expression) -> Argument {
+    Argument {
+        value,
+        name: None,
+        by_ref: false,
+        spread: false,
+    }
+}
+
+fn mul_expr(value: Expression, factor: f64) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(value),
+        right: Box::new(Expression::float(factor)),
+    })
+}
+
+fn add_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn normalize_duration_args(args: Vec<Argument>) -> Vec<Argument> {
+    if args.iter().all(|arg| arg.name.is_none()) {
+        return args;
+    }
+    let mut total = Expression::float(0.0);
+    for arg in args {
+        let factor = match arg.name.as_deref() {
+            Some("days") => 86_400_000.0,
+            Some("hours") => 3_600_000.0,
+            Some("minutes") => 60_000.0,
+            Some("seconds") => 1000.0,
+            Some("milliseconds") => 1.0,
+            Some("microseconds") => 0.001,
+            _ => continue,
+        };
+        total = add_expr(total, mul_expr(arg.value, factor));
+    }
+    vec![positional_arg(total)]
+}
+
+#[derive(Clone, Debug)]
+struct DartUri {
+    scheme: String,
+    host: String,
+    port: String,
+    path: String,
+    query: String,
+    fragment: String,
+    user_info: String,
+    href: String,
+}
+
+fn uri_decode(text: &str) -> String {
+    text.replace("%20", " ")
+}
+
+fn default_port(scheme: &str) -> String {
+    match scheme {
+        "http" => "80".to_string(),
+        "https" => "443".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn split_authority(input: &str) -> (String, String, String) {
+    let (user_info, host_port) = input
+        .rsplit_once('@')
+        .map(|(u, h)| (u.to_string(), h.to_string()))
+        .unwrap_or_else(|| (String::new(), input.to_string()));
+    if let Some((host, port)) = host_port.rsplit_once(':') {
+        if port.chars().all(|c| c.is_ascii_digit()) {
+            return (user_info, host.to_string(), port.to_string());
+        }
+    }
+    (user_info, host_port, String::new())
+}
+
+fn normalize_path_text(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let trailing = path.ends_with('/') && path.len() > 1;
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let mut out = parts.join("/");
+    if absolute {
+        out.insert(0, '/');
+    }
+    if trailing && !out.ends_with('/') {
+        out.push('/');
+    }
+    if out.is_empty() && absolute {
+        "/".to_string()
+    } else {
+        out
+    }
+}
+
+impl DartUri {
+    fn parse(input: &str) -> Self {
+        let href = input.to_string();
+        let (without_fragment, fragment) = input
+            .split_once('#')
+            .map(|(a, b)| (a, b))
+            .unwrap_or((input, ""));
+        let (without_query, query) = without_fragment
+            .split_once('?')
+            .map(|(a, b)| (a, b))
+            .unwrap_or((without_fragment, ""));
+        let (scheme, rest) = without_query
+            .split_once("://")
+            .map(|(s, r)| (s.to_lowercase(), r))
+            .unwrap_or_else(|| (String::new(), without_query));
+        let raw_path_storage;
+        let (authority, raw_path) = if scheme.is_empty() {
+            ("", rest)
+        } else if let Some((a, p)) = rest.split_once('/') {
+            raw_path_storage = format!("/{}", p);
+            (a, raw_path_storage.as_str())
+        } else {
+            (rest, "")
+        };
+        let (user_info, host, explicit_port) = split_authority(authority);
+        let port = if explicit_port.is_empty() {
+            default_port(&scheme)
+        } else {
+            explicit_port
+        };
+        let path = uri_decode(raw_path);
+        Self {
+            scheme,
+            host,
+            port,
+            path,
+            query: uri_decode(query),
+            fragment: uri_decode(fragment),
+            user_info: uri_decode(&user_info),
+            href,
+        }
+    }
+
+    fn from_parts(
+        scheme: &str,
+        authority: &str,
+        path: &str,
+        query: Option<&str>,
+        fragment: Option<&str>,
+        port_override: Option<&str>,
+    ) -> Self {
+        let (user_info, host, explicit_port) = split_authority(authority);
+        let port = port_override
+            .filter(|p| !p.is_empty() && *p != "null")
+            .map(|p| p.to_string())
+            .or_else(|| (!explicit_port.is_empty()).then_some(explicit_port))
+            .unwrap_or_else(|| default_port(scheme));
+        let mut href = format!("{}://{}", scheme, host);
+        let default = default_port(scheme);
+        if !port.is_empty() && port != default {
+            href.push(':');
+            href.push_str(&port);
+        }
+        href.push_str(path);
+        if let Some(q) = query.filter(|q| !q.is_empty()) {
+            href.push('?');
+            href.push_str(q);
+        }
+        if let Some(f) = fragment.filter(|f| !f.is_empty()) {
+            href.push('#');
+            href.push_str(f);
+        }
+        Self {
+            scheme: scheme.to_string(),
+            host,
+            port,
+            path: path.to_string(),
+            query: query.unwrap_or("").to_string(),
+            fragment: fragment.unwrap_or("").to_string(),
+            user_info,
+            href,
+        }
+    }
+
+    fn from_file(path: &str) -> Self {
+        Self {
+            scheme: "file".to_string(),
+            host: String::new(),
+            port: String::new(),
+            path: path.to_string(),
+            query: String::new(),
+            fragment: String::new(),
+            user_info: String::new(),
+            href: format!("file://{}", path),
+        }
+    }
+
+    fn authority(&self) -> String {
+        if self.host.is_empty() {
+            return String::new();
+        }
+        let default = default_port(&self.scheme);
+        if self.port.is_empty() || self.port == default {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    fn origin(&self) -> String {
+        if self.scheme.is_empty() || self.host.is_empty() {
+            return String::new();
+        }
+        format!("{}://{}", self.scheme, self.authority())
+    }
+
+    fn normalize_path(mut self) -> Self {
+        self.path = normalize_path_text(&self.path);
+        self.href = self.recompose();
+        self
+    }
+
+    fn recompose(&self) -> String {
+        if self.scheme.is_empty() {
+            let mut out = self.path.clone();
+            if !self.query.is_empty() {
+                out.push('?');
+                out.push_str(&self.query);
+            }
+            if !self.fragment.is_empty() {
+                out.push('#');
+                out.push_str(&self.fragment);
+            }
+            return out;
+        }
+        let mut out = format!("{}://{}", self.scheme, self.authority());
+        out.push_str(&self.path);
+        if !self.query.is_empty() {
+            out.push('?');
+            out.push_str(&self.query);
+        }
+        if !self.fragment.is_empty() {
+            out.push('#');
+            out.push_str(&self.fragment);
+        }
+        out
+    }
+
+    fn replace_with(mut self, args: Vec<Argument>) -> Self {
+        for arg in args {
+            match arg.name.as_deref() {
+                Some("scheme") => {
+                    if let Some(v) = literal_string(&arg.value) {
+                        self.scheme = v;
+                    }
+                }
+                Some("host") => {
+                    if let Some(v) = literal_string(&arg.value) {
+                        self.host = v;
+                    }
+                }
+                Some("port") => {
+                    if let Some(v) = literal_number_string(&arg.value) {
+                        self.port = v;
+                    }
+                }
+                Some("path") => {
+                    if let Some(v) = literal_string(&arg.value) {
+                        self.path = v;
+                    }
+                }
+                Some("query") => {
+                    if let Some(v) = literal_string(&arg.value) {
+                        self.query = v;
+                    }
+                }
+                Some("fragment") => {
+                    if let Some(v) = literal_string(&arg.value) {
+                        self.fragment = v;
+                    }
+                }
+                Some("pathSegments") => {
+                    if let Some(v) = path_from_segments_expr(&arg.value) {
+                        self.path = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.href = self.recompose();
+        self
+    }
+
+    fn resolve(&self, rel: &str) -> Self {
+        if rel.contains("://") {
+            return Self::parse(rel);
+        }
+        let mut out = self.clone();
+        if rel.starts_with('/') {
+            out.path = rel.to_string();
+        } else {
+            let base_dir = self
+                .path
+                .rsplit_once('/')
+                .map(|(head, _)| format!("{}/", head))
+                .unwrap_or_else(|| "/".to_string());
+            out.path = format!("{}{}", base_dir, rel);
+        }
+        out.path = normalize_path_text(&out.path);
+        out.query.clear();
+        out.fragment.clear();
+        out.href = out.recompose();
+        out
+    }
+}
+
+fn obj_prop(key: &str, value: Expression) -> ObjectProperty {
+    ObjectProperty::KeyValue {
+        key: Expression::string(key),
+        value,
+    }
+}
+
+fn query_params_expr(query: &str) -> Expression {
+    let props = query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (k, v) = part.split_once('=').unwrap_or((part, ""));
+            obj_prop(&uri_decode(k), Expression::string(&uri_decode(v)))
+        })
+        .collect();
+    Expression::new(ExprKind::Object(props))
+}
+
+fn path_segments_expr(path: &str) -> Expression {
+    Expression::new(ExprKind::Array(
+        path.split('/')
+            .filter(|part| !part.is_empty())
+            .map(|part| ArrayElement {
+                value: Expression::string(part),
+                key: None,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn dart_uri_expr(uri: DartUri) -> Expression {
+    let has_query = !uri.query.is_empty();
+    let has_fragment = !uri.fragment.is_empty();
+    let has_authority = !uri.host.is_empty();
+    Expression::new(ExprKind::Object(vec![
+        obj_prop("__dart_uri_marker", Expression::bool(true)),
+        obj_prop("scheme", Expression::string(&uri.scheme)),
+        obj_prop("host", Expression::string(&uri.host)),
+        obj_prop("port", Expression::string(&uri.port)),
+        obj_prop("path", Expression::string(&uri.path)),
+        obj_prop("query", Expression::string(&uri.query)),
+        obj_prop("fragment", Expression::string(&uri.fragment)),
+        obj_prop("userInfo", Expression::string(&uri.user_info)),
+        obj_prop("authority", Expression::string(&uri.authority())),
+        obj_prop("origin", Expression::string(&uri.origin())),
+        obj_prop("href", Expression::string(&uri.href)),
+        obj_prop("hasScheme", Expression::bool(!uri.scheme.is_empty())),
+        obj_prop("hasAuthority", Expression::bool(has_authority)),
+        obj_prop("isAbsolute", Expression::bool(!uri.scheme.is_empty())),
+        obj_prop("hasQuery", Expression::bool(has_query)),
+        obj_prop("hasFragment", Expression::bool(has_fragment)),
+        obj_prop("hasEmptyPath", Expression::bool(uri.path.is_empty())),
+        obj_prop("pathSegments", path_segments_expr(&uri.path)),
+        obj_prop("queryParameters", query_params_expr(&uri.query)),
+    ]))
+}
+
+fn object_string_field(expr: &Expression, field: &str) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| match prop {
+        ObjectProperty::KeyValue { key, value } => {
+            if literal_string(key).as_deref() == Some(field) {
+                literal_string(value)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
+fn dart_uri_from_expr(expr: &Expression) -> Option<DartUri> {
+    let ExprKind::Object(_) = &expr.kind else {
+        return None;
+    };
+    if object_string_field(expr, "__dart_uri_marker").is_none()
+        && !matches!(
+            &expr.kind,
+            ExprKind::Object(props) if props.iter().any(|p| matches!(p, ObjectProperty::KeyValue { key, value } if literal_string(key).as_deref() == Some("__dart_uri_marker") && matches!(value.kind, ExprKind::Lit(Literal::Bool(true)))))
+        )
+    {
+        return None;
+    }
+    Some(DartUri {
+        scheme: object_string_field(expr, "scheme").unwrap_or_default(),
+        host: object_string_field(expr, "host").unwrap_or_default(),
+        port: object_string_field(expr, "port").unwrap_or_default(),
+        path: object_string_field(expr, "path").unwrap_or_default(),
+        query: object_string_field(expr, "query").unwrap_or_default(),
+        fragment: object_string_field(expr, "fragment").unwrap_or_default(),
+        user_info: object_string_field(expr, "userInfo").unwrap_or_default(),
+        href: object_string_field(expr, "href").unwrap_or_default(),
+    })
+}
+
+fn query_string_from_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Null) => Some(String::new()),
+        ExprKind::Object(props) => Some(
+            props
+                .iter()
+                .filter_map(|prop| match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        Some(format!("{}={}", literal_string(key)?, literal_string(value)?))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("&"),
+        ),
+        _ => None,
+    }
+}
+
+fn path_from_segments_expr(expr: &Expression) -> Option<String> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    let parts = items
+        .iter()
+        .map(|item| literal_string(&item.value))
+        .collect::<Option<Vec<_>>>()?;
+    Some(format!("/{}", parts.join("/")))
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Cascade desugaring
 // ════════════════════════════════════════════════════════════════════════════
@@ -3727,7 +4502,7 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
         }
     }
 
-    let mut result = receiver.clone();
+    let mut ops = Vec::new();
 
     for section in sections {
         let mut sec_inner = section.into_inner();
@@ -3746,30 +4521,30 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
                             field: name,
                             null_safe: false,
                         });
-                        result = Expression::new(ExprKind::Call {
+                        ops.push(Expression::new(ExprKind::Call {
                             callee: Box::new(callee),
                             args,
                             optional: false,
-                        });
+                        }));
                     } else {
                         // assignment: receiver.name = expr
                         let value = walk_expression(next_p)?;
-                        result = Expression::new(ExprKind::Assign {
+                        ops.push(Expression::new(ExprKind::Assign {
                             target: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(receiver.clone()),
                                 field: name,
                                 null_safe: false,
                             })),
                             value: Box::new(value),
-                        });
+                        }));
                     }
                 } else {
                     // Bare member access
-                    result = Expression::new(ExprKind::Member {
+                    ops.push(Expression::new(ExprKind::Member {
                         object: Box::new(receiver.clone()),
                         field: name,
                         null_safe: false,
-                    });
+                    }));
                 }
             }
             _ => {
@@ -3779,7 +4554,8 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
         }
     }
 
-    Ok(result)
+    ops.push(receiver);
+    Ok(Expression::new(ExprKind::Sequence(ops)))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4073,6 +4849,31 @@ fn unescape_string_chars(s: &str) -> String {
                 Some('"') => result.push('"'),
                 Some('$') => result.push('$'),
                 Some('0') => result.push('\0'),
+                Some('x') => {
+                    let hi = chars.next();
+                    let lo = chars.next();
+                    if let (Some(hi), Some(lo)) = (hi, lo) {
+                        let hex = format!("{}{}", hi, lo);
+                        if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                            if let Some(ch) = char::from_u32(value) {
+                                result.push(ch);
+                            }
+                        }
+                    }
+                }
+                Some('u') => {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        if let Some(ch) = chars.next() {
+                            hex.push(ch);
+                        }
+                    }
+                    if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(value) {
+                            result.push(ch);
+                        }
+                    }
+                }
                 Some(other) => {
                     result.push('\\');
                     result.push(other);

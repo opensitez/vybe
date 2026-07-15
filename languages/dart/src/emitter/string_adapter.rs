@@ -6,14 +6,63 @@
 
 use vybe_emitter::instructions::{core_wasm, host};
 use vybe_emitter::{collections, strings};
-use vybe_bytecode::Chunk;
+use std::sync::Arc;
+use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+
+const SB_BUFFER_KEY: &str = "__dart_string_buffer";
+const SB_MARKER_KEY: &str = "__dart_string_buffer_marker";
+const URI_HREF_KEY: &str = "href";
+const URI_MARKER_KEY: &str = "__dart_uri_marker";
+
+fn reserve_slot(chunk: &mut Chunk) -> u16 {
+    chunk.alloc_scratch(1)
+}
+
+fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+    chunk.add_constant(Value::String(Arc::from(key)))
+}
+
+fn emit_sb_buffer_get(chunk: &mut Chunk, line: u32) {
+    let key = string_key(chunk, SB_BUFFER_KEY);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+}
+
+fn emit_sb_marker_test(chunk: &mut Chunk, line: u32) {
+    let key = string_key(chunk, SB_MARKER_KEY);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+}
+
+fn emit_dart_value_to_string(chunk: &mut Chunk, line: u32) {
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
+    chunk.emit(1, line);
+}
+
+fn emit_dart_sb_append_value(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let sb_slot = reserve_slot(chunk);
+    let buffer_key = string_key(chunk, SB_BUFFER_KEY);
+    chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_dart_value_to_string(chunk, line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
+}
 
 /// Dart `s.isEmpty` — true iff length == 0. Stack: [s] → [bool].
 pub fn emit_dart_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_dart_length(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// Dart `s.isNotEmpty` — true iff length != 0. Stack: [s] → [bool].
@@ -21,6 +70,7 @@ pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_dart_length(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// Dart `n.isEven` — true iff `n % 2 == 0`. Stack: [n] → [bool].
@@ -29,6 +79,7 @@ pub fn emit_dart_is_even(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_REM_S, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// Dart `n.isOdd` — true iff `n % 2 != 0`. Stack: [n] → [bool].
@@ -37,6 +88,117 @@ pub fn emit_dart_is_odd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_REM_S, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Dart `StringBuffer()` — plain object with one mutable string field.
+pub fn emit_dart_sb_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let buffer_key = string_key(chunk, SB_BUFFER_KEY);
+    let marker_key = string_key(chunk, SB_MARKER_KEY);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const("", line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
+    chunk.emit_op(Op::DROP, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, marker_key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// Dart `buf.write(value)` — append stringified value, return receiver.
+pub fn emit_dart_sb_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_dart_sb_append_value(chunks, current, value_slot, line);
+}
+
+/// Dart `buf.writeln([value])` — append value then newline, return receiver.
+pub fn emit_dart_sb_writeln(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let value_slot = reserve_slot(&mut chunks[current]);
+    if argc > 1 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    } else {
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    }
+    emit_dart_sb_append_value(chunks, current, value_slot, line);
+    let newline_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_string_const("\n", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, newline_slot, line);
+    emit_dart_sb_append_value(chunks, current, newline_slot, line);
+}
+
+/// Dart `buf.writeAll(iterable, [separator])`.
+pub fn emit_dart_sb_write_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let sep_slot = reserve_slot(&mut chunks[current]);
+    let iterable_slot = reserve_slot(&mut chunks[current]);
+    if argc > 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, sep_slot, line);
+    } else {
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, sep_slot, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, iterable_slot, line);
+    let joined_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterable_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep_slot, line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, joined_slot, line);
+    emit_dart_sb_append_value(chunks, current, joined_slot, line);
+}
+
+/// Dart `buf.writeCharCode(code)`.
+pub fn emit_dart_sb_write_char_code(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = reserve_slot(&mut chunks[current]);
+    host::emit(&mut chunks[current], "wasm:js-string", "fromCharCode", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_dart_sb_append_value(chunks, current, value_slot, line);
+}
+
+/// Dart `buf.clear()` — empty mutable content, return receiver.
+pub fn emit_dart_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let sb_slot = reserve_slot(chunk);
+    let buffer_key = string_key(chunk, SB_BUFFER_KEY);
+    chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
+    chunk.emit_string_const("", line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
+}
+
+/// Dart `RegExp(pattern, ...)` after walker flag-normalisation.
+/// Stack: [pattern] or [pattern, flags] -> [regexp].
+pub fn emit_dart_regexp_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        chunks[current].emit_string_const("", line);
+    }
+    host::emit(&mut chunks[current], "ecma:regexp", "new", 2, line);
+}
+
+/// Dart `re.hasMatch(input)`.
+pub fn emit_dart_regexp_has_match(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:regexp", "test", 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Dart `re.firstMatch(input)` -> JS match array/null.
+pub fn emit_dart_regexp_first_match(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:regexp", "exec", 2, line);
+}
+
+/// Dart `re.allMatches(input)` -> iterable match array.
+pub fn emit_dart_regexp_all_matches(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:regexp", "matchAll", 2, line);
+}
+
+/// Dart `match.group(index)`; JS match arrays store group 0..N by index.
+pub fn emit_dart_regexp_group(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_get(chunks, current, line);
 }
 
 /// Dart `print(value)` — calls value.toString() before logging, per
@@ -47,9 +209,7 @@ pub fn emit_dart_is_odd(chunks: &mut [Chunk], current: usize, line: u32) {
 /// misresolve whenever the tables diverged).
 pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     use vybe_bytecode::Op as VOp;
-    let to_str = chunks[current].add_import("ecma:string", "String");
-    chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
-    chunks[current].emit(1, line);
+    emit_dart_to_string(chunks, current, line);
     let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, log_idx, line);
     chunks[current].emit(1, line);
@@ -58,10 +218,21 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 /// Dart `value.toString()` — route through ECMA string coercion.
 /// Stack: [value] → [string].
 pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    use vybe_bytecode::Op as VOp;
-    let to_str = chunks[current].add_import("ecma:string", "String");
-    chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
-    chunks[current].emit(1, line);
+    let uri_key = string_key(&mut chunks[current], URI_HREF_KEY);
+    let uri_marker = string_key(&mut chunks[current], URI_MARKER_KEY);
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, uri_marker, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, uri_key, line);
+    chunks[current].emit_else(line);
+    emit_sb_marker_test(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_sb_buffer_get(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    emit_dart_value_to_string(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// Dart `replaceFirst(pattern, replacement)` — first match only.
@@ -133,12 +304,18 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
+    emit_sb_marker_test(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_sb_buffer_get(&mut chunks[current], line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_else(line);
     // Object/Map fall-through — count own enumerable properties via
     // `ecma:object.length`. Import tables are per chunk: register on
     // the chunk whose CALL_IMPORT indexes them.
     let idx = chunks[current].add_import("ecma:object", "length");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
