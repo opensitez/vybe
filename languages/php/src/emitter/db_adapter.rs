@@ -55,6 +55,39 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
 }
 
+fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line: u32) {
+    lget(chunk, sql_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "trim");
+        chunk.emit_call(idx, 1, line);
+    }
+    {
+        let idx = chunk.add_import("ecma:string", "toLowerCase");
+        chunk.emit_call(idx, 1, line);
+    }
+    let lower_slot = alloc_local(chunk);
+    lset(chunk, lower_slot, line);
+
+    lget(chunk, lower_slot, line);
+    push_str(chunk, "select", line);
+    {
+        let idx = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(idx, 2, line);
+    }
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, lower_slot, line);
+    push_str(chunk, ",", line);
+    {
+        let idx = chunk.add_import("ecma:string", "split");
+        chunk.emit_call(idx, 2, line);
+    }
+    vybe_emitter::collections::emit_array_length(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_end(line);
+}
+
 /// The statement class name for a connection whose `__type` is on top of the
 /// stack: `"mysqli"` → `"mysqli_stmt"`, anything else → `"PDOStatement"`.
 /// Consumes the `__type` value, leaves the label on the stack.
@@ -133,12 +166,14 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         ("insert_id", 0.0),
         ("affected_rows", 0.0),
         ("num_rows", 0.0),
-        ("field_count", 0.0),
     ] {
         lget(chunk, stmt_slot, line);
         chunk.emit_f64_const(val, line);
         struct_set_key(chunk, key, line);
     }
+    lget(chunk, stmt_slot, line);
+    emit_select_column_count_from_sql_slot(chunk, sql_slot, line);
+    struct_set_key(chunk, "field_count", line);
     for key in ["error", "sqlstate"] {
         lget(chunk, stmt_slot, line);
         push_str(chunk, if key == "sqlstate" { "00000" } else { "" }, line);

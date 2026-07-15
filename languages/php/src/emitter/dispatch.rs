@@ -371,6 +371,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.datetime_set_time" => {
             crate::emitter::datetime_adapter::emit_datetime_set_time(chunks, current, line)
         }
+        "php.datetime_set_timestamp" => {
+            crate::emitter::datetime_adapter::emit_datetime_set_timestamp(chunks, current, line)
+        }
         "php.datetime_create_from_format" => {
             crate::emitter::datetime_adapter::emit_datetime_create_from_format(
                 chunks, current, line,
@@ -1206,6 +1209,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
+        "php.pdo_statement_fetch_object" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_fetch_object(
+                chunks, current, argc, line,
+            )
+        }
         "php.pdo_statement_row_count" => {
             crate::emitter::pdo_adapter::emit_php_pdo_statement_row_count(
                 chunks, current, argc, line,
@@ -1242,6 +1250,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.mysqli_stmt_get_result" => {
             super::mysqli_adapter::emit_php_mysqli_stmt_get_result(chunks, current, argc, line)
+        }
+        "php.mysqli_stmt_result_metadata" => {
+            super::mysqli_adapter::emit_php_mysqli_stmt_result_metadata(
+                chunks, current, argc, line,
+            )
         }
         "php.pdo_set_attribute" => {
             crate::emitter::pdo_adapter::emit_php_pdo_set_attribute(chunks, current, argc, line)

@@ -171,11 +171,29 @@ fn emit_datetime_ctor(
 
     if argc >= 1 {
         // Stack: [s] → ecma:date.parse → [ms_or_NaN]. NaN flow-through
-        // is acceptable for the suite — invalid dates produce NaN
-        // `__time`; downstream `format` returns an empty string.
+        // is not PHP-compatible: invalid constructor strings throw Exception.
         call_import(chunks, current, "ecma:date", "parse", 1, line);
     } else {
         call_import(chunks, current, "ecma:date", "now", 0, line);
+    }
+    if argc >= 1 {
+        let chunk = &mut chunks[current];
+        let ms_slot = alloc_local(chunk);
+        local_set(chunk, ms_slot, line);
+        local_get(chunk, ms_slot, line);
+        local_get(chunk, ms_slot, line);
+        chunk.emit_op(Op::F64_NE, line);
+        chunk.emit_if(line);
+        crate::emitter::type_guard::emit_throw_const(
+            chunks.as_mut_slice(),
+            current,
+            "Exception",
+            "Failed to parse time string",
+            line,
+        );
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+        local_get(chunk, ms_slot, line);
     }
     emit_wrap_ms(&mut chunks[current], type_tag, line);
 
@@ -298,6 +316,7 @@ pub fn emit_datetime_set_date(chunks: &mut [Chunk], current: usize, line: u32) {
         local_set(chunk, dt, line);
         (d, m, y, dt)
     };
+    emit_clone_if_immutable(&mut chunks[current], dt_slot, line);
     // Preserve the time-of-day (h/i/s) from the original instant.
     let h_slot = alloc_local(&mut chunks[current]);
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
@@ -324,7 +343,10 @@ pub fn emit_datetime_set_date(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let ms_slot = alloc_local(chunk);
     local_set(chunk, ms_slot, line);
-    emit_rewrap_like(chunk, dt_slot, ms_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, ms_slot, line);
+    struct_set(chunk, TIME_KEY, line);
+    local_get(chunk, dt_slot, line);
 }
 
 /// PHP `$dt->setTime($h, $i, $s)` — returns a new object with the time-of-day
@@ -342,6 +364,7 @@ pub fn emit_datetime_set_time(chunks: &mut [Chunk], current: usize, line: u32) {
         local_set(chunk, dt, line);
         (s, i, h, dt)
     };
+    emit_clone_if_immutable(&mut chunks[current], dt_slot, line);
     // Preserve the calendar date (Y/M/D). `getMonth` is already 0-based, the
     // form `ecma:date.UTC` expects.
     let y_slot = alloc_local(&mut chunks[current]);
@@ -367,7 +390,27 @@ pub fn emit_datetime_set_time(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let ms_slot = alloc_local(chunk);
     local_set(chunk, ms_slot, line);
-    emit_rewrap_like(chunk, dt_slot, ms_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, ms_slot, line);
+    struct_set(chunk, TIME_KEY, line);
+    local_get(chunk, dt_slot, line);
+}
+
+/// PHP `$dt->setTimestamp($ts)` / `date_timestamp_set($dt, $ts)`.
+/// Stack: `[dt, seconds]` → `[dt]`, mutating DateTime and cloning immutable.
+pub fn emit_datetime_set_timestamp(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let ts_slot = alloc_local(chunk);
+    let dt_slot = alloc_local(chunk);
+    local_set(chunk, ts_slot, line);
+    local_set(chunk, dt_slot, line);
+    emit_clone_if_immutable(chunk, dt_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, ts_slot, line);
+    push_const(chunk, Value::F64(MS_PER_SECOND), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    struct_set(chunk, TIME_KEY, line);
+    local_get(chunk, dt_slot, line);
 }
 
 fn emit_parse_int_base10(chunks: &mut [Chunk], current: usize, str_slot: u16, line: u32) {

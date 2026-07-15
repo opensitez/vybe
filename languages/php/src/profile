@@ -768,6 +768,7 @@ __php_dt_get_offset    = { emit = "common:php.datetime_get_offset",     min_args
 __php_dt_set_timezone  = { emit = "common:php.datetime_set_timezone",   min_args = 2, max_args = 2 }
 __php_dt_set_date      = { emit = "common:php.datetime_set_date",       min_args = 4, max_args = 4 }
 __php_dt_set_time      = { emit = "common:php.datetime_set_time",       min_args = 4, max_args = 4 }
+__php_dt_set_timestamp = { emit = "common:php.datetime_set_timestamp",  min_args = 2, max_args = 2 }
 __php_dt_create_from_format = { emit = "common:php.datetime_create_from_format", min_args = 2, max_args = 2 }
 __php_dt_imm_create_from_format = { emit = "common:php.datetime_immutable_create_from_format", min_args = 2, max_args = 2 }
 __php_dt_format        = { emit = "common:php.datetime_format",         min_args = 2, max_args = 2 }
@@ -877,6 +878,7 @@ bindColumn       = { emit = "common:php.pdo_statement_bind_column", min_args = 2
 fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
 fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
 fetchColumn      = { emit = "common:php.pdo_statement_fetch_column", min_args = 0, max_args = 1 }
+fetchObject      = { emit = "common:php.pdo_statement_fetch_object", min_args = 0, max_args = 1 }
 rowCount         = { emit = "common:php.pdo_statement_row_count",  min_args = 0, max_args = 0 }
 columnCount      = { emit = "common:php.pdo_statement_column_count", min_args = 0, max_args = 0 }
 paramCount       = { emit = "common:php.pdo_statement_param_count", min_args = 0, max_args = 0 }
@@ -900,6 +902,7 @@ get_warnings     = { emit = "common:php.mysqli_stmt_false",      min_args = 0, m
 more_results     = { emit = "common:php.mysqli_stmt_false",      min_args = 0, max_args = 0 }
 next_result      = { emit = "common:php.mysqli_stmt_false",      min_args = 0, max_args = 0 }
 get_result       = { emit = "common:php.mysqli_stmt_get_result", min_args = 0, max_args = 0 }
+result_metadata  = { emit = "common:php.mysqli_stmt_result_metadata", min_args = 0, max_args = 0 }
 fetch_assoc      = { emit = "common:php.mysqli_fetch_assoc",     min_args = 0, max_args = 0 }
 fetch_row        = { emit = "common:php.mysqli_fetch_array",     min_args = 0, max_args = 0 }
 fetch_object     = { emit = "common:php.mysqli_fetch_object",    min_args = 0, max_args = 1 }
@@ -962,9 +965,14 @@ reduce   = "__array_reduce"
 "PDO.PARAM_NULL"       = 0
 "PDO.FETCH_ASSOC"       = 2
 "PDO.FETCH_NUM"         = 3
+"PDO.FETCH_OBJ"         = 5
 "PDO.FETCH_BOUND"       = 6
 "PDO.FETCH_COLUMN"      = 7
+"PDO.FETCH_CLASS"       = 8
+"PDO.FETCH_INTO"        = 9
+"PDO.FETCH_FUNC"        = 10
 "PDO.FETCH_KEY_PAIR"    = 12
+"PDO.FETCH_GROUP"       = 65536
 "NumberFormatter.DECIMAL" = 1
 "NumberFormatter.CURRENCY" = 2
 "NumberFormatter.PERCENT" = 3

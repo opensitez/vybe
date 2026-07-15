@@ -52,6 +52,7 @@ fn php_exception_chain(exc_name: &str) -> &'static [&'static str] {
         "FiberError" => &["FiberError", "Error", "Throwable"],
         "Error" => &["Error", "Throwable"],
         "Exception" => &["Exception", "Throwable"],
+        "PDOException" => &["PDOException", "Exception", "Throwable"],
         "RuntimeException" => &["RuntimeException", "Exception", "Throwable"],
         "OutOfRangeException" => &[
             "OutOfRangeException",

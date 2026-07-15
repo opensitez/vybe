@@ -107,6 +107,18 @@ fn set_mysqli_error_state(chunk: &mut Chunk, errno: f64, error: &str, line: u32)
     global_set_key(chunk, "__php_mysqli_connect_error", line);
 }
 
+fn emit_slot_is_nonempty_string(chunk: &mut Chunk, slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "test");
+        chunk.emit_call(idx, 1, line);
+    }
+    lget(chunk, slot, line);
+    push_str(chunk, "", line);
+    vybe_emitter::ops::emit_dyn_ne(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+}
+
 fn emit_mysqli_result_fields(
     chunks: &mut [Chunk],
     current: usize,
@@ -370,9 +382,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
 
     // Append user if provided
     if let Some(slot) = user_slot {
-        lget(chunk, slot, line);
-        push_str(chunk, "", line);
-        vybe_emitter::ops::emit_dyn_ne(chunk, line);
+        emit_slot_is_nonempty_string(chunk, slot, line);
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         lget(chunk, slot, line);
@@ -386,9 +396,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
 
     // Append password if provided
     if let Some(pass_slot) = password_slot {
-        lget(chunk, pass_slot, line);
-        push_str(chunk, "", line);
-        vybe_emitter::ops::emit_dyn_ne(chunk, line);
+        emit_slot_is_nonempty_string(chunk, pass_slot, line);
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, ":", line);
@@ -428,9 +436,7 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
 
     // Append /database if provided
     if let Some(slot) = database_slot {
-        lget(chunk, slot, line);
-        push_str(chunk, "", line);
-        vybe_emitter::ops::emit_dyn_ne(chunk, line);
+        emit_slot_is_nonempty_string(chunk, slot, line);
         chunk.emit_if(line);
         lget(chunk, url_slot, line);
         push_str(chunk, "/", line);
@@ -1030,6 +1036,9 @@ pub fn emit_php_mysqli_num_rows(chunks: &mut [Chunk], current: usize, _argc: u8,
 
 pub fn emit_php_mysqli_fetch_all(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    if _argc >= 2 {
+        chunk.emit_op(Op::DROP, line);
+    }
     let result_slot = alloc_local(chunk);
     lset(chunk, result_slot, line);
 
@@ -1074,6 +1083,32 @@ pub fn emit_php_mysqli_stmt_get_result(chunks: &mut [Chunk], current: usize, _ar
     lset(chunk, rows_slot, line);
     let result_slot = emit_mysqli_result_object(chunks, current, rows_slot, line);
     lget(&mut chunks[current], result_slot, line);
+}
+
+pub fn emit_php_mysqli_stmt_result_metadata(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let stmt_slot = alloc_local(chunk);
+    lset(chunk, stmt_slot, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    let meta_slot = alloc_local(chunk);
+    lset(chunk, meta_slot, line);
+
+    lget(chunk, meta_slot, line);
+    push_str(chunk, "mysqli_result", line);
+    struct_set_key(chunk, "__type", line);
+
+    lget(chunk, meta_slot, line);
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "field_count", line);
+    struct_set_key(chunk, "field_count", line);
+
+    lget(chunk, meta_slot, line);
 }
 
 /// `$stmt->attr_get($attr)` → an integer attribute value (0 stub).

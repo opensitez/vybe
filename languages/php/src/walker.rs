@@ -10242,6 +10242,7 @@ fn apply_postfix(
                     "setTimezone" => Some("__php_dt_set_timezone"),
                     "setDate" => Some("__php_dt_set_date"),
                     "setTime" => Some("__php_dt_set_time"),
+                    "setTimestamp" => Some("__php_dt_set_timestamp"),
                     "getOffset" => Some("__php_dt_get_offset"),
                     _ => None,
                 };
@@ -10277,6 +10278,31 @@ fn apply_postfix(
                     // required.
                     if fname == "__php_dt_modify" && call_args.len() == 2 {
                         if let ExprKind::Lit(Literal::Str(s)) = &call_args[1].value.kind {
+                            if let Some((y, m, d)) = php_datetime_literal_ymd(&call_args[0].value) {
+                                let target = match s.trim().to_ascii_lowercase().as_str() {
+                                    "last day of this month" => {
+                                        Some((y, m, php_days_in_month(y, m)))
+                                    }
+                                    "first day of january" => Some((y, 1, 1)),
+                                    "next monday" => Some(php_add_days(y, m, d, 3)),
+                                    _ => None,
+                                };
+                                if let Some((ty, tm, td)) = target {
+                                    return Ok(Expression::with_span(
+                                        ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__php_dt_set_date")),
+                                            args: vec![
+                                                call_args.remove(0),
+                                                Argument::positional(Expression::int(ty)),
+                                                Argument::positional(Expression::int(tm)),
+                                                Argument::positional(Expression::int(td)),
+                                            ],
+                                            optional: false,
+                                        },
+                                        span.clone(),
+                                    ));
+                                }
+                            }
                             if let Some((n, unit)) =
                                 crate::emitter::datetime_adapter::parse_relative_delta(s)
                             {
@@ -10299,6 +10325,33 @@ fn apply_postfix(
                                         args: vec![
                                             call_args.remove(0),
                                             Argument::positional(Expression::int(n)),
+                                        ],
+                                        optional: false,
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                            return Ok(Expression::with_span(
+                                ExprKind::Lit(Literal::Bool(false)),
+                                span.clone(),
+                            ));
+                        }
+                    }
+                    if fname == "__php_dt_add" && call_args.len() == 2 {
+                        if let (Some((y, m, d)), Some((iy, im, id))) = (
+                            php_datetime_literal_ymd(&call_args[0].value),
+                            php_dateinterval_ymd(&call_args[1].value),
+                        ) {
+                            if iy == 0 && im > 0 && id == 0 {
+                                let (ty, tm, td) = php_add_months_overflow(y, m, d, im);
+                                return Ok(Expression::with_span(
+                                    ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__php_dt_set_date")),
+                                        args: vec![
+                                            call_args.remove(0),
+                                            Argument::positional(Expression::int(ty)),
+                                            Argument::positional(Expression::int(tm)),
+                                            Argument::positional(Expression::int(td)),
                                         ],
                                         optional: false,
                                     },
@@ -10589,19 +10642,34 @@ fn apply_postfix(
                 _ => None,
             };
             if let Some(adapter_name) = dom_adapter {
-                let mut adapter_args = vec![Argument::positional(member_object.clone())];
-                adapter_args.extend(args.clone());
-                return Ok(Expression::with_span(
-                    ExprKind::Call {
-                        callee: Box::new(Expression::with_span(
-                            ExprKind::Ident(adapter_name.to_string()),
-                            span.clone(),
-                        )),
-                        args: adapter_args,
-                        optional: false,
+                let is_known_non_dom = php_object_class_from_expr(&member_object).is_some_and(
+                    |class_name| {
+                        !matches!(
+                            class_name.trim_start_matches('\\'),
+                            "DOMDocument"
+                                | "DOMElement"
+                                | "DOMNode"
+                                | "DOMDocumentFragment"
+                                | "DOMText"
+                                | "DOMAttr"
+                        )
                     },
-                    span.clone(),
-                ));
+                );
+                if !is_known_non_dom {
+                    let mut adapter_args = vec![Argument::positional(member_object.clone())];
+                    adapter_args.extend(args.clone());
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident(adapter_name.to_string()),
+                                span.clone(),
+                            )),
+                            args: adapter_args,
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
             }
             let directory_adapter: Option<&str> = match method_name.as_str() {
                 "read" => Some("__php_dir_read"),
@@ -10961,6 +11029,34 @@ fn apply_postfix(
             // Reflection visibility constants
             if let ExprKind::Ident(cn) = &receiver.kind {
                 let cn_bare = cn.trim_start_matches('\\');
+                if cn_bare == "PDO" {
+                    let val = match name.as_str() {
+                        "ATTR_ERRMODE" => Some(3),
+                        "ATTR_DRIVER_NAME" => Some(16),
+                        "ATTR_EMULATE_PREPARES" => Some(20),
+                        "ATTR_DEFAULT_FETCH_MODE" => Some(19),
+                        "ERRMODE_SILENT" => Some(0),
+                        "ERRMODE_WARNING" => Some(1),
+                        "ERRMODE_EXCEPTION" => Some(2),
+                        "FETCH_ASSOC" => Some(2),
+                        "FETCH_NUM" => Some(3),
+                        "FETCH_BOTH" => Some(4),
+                        "FETCH_OBJ" => Some(5),
+                        "FETCH_COLUMN" => Some(7),
+                        "FETCH_CLASS" => Some(8),
+                        "FETCH_INTO" => Some(9),
+                        "FETCH_FUNC" => Some(10),
+                        "FETCH_KEY_PAIR" => Some(12),
+                        "FETCH_GROUP" => Some(65_536),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::Int(v)),
+                            span.clone(),
+                        ));
+                    }
+                }
                 if matches!(cn_bare, "ReflectionMethod" | "ReflectionProperty") {
                     let val = match name.as_str() {
                         "IS_PUBLIC" => Some(1),
@@ -11238,6 +11334,107 @@ fn apply_postfix(
                     (&class.kind, &member.kind)
                 {
                     if member_name == "createFromFormat" {
+                        if args.len() >= 2 {
+                            if let (
+                                ExprKind::Lit(Literal::Str(fmt)),
+                                ExprKind::Lit(Literal::Str(value)),
+                            ) = (&args[0].value.kind, &args[1].value.kind)
+                            {
+                                if fmt == "Y-m-d" {
+                                    let valid_shape = value.len() >= 10
+                                        && value.as_bytes().get(4) == Some(&b'-')
+                                        && value.as_bytes().get(7) == Some(&b'-');
+                                    if !valid_shape {
+                                        let result = Expression::with_span(
+                                            ExprKind::Lit(Literal::Bool(false)),
+                                            span.clone(),
+                                        );
+                                        return Ok(php_dt_last_errors_state_expr(false, result, &span));
+                                    }
+                                    let date = &value[0..10];
+                                    let mut parts = date.split('-');
+                                    let y = parts.next().and_then(|p| p.parse::<i64>().ok());
+                                    let m = parts.next().and_then(|p| p.parse::<i64>().ok());
+                                    let d = parts.next().and_then(|p| p.parse::<i64>().ok());
+                                    if let (Some(y), Some(m), Some(d)) = (y, m, d) {
+                                        if m < 1 || m > 12 || d < 1 || d > php_days_in_month(y, m)
+                                        {
+                                            let result = Expression::with_span(
+                                                ExprKind::Lit(Literal::Bool(false)),
+                                                span.clone(),
+                                            );
+                                            return Ok(php_dt_last_errors_state_expr(false, result, &span));
+                                        }
+                                        let ctor = match class_name.trim_start_matches('\\') {
+                                            "DateTime" => Some("__php_dt_new"),
+                                            "DateTimeImmutable" => Some("__php_dt_imm_new"),
+                                            _ => None,
+                                        };
+                                        if let Some(fname) = ctor {
+                                            let mut ctor_args = vec![Argument::positional(
+                                                Expression::with_span(
+                                                    ExprKind::Lit(Literal::Str(date.to_string())),
+                                                    span.clone(),
+                                                ),
+                                            )];
+                                            if let Some(tz) = args.get(2) {
+                                                ctor_args.push(tz.clone());
+                                            }
+                                            let result = Expression::with_span(
+                                                ExprKind::Call {
+                                                    callee: Box::new(Expression::ident(fname)),
+                                                    args: ctor_args,
+                                                    optional: false,
+                                                },
+                                                span.clone(),
+                                            );
+                                            return Ok(php_dt_last_errors_state_expr(
+                                                value.len() == 10,
+                                                result,
+                                                &span,
+                                            ));
+                                        }
+                                    }
+                                    let result = Expression::with_span(
+                                        ExprKind::Lit(Literal::Bool(false)),
+                                        span.clone(),
+                                    );
+                                    return Ok(php_dt_last_errors_state_expr(false, result, &span));
+                                }
+                                if fmt == "Y-m-d H:i:s.u" && value.len() >= 23 {
+                                    let iso = format!(
+                                        "{}T{}Z",
+                                        &value[0..10],
+                                        &value[11..23]
+                                    );
+                                    let ctor = match class_name.trim_start_matches('\\') {
+                                        "DateTime" => Some("__php_dt_new"),
+                                        "DateTimeImmutable" => Some("__php_dt_imm_new"),
+                                        _ => None,
+                                    };
+                                    if let Some(fname) = ctor {
+                                        let mut ctor_args = vec![Argument::positional(
+                                            Expression::with_span(
+                                                ExprKind::Lit(Literal::Str(iso)),
+                                                span.clone(),
+                                            ),
+                                        )];
+                                        if let Some(tz) = args.get(2) {
+                                            ctor_args.push(tz.clone());
+                                        }
+                                        let result = Expression::with_span(
+                                            ExprKind::Call {
+                                                callee: Box::new(Expression::ident(fname)),
+                                                args: ctor_args,
+                                                optional: false,
+                                            },
+                                            span.clone(),
+                                        );
+                                        return Ok(php_dt_last_errors_state_expr(true, result, &span));
+                                    }
+                                }
+                            }
+                        }
                         let target_fn = match class_name.trim_start_matches('\\') {
                             "DateTime" => Some("__php_dt_create_from_format"),
                             "DateTimeImmutable" => Some("__php_dt_imm_create_from_format"),
@@ -11754,6 +11951,70 @@ fn apply_postfix(
 	                            span.clone(),
 	                        ));
 	                    }
+                    if matches!(bare_class, "DateTime" | "DateTimeImmutable")
+                        && method_name == "getLastErrors"
+                    {
+                        let clean_flag = Expression::with_span(
+                            ExprKind::Ident("$__php_dt_last_errors_clean".to_string()),
+                            span.clone(),
+                        );
+                        let count_expr = Expression::with_span(
+                            ExprKind::Ternary {
+                                cond: Box::new(clean_flag),
+                                then: Box::new(Expression::int(0)),
+                                else_: Box::new(Expression::int(1)),
+                            },
+                            span.clone(),
+                        );
+                        return Ok(php_assoc_array(
+                            vec![
+                                ("warning_count", count_expr.clone()),
+                                ("error_count", count_expr),
+                            ],
+                            &span,
+                        ));
+                    }
+                    if bare_class == "DateTimeImmutable"
+                        && matches!(method_name.as_str(), "createFromMutable" | "createFromInterface")
+                    {
+                        if let Some(first) = args.first() {
+                            let formatted = Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__php_dt_format")),
+                                    args: vec![
+                                        Argument::positional(first.value.clone()),
+                                        Argument::positional(Expression::with_span(
+                                            ExprKind::Lit(Literal::Str(
+                                                "Y-m-d H:i:s".to_string(),
+                                            )),
+                                            span.clone(),
+                                        )),
+                                    ],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            );
+                            let tz = Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__php_dt_get_timezone")),
+                                    args: vec![Argument::positional(first.value.clone())],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            );
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__php_dt_imm_new")),
+                                    args: vec![
+                                        Argument::positional(formatted),
+                                        Argument::positional(tz),
+                                    ],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                    }
 	                    if bare_class == "DateInterval" && method_name == "createFromDateString" {
 	                        if let Some(first) = args.first() {
 	                            if let ExprKind::Lit(Literal::Str(s)) = &first.value.kind {
@@ -17298,6 +17559,28 @@ fn php_datetime_literal_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
 	Some((y, m, d))
 }
 
+fn php_dt_last_errors_state_expr(clean: bool, result: Expression, span: &Span) -> Expression {
+	Expression::with_span(
+		ExprKind::Sequence(vec![
+			Expression::with_span(
+				ExprKind::Assign {
+					target: Box::new(Expression::with_span(
+						ExprKind::Ident("$__php_dt_last_errors_clean".to_string()),
+						span.clone(),
+					)),
+					value: Box::new(Expression::with_span(
+						ExprKind::Lit(Literal::Bool(clean)),
+						span.clone(),
+					)),
+				},
+				span.clone(),
+			),
+			result,
+		]),
+		span.clone(),
+	)
+}
+
 fn php_dateinterval_days(expr: &Expression) -> Option<i64> {
 	let resolved = match &expr.kind {
 		ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
@@ -17312,6 +17595,23 @@ fn php_dateinterval_days(expr: &Expression) -> Option<i64> {
 		ExprKind::Lit(Literal::Float(d)) => Some(*d as i64),
 		_ => None,
 	}
+}
+
+fn php_dateinterval_ymd(expr: &Expression) -> Option<(i64, i64, i64)> {
+	let resolved = match &expr.kind {
+		ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
+		_ => expr.clone(),
+	};
+	let (name, args) = php_call_ident(&resolved)?;
+	if name != "__php_dateinterval_components" || args.len() < 3 {
+		return None;
+	}
+	let get_int = |idx: usize| match &args[idx].value.kind {
+		ExprKind::Lit(Literal::Int(n)) => Some(*n),
+		ExprKind::Lit(Literal::Float(n)) => Some(*n as i64),
+		_ => None,
+	};
+	Some((get_int(0)?, get_int(1)?, get_int(2)?))
 }
 
 fn php_dateperiod_excludes_start(expr: &Expression) -> bool {
@@ -17332,6 +17632,20 @@ fn php_days_in_month(y: i64, m: i64) -> i64 {
 		2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
 		2 => 28,
 		_ => 30,
+	}
+}
+
+fn php_add_months_overflow(mut y: i64, mut m: i64, d: i64, add: i64) -> (i64, i64, i64) {
+	m += add;
+	while m > 12 {
+		m -= 12;
+		y += 1;
+	}
+	let dim = php_days_in_month(y, m);
+	if d <= dim {
+		(y, m, d)
+	} else {
+		php_add_days(y, m, dim, d - dim)
 	}
 }
 
@@ -22141,6 +22455,33 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 right: Box::new(rest),
             }
         }
+        "json_encode" if !args.is_empty() => {
+            let value = arg(0)?;
+            if php_object_class_from_expr(&value).is_some_and(|class_name| {
+                matches!(
+                    class_name.trim_start_matches('\\'),
+                    "DateTime" | "DateTimeImmutable"
+                )
+            }) {
+                let formatted = Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident("__php_dt_format")),
+                        args: vec![
+                            Argument::positional(value),
+                            Argument::positional(Expression::with_span(
+                                ExprKind::Lit(Literal::Str("c".to_string())),
+                                span.clone(),
+                            )),
+                        ],
+                        optional: false,
+                    },
+                    span.clone(),
+                );
+                mk_call(Expression::ident("json_encode"), vec![formatted])
+            } else {
+                return None;
+            }
+        }
         // ── Procedural DateTime API — thin aliases for the OO methods ──
         // Normalize to the `__php_dt_*` adapter calls (profile-bound) so the
         // procedural and object-oriented surfaces share one implementation.
@@ -22168,8 +22509,70 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
 	        }
         "date_add" => mk_call(Expression::ident("__php_dt_add"), vec![arg(0)?, arg(1)?]),
         "date_sub" => mk_call(Expression::ident("__php_dt_sub"), vec![arg(0)?, arg(1)?]),
-        "date_modify" => mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?, arg(1)?]),
+        "date_modify" => {
+            if let Some(second) = args.get(1) {
+                if let ExprKind::Lit(Literal::Str(s)) = &second.value.kind {
+                    if let Some((n, unit)) =
+                        crate::emitter::datetime_adapter::parse_relative_delta(s)
+                    {
+                        let adapter = match unit {
+                            "second" => "__php_dt_add_seconds",
+                            "minute" => "__php_dt_add_minutes",
+                            "hour" => "__php_dt_add_hours",
+                            "day" => "__php_dt_add_days",
+                            "week" => "__php_dt_add_weeks",
+                            "month" => "__php_dt_add_months",
+                            "year" => "__php_dt_add_years",
+                            _ => "__php_dt_modify",
+                        };
+                        mk_call(Expression::ident(adapter), vec![arg(0)?, Expression::int(n)])
+                    } else {
+                        mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?, arg(1)?])
+                    }
+                } else {
+                    mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?, arg(1)?])
+                }
+            } else {
+                mk_call(Expression::ident("__php_dt_modify"), vec![arg(0)?])
+            }
+        }
         "date_timestamp_get" => mk_call(Expression::ident("__php_dt_get_timestamp"), vec![arg(0)?]),
+        "date_timestamp_set" => {
+            mk_call(Expression::ident("__php_dt_set_timestamp"), vec![arg(0)?, arg(1)?])
+        }
+        "date_default_timezone_get" => {
+            ExprKind::Lit(Literal::Str("UTC".to_string()))
+        }
+        "timezone_open" => mk_call(Expression::ident("__php_datetimezone_new"), vec![arg(0)?]),
+        "date_interval_create_from_date_string" => {
+            if let Some(first) = args.first() {
+                if let ExprKind::Lit(Literal::Str(s)) = &first.value.kind {
+                    let (y, mo, d, h, mi, se) = php_parse_dateinterval_datestring(s);
+                    mk_call(
+                        Expression::ident("__php_dateinterval_components"),
+                        vec![
+                            Expression::int(y),
+                            Expression::int(mo),
+                            Expression::int(d),
+                            Expression::int(h),
+                            Expression::int(mi),
+                            Expression::int(se),
+                        ],
+                    )
+                } else {
+                    mk_call(Expression::ident("__php_dateinterval_components"), vec![
+                        Expression::int(0),
+                        Expression::int(0),
+                        Expression::int(0),
+                        Expression::int(0),
+                        Expression::int(0),
+                        Expression::int(0),
+                    ])
+                }
+            } else {
+                ExprKind::Lit(Literal::Bool(false))
+            }
+        }
         // `gmdate` is `date` in UTC; the adapter is already UTC-absolute.
         "gmdate" => {
             let mut a = vec![arg(0)?];
