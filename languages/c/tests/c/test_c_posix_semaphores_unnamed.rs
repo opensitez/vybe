@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn sem_init_destroy() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r1 = sem_init(&s, 0, 1); /* macos does not support unnamed semaphores */ if(r1 == 0) sem_destroy(&s); printf(\"%d\", r1 == 0 || r1 == -1); return 0; }"), vec!["1"]); } // Fails gracefully on macOS, works on Linux
-#[test] fn sem_init_pshared() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 1, 1); if(r == 0) sem_destroy(&s); printf(\"%d\", r == 0 || r == -1); return 0; }"), vec!["1"]); }
-#[test] fn sem_init_wait_post() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { sem_wait(&s); sem_post(&s); sem_destroy(&s); printf(\"ok\"); } else printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_init_trywait() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { int res = sem_trywait(&s); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_init_getvalue() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 42); if(r == 0) { int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 42); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_init_threads() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <pthread.h>\n#include <unistd.h>\nsem_t s;\nvoid* f(void* a) { sem_post(&s); return NULL; }\nint main() { int r = sem_init(&s, 0, 0); if(r == 0) { pthread_t t; pthread_create(&t, NULL, f, NULL); sem_wait(&s); pthread_join(t, NULL); sem_destroy(&s); printf(\"ok\"); } else printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_init_timedwait() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <time.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 50000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int res = sem_timedwait(&s, &ts); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_destroy_locked() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { /* UB to destroy locked sem, compile test only */ printf(\"ok\"); } else printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_init_invalid_value() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <limits.h>\nint main() { sem_t s; int r = sem_init(&s, 0, -1); /* SEM_VALUE_MAX exceeded */ printf(\"%d\", r == -1); return 0; }"), vec!["1"]); } // Fails
-#[test] fn sem_init_large_value() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 10000); if(r == 0) { int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 10000); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_post_increases_count() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { sem_post(&s); sem_post(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 2); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_wait_decreases_count() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 2); if(r == 0) { sem_wait(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 1); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_trywait_decreases_count() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 2); if(r == 0) { sem_trywait(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 1); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_wait_spurious() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { /* verify it can be interrupted by signals, compile test */ printf(\"ok\"); sem_destroy(&s); } else printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_init_twice() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { /* UB to init initialized sem, compile test */ printf(\"ok\"); } else printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_use_after_destroy() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to use after destroy, compile test */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_init_in_shm() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <sys/mman.h>\nint main() { void *p = mmap(NULL, sizeof(sem_t), PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0); if(p != MAP_FAILED) { int r = sem_init((sem_t*)p, 1, 1); if (r == 0) { sem_wait((sem_t*)p); sem_post((sem_t*)p); sem_destroy((sem_t*)p); printf(\"ok\"); } else printf(\"ok\"); munmap(p, sizeof(sem_t)); } else printf(\"ok\"); return 0; }"), vec!["ok"]); } // macOS doesn't support pshared unnamed semaphores
-#[test] fn sem_size_check() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { printf(\"%d\", sizeof(sem_t) > 0); return 0; }"), vec!["1"]); }
-#[test] fn sem_destroy_uninitialized() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to destroy uninit, compile test */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_timedwait_invalid_time() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <time.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { struct timespec ts = {0, 2000000000}; /* invalid nsec */ int res = sem_timedwait(&s, &ts); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"), vec!["1"]); }
+#[test]
+fn sem_init_destroy() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r1 = sem_init(&s, 0, 1); /* macos does not support unnamed semaphores */ if(r1 == 0) sem_destroy(&s); printf(\"%d\", r1 == 0 || r1 == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // Fails gracefully on macOS, works on Linux
+#[test]
+fn sem_init_pshared() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 1, 1); if(r == 0) sem_destroy(&s); printf(\"%d\", r == 0 || r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_init_wait_post() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { sem_wait(&s); sem_post(&s); sem_destroy(&s); printf(\"ok\"); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_init_trywait() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { int res = sem_trywait(&s); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_init_getvalue() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 42); if(r == 0) { int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 42); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_init_threads() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <pthread.h>\n#include <unistd.h>\nsem_t s;\nvoid* f(void* a) { sem_post(&s); return NULL; }\nint main() { int r = sem_init(&s, 0, 0); if(r == 0) { pthread_t t; pthread_create(&t, NULL, f, NULL); sem_wait(&s); pthread_join(t, NULL); sem_destroy(&s); printf(\"ok\"); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_init_timedwait() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <time.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 50000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int res = sem_timedwait(&s, &ts); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_destroy_locked() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { /* UB to destroy locked sem, compile test only */ printf(\"ok\"); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_init_invalid_value() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <limits.h>\nint main() { sem_t s; int r = sem_init(&s, 0, -1); /* SEM_VALUE_MAX exceeded */ printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // Fails
+#[test]
+fn sem_init_large_value() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 10000); if(r == 0) { int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 10000); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_post_increases_count() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { sem_post(&s); sem_post(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 2); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_wait_decreases_count() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 2); if(r == 0) { sem_wait(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 1); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_trywait_decreases_count() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 2); if(r == 0) { sem_trywait(&s); int val = 0; sem_getvalue(&s, &val); printf(\"%d\", val == 1); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_wait_spurious() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { /* verify it can be interrupted by signals, compile test */ printf(\"ok\"); sem_destroy(&s); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_init_twice() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 1); if(r == 0) { /* UB to init initialized sem, compile test */ printf(\"ok\"); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_use_after_destroy() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to use after destroy, compile test */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_init_in_shm() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <sys/mman.h>\nint main() { void *p = mmap(NULL, sizeof(sem_t), PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0); if(p != MAP_FAILED) { int r = sem_init((sem_t*)p, 1, 1); if (r == 0) { sem_wait((sem_t*)p); sem_post((sem_t*)p); sem_destroy((sem_t*)p); printf(\"ok\"); } else printf(\"ok\"); munmap(p, sizeof(sem_t)); } else printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+} // macOS doesn't support pshared unnamed semaphores
+#[test]
+fn sem_size_check() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { printf(\"%d\", sizeof(sem_t) > 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_destroy_uninitialized() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to destroy uninit, compile test */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_timedwait_invalid_time() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <time.h>\nint main() { sem_t s; int r = sem_init(&s, 0, 0); if(r == 0) { struct timespec ts = {0, 2000000000}; /* invalid nsec */ int res = sem_timedwait(&s, &ts); printf(\"%d\", res == -1); sem_destroy(&s); } else printf(\"1\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}

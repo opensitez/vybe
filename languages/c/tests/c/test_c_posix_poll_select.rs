@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn select_basic_timeout() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timeval tv = {0, 10000}; int res = select(0, &r, NULL, NULL, &tv); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
-#[test] fn select_read_ready() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"x\", 1); fd_set r; FD_ZERO(&r); FD_SET(fd[0], &r); struct timeval tv = {0, 0}; int res = select(fd[0]+1, &r, NULL, NULL, &tv); printf(\"%d %d\", res == 1, FD_ISSET(fd[0], &r) != 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1 1"]); }
-#[test] fn select_write_ready() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); fd_set w; FD_ZERO(&w); FD_SET(fd[1], &w); struct timeval tv = {0, 0}; int res = select(fd[1]+1, NULL, &w, NULL, &tv); printf(\"%d %d\", res == 1, FD_ISSET(fd[1], &w) != 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1 1"]); }
-#[test] fn fd_set_macros() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set s; FD_ZERO(&s); FD_SET(5, &s); int r1 = FD_ISSET(5, &s); FD_CLR(5, &s); int r2 = FD_ISSET(5, &s); printf(\"%d %d\", r1 != 0, r2 != 0); return 0; }"), vec!["1 0"]); }
-#[test] fn select_invalid_nfds() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { int res = select(-1, NULL, NULL, NULL, NULL); printf(\"%d\", res == -1); return 0; }"), vec!["1"]); }
-#[test] fn poll_basic_timeout() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { int res = poll(NULL, 0, 10); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
-#[test] fn poll_read_ready() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"x\", 1); struct pollfd p = {fd[0], POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLIN) != 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1 1"]); }
-#[test] fn poll_write_ready() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); struct pollfd p = {fd[1], POLLOUT, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLOUT) != 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1 1"]); }
-#[test] fn poll_hup() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); close(fd[1]); struct pollfd p = {fd[0], POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLHUP) != 0); close(fd[0]); return 0; }"), vec!["1 1"]); } // Pipe read end sees HUP when write end closed
-#[test] fn poll_nval() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { struct pollfd p = {9999, POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLNVAL) != 0); return 0; }"), vec!["1 1"]); }
-#[test] fn select_ebadf() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); FD_SET(9999, &r); struct timeval tv = {0, 0}; int res = select(10000, &r, NULL, NULL, &tv); printf(\"%d\", res == -1); return 0; }"), vec!["1"]); } // Select returns -1 with EBADF, unlike poll marking POLLNVAL
-#[test] fn poll_multiple_fds() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int f1[2], f2[2]; pipe(f1); pipe(f2); write(f1[1], \"x\", 1); struct pollfd p[2] = {{f1[0], POLLIN, 0}, {f2[0], POLLIN, 0}}; int res = poll(p, 2, 0); printf(\"%d %d %d\", res == 1, (p[0].revents & POLLIN) != 0, (p[1].revents & POLLIN) == 0); close(f1[0]); close(f1[1]); close(f2[0]); close(f2[1]); return 0; }"), vec!["1 1 1"]); }
-#[test] fn select_multiple_fds() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int f1[2], f2[2]; pipe(f1); pipe(f2); write(f1[1], \"x\", 1); fd_set r; FD_ZERO(&r); FD_SET(f1[0], &r); FD_SET(f2[0], &r); int max = f1[0] > f2[0] ? f1[0] : f2[0]; struct timeval tv = {0, 0}; int res = select(max+1, &r, NULL, NULL, &tv); printf(\"%d %d %d\", res == 1, FD_ISSET(f1[0], &r) != 0, FD_ISSET(f2[0], &r) == 0); close(f1[0]); close(f1[1]); close(f2[0]); close(f2[1]); return 0; }"), vec!["1 1 1"]); }
-#[test] fn poll_negative_fd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { struct pollfd p = {-1, POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 0, p.revents == 0); return 0; }"), vec!["1 1"]); } // Poll ignores negative fds and sets revents to 0
-#[test] fn pselect_compile() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timespec ts = {0, 0}; int res = pselect(0, &r, NULL, NULL, &ts, NULL); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
-#[test] fn ppoll_compile() { assert_eq!(run_c("#define _GNU_SOURCE\n#include <poll.h>\nint main() { struct timespec ts = {0, 0}; int res = ppoll(NULL, 0, &ts, NULL); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
-#[test] fn select_timeout_modification() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timeval tv = {0, 10000}; select(0, &r, NULL, NULL, &tv); /* Some OS modify tv to reflect remaining time. Valid C either way */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn select_large_fd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); FD_SET(FD_SETSIZE-1, &r); /* Valid as long as < FD_SETSIZE */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn poll_zero_nfds() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { int res = poll(NULL, 0, 0); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
-#[test] fn select_all_null() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { int res = select(0, NULL, NULL, NULL, NULL); /* blocks forever normally, but we test signal or just compile. Wait, we don't want to block forever. Use timeout */ struct timeval tv = {0, 0}; res = select(0, NULL, NULL, NULL, &tv); printf(\"%d\", res == 0); return 0; }"), vec!["1"]); }
+#[test]
+fn select_basic_timeout() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timeval tv = {0, 10000}; int res = select(0, &r, NULL, NULL, &tv); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn select_read_ready() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"x\", 1); fd_set r; FD_ZERO(&r); FD_SET(fd[0], &r); struct timeval tv = {0, 0}; int res = select(fd[0]+1, &r, NULL, NULL, &tv); printf(\"%d %d\", res == 1, FD_ISSET(fd[0], &r) != 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn select_write_ready() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); fd_set w; FD_ZERO(&w); FD_SET(fd[1], &w); struct timeval tv = {0, 0}; int res = select(fd[1]+1, NULL, &w, NULL, &tv); printf(\"%d %d\", res == 1, FD_ISSET(fd[1], &w) != 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn fd_set_macros() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set s; FD_ZERO(&s); FD_SET(5, &s); int r1 = FD_ISSET(5, &s); FD_CLR(5, &s); int r2 = FD_ISSET(5, &s); printf(\"%d %d\", r1 != 0, r2 != 0); return 0; }"
+        ),
+        vec!["1 0"]
+    );
+}
+#[test]
+fn select_invalid_nfds() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { int res = select(-1, NULL, NULL, NULL, NULL); printf(\"%d\", res == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn poll_basic_timeout() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { int res = poll(NULL, 0, 10); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn poll_read_ready() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"x\", 1); struct pollfd p = {fd[0], POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLIN) != 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn poll_write_ready() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); struct pollfd p = {fd[1], POLLOUT, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLOUT) != 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn poll_hup() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); close(fd[1]); struct pollfd p = {fd[0], POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLHUP) != 0); close(fd[0]); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+} // Pipe read end sees HUP when write end closed
+#[test]
+fn poll_nval() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { struct pollfd p = {9999, POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 1, (p.revents & POLLNVAL) != 0); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn select_ebadf() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); FD_SET(9999, &r); struct timeval tv = {0, 0}; int res = select(10000, &r, NULL, NULL, &tv); printf(\"%d\", res == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // Select returns -1 with EBADF, unlike poll marking POLLNVAL
+#[test]
+fn poll_multiple_fds() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\n#include <unistd.h>\nint main() { int f1[2], f2[2]; pipe(f1); pipe(f2); write(f1[1], \"x\", 1); struct pollfd p[2] = {{f1[0], POLLIN, 0}, {f2[0], POLLIN, 0}}; int res = poll(p, 2, 0); printf(\"%d %d %d\", res == 1, (p[0].revents & POLLIN) != 0, (p[1].revents & POLLIN) == 0); close(f1[0]); close(f1[1]); close(f2[0]); close(f2[1]); return 0; }"
+        ),
+        vec!["1 1 1"]
+    );
+}
+#[test]
+fn select_multiple_fds() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\n#include <unistd.h>\nint main() { int f1[2], f2[2]; pipe(f1); pipe(f2); write(f1[1], \"x\", 1); fd_set r; FD_ZERO(&r); FD_SET(f1[0], &r); FD_SET(f2[0], &r); int max = f1[0] > f2[0] ? f1[0] : f2[0]; struct timeval tv = {0, 0}; int res = select(max+1, &r, NULL, NULL, &tv); printf(\"%d %d %d\", res == 1, FD_ISSET(f1[0], &r) != 0, FD_ISSET(f2[0], &r) == 0); close(f1[0]); close(f1[1]); close(f2[0]); close(f2[1]); return 0; }"
+        ),
+        vec!["1 1 1"]
+    );
+}
+#[test]
+fn poll_negative_fd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { struct pollfd p = {-1, POLLIN, 0}; int res = poll(&p, 1, 0); printf(\"%d %d\", res == 0, p.revents == 0); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+} // Poll ignores negative fds and sets revents to 0
+#[test]
+fn pselect_compile() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timespec ts = {0, 0}; int res = pselect(0, &r, NULL, NULL, &ts, NULL); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ppoll_compile() {
+    assert_eq!(
+        run_c(
+            "#define _GNU_SOURCE\n#include <poll.h>\nint main() { struct timespec ts = {0, 0}; int res = ppoll(NULL, 0, &ts, NULL); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn select_timeout_modification() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); struct timeval tv = {0, 10000}; select(0, &r, NULL, NULL, &tv); /* Some OS modify tv to reflect remaining time. Valid C either way */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn select_large_fd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { fd_set r; FD_ZERO(&r); FD_SET(FD_SETSIZE-1, &r); /* Valid as long as < FD_SETSIZE */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn poll_zero_nfds() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <poll.h>\nint main() { int res = poll(NULL, 0, 0); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn select_all_null() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <sys/select.h>\nint main() { int res = select(0, NULL, NULL, NULL, NULL); /* blocks forever normally, but we test signal or just compile. Wait, we don't want to block forever. Use timeout */ struct timeval tv = {0, 0}; res = select(0, NULL, NULL, NULL, &tv); printf(\"%d\", res == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}

@@ -1,8 +1,13 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn posix_time_complex_formatting() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_time_complex_formatting() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <time.h>
 #include <string.h>
@@ -29,11 +34,17 @@ int main() {
     printf("%s", buf);
     return 0;
 }
-    "#), vec!["2023-10-15T14:30:45Z"]);
+    "#
+        ),
+        vec!["2023-10-15T14:30:45Z"]
+    );
 }
 
-#[test] fn posix_gettimeofday_nanosleep() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_gettimeofday_nanosleep() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <sys/time.h>
 #include <time.h>
@@ -51,5 +62,8 @@ int main() {
     printf("%d", elapsed_us >= 40000); // Allow some OS scheduling tolerance
     return 0;
 }
-    "#), vec!["1"]);
+    "#
+        ),
+        vec!["1"]
+    );
 }

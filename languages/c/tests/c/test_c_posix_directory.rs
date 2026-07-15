@@ -1,8 +1,13 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn posix_directory_lifecycle() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_directory_lifecycle() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <sys/stat.h>
 #include <dirent.h>
@@ -38,11 +43,17 @@ int main() {
     printf("%d", found_file);
     return 0;
 }
-    "#), vec!["1"]);
+    "#
+        ),
+        vec!["1"]
+    );
 }
 
-#[test] fn posix_getcwd_chdir() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_getcwd_chdir() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <unistd.h>
 #include <stdlib.h>
@@ -63,5 +74,8 @@ int main() {
     printf("%d %d", strcmp(cwd2, "/") == 0, strcmp(cwd1, cwd3) == 0);
     return 0;
 }
-    "#), vec!["1 1"]);
+    "#
+        ),
+        vec!["1 1"]
+    );
 }

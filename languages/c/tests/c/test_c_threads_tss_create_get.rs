@@ -1,6 +1,32 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn tss_create_set_get() { assert_eq!(run_c("#include <threads.h>\n#include <stdlib.h>\ntss_t key;\nint main() { if (tss_create(&key, NULL) == thrd_success) { int val = 42; tss_set(key, &val); int *res = tss_get(key); printf(\"%d\", *res); tss_delete(key); } return 0; }"), vec!["42"]); }
-#[test] fn tss_threads_independent() { assert_eq!(run_c("#include <threads.h>\ntss_t key;\nint worker(void *arg) { int *val = arg; tss_set(key, val); thrd_yield(); int *res = tss_get(key); return *res; }\nint main() { tss_create(&key, NULL); thrd_t t1, t2; int v1 = 10, v2 = 20; thrd_create(&t1, worker, &v1); thrd_create(&t2, worker, &v2); int r1, r2; thrd_join(t1, &r1); thrd_join(t2, &r2); printf(\"%d %d\", r1, r2); tss_delete(key); return 0; }"), vec!["10 20"]); }
-#[test] fn thread_local_storage_keyword() { assert_eq!(run_c("#include <threads.h>\nthread_local int tls_var = 5;\nint worker(void *arg) { tls_var += 10; return tls_var; }\nint main() { thrd_t t; thrd_create(&t, worker, NULL); int res; thrd_join(t, &res); printf(\"%d %d\", res, tls_var); return 0; }"), vec!["15 5"]); }
+#[test]
+fn tss_create_set_get() {
+    assert_eq!(
+        run_c(
+            "#include <threads.h>\n#include <stdlib.h>\ntss_t key;\nint main() { if (tss_create(&key, NULL) == thrd_success) { int val = 42; tss_set(key, &val); int *res = tss_get(key); printf(\"%d\", *res); tss_delete(key); } return 0; }"
+        ),
+        vec!["42"]
+    );
+}
+#[test]
+fn tss_threads_independent() {
+    assert_eq!(
+        run_c(
+            "#include <threads.h>\ntss_t key;\nint worker(void *arg) { int *val = arg; tss_set(key, val); thrd_yield(); int *res = tss_get(key); return *res; }\nint main() { tss_create(&key, NULL); thrd_t t1, t2; int v1 = 10, v2 = 20; thrd_create(&t1, worker, &v1); thrd_create(&t2, worker, &v2); int r1, r2; thrd_join(t1, &r1); thrd_join(t2, &r2); printf(\"%d %d\", r1, r2); tss_delete(key); return 0; }"
+        ),
+        vec!["10 20"]
+    );
+}
+#[test]
+fn thread_local_storage_keyword() {
+    assert_eq!(
+        run_c(
+            "#include <threads.h>\nthread_local int tls_var = 5;\nint worker(void *arg) { tls_var += 10; return tls_var; }\nint main() { thrd_t t; thrd_create(&t, worker, NULL); int res; thrd_join(t, &res); printf(\"%d %d\", res, tls_var); return 0; }"
+        ),
+        vec!["15 5"]
+    );
+}

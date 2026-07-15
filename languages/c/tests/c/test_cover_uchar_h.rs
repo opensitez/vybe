@@ -1,6 +1,5 @@
 //! uchar.h — UTF character typedefs, literals, macros, and conversion entry points.
 
-
 c_run_cases! {
     uchar_char8_literal_value => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char8_t c = u8'a'; printf(\"%d\\n\", (int)c); return 0;", expect: ["97"] },
     uchar_char16_literal_value => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char16_t c = u'b'; printf(\"%d\\n\", (int)c); return 0;", expect: ["98"] },

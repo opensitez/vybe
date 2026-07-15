@@ -40,6 +40,7 @@ uses_common_resolver = true
 # sprintf routes through the libc inline emitter helper (no JS polyfill).
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_sprintf" = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
+"__c_vsprintf" = { emit = "common:libc.stdio.vsprintf", min_args = 2, max_args = 2 }
 "__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
 "__c_str_index_of" = { emit = "common:str_index_of", min_args = 2, max_args = 2 }
 "__c_str_last_index_of" = { emit = "common:str_last_index_of", min_args = 2, max_args = 2 }

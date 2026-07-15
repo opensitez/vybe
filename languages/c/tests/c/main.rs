@@ -266,10 +266,10 @@ mod test_lang_preprocessor_breadth;
 mod test_lang_preprocessor_conditional_code;
 mod test_lang_preprocessor_macro_expansion;
 mod test_lang_relational_equality;
+mod test_lang_run_breadth;
 mod test_lang_run_breadth2;
 mod test_lang_run_breadth3;
 mod test_lang_run_breadth4;
-mod test_lang_run_breadth;
 mod test_lang_semantics_batch;
 mod test_lang_shift_operator_semantics;
 mod test_lang_sizeof_alignof_expressions;
@@ -383,4 +383,3 @@ mod test_vla;
 mod test_volatile;
 mod test_wchar_string_operations;
 mod test_wide_chars;
-

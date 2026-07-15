@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn fork_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { printf(\"child\"); _exit(0); } else if (p > 0) { wait(NULL); printf(\"parent\"); } return 0; }"), vec!["childparent", "parentchild"]); } // Depending on flush order, allow both or use sleep
-#[test] fn fork_waitpid_status() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { _exit(42); } else { int status; waitpid(p, &status, 0); printf(\"%d %d\", WIFEXITED(status), WEXITSTATUS(status)); } return 0; }"), vec!["1 42"]); }
-#[test] fn fork_multiple_children() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { for(int i=0; i<3; i++) { if (fork() == 0) _exit(i); } int st; while(wait(&st) > 0); printf(\"done\"); return 0; }"), vec!["done"]); }
-#[test] fn fork_orphan_reparent() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { if (fork() == 0) { if (fork() == 0) { sleep(1); _exit(0); } _exit(0); } wait(NULL); printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn waitpid_nohang() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { sleep(2); _exit(0); } int st; int res = waitpid(p, &st, WNOHANG); printf(\"%d\", res == 0); waitpid(p, &st, 0); return 0; }"), vec!["1"]); }
-#[test] fn wifsignaled_check() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <signal.h>\nint main() { pid_t p = fork(); if (p == 0) { kill(getpid(), SIGKILL); _exit(0); } int st; waitpid(p, &st, 0); printf(\"%d %d\", WIFSIGNALED(st), WTERMSIG(st) == SIGKILL); return 0; }"), vec!["1 1"]); }
-#[test] fn fork_shared_file_descriptor() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fork_fd.txt\", O_CREAT|O_WRONLY|O_TRUNC, 0644); write(fd, \"A\", 1); pid_t p = fork(); if (p == 0) { write(fd, \"B\", 1); _exit(0); } wait(NULL); write(fd, \"C\", 1); close(fd); FILE *f = fopen(\"test_fork_fd.txt\", \"r\"); char b[4]={0}; fread(b, 1, 3, f); printf(\"%s\", b); fclose(f); unlink(\"test_fork_fd.txt\"); return 0; }"), vec!["ABC"]); }
-#[test] fn waitid_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(7); siginfo_t inf = {0}; waitid(P_PID, p, &inf, WEXITED); printf(\"%d %d\", inf.si_pid == p, inf.si_status); return 0; }"), vec!["1 7"]); }
-#[test] fn fork_vfork_compile() { assert_eq!(run_c("#define _XOPEN_SOURCE 500\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = vfork(); if (p == 0) _exit(9); int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st)); return 0; }"), vec!["9"]); }
-#[test] fn fork_memory_copy_on_write() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int var = 1; pid_t p = fork(); if (p == 0) { var = 2; _exit(0); } wait(NULL); printf(\"%d\", var); return 0; }"), vec!["1"]); } // parent's memory is untouched
-#[test] fn wait_returns_pid() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; pid_t r = wait(&st); printf(\"%d\", r == p); return 0; }"), vec!["1"]); }
-#[test] fn waitpid_group() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; pid_t r = waitpid(0, &st, 0); /* 0 means any child in same process group */ printf(\"%d\", r == p); return 0; }"), vec!["1"]); }
-#[test] fn fork_max_files() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { /* verify getdtablesize works across fork */ int fds = getdtablesize(); pid_t p = fork(); if (p == 0) _exit(getdtablesize() == fds ? 1 : 0); int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st)); return 0; }"), vec!["1"]); }
-#[test] fn waitpid_invalid_pid() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int st; pid_t r = waitpid(-99999, &st, 0); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn wait_no_children() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int st; pid_t r = wait(&st); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn fork_exec_combo() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { execl(\"/bin/echo\", \"echo\", \"child_echo\", NULL); _exit(1); } int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st) == 0); return 0; }"), vec!["child_echo\n1"]); }
-#[test] fn wait3_wait4_compile() { assert_eq!(run_c("#define _BSD_SOURCE\n#define _DEFAULT_SOURCE\n#include <sys/wait.h>\n#include <sys/resource.h>\n#include <unistd.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; struct rusage ru; wait4(p, &st, 0, &ru); printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn fork_flush_stdout() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { printf(\"A\"); fflush(stdout); pid_t p = fork(); if(p==0) { printf(\"B\"); _exit(0); } wait(NULL); printf(\"C\"); return 0; }"), vec!["ABC", "ACB"]); }
-#[test] fn fork_unflushed_stdout() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { /* Set fully buffered so it is copied in memory */ setvbuf(stdout, NULL, _IOFBF, 1024); printf(\"A\"); pid_t p = fork(); if(p==0) { printf(\"B\"); _exit(0); } wait(NULL); printf(\"C\"); return 0; }"), vec!["ABAC"]); } // A gets printed by child and parent
-#[test] fn posix_spawn_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <spawn.h>\n#include <sys/wait.h>\nextern char **environ;\nint main() { pid_t p; char *argv[] = {\"true\", NULL}; int s = posix_spawn(&p, \"/usr/bin/true\", NULL, NULL, argv, environ); if(s != 0) posix_spawn(&p, \"/bin/true\", NULL, NULL, argv, environ); int st; waitpid(p, &st, 0); printf(\"%d\", WIFEXITED(st) && WEXITSTATUS(st) == 0); return 0; }"), vec!["1"]); }
+#[test]
+fn fork_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { printf(\"child\"); _exit(0); } else if (p > 0) { wait(NULL); printf(\"parent\"); } return 0; }"
+        ),
+        vec!["childparent", "parentchild"]
+    );
+} // Depending on flush order, allow both or use sleep
+#[test]
+fn fork_waitpid_status() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { _exit(42); } else { int status; waitpid(p, &status, 0); printf(\"%d %d\", WIFEXITED(status), WEXITSTATUS(status)); } return 0; }"
+        ),
+        vec!["1 42"]
+    );
+}
+#[test]
+fn fork_multiple_children() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { for(int i=0; i<3; i++) { if (fork() == 0) _exit(i); } int st; while(wait(&st) > 0); printf(\"done\"); return 0; }"
+        ),
+        vec!["done"]
+    );
+}
+#[test]
+fn fork_orphan_reparent() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { if (fork() == 0) { if (fork() == 0) { sleep(1); _exit(0); } _exit(0); } wait(NULL); printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn waitpid_nohang() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { sleep(2); _exit(0); } int st; int res = waitpid(p, &st, WNOHANG); printf(\"%d\", res == 0); waitpid(p, &st, 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn wifsignaled_check() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <signal.h>\nint main() { pid_t p = fork(); if (p == 0) { kill(getpid(), SIGKILL); _exit(0); } int st; waitpid(p, &st, 0); printf(\"%d %d\", WIFSIGNALED(st), WTERMSIG(st) == SIGKILL); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn fork_shared_file_descriptor() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fork_fd.txt\", O_CREAT|O_WRONLY|O_TRUNC, 0644); write(fd, \"A\", 1); pid_t p = fork(); if (p == 0) { write(fd, \"B\", 1); _exit(0); } wait(NULL); write(fd, \"C\", 1); close(fd); FILE *f = fopen(\"test_fork_fd.txt\", \"r\"); char b[4]={0}; fread(b, 1, 3, f); printf(\"%s\", b); fclose(f); unlink(\"test_fork_fd.txt\"); return 0; }"
+        ),
+        vec!["ABC"]
+    );
+}
+#[test]
+fn waitid_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(7); siginfo_t inf = {0}; waitid(P_PID, p, &inf, WEXITED); printf(\"%d %d\", inf.si_pid == p, inf.si_status); return 0; }"
+        ),
+        vec!["1 7"]
+    );
+}
+#[test]
+fn fork_vfork_compile() {
+    assert_eq!(
+        run_c(
+            "#define _XOPEN_SOURCE 500\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = vfork(); if (p == 0) _exit(9); int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st)); return 0; }"
+        ),
+        vec!["9"]
+    );
+}
+#[test]
+fn fork_memory_copy_on_write() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int var = 1; pid_t p = fork(); if (p == 0) { var = 2; _exit(0); } wait(NULL); printf(\"%d\", var); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // parent's memory is untouched
+#[test]
+fn wait_returns_pid() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; pid_t r = wait(&st); printf(\"%d\", r == p); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn waitpid_group() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; pid_t r = waitpid(0, &st, 0); /* 0 means any child in same process group */ printf(\"%d\", r == p); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn fork_max_files() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { /* verify getdtablesize works across fork */ int fds = getdtablesize(); pid_t p = fork(); if (p == 0) _exit(getdtablesize() == fds ? 1 : 0); int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st)); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn waitpid_invalid_pid() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int st; pid_t r = waitpid(-99999, &st, 0); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn wait_no_children() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int st; pid_t r = wait(&st); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn fork_exec_combo() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { pid_t p = fork(); if (p == 0) { execl(\"/bin/echo\", \"echo\", \"child_echo\", NULL); _exit(1); } int st; waitpid(p, &st, 0); printf(\"%d\", WEXITSTATUS(st) == 0); return 0; }"
+        ),
+        vec!["child_echo\n1"]
+    );
+}
+#[test]
+fn wait3_wait4_compile() {
+    assert_eq!(
+        run_c(
+            "#define _BSD_SOURCE\n#define _DEFAULT_SOURCE\n#include <sys/wait.h>\n#include <sys/resource.h>\n#include <unistd.h>\nint main() { pid_t p = fork(); if (p == 0) _exit(0); int st; struct rusage ru; wait4(p, &st, 0, &ru); printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn fork_flush_stdout() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { printf(\"A\"); fflush(stdout); pid_t p = fork(); if(p==0) { printf(\"B\"); _exit(0); } wait(NULL); printf(\"C\"); return 0; }"
+        ),
+        vec!["ABC", "ACB"]
+    );
+}
+#[test]
+fn fork_unflushed_stdout() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { /* Set fully buffered so it is copied in memory */ setvbuf(stdout, NULL, _IOFBF, 1024); printf(\"A\"); pid_t p = fork(); if(p==0) { printf(\"B\"); _exit(0); } wait(NULL); printf(\"C\"); return 0; }"
+        ),
+        vec!["ABAC"]
+    );
+} // A gets printed by child and parent
+#[test]
+fn posix_spawn_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <spawn.h>\n#include <sys/wait.h>\nextern char **environ;\nint main() { pid_t p; char *argv[] = {\"true\", NULL}; int s = posix_spawn(&p, \"/usr/bin/true\", NULL, NULL, argv, environ); if(s != 0) posix_spawn(&p, \"/bin/true\", NULL, NULL, argv, environ); int st; waitpid(p, &st, 0); printf(\"%d\", WIFEXITED(st) && WEXITSTATUS(st) == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}

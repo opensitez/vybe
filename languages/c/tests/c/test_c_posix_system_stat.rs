@@ -1,8 +1,13 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn posix_stat_complex_workflow() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_stat_complex_workflow() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -24,11 +29,17 @@ int main() {
     unlink(path);
     return 0;
 }
-    "#), vec!["11 1 0"]);
+    "#
+        ),
+        vec!["11 1 0"]
+    );
 }
 
-#[test] fn posix_fstat_lstat_comparison() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_fstat_lstat_comparison() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <sys/stat.h>
 #include <unistd.h>
@@ -49,11 +60,17 @@ int main() {
     printf("%d %d", (int)st1.st_size == (int)st2.st_size, st1.st_mode == st2.st_mode);
     return 0;
 }
-    "#), vec!["1 1"]);
+    "#
+        ),
+        vec!["1 1"]
+    );
 }
 
-#[test] fn posix_access_permissions() {
-    assert_eq!(run_c(r#"
+#[test]
+fn posix_access_permissions() {
+    assert_eq!(
+        run_c(
+            r#"
 #define _POSIX_C_SOURCE 200809L
 #include <unistd.h>
 #include <fcntl.h>
@@ -71,5 +88,8 @@ int main() {
     printf("%d %d %d", r_ok, w_ok, x_ok);
     return 0;
 }
-    "#), vec!["1 1 0"]);
+    "#
+        ),
+        vec!["1 1 0"]
+    );
 }

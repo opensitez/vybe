@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn sem_open_close() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem1\", O_CREAT, 0644, 1); printf(\"%d\", s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"/test_sem1\"); } return 0; }"), vec!["1"]); }
-#[test] fn sem_unlink_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem2\", O_CREAT, 0644, 1); int r = sem_unlink(\"/test_sem2\"); printf(\"%d\", r == 0); if(s != SEM_FAILED) sem_close(s); return 0; }"), vec!["1"]); }
-#[test] fn sem_wait_post() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem3\", O_CREAT, 0644, 1); sem_wait(s); int r = sem_post(s); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem3\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_trywait_success() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem4\", O_CREAT, 0644, 1); int r = sem_trywait(s); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem4\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_trywait_fail() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem5\", O_CREAT, 0644, 1); sem_wait(s); int r = sem_trywait(s); printf(\"%d\", r == -1); sem_close(s); sem_unlink(\"/test_sem5\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_getvalue() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem6\", O_CREAT, 0644, 42); int val = 0; sem_getvalue(s, &val); printf(\"%d\", val == 42); sem_close(s); sem_unlink(\"/test_sem6\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_open_existing() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s1 = sem_open(\"/test_sem7\", O_CREAT, 0644, 1); sem_t *s2 = sem_open(\"/test_sem7\", 0); printf(\"%d\", s2 != SEM_FAILED); sem_close(s1); if(s2 != SEM_FAILED) sem_close(s2); sem_unlink(\"/test_sem7\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_open_exclusive() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s1 = sem_open(\"/test_sem8\", O_CREAT, 0644, 1); sem_t *s2 = sem_open(\"/test_sem8\", O_CREAT | O_EXCL, 0644, 1); printf(\"%d\", s2 == SEM_FAILED); sem_close(s1); sem_unlink(\"/test_sem8\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_open_missing_without_creat() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem_missing\", 0); printf(\"%d\", s == SEM_FAILED); return 0; }"), vec!["1"]); }
-#[test] fn sem_timedwait_success() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <time.h>\nint main() { sem_t *s = sem_open(\"/test_sem9\", O_CREAT, 0644, 1); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 1; int r = sem_timedwait(s, &ts); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem9\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_timedwait_timeout() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <time.h>\nint main() { sem_t *s = sem_open(\"/test_sem10\", O_CREAT, 0644, 0); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 50000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int r = sem_timedwait(s, &ts); printf(\"%d\", r == -1); sem_close(s); sem_unlink(\"/test_sem10\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_multiple_posts() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem11\", O_CREAT, 0644, 0); sem_post(s); sem_post(s); sem_post(s); int val; sem_getvalue(s, &val); printf(\"%d\", val == 3); sem_close(s); sem_unlink(\"/test_sem11\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_post_increases_value() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem12\", O_CREAT, 0644, 0); int v1; sem_getvalue(s, &v1); sem_post(s); int v2; sem_getvalue(s, &v2); printf(\"%d\", v2 > v1); sem_close(s); sem_unlink(\"/test_sem12\"); return 0; }"), vec!["1"]); }
-#[test] fn sem_unlink_nonexistent() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { int r = sem_unlink(\"/test_sem_does_not_exist\"); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn sem_close_unopened() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to close SEM_FAILED, compile test */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn sem_open_long_name() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { char name[300]; name[0] = '/'; for(int i=1; i<250; i++) name[i] = 'a'; name[250] = 0; sem_t *s = sem_open(name, O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED); /* Most implementations reject very long names */ return 0; }"), vec!["1"]); }
-#[test] fn sem_shared_processes() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { sem_unlink(\"/test_sem13\"); sem_t *s = sem_open(\"/test_sem13\", O_CREAT, 0644, 0); pid_t p = fork(); if (p==0) { sem_t *s2 = sem_open(\"/test_sem13\", 0); sem_post(s2); sem_close(s2); _exit(0); } sem_wait(s); printf(\"1\"); sem_close(s); sem_unlink(\"/test_sem13\"); wait(NULL); return 0; }"), vec!["1"]); }
-#[test] fn sem_name_no_slash() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* POSIX says name MUST begin with slash for portability */ sem_t *s = sem_open(\"test_sem14\", O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED || s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"test_sem14\"); } return 0; }"), vec!["1"]); } // May work on Linux, may fail on macOS
-#[test] fn sem_name_multiple_slashes() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* Implementation defined behavior */ sem_t *s = sem_open(\"//test_sem15\", O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED || s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"//test_sem15\"); } return 0; }"), vec!["1"]); }
-#[test] fn sem_open_limit() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* Check we can open at least 5 */ sem_t *s[5]; int ok = 1; char name[20]; for(int i=0; i<5; i++) { sprintf(name, \"/test_sem_l%d\", i); s[i] = sem_open(name, O_CREAT, 0644, 1); if(s[i] == SEM_FAILED) ok = 0; } printf(\"%d\", ok); for(int i=0; i<5; i++) { sprintf(name, \"/test_sem_l%d\", i); if(s[i] != SEM_FAILED) { sem_close(s[i]); sem_unlink(name); } } return 0; }"), vec!["1"]); }
+#[test]
+fn sem_open_close() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem1\", O_CREAT, 0644, 1); printf(\"%d\", s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"/test_sem1\"); } return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_unlink_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem2\", O_CREAT, 0644, 1); int r = sem_unlink(\"/test_sem2\"); printf(\"%d\", r == 0); if(s != SEM_FAILED) sem_close(s); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_wait_post() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem3\", O_CREAT, 0644, 1); sem_wait(s); int r = sem_post(s); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem3\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_trywait_success() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem4\", O_CREAT, 0644, 1); int r = sem_trywait(s); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem4\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_trywait_fail() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem5\", O_CREAT, 0644, 1); sem_wait(s); int r = sem_trywait(s); printf(\"%d\", r == -1); sem_close(s); sem_unlink(\"/test_sem5\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_getvalue() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem6\", O_CREAT, 0644, 42); int val = 0; sem_getvalue(s, &val); printf(\"%d\", val == 42); sem_close(s); sem_unlink(\"/test_sem6\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_open_existing() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s1 = sem_open(\"/test_sem7\", O_CREAT, 0644, 1); sem_t *s2 = sem_open(\"/test_sem7\", 0); printf(\"%d\", s2 != SEM_FAILED); sem_close(s1); if(s2 != SEM_FAILED) sem_close(s2); sem_unlink(\"/test_sem7\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_open_exclusive() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s1 = sem_open(\"/test_sem8\", O_CREAT, 0644, 1); sem_t *s2 = sem_open(\"/test_sem8\", O_CREAT | O_EXCL, 0644, 1); printf(\"%d\", s2 == SEM_FAILED); sem_close(s1); sem_unlink(\"/test_sem8\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_open_missing_without_creat() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem_missing\", 0); printf(\"%d\", s == SEM_FAILED); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_timedwait_success() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <time.h>\nint main() { sem_t *s = sem_open(\"/test_sem9\", O_CREAT, 0644, 1); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 1; int r = sem_timedwait(s, &ts); printf(\"%d\", r == 0); sem_close(s); sem_unlink(\"/test_sem9\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_timedwait_timeout() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <time.h>\nint main() { sem_t *s = sem_open(\"/test_sem10\", O_CREAT, 0644, 0); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 50000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int r = sem_timedwait(s, &ts); printf(\"%d\", r == -1); sem_close(s); sem_unlink(\"/test_sem10\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_multiple_posts() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem11\", O_CREAT, 0644, 0); sem_post(s); sem_post(s); sem_post(s); int val; sem_getvalue(s, &val); printf(\"%d\", val == 3); sem_close(s); sem_unlink(\"/test_sem11\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_post_increases_value() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { sem_t *s = sem_open(\"/test_sem12\", O_CREAT, 0644, 0); int v1; sem_getvalue(s, &v1); sem_post(s); int v2; sem_getvalue(s, &v2); printf(\"%d\", v2 > v1); sem_close(s); sem_unlink(\"/test_sem12\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_unlink_nonexistent() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { int r = sem_unlink(\"/test_sem_does_not_exist\"); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_close_unopened() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\nint main() { /* UB to close SEM_FAILED, compile test */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn sem_open_long_name() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { char name[300]; name[0] = '/'; for(int i=1; i<250; i++) name[i] = 'a'; name[250] = 0; sem_t *s = sem_open(name, O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED); /* Most implementations reject very long names */ return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_shared_processes() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { sem_unlink(\"/test_sem13\"); sem_t *s = sem_open(\"/test_sem13\", O_CREAT, 0644, 0); pid_t p = fork(); if (p==0) { sem_t *s2 = sem_open(\"/test_sem13\", 0); sem_post(s2); sem_close(s2); _exit(0); } sem_wait(s); printf(\"1\"); sem_close(s); sem_unlink(\"/test_sem13\"); wait(NULL); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_name_no_slash() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* POSIX says name MUST begin with slash for portability */ sem_t *s = sem_open(\"test_sem14\", O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED || s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"test_sem14\"); } return 0; }"
+        ),
+        vec!["1"]
+    );
+} // May work on Linux, may fail on macOS
+#[test]
+fn sem_name_multiple_slashes() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* Implementation defined behavior */ sem_t *s = sem_open(\"//test_sem15\", O_CREAT, 0644, 1); printf(\"%d\", s == SEM_FAILED || s != SEM_FAILED); if(s != SEM_FAILED) { sem_close(s); sem_unlink(\"//test_sem15\"); } return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn sem_open_limit() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <semaphore.h>\n#include <fcntl.h>\nint main() { /* Check we can open at least 5 */ sem_t *s[5]; int ok = 1; char name[20]; for(int i=0; i<5; i++) { sprintf(name, \"/test_sem_l%d\", i); s[i] = sem_open(name, O_CREAT, 0644, 1); if(s[i] == SEM_FAILED) ok = 0; } printf(\"%d\", ok); for(int i=0; i<5; i++) { sprintf(name, \"/test_sem_l%d\", i); if(s[i] != SEM_FAILED) { sem_close(s[i]); sem_unlink(name); } } return 0; }"
+        ),
+        vec!["1"]
+    );
+}

@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn pipe_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; int r = pipe(fd); printf(\"%d %d %d\", r == 0, fd[0] >= 0, fd[1] >= 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1 1 1"]); }
-#[test] fn pipe_read_write() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"abc\", 3); char buf[4] = {0}; read(fd[0], buf, 3); printf(\"%s\", buf); close(fd[0]); close(fd[1]); return 0; }"), vec!["abc"]); }
-#[test] fn pipe_fork_ipc() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { close(fd[0]); write(fd[1], \"msg\", 3); close(fd[1]); _exit(0); } close(fd[1]); char buf[5] = {0}; read(fd[0], buf, 3); close(fd[0]); wait(NULL); printf(\"%s\", buf); return 0; }"), vec!["msg"]); }
-#[test] fn dup_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup.txt\", O_CREAT|O_WRONLY, 0644); int fd2 = dup(fd); write(fd2, \"dup\", 3); close(fd); close(fd2); FILE *f = fopen(\"test_dup.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 3, f); printf(\"%s %d\", buf, fd != fd2); fclose(f); unlink(\"test_dup.txt\"); return 0; }"), vec!["dup 1"]); }
-#[test] fn dup2_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup2.txt\", O_CREAT|O_WRONLY, 0644); dup2(fd, 100); write(100, \"d2\", 2); close(fd); close(100); FILE *f = fopen(\"test_dup2.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 2, f); printf(\"%s\", buf); fclose(f); unlink(\"test_dup2.txt\"); return 0; }"), vec!["d2"]); }
-#[test] fn dup2_stdout_redirect() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\n#include <sys/wait.h>\nint main() { int fd = open(\"test_redir.txt\", O_CREAT|O_WRONLY, 0644); pid_t p = fork(); if (p == 0) { dup2(fd, STDOUT_FILENO); close(fd); execl(\"/bin/echo\", \"echo\", \"redirected\", NULL); _exit(1); } wait(NULL); close(fd); FILE *f = fopen(\"test_redir.txt\", \"r\"); char buf[20]={0}; fread(buf, 1, 10, f); printf(\"%s\", buf); fclose(f); unlink(\"test_redir.txt\"); return 0; }"), vec!["redirected"]); }
-#[test] fn dup3_gnu() { assert_eq!(run_c("#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup3.txt\", O_CREAT|O_WRONLY, 0644); dup3(fd, 100, O_CLOEXEC); write(100, \"d3\", 2); close(fd); close(100); FILE *f = fopen(\"test_dup3.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 2, f); printf(\"%s\", buf); fclose(f); unlink(\"test_dup3.txt\"); return 0; }"), vec!["d3"]); }
-#[test] fn pipe2_gnu() { assert_eq!(run_c("#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd[2]; pipe2(fd, O_CLOEXEC); int flags = fcntl(fd[0], F_GETFD); printf(\"%d\", (flags & FD_CLOEXEC) != 0); close(fd[0]); close(fd[1]); return 0; }"), vec!["1"]); }
-#[test] fn dup2_same_fd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_same.txt\", O_CREAT, 0644); int r = dup2(fd, fd); printf(\"%d\", r == fd); close(fd); unlink(\"test_same.txt\"); return 0; }"), vec!["1"]); } // If oldfd == newfd, dup2 does nothing and returns newfd
-#[test] fn pipe_read_blocks() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { sleep(1); write(fd[1], \"A\", 1); close(fd[1]); _exit(0); } char buf[2] = {0}; read(fd[0], buf, 1); printf(\"%s\", buf); wait(NULL); close(fd[0]); close(fd[1]); return 0; }"), vec!["A"]); }
-#[test] fn pipe_write_to_closed_reader_sigpipe() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <signal.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { close(fd[0]); write(fd[1], \"A\", 1); _exit(0); } close(fd[1]); close(fd[0]); int st; wait(&st); printf(\"%d\", WIFSIGNALED(st) && WTERMSIG(st) == SIGPIPE); return 0; }"), vec!["1"]); }
-#[test] fn dup_closed_fd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup_c.txt\", O_CREAT, 0644); close(fd); int r = dup(fd); printf(\"%d\", r == -1); unlink(\"test_dup_c.txt\"); return 0; }"), vec!["1"]); }
-#[test] fn dup2_closed_oldfd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup2_c.txt\", O_CREAT, 0644); close(fd); int r = dup2(fd, 100); printf(\"%d\", r == -1); unlink(\"test_dup2_c.txt\"); return 0; }"), vec!["1"]); }
-#[test] fn dup_limits() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd = dup(0); printf(\"%d\", fd >= 3); close(fd); return 0; }"), vec!["1"]); } // Next available is usually 3 or higher
-#[test] fn pipe_capacity_limit() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd[2]; pipe(fd); fcntl(fd[1], F_SETFL, O_NONBLOCK); int written = 0; while(write(fd[1], \"X\", 1) == 1 && written < 1000000) written++; printf(\"%d\", written >= 4096); close(fd[0]); close(fd[1]); return 0; }"), vec!["1"]); } // pipe buffers are at least a page
-#[test] fn dup2_closes_newfd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd1 = open(\"test_d2_1.txt\", O_CREAT, 0644); int fd2 = open(\"test_d2_2.txt\", O_CREAT, 0644); dup2(fd1, fd2); /* fd2 was closed and reopened as fd1 duplicate */ int r = write(fd2, \"x\", 1); printf(\"%d\", r == -1 || r == 1); close(fd1); close(fd2); unlink(\"test_d2_1.txt\"); unlink(\"test_d2_2.txt\"); return 0; }"), vec!["1"]); }
-#[test] fn pipe_eof_on_all_writers_closed() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); close(fd[1]); char buf[10]; int r = read(fd[0], buf, 10); printf(\"%d\", r == 0); close(fd[0]); return 0; }"), vec!["1"]); }
-#[test] fn dup_fd_flags_preserved() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_flags.txt\", O_CREAT|O_APPEND|O_WRONLY, 0644); int fd2 = dup(fd); int flags = fcntl(fd2, F_GETFL); printf(\"%d\", (flags & O_APPEND) != 0); close(fd); close(fd2); unlink(\"test_flags.txt\"); return 0; }"), vec!["1"]); }
-#[test] fn fcntl_dupfd() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fcntl_dup.txt\", O_CREAT, 0644); int fd2 = fcntl(fd, F_DUPFD, 100); printf(\"%d\", fd2 >= 100); close(fd); close(fd2); unlink(\"test_fcntl_dup.txt\"); return 0; }"), vec!["1"]); }
-#[test] fn fcntl_dupfd_cloexec() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fcntl_dup_clo.txt\", O_CREAT, 0644); int fd2 = fcntl(fd, F_DUPFD_CLOEXEC, 100); int flg = fcntl(fd2, F_GETFD); printf(\"%d\", (flg & FD_CLOEXEC) != 0); close(fd); close(fd2); unlink(\"test_fcntl_dup_clo.txt\"); return 0; }"), vec!["1"]); }
+#[test]
+fn pipe_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; int r = pipe(fd); printf(\"%d %d %d\", r == 0, fd[0] >= 0, fd[1] >= 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1 1 1"]
+    );
+}
+#[test]
+fn pipe_read_write() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); write(fd[1], \"abc\", 3); char buf[4] = {0}; read(fd[0], buf, 3); printf(\"%s\", buf); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["abc"]
+    );
+}
+#[test]
+fn pipe_fork_ipc() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { close(fd[0]); write(fd[1], \"msg\", 3); close(fd[1]); _exit(0); } close(fd[1]); char buf[5] = {0}; read(fd[0], buf, 3); close(fd[0]); wait(NULL); printf(\"%s\", buf); return 0; }"
+        ),
+        vec!["msg"]
+    );
+}
+#[test]
+fn dup_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup.txt\", O_CREAT|O_WRONLY, 0644); int fd2 = dup(fd); write(fd2, \"dup\", 3); close(fd); close(fd2); FILE *f = fopen(\"test_dup.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 3, f); printf(\"%s %d\", buf, fd != fd2); fclose(f); unlink(\"test_dup.txt\"); return 0; }"
+        ),
+        vec!["dup 1"]
+    );
+}
+#[test]
+fn dup2_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup2.txt\", O_CREAT|O_WRONLY, 0644); dup2(fd, 100); write(100, \"d2\", 2); close(fd); close(100); FILE *f = fopen(\"test_dup2.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 2, f); printf(\"%s\", buf); fclose(f); unlink(\"test_dup2.txt\"); return 0; }"
+        ),
+        vec!["d2"]
+    );
+}
+#[test]
+fn dup2_stdout_redirect() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\n#include <sys/wait.h>\nint main() { int fd = open(\"test_redir.txt\", O_CREAT|O_WRONLY, 0644); pid_t p = fork(); if (p == 0) { dup2(fd, STDOUT_FILENO); close(fd); execl(\"/bin/echo\", \"echo\", \"redirected\", NULL); _exit(1); } wait(NULL); close(fd); FILE *f = fopen(\"test_redir.txt\", \"r\"); char buf[20]={0}; fread(buf, 1, 10, f); printf(\"%s\", buf); fclose(f); unlink(\"test_redir.txt\"); return 0; }"
+        ),
+        vec!["redirected"]
+    );
+}
+#[test]
+fn dup3_gnu() {
+    assert_eq!(
+        run_c(
+            "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup3.txt\", O_CREAT|O_WRONLY, 0644); dup3(fd, 100, O_CLOEXEC); write(100, \"d3\", 2); close(fd); close(100); FILE *f = fopen(\"test_dup3.txt\", \"r\"); char buf[5]={0}; fread(buf, 1, 2, f); printf(\"%s\", buf); fclose(f); unlink(\"test_dup3.txt\"); return 0; }"
+        ),
+        vec!["d3"]
+    );
+}
+#[test]
+fn pipe2_gnu() {
+    assert_eq!(
+        run_c(
+            "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd[2]; pipe2(fd, O_CLOEXEC); int flags = fcntl(fd[0], F_GETFD); printf(\"%d\", (flags & FD_CLOEXEC) != 0); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn dup2_same_fd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_same.txt\", O_CREAT, 0644); int r = dup2(fd, fd); printf(\"%d\", r == fd); close(fd); unlink(\"test_same.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // If oldfd == newfd, dup2 does nothing and returns newfd
+#[test]
+fn pipe_read_blocks() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { sleep(1); write(fd[1], \"A\", 1); close(fd[1]); _exit(0); } char buf[2] = {0}; read(fd[0], buf, 1); printf(\"%s\", buf); wait(NULL); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["A"]
+    );
+}
+#[test]
+fn pipe_write_to_closed_reader_sigpipe() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <sys/wait.h>\n#include <signal.h>\nint main() { int fd[2]; pipe(fd); pid_t p = fork(); if (p == 0) { close(fd[0]); write(fd[1], \"A\", 1); _exit(0); } close(fd[1]); close(fd[0]); int st; wait(&st); printf(\"%d\", WIFSIGNALED(st) && WTERMSIG(st) == SIGPIPE); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn dup_closed_fd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup_c.txt\", O_CREAT, 0644); close(fd); int r = dup(fd); printf(\"%d\", r == -1); unlink(\"test_dup_c.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn dup2_closed_oldfd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_dup2_c.txt\", O_CREAT, 0644); close(fd); int r = dup2(fd, 100); printf(\"%d\", r == -1); unlink(\"test_dup2_c.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn dup_limits() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd = dup(0); printf(\"%d\", fd >= 3); close(fd); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // Next available is usually 3 or higher
+#[test]
+fn pipe_capacity_limit() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd[2]; pipe(fd); fcntl(fd[1], F_SETFL, O_NONBLOCK); int written = 0; while(write(fd[1], \"X\", 1) == 1 && written < 1000000) written++; printf(\"%d\", written >= 4096); close(fd[0]); close(fd[1]); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // pipe buffers are at least a page
+#[test]
+fn dup2_closes_newfd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd1 = open(\"test_d2_1.txt\", O_CREAT, 0644); int fd2 = open(\"test_d2_2.txt\", O_CREAT, 0644); dup2(fd1, fd2); /* fd2 was closed and reopened as fd1 duplicate */ int r = write(fd2, \"x\", 1); printf(\"%d\", r == -1 || r == 1); close(fd1); close(fd2); unlink(\"test_d2_1.txt\"); unlink(\"test_d2_2.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn pipe_eof_on_all_writers_closed() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\nint main() { int fd[2]; pipe(fd); close(fd[1]); char buf[10]; int r = read(fd[0], buf, 10); printf(\"%d\", r == 0); close(fd[0]); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn dup_fd_flags_preserved() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_flags.txt\", O_CREAT|O_APPEND|O_WRONLY, 0644); int fd2 = dup(fd); int flags = fcntl(fd2, F_GETFL); printf(\"%d\", (flags & O_APPEND) != 0); close(fd); close(fd2); unlink(\"test_flags.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn fcntl_dupfd() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fcntl_dup.txt\", O_CREAT, 0644); int fd2 = fcntl(fd, F_DUPFD, 100); printf(\"%d\", fd2 >= 100); close(fd); close(fd2); unlink(\"test_fcntl_dup.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn fcntl_dupfd_cloexec() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <unistd.h>\n#include <fcntl.h>\nint main() { int fd = open(\"test_fcntl_dup_clo.txt\", O_CREAT, 0644); int fd2 = fcntl(fd, F_DUPFD_CLOEXEC, 100); int flg = fcntl(fd2, F_GETFD); printf(\"%d\", (flg & FD_CLOEXEC) != 0); close(fd); close(fd2); unlink(\"test_fcntl_dup_clo.txt\"); return 0; }"
+        ),
+        vec!["1"]
+    );
+}

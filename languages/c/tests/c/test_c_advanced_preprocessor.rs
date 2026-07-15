@@ -1,8 +1,13 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn preprocessor_advanced_stringification_pasting() {
-    assert_eq!(run_c(r#"
+#[test]
+fn preprocessor_advanced_stringification_pasting() {
+    assert_eq!(
+        run_c(
+            r#"
 #define STR_IMPL(x) #x
 #define STR(x) STR_IMPL(x)
 
@@ -19,11 +24,17 @@ int main() {
     print_my();
     return 0;
 }
-    "#), vec!["my=100"]);
+    "#
+        ),
+        vec!["my=100"]
+    );
 }
 
-#[test] fn preprocessor_variadic_macros_complex() {
-    assert_eq!(run_c(r#"
+#[test]
+fn preprocessor_variadic_macros_complex() {
+    assert_eq!(
+        run_c(
+            r#"
 #include <string.h>
 
 #define FORMAT_STR(buf, size, fmt, ...) snprintf(buf, size, "<" fmt ">", __VA_ARGS__)
@@ -38,12 +49,18 @@ int main() {
     LOG_ERR(404, "User %s not found", "admin");
     return 0;
 }
-    "#), vec!["ERR[404]: <User admin not found>"]);
+    "#
+        ),
+        vec!["ERR[404]: <User admin not found>"]
+    );
 }
 
-#[test] fn preprocessor_recursive_macro_guard() {
+#[test]
+fn preprocessor_recursive_macro_guard() {
     // Tests that recursive macros don't infinitely expand
-    assert_eq!(run_c(r#"
+    assert_eq!(
+        run_c(
+            r#"
 #define A(x) B(x)
 #define B(x) A(x) + 1
 
@@ -54,11 +71,17 @@ int main() {
     printf("ok");
     return 0;
 }
-    "#), vec!["ok"]);
+    "#
+        ),
+        vec!["ok"]
+    );
 }
 
-#[test] fn preprocessor_xmacro_pattern() {
-    assert_eq!(run_c(r#"
+#[test]
+fn preprocessor_xmacro_pattern() {
+    assert_eq!(
+        run_c(
+            r#"
 #define COLOR_LIST \
     X(RED, 10) \
     X(GREEN, 20) \
@@ -83,5 +106,8 @@ int main() {
     printf("%d %d", GREEN, get_color_val(BLUE));
     return 0;
 }
-    "#), vec!["20 30"]);
+    "#
+        ),
+        vec!["20 30"]
+    );
 }

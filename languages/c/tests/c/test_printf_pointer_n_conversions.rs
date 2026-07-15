@@ -5,13 +5,13 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"abc%n\", &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["3"]
+        expect: ["abc3"]
     },
     printf_n_after_integer => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"x%d%n\", 7, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["2"]
+        expect: ["x72"]
     },
     printf_n_zero_width_output => {
         includes: ["<stdio.h>", "<stddef.h>"],
@@ -23,43 +23,43 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"50%%%n\", &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["3"]
+        expect: ["50%3"]
     },
     printf_n_mid_format_string => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int a=0,b=0; printf(\"hi%n there%n\", &a,&b); printf(\"%d %d\\n\", a,b); return 0;",
-        expect: ["2 8"]
+        expect: ["hi there2 8"]
     },
     printf_n_with_string_conversion => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%s%n\", \"go\", &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["2"]
+        expect: ["go2"]
     },
     printf_n_after_float => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%.1f%n\", 1.5, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["3"]
+        expect: ["1.53"]
     },
     printf_n_multiple_separate_prints => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"a%n\", &n); int m=n; printf(\"bc%n\", &n); printf(\"%d %d\\n\", m, n); return 0;",
-        expect: ["1 3"]
+        expect: ["abc1 3"]
     },
     printf_n_before_newline => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%d%n\\n\", 5, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["2"]
+        expect: ["5", "2"]
     },
     printf_n_after_width_field => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%5d%n\", 1, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["5"]
+        expect: ["    15"]
     },
     printf_p_null_void_pointer => {
         includes: ["<stdio.h>", "<stddef.h>"],
@@ -251,13 +251,13 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%% %n\", &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["2"]
+        expect: ["% 2"]
     },
     printf_n_after_wide_string_field => {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%10s%n\", \"x\", &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["10"]
+        expect: ["         x10"]
     },
     printf_n_with_zero_precision_int => {
         includes: ["<stdio.h>", "<stddef.h>"],
@@ -287,7 +287,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%+05d%n\", 3, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["5"]
+        expect: ["+00035"]
     },
     printf_percent_hex_upper_with_suffix => {
         includes: ["<stdio.h>", "<stddef.h>"],
@@ -311,7 +311,7 @@ c_run_cases! {
         includes: ["<stdio.h>", "<stddef.h>"],
         decls: "",
         body: "int n=0; printf(\"%c%n\", 65, &n); printf(\"%d\\n\", n); return 0;",
-        expect: ["1"]
+        expect: ["A1"]
     },
     printf_percent_general_format_suffix => {
         includes: ["<stdio.h>", "<stddef.h>"],

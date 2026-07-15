@@ -41,9 +41,7 @@ fn emit_string_or_array_method(
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) -> bool {
     if name.starts_with("libc.") {
-        return vybe_platform_libc::emitter::dispatch::dispatch(
-            name, chunks, current, _argc, line,
-        );
+        return vybe_platform_libc::emitter::dispatch::dispatch(name, chunks, current, _argc, line);
     }
 
     match name {

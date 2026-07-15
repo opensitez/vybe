@@ -1,23 +1,183 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn ungetc_basic() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc.txt\", \"w+\"); fputs(\"hello\", f); rewind(f); fgetc(f); ungetc('X', f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["X"]); }
-#[test] fn ungetc_multiple_chars() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_multi.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('Y', f); ungetc('X', f); /* POSIX guarantees 1 char of pushback, but most allow more. We check the first pop */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["X"]); }
-#[test] fn ungetc_eof() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_eof.txt\", \"w+\"); int res = ungetc(EOF, f); printf(\"%d\", res == EOF); fclose(f); return 0; }"), vec!["1"]); }
-#[test] fn ungetc_clears_eof_flag() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_ceof.txt\", \"w+\"); fgetc(f); int e1 = feof(f) != 0; ungetc('A', f); int e2 = feof(f) != 0; printf(\"%d %d %c\", e1, e2, fgetc(f)); fclose(f); return 0; }"), vec!["1 0 A"]); }
-#[test] fn ungetc_then_fseek() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_seek.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('X', f); fseek(f, 0, SEEK_SET); /* fseek discards ungetc buffer */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["a"]); }
-#[test] fn ungetc_then_rewind() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_rew.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('X', f); rewind(f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["a"]); }
-#[test] fn ungetc_ftell_behavior() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_ftell.txt\", \"w+\"); fputs(\"abcdef\", f); rewind(f); fgetc(f); fgetc(f); long pos1 = ftell(f); ungetc('X', f); long pos2 = ftell(f); printf(\"%ld %ld\", pos1, pos2); fclose(f); return 0; }"), vec!["2 1"]); } // ftell decreases by 1
-#[test] fn ungetc_at_start_of_file() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_start.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('X', f); /* UB in strict C if stream is at 0, but usually supported */ long pos = ftell(f); printf(\"%ld\", pos); fclose(f); return 0; }"), vec!["-1"]); } // Often drops below 0
-#[test] fn ungetc_then_fread() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_fread.txt\", \"w+\"); fputs(\"hello\", f); rewind(f); fgetc(f); ungetc('Z', f); char buf[5] = {0}; fread(buf, 1, 4, f); printf(\"%s\", buf); fclose(f); return 0; }"), vec!["Zell"]); }
-#[test] fn ungetwc_basic() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc.txt\", \"w+\"); fputws(L\"hello\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); printf(\"%d\", (int)fgetwc(f)); fclose(f); return 0; }"), vec!["88"]); }
-#[test] fn ungetwc_weof() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_weof.txt\", \"w+\"); int res = ungetwc(WEOF, f); printf(\"%d\", res == WEOF); fclose(f); return 0; }"), vec!["1"]); }
-#[test] fn ungetc_empty_file() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_empty.txt\", \"w+\"); ungetc('X', f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["X"]); }
-#[test] fn ungetc_stdin() { assert_eq!(run_c("int main() { ungetc('A', stdin); printf(\"%c\", fgetc(stdin)); return 0; }"), vec!["A"]); }
-#[test] fn ungetc_multiple_pops() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_pops.txt\", \"w+\"); fputs(\"123\", f); rewind(f); fgetc(f); fgetc(f); ungetc('A', f); ungetc('B', f); printf(\"%c%c%c\", fgetc(f), fgetc(f), fgetc(f)); fclose(f); return 0; }"), vec!["BA3"]); } // pops are LIFO
-#[test] fn ungetc_without_read() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_noread.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('Z', f); printf(\"%c%c\", fgetc(f), fgetc(f)); fclose(f); return 0; }"), vec!["Za"]); }
-#[test] fn ungetwc_clears_eof() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_eof.txt\", \"w+\"); fgetwc(f); int e1 = feof(f) != 0; ungetwc(L'A', f); int e2 = feof(f) != 0; printf(\"%d %d\", e1, e2); fclose(f); return 0; }"), vec!["1 0"]); }
-#[test] fn ungetwc_then_fseek() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_seek.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); fseek(f, 0, SEEK_SET); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["a"]); }
-#[test] fn ungetwc_then_rewind() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_rew.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); ungetwc(L'X', f); rewind(f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["a"]); }
-#[test] fn ungetc_after_fflush() { assert_eq!(run_c("int main() { FILE *f = fopen(\"test_ungetc_flush.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('X', f); fflush(f); /* fflush discards ungetc */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"), vec!["b"]); }
-#[test] fn ungetwc_after_fflush() { assert_eq!(run_c("#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_flush.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); fflush(f); printf(\"%d\", (int)fgetwc(f)); fclose(f); return 0; }"), vec!["98"]); } // 98 = 'b'
+#[test]
+fn ungetc_basic() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc.txt\", \"w+\"); fputs(\"hello\", f); rewind(f); fgetc(f); ungetc('X', f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["X"]
+    );
+}
+#[test]
+fn ungetc_multiple_chars() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_multi.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('Y', f); ungetc('X', f); /* POSIX guarantees 1 char of pushback, but most allow more. We check the first pop */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["X"]
+    );
+}
+#[test]
+fn ungetc_eof() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_eof.txt\", \"w+\"); int res = ungetc(EOF, f); printf(\"%d\", res == EOF); fclose(f); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ungetc_clears_eof_flag() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_ceof.txt\", \"w+\"); fgetc(f); int e1 = feof(f) != 0; ungetc('A', f); int e2 = feof(f) != 0; printf(\"%d %d %c\", e1, e2, fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["1 0 A"]
+    );
+}
+#[test]
+fn ungetc_then_fseek() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_seek.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('X', f); fseek(f, 0, SEEK_SET); /* fseek discards ungetc buffer */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["a"]
+    );
+}
+#[test]
+fn ungetc_then_rewind() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_rew.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('X', f); rewind(f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["a"]
+    );
+}
+#[test]
+fn ungetc_ftell_behavior() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_ftell.txt\", \"w+\"); fputs(\"abcdef\", f); rewind(f); fgetc(f); fgetc(f); long pos1 = ftell(f); ungetc('X', f); long pos2 = ftell(f); printf(\"%ld %ld\", pos1, pos2); fclose(f); return 0; }"
+        ),
+        vec!["2 1"]
+    );
+} // ftell decreases by 1
+#[test]
+fn ungetc_at_start_of_file() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_start.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('X', f); /* UB in strict C if stream is at 0, but usually supported */ long pos = ftell(f); printf(\"%ld\", pos); fclose(f); return 0; }"
+        ),
+        vec!["-1"]
+    );
+} // Often drops below 0
+#[test]
+fn ungetc_then_fread() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_fread.txt\", \"w+\"); fputs(\"hello\", f); rewind(f); fgetc(f); ungetc('Z', f); char buf[5] = {0}; fread(buf, 1, 4, f); printf(\"%s\", buf); fclose(f); return 0; }"
+        ),
+        vec!["Zell"]
+    );
+}
+#[test]
+fn ungetwc_basic() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc.txt\", \"w+\"); fputws(L\"hello\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); printf(\"%d\", (int)fgetwc(f)); fclose(f); return 0; }"
+        ),
+        vec!["88"]
+    );
+}
+#[test]
+fn ungetwc_weof() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_weof.txt\", \"w+\"); int res = ungetwc(WEOF, f); printf(\"%d\", res == WEOF); fclose(f); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ungetc_empty_file() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_empty.txt\", \"w+\"); ungetc('X', f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["X"]
+    );
+}
+#[test]
+fn ungetc_stdin() {
+    assert_eq!(
+        run_c("int main() { ungetc('A', stdin); printf(\"%c\", fgetc(stdin)); return 0; }"),
+        vec!["A"]
+    );
+}
+#[test]
+fn ungetc_multiple_pops() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_pops.txt\", \"w+\"); fputs(\"123\", f); rewind(f); fgetc(f); fgetc(f); ungetc('A', f); ungetc('B', f); printf(\"%c%c%c\", fgetc(f), fgetc(f), fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["BA3"]
+    );
+} // pops are LIFO
+#[test]
+fn ungetc_without_read() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_noread.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); ungetc('Z', f); printf(\"%c%c\", fgetc(f), fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["Za"]
+    );
+}
+#[test]
+fn ungetwc_clears_eof() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_eof.txt\", \"w+\"); fgetwc(f); int e1 = feof(f) != 0; ungetwc(L'A', f); int e2 = feof(f) != 0; printf(\"%d %d\", e1, e2); fclose(f); return 0; }"
+        ),
+        vec!["1 0"]
+    );
+}
+#[test]
+fn ungetwc_then_fseek() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_seek.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); fseek(f, 0, SEEK_SET); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["a"]
+    );
+}
+#[test]
+fn ungetwc_then_rewind() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_rew.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); ungetwc(L'X', f); rewind(f); printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["a"]
+    );
+}
+#[test]
+fn ungetc_after_fflush() {
+    assert_eq!(
+        run_c(
+            "int main() { FILE *f = fopen(\"test_ungetc_flush.txt\", \"w+\"); fputs(\"abc\", f); rewind(f); fgetc(f); ungetc('X', f); fflush(f); /* fflush discards ungetc */ printf(\"%c\", fgetc(f)); fclose(f); return 0; }"
+        ),
+        vec!["b"]
+    );
+}
+#[test]
+fn ungetwc_after_fflush() {
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\nint main() { FILE *f = fopen(\"test_ungetwc_flush.txt\", \"w+\"); fputws(L\"abc\", f); rewind(f); fgetwc(f); ungetwc(L'X', f); fflush(f); printf(\"%d\", (int)fgetwc(f)); fclose(f); return 0; }"
+        ),
+        vec!["98"]
+    );
+} // 98 = 'b'

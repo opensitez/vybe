@@ -1,23 +1,185 @@
 use super::helpers::run_prints;
-fn run_c(src: &str) -> Vec<String> { run_prints(&format!("#include <stdio.h>\n{}", src)) }
+fn run_c(src: &str) -> Vec<String> {
+    run_prints(&format!("#include <stdio.h>\n{}", src))
+}
 
-#[test] fn clock_gettime_realtime() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(CLOCK_REALTIME, &ts); printf(\"%d\", r == 0 && ts.tv_sec > 0); return 0; }"), vec!["1"]); }
-#[test] fn clock_gettime_monotonic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(CLOCK_MONOTONIC, &ts); printf(\"%d\", r == 0); return 0; }"), vec!["1"]); }
-#[test] fn clock_getres_realtime() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_getres(CLOCK_REALTIME, &ts); printf(\"%d\", r == 0 && ts.tv_nsec > 0); return 0; }"), vec!["1"]); }
-#[test] fn clock_settime_compile() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0,0}; int r = clock_settime(CLOCK_REALTIME, &ts); /* Will fail without privileges */ printf(\"%d\", r == -1 || r == 0); return 0; }"), vec!["1"]); }
-#[test] fn timer_create_delete() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; int r1 = timer_create(CLOCK_REALTIME, &sev, &t); int r2 = 0; if (r1 == 0) r2 = timer_delete(t); printf(\"%d %d\", r1 == 0, r2 == 0); return 0; }"), vec!["1 1"]); }
-#[test] fn timer_settime_gettime() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); struct itimerspec its = {{0,0}, {10,0}}; timer_settime(t, 0, &its, NULL); struct itimerspec curr; timer_gettime(t, &curr); printf(\"%d\", curr.it_value.tv_sec > 0); timer_delete(t); return 0; }"), vec!["1"]); }
-#[test] fn nanosleep_basic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = nanosleep(&ts, NULL); printf(\"%d\", r == 0); return 0; }"), vec!["1"]); }
-#[test] fn nanosleep_invalid() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 2000000000}; /* invalid nsec */ int r = nanosleep(&ts, NULL); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn clock_nanosleep_realtime() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_REALTIME, 0, &ts, NULL); printf(\"%d\", r == 0); return 0; }"), vec!["1"]); }
-#[test] fn clock_nanosleep_monotonic() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL); printf(\"%d\", r == 0); return 0; }"), vec!["1"]); }
-#[test] fn clock_nanosleep_absolute() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 1000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int r = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &ts, NULL); printf(\"%d\", r == 0); return 0; }"), vec!["1"]); }
-#[test] fn timer_getoverrun_compile() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); int r = timer_getoverrun(t); printf(\"%d\", r >= 0); timer_delete(t); return 0; }"), vec!["1"]); }
-#[test] fn clock_gettime_invalid_clock() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(99999, &ts); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn clock_getres_invalid_clock() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_getres(99999, &ts); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn timer_create_invalid_clock() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; int r = timer_create(99999, &sev, &t); printf(\"%d\", r == -1); return 0; }"), vec!["1"]); }
-#[test] fn timer_delete_invalid() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { /* UB to delete uninitialized or invalid timer_t, compile check only */ printf(\"ok\"); return 0; }"), vec!["ok"]); }
-#[test] fn timer_settime_cancel() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); struct itimerspec its = {{0,0}, {10,0}}; timer_settime(t, 0, &its, NULL); struct itimerspec its2 = {{0,0}, {0,0}}; timer_settime(t, 0, &its2, NULL); struct itimerspec curr; timer_gettime(t, &curr); printf(\"%d\", curr.it_value.tv_sec == 0); timer_delete(t); return 0; }"), vec!["1"]); } // Disarm by setting 0
-#[test] fn timer_create_sigev_signal() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_SIGNAL; sev.sigev_signo = SIGUSR1; int r = timer_create(CLOCK_REALTIME, &sev, &t); printf(\"%d\", r == 0); if(r==0) timer_delete(t); return 0; }"), vec!["1"]); }
-#[test] fn timer_create_sigev_thread() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nvoid f(union sigval v) {}\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_THREAD; sev.sigev_notify_function = f; int r = timer_create(CLOCK_REALTIME, &sev, &t); printf(\"%d\", r == 0); if(r==0) timer_delete(t); return 0; }"), vec!["1"]); }
-#[test] fn clock_nanosleep_invalid_flags() { assert_eq!(run_c("#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_REALTIME, 999, &ts, NULL); printf(\"%d\", r != 0); return 0; }"), vec!["1"]); }
+#[test]
+fn clock_gettime_realtime() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(CLOCK_REALTIME, &ts); printf(\"%d\", r == 0 && ts.tv_sec > 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_gettime_monotonic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(CLOCK_MONOTONIC, &ts); printf(\"%d\", r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_getres_realtime() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_getres(CLOCK_REALTIME, &ts); printf(\"%d\", r == 0 && ts.tv_nsec > 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_settime_compile() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0,0}; int r = clock_settime(CLOCK_REALTIME, &ts); /* Will fail without privileges */ printf(\"%d\", r == -1 || r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn timer_create_delete() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; int r1 = timer_create(CLOCK_REALTIME, &sev, &t); int r2 = 0; if (r1 == 0) r2 = timer_delete(t); printf(\"%d %d\", r1 == 0, r2 == 0); return 0; }"
+        ),
+        vec!["1 1"]
+    );
+}
+#[test]
+fn timer_settime_gettime() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); struct itimerspec its = {{0,0}, {10,0}}; timer_settime(t, 0, &its, NULL); struct itimerspec curr; timer_gettime(t, &curr); printf(\"%d\", curr.it_value.tv_sec > 0); timer_delete(t); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn nanosleep_basic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = nanosleep(&ts, NULL); printf(\"%d\", r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn nanosleep_invalid() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 2000000000}; /* invalid nsec */ int r = nanosleep(&ts, NULL); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_nanosleep_realtime() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_REALTIME, 0, &ts, NULL); printf(\"%d\", r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_nanosleep_monotonic() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL); printf(\"%d\", r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_nanosleep_absolute() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 1000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int r = clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &ts, NULL); printf(\"%d\", r == 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn timer_getoverrun_compile() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); int r = timer_getoverrun(t); printf(\"%d\", r >= 0); timer_delete(t); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_gettime_invalid_clock() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_gettime(99999, &ts); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_getres_invalid_clock() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts; int r = clock_getres(99999, &ts); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn timer_create_invalid_clock() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; int r = timer_create(99999, &sev, &t); printf(\"%d\", r == -1); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn timer_delete_invalid() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { /* UB to delete uninitialized or invalid timer_t, compile check only */ printf(\"ok\"); return 0; }"
+        ),
+        vec!["ok"]
+    );
+}
+#[test]
+fn timer_settime_cancel() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_NONE; timer_create(CLOCK_REALTIME, &sev, &t); struct itimerspec its = {{0,0}, {10,0}}; timer_settime(t, 0, &its, NULL); struct itimerspec its2 = {{0,0}, {0,0}}; timer_settime(t, 0, &its2, NULL); struct itimerspec curr; timer_gettime(t, &curr); printf(\"%d\", curr.it_value.tv_sec == 0); timer_delete(t); return 0; }"
+        ),
+        vec!["1"]
+    );
+} // Disarm by setting 0
+#[test]
+fn timer_create_sigev_signal() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_SIGNAL; sev.sigev_signo = SIGUSR1; int r = timer_create(CLOCK_REALTIME, &sev, &t); printf(\"%d\", r == 0); if(r==0) timer_delete(t); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn timer_create_sigev_thread() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\n#include <signal.h>\nvoid f(union sigval v) {}\nint main() { timer_t t; struct sigevent sev = {0}; sev.sigev_notify = SIGEV_THREAD; sev.sigev_notify_function = f; int r = timer_create(CLOCK_REALTIME, &sev, &t); printf(\"%d\", r == 0); if(r==0) timer_delete(t); return 0; }"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn clock_nanosleep_invalid_flags() {
+    assert_eq!(
+        run_c(
+            "#define _POSIX_C_SOURCE 200809L\n#include <time.h>\nint main() { struct timespec ts = {0, 1000000}; int r = clock_nanosleep(CLOCK_REALTIME, 999, &ts, NULL); printf(\"%d\", r != 0); return 0; }"
+        ),
+        vec!["1"]
+    );
+}

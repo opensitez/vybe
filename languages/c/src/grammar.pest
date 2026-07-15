@@ -58,6 +58,7 @@ other_directive = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ (line_c
 type_keyword = @{
     ("void" | "char" | "short" | "int" | "long" | "float" | "double"
     | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t" | "wchar_t"
+    | "char8_t" | "char16_t" | "char32_t"
     | "complex" | "_Complex"
     | "int8_t" | "int16_t" | "int32_t" | "int64_t"
     | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
@@ -67,7 +68,7 @@ type_keyword = @{
 type_qualifier = @{
     ("const" | "volatile" | "register" | "static" | "extern" | "auto"
     | "inline" | "restrict" | "_Atomic" | "_Noreturn" | "noreturn"
-    | "_Thread_local" | "thread_local")
+    | "_Thread_local" | "thread_local" | "__thread")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
@@ -387,13 +388,13 @@ int_suffix = @{ ("u" | "U" | "l" | "L")+ }
 
 float_literal = @{
     ("0x" | "0X")
-    ~ (ASCII_HEX_DIGIT+ ~ "." ~ ASCII_HEX_DIGIT* | "." ~ ASCII_HEX_DIGIT+ | ASCII_HEX_DIGIT+)
+    ~ (ASCII_HEX_DIGIT+ ~ "." ~ !(".") ~ ASCII_HEX_DIGIT* | "." ~ ASCII_HEX_DIGIT+ | ASCII_HEX_DIGIT+)
     ~ (("p" | "P") ~ ("+" | "-")? ~ ASCII_DIGIT+)
     ~ float_suffix?
-    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+ | ASCII_DIGIT+)
+    | (ASCII_DIGIT+ ~ "." ~ !(".") ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+ | ASCII_DIGIT+)
     ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)
     ~ float_suffix?
-    | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+)
+    | (ASCII_DIGIT+ ~ "." ~ !(".") ~ ASCII_DIGIT* | "." ~ ASCII_DIGIT+)
     ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
     ~ float_suffix?
 }
@@ -407,12 +408,15 @@ c_escape = @{
 }
 char_literal = @{ "'" ~ (c_escape | (!"'" ~ ANY))+ ~ "'" }
 utf8_char_literal = @{ "u8" ~ char_literal }
-wide_char_literal = @{ "L" ~ char_literal }
+wide_char_literal = @{ ("L" | "u" | "U") ~ char_literal }
 
 // Adjacent string literals concatenate in C; the walker joins them.
 c_str_char = @{ c_escape | (!("\"" | "\\") ~ ANY) }
-string_literal = @{ ("\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
-wide_string_literal = @{ ("L" ~ "\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
+string_literal = @{ (("u8")? ~ "\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*)+ }
+wide_string_literal = @{
+    ("L" | "u" | "U") ~ "\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*
+    ~ ((("L" | "u" | "U")? ~ "\"" ~ c_str_char* ~ "\"" ~ WHITESPACE*))*
+}
 
 // ── Identifiers & keywords ─────────────────────────────────────────────────
 
@@ -421,6 +425,7 @@ ident_name = @{ !keyword ~ !type_keyword_word ~ (ASCII_ALPHA | "_") ~ (ASCII_ALP
 type_keyword_word = _{
     ("void" | "char" | "short" | "int" | "long" | "float" | "double"
     | "signed" | "unsigned" | "_Bool" | "bool" | "size_t" | "ssize_t" | "wchar_t"
+    | "char8_t" | "char16_t" | "char32_t"
     | "complex" | "_Complex"
     | "int8_t" | "int16_t" | "int32_t" | "int64_t"
     | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t" | "FILE")
@@ -432,7 +437,7 @@ keyword = _{
     | "break" | "continue" | "return" | "goto" | "sizeof" | "typedef"
     | "_Alignas" | "alignas" | "_Alignof" | "alignof"
     | "_Generic"
-    | "_Noreturn" | "noreturn" | "_Thread_local" | "thread_local" | "_Complex" | "complex"
+    | "_Noreturn" | "noreturn" | "_Thread_local" | "thread_local" | "__thread" | "_Complex" | "complex"
     | "__typeof__" | "typeof"
     | "_Static_assert" | "static_assert"
     | "struct" | "union" | "enum" | "const" | "volatile" | "register"
