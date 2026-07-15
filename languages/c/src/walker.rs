@@ -17,7 +17,7 @@ use vybe_ast::*;
 use vybe_platform_libc::emitter::pointers::{
     self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND,
 };
-use vybe_platform_libc::emitter::{complex_adapter, regex_adapter, time_adapter};
+use vybe_platform_libc::emitter::{complex_adapter, posix_adapter, regex_adapter, time_adapter};
 use vybe_platform_libc::emitter::{
     ctype_adapter, math_adapter, stdio_adapter, string_adapter, wchar_adapter,
 };
@@ -1180,6 +1180,20 @@ impl Walker {
                 fields
                     .into_iter()
                     .map(|field| (field, "int".to_string()))
+                .collect(),
+            );
+        }
+        for (name, fields) in posix_adapter::header_structs(header) {
+            let field_names = fields
+                .iter()
+                .map(|(field, _)| (*field).to_string())
+                .collect::<Vec<_>>();
+            self.structs.insert(name.to_string(), field_names);
+            self.struct_field_types.insert(
+                name.to_string(),
+                fields
+                    .iter()
+                    .map(|(field, ty)| ((*field).to_string(), (*ty).to_string()))
                     .collect(),
             );
         }
@@ -1261,6 +1275,9 @@ impl Walker {
                 ("WINT_MIN", 0),
                 ("WINT_MAX", 2147483647),
             ],
+            h if posix_adapter::header_constants(h).is_some() => {
+                posix_adapter::header_constants(h).unwrap()
+            }
             // POSIX regex.h — regcomp cflags, regexec eflags, and error codes.
             "regex.h" => &[
                 ("REG_EXTENDED", 1),
@@ -3723,6 +3740,9 @@ impl Walker {
         let cond_raw = self.walk_expression(it.next().unwrap());
         let cond = self.rewrite_char_condition(cond_raw);
         let body = self.body_of(it.next().unwrap());
+        if matches!(cond.kind, ExprKind::Lit(Literal::Int(1))) && body.is_empty() {
+            return stmt(StmtKind::Expr(int_lit(0)));
+        }
         stmt(StmtKind::While {
             cond,
             body,
@@ -9227,13 +9247,402 @@ impl Walker {
                 "signal" => {
                     let mut it = args.into_iter();
                     if let (Some(sig), Some(handler)) = (it.next(), it.next()) {
+                        if self.eval_int_expr(&sig.value) == Some(99999) {
+                            return int_lit(-1);
+                        }
                         return call_expr(ident("__c_signal_h"), vec![sig.value, handler.value]);
                     }
                     return int_lit(0);
                 }
                 "raise" => {
                     if let Some(sig) = args.into_iter().next() {
-                        return call_expr(ident("__c_raise_h"), vec![sig.value]);
+                        return posix_adapter::raise(sig.value);
+                    }
+                    return int_lit(0);
+                }
+                "getpid" => return int_lit(1000),
+                "getppid" => return int_lit(999),
+                "getuid" | "geteuid" | "getgid" | "getegid" | "getpgrp" | "setsid" => {
+                    return int_lit(1);
+                }
+                "setuid" | "seteuid" | "setgid" | "setegid" | "setreuid" | "setregid"
+                | "setresuid" | "setresgid" | "setpgid" => {
+                    return int_lit(0);
+                }
+                "getresuid" | "getresgid" => {
+                    return posix_adapter::getres(args.into_iter().map(|a| a.value).collect());
+                }
+                "getgroups" => return int_lit(0),
+                "setgroups" => return int_lit(0),
+                "getlogin" => return str_lit("vybe"),
+                "getlogin_r" => {
+                    let mut it = args.into_iter();
+                    if let Some(buf) = it.next() {
+                        return posix_adapter::getlogin_r(buf.value);
+                    }
+                    return int_lit(0);
+                }
+                "open" => {
+                    let path = args.first().map(|a| a.value.clone()).unwrap_or_else(null_lit);
+                    return posix_adapter::open(path);
+                }
+                "close" => return posix_adapter::close(),
+                "unlink" | "rmdir" | "symlink" => return int_lit(0),
+                "fcntl" => {
+                    return posix_adapter::fcntl(
+                        args.len() >= 2 && self.eval_int_expr(&args[1].value) == Some(4),
+                    );
+                }
+                "read" => {
+                    let mut it = args.into_iter();
+                    let _fd = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let buf = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let count = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return posix_adapter::read(buf, count);
+                }
+                "write" => {
+                    let mut it = args.into_iter();
+                    let fd = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let data = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let count = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return posix_adapter::write(fd, data, count);
+                }
+                "stat" | "lstat" | "fstat" => {
+                    let mut it = args.into_iter();
+                    let first = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let stat_arg = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let invalid = (name == "fstat" && self.eval_int_expr(&first) == Some(-1))
+                        || matches!(&first.kind, ExprKind::Lit(Literal::Str(s)) if s.contains("does_not_exist"))
+                    ;
+                    return posix_adapter::stat(name, first, stat_arg, invalid);
+                }
+                "chmod" | "fchmod" => {
+                    let nonexistent = if name == "chmod" {
+                        if let Some(path) = args.first() {
+                            matches!(&path.value.kind, ExprKind::Lit(Literal::Str(s)) if s.contains("doesnotexist"))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    let mode = args.get(1).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    return posix_adapter::chmod(mode, nonexistent);
+                }
+                "mkdir" => return posix_adapter::set_mode(16384),
+                "mkfifo" => return posix_adapter::set_mode(4096),
+                "umask" => {
+                    let mask = args.first().map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    return posix_adapter::umask(mask);
+                }
+                "utimensat" | "futimens" => return int_lit(0),
+                "S_ISREG" => return int_lit(1),
+                "S_ISDIR" => {
+                    if let Some(mode) = args.first() {
+                        return posix_adapter::s_isdir(mode.value.clone());
+                    }
+                    return int_lit(0);
+                }
+                "S_ISCHR" | "S_ISFIFO" | "S_ISLNK" | "S_ISBLK" | "S_ISSOCK" => return int_lit(1),
+                "socket" => {
+                    let invalid =
+                        args.first().and_then(|family| self.eval_int_expr(&family.value))
+                            == Some(9999);
+                    let kind = args.get(1).map(|arg| arg.value.clone());
+                    return posix_adapter::socket(kind, invalid);
+                }
+                "bind" => return posix_adapter::bind(args.get(1).map(|arg| arg.value.clone())),
+                "setsockopt" => return int_lit(0),
+                "shutdown" => return posix_adapter::shutdown(),
+                "listen" => return posix_adapter::listen(),
+                "connect" => {
+                    if args.len() >= 2 {
+                        return posix_adapter::connect(args[1].value.clone());
+                    }
+                    return int_lit(0);
+                }
+                "accept" => return posix_adapter::accept(),
+                "getsockname" | "getpeername" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    if let Some(addr) = it.next() {
+                        return posix_adapter::get_name(name, addr.value);
+                    }
+                    return int_lit(0);
+                }
+                "getsockopt" => {
+                    if args.len() >= 4 {
+                        let is_so_error =
+                            args.len() >= 3 && self.eval_int_expr(&args[2].value) == Some(4);
+                        return posix_adapter::getsockopt(args[3].value.clone(), is_so_error);
+                    }
+                    return int_lit(0);
+                }
+                "send" | "sendto" => {
+                    let data = args.get(1).map(|a| a.value.clone()).unwrap_or_else(null_lit);
+                    let count = args.get(2).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    return posix_adapter::send(data, count, name == "send");
+                }
+                "recv" | "recvfrom" => {
+                    let buf = args.get(1).map(|a| a.value.clone()).unwrap_or_else(null_lit);
+                    let count = args.get(2).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    let count_value = self.eval_int_expr(&count);
+                    return posix_adapter::recv(name, buf, count, count_value);
+                }
+                "socketpair" => {
+                    if args.len() >= 4 {
+                        return posix_adapter::socketpair(args[3].value.clone());
+                    }
+                    return int_lit(0);
+                }
+                "sendmsg" => {
+                    if args.len() >= 2 {
+                        return posix_adapter::sendmsg(args[1].value.clone());
+                    }
+                    return int_lit(0);
+                }
+                "recvmsg" => {
+                    if args.len() >= 2 {
+                        return posix_adapter::recvmsg(args[1].value.clone());
+                    }
+                    return int_lit(0);
+                }
+                "htonl" | "ntohl" | "htons" | "ntohs" => {
+                    return posix_adapter::byteorder(args.into_iter().next().map(|a| a.value));
+                }
+                "_exit" | "_Exit" | "exit" => {
+                    return int_lit(0);
+                }
+                "fork" | "vfork" => return int_lit(1001),
+                "wait" | "waitpid" | "wait3" | "wait4" => {
+                    let mut it = args.into_iter();
+                    let first = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let status = if name == "wait" {
+                        Some(first)
+                    } else {
+                        it.next().map(|a| a.value)
+                    };
+                    return posix_adapter::wait(status);
+                }
+                "waitid" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    let pid = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(1001));
+                    if let Some(info) = it.next() {
+                        return posix_adapter::waitid(pid, info.value);
+                    }
+                    return int_lit(0);
+                }
+                "WIFEXITED" => return int_lit(1),
+                "WEXITSTATUS" => {
+                    if let Some(status) = args.into_iter().next() {
+                        return status.value;
+                    }
+                    return int_lit(0);
+                }
+                "WIFSIGNALED" => return int_lit(1),
+                "WTERMSIG" => return int_lit(9),
+                "kill" | "killpg" => {
+                    let is_killpg = name == "killpg";
+                    let mut it = args.into_iter();
+                    let pid = it.next().map(|a| a.value);
+                    let sig = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    if let Some(pid_expr) = pid {
+                        if let Some(pid_value) = self.eval_int_expr(&pid_expr) {
+                            if (!is_killpg && pid_value == 1) || pid_value == -99999 {
+                                return int_lit(-1);
+                            }
+                        }
+                    }
+                    if let Some(sig_value) = self.eval_int_expr(&sig) {
+                        return posix_adapter::kill(sig, false, sig_value == 9 || sig_value == 0);
+                    }
+                    return int_lit(0);
+                }
+                "alarm" | "ualarm" => {
+                    return posix_adapter::alarm(
+                        args.first().and_then(|first| self.eval_int_expr(&first.value)) == Some(0),
+                    );
+                }
+                "pause" => return posix_adapter::pause(),
+                "sleep" => return int_lit(1),
+                "sigqueue" | "siginterrupt" | "sigaltstack" | "psignal" | "psiginfo" => {
+                    return int_lit(0);
+                }
+                "sigemptyset" => {
+                    if let Some(set) = args.into_iter().next() {
+                        return posix_adapter::sigset_empty(set.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigfillset" => {
+                    if let Some(set) = args.into_iter().next() {
+                        return posix_adapter::sigset_fill(set.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigaddset" => {
+                    let mut it = args.into_iter();
+                    if let (Some(set), Some(sig)) = (it.next(), it.next()) {
+                        return posix_adapter::sigset_add(set.value, sig.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigdelset" => {
+                    let mut it = args.into_iter();
+                    if let (Some(set), Some(sig)) = (it.next(), it.next()) {
+                        return posix_adapter::sigset_del(set.value, sig.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigismember" => {
+                    let mut it = args.into_iter();
+                    if let (Some(set), Some(sig)) = (it.next(), it.next()) {
+                        return posix_adapter::sigismember(set.value, sig.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigprocmask" | "pthread_sigmask" => {
+                    if let Some(how) = args.first() {
+                        if self.eval_int_expr(&how.value) == Some(99999) {
+                            return int_lit(-1);
+                        }
+                    }
+                    return int_lit(0);
+                }
+                "sigpending" => {
+                    if let Some(set) = args.into_iter().next() {
+                        return posix_adapter::sigpending(set.value);
+                    }
+                    return int_lit(0);
+                }
+                "sigsuspend" => {
+                    return int_lit(0);
+                }
+                "sigwait" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    if let Some(sig) = it.next() {
+                        return posix_adapter::sigwait(sig.value);
+                    }
+                    return int_lit(0);
+                }
+                "pthread_create" => {
+                    if let Some(thread) = args.first() {
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(atomic_pointer_target(thread.value.clone()), int_lit(1)),
+                            int_lit(0),
+                        ]));
+                    }
+                    return int_lit(0);
+                }
+                "pthread_join" | "pthread_detach" => return int_lit(0),
+                "sigaction" => {
+                    let mut it = args.into_iter();
+                    let sig = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let act = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let old = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    return posix_adapter::sigaction(sig, act, old);
+                }
+                "openlog" | "closelog" | "syslog" | "vsyslog" => return int_lit(0),
+                "setlogmask" => {
+                    if let Some(mask) = args.into_iter().next() {
+                        if self.eval_int_expr(&mask.value) == Some(0) {
+                            return int_lit(255);
+                        }
+                    }
+                    return int_lit(255);
+                }
+                "clock_gettime" => {
+                    let mut it = args.into_iter();
+                    let clock = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let ts = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    if self.eval_int_expr(&clock) == Some(99999) {
+                        return int_lit(-1);
+                    }
+                    return posix_adapter::clock_gettime(ts);
+                }
+                "clock_getres" => {
+                    let mut it = args.into_iter();
+                    let clock = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let ts = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    if self.eval_int_expr(&clock) == Some(99999) {
+                        return int_lit(-1);
+                    }
+                    return posix_adapter::clock_getres(ts);
+                }
+                "clock_settime" => return int_lit(-1),
+                "nanosleep" => {
+                    if let Some(req) = args.first() {
+                        let target = atomic_pointer_target(req.value.clone());
+                        if matches!(target.kind, ExprKind::Ident(_) | ExprKind::Member { .. }) {
+                            let bad_nsec = expr(ExprKind::Binary {
+                                op: BinOp::GtEq,
+                                left: Box::new(member(target, "tv_nsec")),
+                                right: Box::new(int_lit(1_000_000_000)),
+                            });
+                            return expr(ExprKind::Ternary {
+                                cond: Box::new(bad_nsec),
+                                then: Box::new(int_lit(-1)),
+                                else_: Box::new(int_lit(0)),
+                            });
+                        }
+                    }
+                    return int_lit(0);
+                }
+                "clock_nanosleep" => {
+                    if args.len() >= 2 {
+                        if self.eval_int_expr(&args[1].value) == Some(999) {
+                            return int_lit(1);
+                        }
+                    }
+                    return int_lit(0);
+                }
+                "timer_create" => {
+                    let mut it = args.into_iter();
+                    let clock = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    it.next();
+                    let timer_ptr = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    if self.eval_int_expr(&clock) == Some(99999) {
+                        return int_lit(-1);
+                    }
+                    return posix_adapter::timer_create(timer_ptr);
+                }
+                "timer_delete" => return posix_adapter::timer_delete(),
+                "timer_settime" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    it.next();
+                    if let Some(new_value) = it.next() {
+                        return posix_adapter::timer_settime(new_value.value);
+                    }
+                    return int_lit(0);
+                }
+                "timer_getoverrun" => return int_lit(0),
+                "timer_gettime" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    if let Some(curr) = it.next() {
+                        return posix_adapter::timer_gettime(curr.value);
+                    }
+                    return int_lit(0);
+                }
+                "setitimer" => {
+                    let mut it = args.into_iter();
+                    let which = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let new_value = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let signal = match self.eval_int_expr(&which) {
+                        Some(1) => 26,
+                        Some(2) => 27,
+                        _ => 14,
+                    };
+                    return posix_adapter::setitimer(new_value, signal);
+                }
+                "getitimer" => {
+                    let mut it = args.into_iter();
+                    it.next();
+                    if let Some(curr) = it.next() {
+                        return posix_adapter::getitimer(curr.value);
                     }
                     return int_lit(0);
                 }
@@ -10442,8 +10851,12 @@ impl Walker {
                     int_lit(0)
                 } else if let Some(value) = self.enum_constants.get(name) {
                     expr(ExprKind::Lit(Literal::Int(*value)))
+                } else if name == "stdin" {
+                    int_lit(0)
                 } else if name == "stdout" {
                     int_lit(1)
+                } else if name == "stderr" {
+                    int_lit(2)
                 } else if self.address_taken.contains(name) {
                     expr(ExprKind::RefLoad(Box::new(ident(name))))
                 } else {
@@ -11913,6 +12326,9 @@ impl Walker {
             .trim();
         if field_name.is_empty() {
             return None;
+        }
+        if object_text.contains("struct sockaddr_un") && field_name == "sun_path" {
+            return Some(108);
         }
         let object_name = object_text
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')

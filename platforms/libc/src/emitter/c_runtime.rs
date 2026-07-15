@@ -1644,6 +1644,15 @@ fn build_prelude() -> Vec<Statement> {
                 vec![stmt(StmtKind::Return(Some(int_lit(0))))],
                 None,
             ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(expr(ExprKind::TypeOf(Box::new(ident("h"))))),
+                    right: Box::new(str_lit("function")),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
             stmt(StmtKind::Expr(expr(ExprKind::Call {
                 callee: Box::new(ident("h")),
                 args: vec![Argument::positional(ident("sig"))],
