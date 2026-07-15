@@ -287,7 +287,7 @@ fn default_string_with_concat_call() {
         run_pascal(
             r#"program T; function Wrap(s:string; open:string='['; close:string=']'):string; begin Result:=open+s+close; end; begin WriteLn(Wrap('a')); WriteLn(Wrap('b','(',' )')); end."#
         ),
-        &["[a]", "(b)"]
+        &["[a]", "(b )"]
     );
 }
 

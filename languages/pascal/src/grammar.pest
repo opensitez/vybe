@@ -190,9 +190,10 @@ class_class_member = {
 class_property_decl = { (^"class" ~ ^"property" | ^"property") ~ property_def ~ (^"default" ~ ";")? }
 
 // Interface type
-interface_type = { ^"interface" ~ interface_heritage? ~ interface_body? }
+interface_type = { ^"interface" ~ interface_heritage? ~ interface_guid? ~ interface_body? }
 
 interface_heritage = { "(" ~ identifier ~ ")" }
+interface_guid = { "[" ~ string_literal ~ "]" }
 
 interface_body = { interface_member* ~ ^"end" }
 
@@ -241,7 +242,7 @@ property_specifiers = {
     | property_nodefault
 }
 
-property_accessor = { identifier ~ ("." ~ identifier)* }
+property_accessor = { method_name ~ ("." ~ method_name)* }
 property_read = { ^"read" ~ property_accessor }
 property_write = { ^"write" ~ property_accessor }
 property_default = { ^"default" ~ (&";" | expression) }
@@ -253,7 +254,13 @@ property_nodefault = { ^"nodefault" ~ expression? }
 method_kind_keyword = { ^"constructor" | ^"destructor" | ^"procedure" | ^"function" }
 
 method_sig_body = {
-    identifier ~ param_clause? ~ return_type_clause? ~ ";" ~ method_directives
+    method_name ~ param_clause? ~ return_type_clause? ~ ";" ~ method_directives
+}
+
+method_name = { identifier | operator_keyword_name }
+operator_keyword_name = {
+    ^"not" | ^"and" | ^"or" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"
+    | ^"set" | ^"do"
 }
 
 return_type_clause = { ":" ~ type_ref }
@@ -295,9 +302,9 @@ destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
 
 // Method implementation: ClassName.MethodName
 qualified_type_name = _{ identifier ~ generic_args? }
-method_impl_proc = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_func = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_body_proc = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_proc = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_func = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
 standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body) }
@@ -343,8 +350,8 @@ type_ref = {
 
 // Procedural types: `procedure(...)` or `function(...): Type`
 procedural_type = {
-    ^"function" ~ param_clause? ~ (":" ~ type_ref)?
-    | ^"procedure" ~ param_clause?
+    ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ (^"of" ~ ^"object")?
+    | ^"procedure" ~ param_clause? ~ (^"of" ~ ^"object")?
 }
 
 // Inline array of: `array[...] of Type` or `array of Type`
@@ -484,7 +491,8 @@ finally_handler = { ^"finally" ~ statement_list ~ ^"end" }
 
 // ── Raise ──────────────────────────────────────────────────────────────────────
 
-raise_statement = { ^"raise" ~ expression? }
+raise_keyword = @{ ^"raise" ~ !(ASCII_ALPHANUMERIC | "_") }
+raise_statement = { raise_keyword ~ expression? }
 
 yield_statement = { ^"yield" ~ expression? }
 
@@ -587,8 +595,8 @@ unary = {
 postfix = { primary ~ postfix_op* }
 
 postfix_op = {
-    "." ~ identifier ~ generic_args? ~ arg_list   // method call: obj.Method<T>(args)
-    | "." ~ identifier                  // field access: obj.Field
+    "." ~ method_name ~ generic_args? ~ arg_list   // method call: obj.Method<T>(args)
+    | "." ~ method_name                  // field access: obj.Field
     | "[" ~ array_index_list ~ "]"      // index: arr[i] or arr[i, j]
     | "^"                               // dereference: ptr^
     | generic_args                       // generic instantiation: TBox<T>.Create(...)

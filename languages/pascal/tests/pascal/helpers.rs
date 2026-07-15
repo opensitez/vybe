@@ -1,10 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::ObjectKind;
 use vybe_bytecode::{HostContext, VM, Value};
 use vybe_host::gui_state::GuiState;
 
 /// Run Pascal source through vybex pipeline: pest grammar -> walker -> common AST -> compiler -> VM
 pub fn run_pascal(src: &str) -> Vec<String> {
+    let _cwd_lock = pascal_test_cwd_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _cwd = PascalTestCwd::new();
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_pascal::register);
@@ -72,6 +77,38 @@ pub fn run_pascal(src: &str) -> Vec<String> {
     }
     let result = output.lock().unwrap().clone();
     result
+}
+
+fn pascal_test_cwd_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct PascalTestCwd {
+    previous: std::path::PathBuf,
+    current: std::path::PathBuf,
+}
+
+impl PascalTestCwd {
+    fn new() -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let previous = std::env::current_dir().expect("failed to read current test directory");
+        let current = std::env::temp_dir().join(format!(
+            "vybe-pascal-test-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&current).expect("failed to create Pascal test temp directory");
+        std::env::set_current_dir(&current).expect("failed to enter Pascal test temp directory");
+        Self { previous, current }
+    }
+}
+
+impl Drop for PascalTestCwd {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
+        let _ = std::fs::remove_dir_all(&self.current);
+    }
 }
 
 /// Run Pascal source with GUI host functions, return (VM, GuiState, output).
