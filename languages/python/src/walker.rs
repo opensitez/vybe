@@ -3181,7 +3181,88 @@ fn is_defined_class(name: &str) -> bool {
 /// Build a call expression, normalising `ClassName(args)` (a call whose callee
 /// is a declared class) to `ExprKind::New` so construction has one canonical
 /// shape across languages. Any other callee stays a plain `Call`.
+/// CPython signatures for the `datetime` constructors that are normally
+/// called with keywords (`timedelta(days=2)`). Keyword handling belongs to
+/// the frontend, so the emitter only ever sees positional arguments in this
+/// exact order.
+fn datetime_kwarg_signature(callee: &Expression) -> Option<&'static [&'static str]> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let module = resolve_module_alias(name).unwrap_or_else(|| name.clone());
+    if module != "datetime" {
+        return None;
+    }
+    Some(match field.as_str() {
+        "timedelta" => &[
+            "days",
+            "seconds",
+            "microseconds",
+            "milliseconds",
+            "minutes",
+            "hours",
+            "weeks",
+        ],
+        "date" => &["year", "month", "day"],
+        "time" => &["hour", "minute", "second", "microsecond", "tzinfo"],
+        "datetime" => &[
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "microsecond",
+            "tzinfo",
+        ],
+        _ => return None,
+    })
+}
+
+/// Place each keyword argument at its signature slot, filling the gaps with
+/// `0`. Only runs when a keyword is actually present, so positional calls
+/// keep their natural arity and the emitter's own defaults still apply.
+fn normalize_datetime_kwargs(params: &[&str], args: Vec<Argument>) -> Vec<Argument> {
+    if args.iter().all(|a| a.name.is_none()) {
+        return args;
+    }
+    let zero = || Expression::new(ExprKind::Lit(Literal::Int(0)));
+    let mut slots: Vec<Expression> = params.iter().map(|_| zero()).collect();
+    let mut highest = 0usize;
+    for (i, arg) in args.into_iter().enumerate() {
+        let slot = match &arg.name {
+            Some(name) => match params.iter().position(|p| p == name) {
+                Some(pos) => pos,
+                // An unknown keyword is not ours to interpret; drop it
+                // rather than shift every later argument.
+                None => continue,
+            },
+            None => i,
+        };
+        if slot < slots.len() {
+            highest = highest.max(slot);
+            slots[slot] = arg.value;
+        }
+    }
+    slots
+        .into_iter()
+        .take(highest + 1)
+        .map(Argument::positional)
+        .collect()
+}
+
 fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
+    if let Some(params) = datetime_kwarg_signature(&callee) {
+        let args = normalize_datetime_kwargs(params, args);
+        return ExprKind::Call {
+            callee: Box::new(callee),
+            args,
+            optional: false,
+        };
+    }
     if let ExprKind::Ident(name) = &callee.kind {
         if let Some(def) = namedtuple_def(name) {
             return build_namedtuple_construction(&def, args);
@@ -3213,6 +3294,71 @@ fn expr_root_ident(e: &Expression) -> Option<String> {
         ExprKind::Call { callee, .. } => expr_root_ident(callee),
         _ => None,
     }
+}
+
+/// True while an expression still denotes a module namespace: the import
+/// root reached through nothing but attribute hops (`importlib.metadata`).
+/// A `Call` or subscript anywhere in the chain produces an ordinary value,
+/// so the namespace ends there.
+fn is_module_namespace_path(e: &Expression) -> bool {
+    module_namespace_path(e).is_some()
+}
+
+/// The dotted path of a module namespace expression, module-aliases
+/// resolved (`md.version` where `import importlib.metadata as md` →
+/// `importlib.metadata.version`). `None` once anything but an attribute
+/// hop appears.
+fn module_namespace_path(e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(n) => {
+            let module = resolve_module_alias(n).unwrap_or_else(|| n.clone());
+            is_imported_module(n).then_some(module)
+        }
+        ExprKind::Member { object, field, .. } => {
+            Some(format!("{}.{}", module_namespace_path(object)?, field))
+        }
+        _ => None,
+    }
+}
+
+/// `calendar.month_name` / `calendar.day_name` — fixed, indexable name
+/// tables. They are constants, so the walker materializes them directly
+/// rather than routing a lookup through the emitter. `month_name[0]` is
+/// empty because CPython's month numbering is 1-based.
+fn calendar_name_table(path: &str) -> Option<&'static [&'static str]> {
+    Some(match path {
+        "calendar.month_name" => &[
+            "", "January", "February", "March", "April", "May", "June", "July", "August",
+            "September", "October", "November", "December",
+        ],
+        "calendar.month_abbr" => &[
+            "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ],
+        "calendar.day_name" => &[
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ],
+        "calendar.day_abbr" => &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        _ => return None,
+    })
+}
+
+/// `datetime` class attributes that hold *constructed* values rather than
+/// scalars, which a `namespace_constants` entry cannot express. Each maps
+/// to a zero-arg builtin the adapter materializes.
+fn datetime_attr_builtin(path: &str) -> Option<&'static str> {
+    Some(match path {
+        "datetime.date.min" | "datetime.datetime.min" => "__py_date_min",
+        "datetime.date.max" | "datetime.datetime.max" => "__py_date_max",
+        "datetime.timezone.utc" => "__py_timezone_utc",
+        "datetime.timedelta.resolution" => "__py_timedelta_resolution",
+        _ => return None,
+    })
 }
 
 /// Rewrite bare attribute reads to subscripts (see the module note above).
@@ -3353,9 +3499,39 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     }
                 }
             }
-            // Keep `self.x` and `module.CONST` on the Member path.
+            // `datetime.date.min` / `datetime.timezone.utc` — class
+            // attributes holding constructed values, which no scalar
+            // constant entry can express.
+            if let Some(path) = module_namespace_path(&object) {
+                let full = format!("{path}.{field}");
+                if let Some(builtin) = datetime_attr_builtin(&full) {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Ident(builtin.into()))),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                }
+                if let Some(names) = calendar_name_table(&full) {
+                    return Expression::new(ExprKind::Array(
+                        names
+                            .iter()
+                            .map(|n| ArrayElement {
+                                value: Expression::new(ExprKind::Lit(Literal::Str((*n).into()))),
+                                spread: false,
+                                key: None,
+                                by_ref: false,
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+            // Keep `self.x` and `module.CONST` on the Member path. A module
+            // read stays a namespace read only while the chain is still pure
+            // attribute hops — once a call or subscript intervenes the result
+            // is an ordinary value (`datetime.date(2020, 6, 15).year`) whose
+            // attributes live on the data path, not the module surface.
             let keep = matches!(root.as_deref(), Some("self"))
-                || root.as_deref().map(is_imported_module).unwrap_or(false);
+                || is_module_namespace_path(&object);
             if keep {
                 Expression::new(ExprKind::Member {
                     object: Box::new(object),
@@ -4437,14 +4613,20 @@ fn expr_is_python_float(e: &Expression) -> bool {
                 args.iter().any(|a| expr_is_python_float(&a.value))
             }
             ExprKind::Member { object, field, .. } => {
-                matches!(&object.kind, ExprKind::Ident(o) if o == "math")
-                    && FLOAT_MATH_FNS.contains(&field.as_str())
+                (matches!(&object.kind, ExprKind::Ident(o) if o == "math")
+                    && FLOAT_MATH_FNS.contains(&field.as_str()))
+                    || FLOAT_DT_METHODS.contains(&field.as_str())
             }
             _ => false,
         },
         _ => false,
     }
 }
+
+/// `datetime` methods CPython documents as returning a float, so they
+/// display with a trailing `.0` (`timedelta(hours=1).total_seconds()` is
+/// `3600.0`). Named methods, not a blanket rule about the receiver.
+const FLOAT_DT_METHODS: &[&str] = &["total_seconds", "timestamp"];
 
 /// Wrap `value` in `__py_float_repr__(value)` so it displays Python-float-style.
 fn wrap_float_repr(value: Expression) -> Expression {

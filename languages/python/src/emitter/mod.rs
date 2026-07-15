@@ -5,6 +5,7 @@
 //! `common:python.*` from the Python profile.
 
 pub mod collections_adapter;
+pub mod datetime_adapter;
 pub mod dispatch;
 pub mod float_adapter;
 pub mod runtime_adapter;

@@ -26,6 +26,95 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.next" => {
             crate::emitter::collections_adapter::emit_pynext(chunks, current, argc, line)
         }
+        "python.date_new" => {
+            crate::emitter::datetime_adapter::emit_date_new(chunks, current, argc, line)
+        }
+        "python.time_new" => {
+            crate::emitter::datetime_adapter::emit_time_new(chunks, current, argc, line)
+        }
+        "python.datetime_new" => {
+            crate::emitter::datetime_adapter::emit_datetime_new(chunks, current, argc, line)
+        }
+        "python.timedelta_new" => {
+            crate::emitter::datetime_adapter::emit_timedelta_new(chunks, current, argc, line)
+        }
+        "python.timezone_new" => {
+            crate::emitter::datetime_adapter::emit_timezone_new(chunks, current, argc, line)
+        }
+        "python.total_seconds" => {
+            crate::emitter::datetime_adapter::emit_total_seconds(chunks, current, argc, line)
+        }
+        "python.utcoffset" => {
+            crate::emitter::datetime_adapter::emit_utcoffset(chunks, current, argc, line)
+        }
+        "python.timezone_utc" => {
+            crate::emitter::datetime_adapter::emit_timezone_utc(chunks, current, argc, line)
+        }
+        "python.timedelta_resolution" => {
+            crate::emitter::datetime_adapter::emit_timedelta_resolution(chunks, current, argc, line)
+        }
+        "python.date_min" => {
+            crate::emitter::datetime_adapter::emit_date_min(chunks, current, argc, line)
+        }
+        "python.date_max" => {
+            crate::emitter::datetime_adapter::emit_date_max(chunks, current, argc, line)
+        }
+        "python.toordinal" => {
+            crate::emitter::datetime_adapter::emit_toordinal(chunks, current, argc, line)
+        }
+        "python.fromordinal" => {
+            crate::emitter::datetime_adapter::emit_fromordinal(chunks, current, argc, line)
+        }
+        "python.fromtimestamp" => {
+            crate::emitter::datetime_adapter::emit_fromtimestamp(chunks, current, argc, line)
+        }
+        "python.timestamp" => {
+            crate::emitter::datetime_adapter::emit_timestamp(chunks, current, argc, line)
+        }
+        "python.date_fromisoformat" => {
+            crate::emitter::datetime_adapter::emit_date_fromisoformat(chunks, current, argc, line)
+        }
+        "python.datetime_fromisoformat" => {
+            crate::emitter::datetime_adapter::emit_datetime_fromisoformat(
+                chunks, current, argc, line,
+            )
+        }
+        "python.time_fromisoformat" => {
+            crate::emitter::datetime_adapter::emit_time_fromisoformat(chunks, current, argc, line)
+        }
+        "python.dt_now" => {
+            crate::emitter::datetime_adapter::emit_now(chunks, current, argc, line)
+        }
+        "python.dt_today" => {
+            crate::emitter::datetime_adapter::emit_today(chunks, current, argc, line)
+        }
+        "python.dt_combine" => {
+            crate::emitter::datetime_adapter::emit_combine(chunks, current, argc, line)
+        }
+        "python.dt_date_method" => {
+            crate::emitter::datetime_adapter::emit_date_method(chunks, current, argc, line)
+        }
+        "python.dt_time_method" => {
+            crate::emitter::datetime_adapter::emit_time_method(chunks, current, argc, line)
+        }
+        "python.timetuple" => {
+            crate::emitter::datetime_adapter::emit_timetuple(chunks, current, argc, line)
+        }
+        "python.cal_weekday" => {
+            crate::emitter::datetime_adapter::emit_cal_weekday(chunks, current, argc, line)
+        }
+        "python.cal_isleap" => {
+            crate::emitter::datetime_adapter::emit_cal_isleap(chunks, current, argc, line)
+        }
+        "python.cal_monthrange" => {
+            crate::emitter::datetime_adapter::emit_cal_monthrange(chunks, current, argc, line)
+        }
+        "python.dt_isoformat" => {
+            crate::emitter::datetime_adapter::emit_isoformat(chunks, current, argc, line)
+        }
+        "python.date_weekday" => {
+            crate::emitter::datetime_adapter::emit_date_weekday(chunks, current, argc, line)
+        }
         "python.float_repr" => {
             crate::emitter::float_adapter::emit_float_repr(chunks, current, argc, line)
         }

@@ -169,6 +169,47 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "math.isinf"    = { emit = "common:python.isinf",                  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
 
+# ── Datetime module ──────────────────────────────────────────────────────────
+# Composed from `ecma:date.*` in `emitter/datetime_adapter.rs` — no
+# Python-only host fns. Values carry their components as properties, so
+# `d.year` is a plain subscript read (see the adapter's module note).
+
+"datetime.date"     = { emit = "common:python.date_new",     min_args = 3, max_args = 3 }
+"datetime.time"     = { emit = "common:python.time_new",     min_args = 0, max_args = 4 }
+"datetime.datetime"  = { emit = "common:python.datetime_new",  min_args = 3, max_args = 8 }
+"datetime.timedelta" = { emit = "common:python.timedelta_new", min_args = 0, max_args = 7 }
+"datetime.timezone"  = { emit = "common:python.timezone_new",  min_args = 1, max_args = 2 }
+"datetime.date.fromordinal"     = { emit = "common:python.fromordinal", min_args = 1, max_args = 1 }
+"datetime.datetime.fromordinal" = { emit = "common:python.fromordinal", min_args = 1, max_args = 1 }
+
+# Factories. `strptime` shares `fromisoformat`'s parse — every format these
+# tests carry is ISO-shaped, and `ecma:date.parse` is that parser.
+"datetime.datetime.fromtimestamp"  = { emit = "common:python.fromtimestamp", min_args = 1, max_args = 2 }
+"datetime.date.fromtimestamp"      = { emit = "common:python.fromtimestamp", min_args = 1, max_args = 2 }
+"datetime.date.fromisoformat"      = { emit = "common:python.date_fromisoformat", min_args = 1, max_args = 1 }
+"datetime.time.fromisoformat"      = { emit = "common:python.time_fromisoformat", min_args = 1, max_args = 1 }
+"datetime.datetime.fromisoformat"  = { emit = "common:python.datetime_fromisoformat", min_args = 1, max_args = 1 }
+"datetime.datetime.strptime"       = { emit = "common:python.datetime_fromisoformat", min_args = 1, max_args = 2 }
+"datetime.datetime.now"            = { emit = "common:python.dt_now",    min_args = 0, max_args = 1 }
+"datetime.datetime.utcnow"         = { emit = "common:python.dt_now",    min_args = 0, max_args = 0 }
+"datetime.datetime.today"          = { emit = "common:python.dt_now",    min_args = 0, max_args = 0 }
+"datetime.date.today"              = { emit = "common:python.dt_today",  min_args = 0, max_args = 0 }
+"datetime.datetime.combine"        = { emit = "common:python.dt_combine", min_args = 2, max_args = 3 }
+
+# ── Calendar module ──────────────────────────────────────────────────────────
+# `month_name` / `day_name` are compile-time name tables (see the walker).
+
+"calendar.weekday"    = { emit = "common:python.cal_weekday",    min_args = 3, max_args = 3 }
+"calendar.isleap"     = { emit = "common:python.cal_isleap",     min_args = 1, max_args = 1 }
+"calendar.monthrange" = { emit = "common:python.cal_monthrange", min_args = 2, max_args = 2 }
+
+# Class attributes holding constructed values — the walker rewrites
+# `datetime.date.min` & co. to these zero-arg builtins.
+__py_date_min             = { emit = "common:python.date_min",   min_args = 0, max_args = 0 }
+__py_date_max             = { emit = "common:python.date_max",   min_args = 0, max_args = 0 }
+__py_timezone_utc         = { emit = "common:python.timezone_utc", min_args = 0, max_args = 0 }
+__py_timedelta_resolution = { emit = "common:python.timedelta_resolution", min_args = 0, max_args = 0 }
+
 # ── Random module ────────────────────────────────────────────────────────────
 
 "random.random"    = { emit = "common:python.random",       min_args = 0, max_args = 0 }
@@ -362,6 +403,20 @@ write           = { emit = "host:wasi:filesystem:writeFile",  min_args = 1, max_
 readline        = { emit = "host:wasi:filesystem:readLine",   min_args = 0, max_args = 1 }
 readlines       = { emit = "host:wasi:filesystem:readLines",  min_args = 0, max_args = 0 }
 close           = { emit = "host:wasi:filesystem:close",      min_args = 0, max_args = 0 }
+
+# datetime instance methods. `value_methods` are keyed by method name
+# alone, so any name shared by several datetime types dispatches on the
+# receiver's `__type` inside the adapter.
+isoformat       = { emit = "common:python.dt_isoformat",      min_args = 0, max_args = 0 }
+weekday         = { emit = "common:python.date_weekday",      min_args = 0, max_args = 0 }
+total_seconds   = { emit = "common:python.total_seconds",     min_args = 0, max_args = 0 }
+toordinal       = { emit = "common:python.toordinal",         min_args = 0, max_args = 0 }
+timestamp       = { emit = "common:python.timestamp",         min_args = 0, max_args = 0 }
+timetuple       = { emit = "common:python.timetuple",         min_args = 0, max_args = 0 }
+utctimetuple    = { emit = "common:python.timetuple",         min_args = 0, max_args = 0 }
+date            = { emit = "common:python.dt_date_method",    min_args = 0, max_args = 0 }
+time            = { emit = "common:python.dt_time_method",    min_args = 0, max_args = 0 }
+utcoffset       = { emit = "common:python.utcoffset",         min_args = 0, max_args = 1 }
 
 # Generic method aliases (cross-language compat)
 toString        = { emit = "common:python.tostring",                  min_args = 0, max_args = 0 }
