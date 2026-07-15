@@ -159,7 +159,7 @@ beta""";
   var s = r'line\nline';
   print(s.length);
 }"#,
-        ["9"]
+        ["10"]
     };
 
     raw_string_does_not_interpolate_dollar_var => {

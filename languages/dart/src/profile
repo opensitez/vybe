@@ -122,13 +122,13 @@ trimRight     = { emit = "common:str_trim_end",        min_args = 0, max_args = 
 startsWith    = { emit = "host:ecma:string:startsWith", min_args = 1, max_args = 2 }
 endsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
 contains      = { emit = "common:str_contains",        min_args = 1, max_args = 1 }
-indexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
+indexOf       = { emit = "host:ecma:string:indexOf",   min_args = 1, max_args = 2 }
 lastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
 replaceAll    = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
 split         = { emit = "common:strings.split",       min_args = 1, max_args = 1 }
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
-padLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
-padRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
+padLeft       = { emit = "host:ecma:string:padStart",  min_args = 1, max_args = 2 }
+padRight      = { emit = "host:ecma:string:padEnd",    min_args = 1, max_args = 2 }
 toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 0 }
 codeUnitAt    = { emit = "common:str_char_code_at",    min_args = 1, max_args = 1 }
 isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }

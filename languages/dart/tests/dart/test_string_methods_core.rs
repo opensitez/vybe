@@ -61,7 +61,7 @@ dart_cases! {
         r#"void main() {
   print('banana'.indexOf('na', 2));
 }"#,
-        ["3"]
+        ["2"]
     };
 
     starts_with_true_for_matching_prefix => {

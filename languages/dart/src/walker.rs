@@ -2297,6 +2297,39 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // ── String literals ─────────────────────────────────────────────
+        Rule::string_literal_sequence => {
+            let mut parts = Vec::new();
+            let mut has_interp = false;
+            for inner in pair.into_inner() {
+                let literal = if inner.as_rule() == Rule::string_literal {
+                    inner.into_inner().next().ok_or("empty string")?
+                } else {
+                    inner
+                };
+                let expr = walk_string_literal(literal)?;
+                match expr {
+                    ExprKind::Lit(Literal::Str(text)) => parts.push(InterpolPart::Text(text)),
+                    ExprKind::Interpolation(mut nested) => {
+                        has_interp = true;
+                        parts.append(&mut nested);
+                    }
+                    other => parts.push(InterpolPart::Expr(Expression::new(other))),
+                }
+            }
+            if has_interp {
+                Ok(ExprKind::Interpolation(parts))
+            } else {
+                Ok(ExprKind::Lit(Literal::Str(
+                    parts
+                        .into_iter()
+                        .filter_map(|part| match part {
+                            InterpolPart::Text(text) => Some(text),
+                            _ => None,
+                        })
+                        .collect(),
+                )))
+            }
+        }
         Rule::string_literal => {
             let inner = pair.into_inner().next().ok_or("empty string")?;
             walk_string_literal(inner)
@@ -4502,9 +4535,14 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
         }
     }
 
+    if let Some(buffer) = fold_string_buffer_cascade(&receiver, &sections)? {
+        return Ok(buffer);
+    }
+
     let mut ops = Vec::new();
 
     for section in sections {
+        let has_call = section.as_str().contains('(');
         let mut sec_inner = section.into_inner();
         let first = sec_inner.next().ok_or("cascade section: empty")?;
 
@@ -4538,6 +4576,17 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
                             value: Box::new(value),
                         }));
                     }
+                } else if has_call {
+                    let callee = Expression::new(ExprKind::Member {
+                        object: Box::new(receiver.clone()),
+                        field: name,
+                        null_safe: false,
+                    });
+                    ops.push(Expression::new(ExprKind::Call {
+                        callee: Box::new(callee),
+                        args: Vec::new(),
+                        optional: false,
+                    }));
                 } else {
                     // Bare member access
                     ops.push(Expression::new(ExprKind::Member {
@@ -4556,6 +4605,115 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
 
     ops.push(receiver);
     Ok(Expression::new(ExprKind::Sequence(ops)))
+}
+
+fn fold_string_buffer_cascade(
+    receiver: &Expression,
+    sections: &[Pair<Rule>],
+) -> Result<Option<Expression>, String> {
+    let ExprKind::Call { callee, args, .. } = &receiver.kind else {
+        return Ok(None);
+    };
+    if !args.is_empty() || !matches!(&callee.kind, ExprKind::Ident(name) if name == "StringBuffer") {
+        return Ok(None);
+    }
+
+    let mut buffer = String::new();
+    for section in sections {
+        let mut inner = section.clone().into_inner();
+        let Some(name_pair) = inner.next() else {
+            return Ok(None);
+        };
+        if name_pair.as_rule() != Rule::ident_name {
+            return Ok(None);
+        }
+        let name = name_pair.as_str();
+        let args = if let Some(next) = inner.next() {
+            if next.as_rule() == Rule::argument_list {
+                walk_arguments(next)?
+            } else {
+                return Ok(None);
+            }
+        } else if section.as_str().contains('(') {
+            Vec::new()
+        } else {
+            return Ok(None);
+        };
+
+        match name {
+            "write" => {
+                let Some(arg) = args.first() else {
+                    return Ok(None);
+                };
+                let Some(text) = dart_literal_to_string(&arg.value) else {
+                    return Ok(None);
+                };
+                buffer.push_str(&text);
+            }
+            "writeln" => {
+                if let Some(arg) = args.first() {
+                    let Some(text) = dart_literal_to_string(&arg.value) else {
+                        return Ok(None);
+                    };
+                    buffer.push_str(&text);
+                }
+                buffer.push('\n');
+            }
+            "writeAll" => {
+                let Some(items_arg) = args.first() else {
+                    return Ok(None);
+                };
+                let separator = args
+                    .get(1)
+                    .and_then(|arg| literal_string(&arg.value))
+                    .unwrap_or_default();
+                let ExprKind::Array(items) = &items_arg.value.kind else {
+                    return Ok(None);
+                };
+                let mut first = true;
+                for item in items {
+                    let Some(text) = dart_literal_to_string(&item.value) else {
+                        return Ok(None);
+                    };
+                    if !first {
+                        buffer.push_str(&separator);
+                    }
+                    first = false;
+                    buffer.push_str(&text);
+                }
+            }
+            "writeCharCode" => {
+                let Some(arg) = args.first() else {
+                    return Ok(None);
+                };
+                let ExprKind::Lit(Literal::Int(code)) = &arg.value.kind else {
+                    return Ok(None);
+                };
+                let Some(ch) = char::from_u32(*code as u32) else {
+                    return Ok(None);
+                };
+                buffer.push(ch);
+            }
+            "clear" => buffer.clear(),
+            _ => return Ok(None),
+        }
+    }
+
+    Ok(Some(Expression::new(ExprKind::Object(vec![
+        obj_prop("__dart_string_buffer_marker", Expression::bool(true)),
+        obj_prop("__dart_string_buffer", Expression::string(&buffer)),
+    ]))))
+}
+
+fn dart_literal_to_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        ExprKind::Lit(Literal::Int(value)) => Some(value.to_string()),
+        ExprKind::Lit(Literal::Float(value)) => Some(format!("{}", value)),
+        ExprKind::Lit(Literal::Bool(value)) => Some(value.to_string()),
+        ExprKind::Lit(Literal::Null) => Some(String::new()),
+        _ => None,
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4637,69 +4795,197 @@ fn walk_string_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
 }
 
 fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let mut parts: Vec<InterpolPart> = Vec::new();
+    return walk_string_literal_source(pair.as_str());
+}
+
+fn walk_string_literal_source(source: &str) -> Result<ExprKind, String> {
+    let (raw, quote_len) = if let Some(rest) = source.strip_prefix('r') {
+        if rest.starts_with("'''") {
+            (true, 3)
+        } else if rest.starts_with("\"\"\"") {
+            (true, 3)
+        } else if rest.starts_with('\'') {
+            (true, 1)
+        } else {
+            (true, 1)
+        }
+    } else if source.starts_with("'''") {
+        (false, 3)
+    } else if source.starts_with("\"\"\"") {
+        (false, 3)
+    } else if source.starts_with('\'') {
+        (false, 1)
+    } else {
+        (false, 1)
+    };
+    let start = if raw { 1 + quote_len } else { quote_len };
+    let end = source.len().saturating_sub(quote_len);
+    let body = source.get(start..end).unwrap_or("");
+    if raw {
+        return Ok(ExprKind::Lit(Literal::Str(body.to_string())));
+    }
+
+    let mut parts = Vec::new();
+    let mut text = String::new();
     let mut has_interp = false;
-
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            // Opening/closing quotes
-            Rule::dq_open
-            | Rule::dq_close
-            | Rule::sq_open
-            | Rule::sq_close
-            | Rule::triple_double_head
-            | Rule::triple_double_tail
-            | Rule::triple_single_head
-            | Rule::triple_single_tail => {}
-
-            // Text chunks
-            Rule::dq_chars
-            | Rule::sq_chars
-            | Rule::triple_double_chars
-            | Rule::triple_single_chars => {
-                let text = unescape_string_chars(p.as_str());
-                parts.push(InterpolPart::Text(text));
+    let mut i = 0;
+    while i < body.len() {
+        let rest = &body[i..];
+        if rest.starts_with('\\') {
+            if let Some((escaped, consumed)) = read_escape(rest) {
+                text.push_str(&escaped);
+                i += consumed;
+            } else {
+                text.push('\\');
+                i += 1;
             }
-
-            // Interpolation
-            Rule::dq_interp
-            | Rule::sq_interp
-            | Rule::triple_double_interp
-            | Rule::triple_single_interp => {
-                has_interp = true;
-                let inner = p.into_inner().next().ok_or("empty interpolation")?;
-                match inner.as_rule() {
-                    Rule::interp_simple => {
-                        // $ident
-                        let ident = inner.into_inner().next().ok_or("interp_simple: no ident")?;
-                        parts.push(InterpolPart::Expr(Expression::ident(ident.as_str())));
-                    }
-                    Rule::interp_complex => {
-                        // ${expr}
-                        let expr_pair =
-                            inner.into_inner().next().ok_or("interp_complex: no expr")?;
-                        parts.push(InterpolPart::Expr(walk_expression(expr_pair)?));
-                    }
-                    _ => {}
+        } else if rest.starts_with("${") {
+            if !text.is_empty() {
+                parts.push(InterpolPart::Text(std::mem::take(&mut text)));
+            }
+            let close = find_interpolation_close(body, i + 2)
+                .ok_or_else(|| "unterminated string interpolation".to_string())?;
+            let expr_src = &body[i + 2..close];
+            parts.push(InterpolPart::Expr(parse_interpolation_expression(expr_src)?));
+            has_interp = true;
+            i = close + 1;
+        } else if rest.starts_with('$') {
+            let after = i + 1;
+            if let Some((ident, consumed)) = read_interpolation_ident(&body[after..]) {
+                if !text.is_empty() {
+                    parts.push(InterpolPart::Text(std::mem::take(&mut text)));
                 }
+                parts.push(InterpolPart::Expr(Expression::ident(ident)));
+                has_interp = true;
+                i = after + consumed;
+            } else {
+                text.push('$');
+                i += 1;
             }
-            _ => {}
+        } else if let Some(ch) = rest.chars().next() {
+            text.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
         }
     }
-
-    if !has_interp {
-        // Plain string with no interpolation
-        let text: String = parts
-            .iter()
-            .map(|p| match p {
-                InterpolPart::Text(s) => s.as_str(),
-                _ => "",
-            })
-            .collect();
-        Ok(ExprKind::Lit(Literal::Str(text)))
-    } else {
-        Ok(ExprKind::Interpolation(parts))
+    if !text.is_empty() {
+        parts.push(InterpolPart::Text(text));
     }
+    if has_interp {
+        Ok(ExprKind::Interpolation(parts))
+    } else {
+        Ok(ExprKind::Lit(Literal::Str(
+            parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    InterpolPart::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect(),
+        )))
+    }
+}
+
+fn parse_interpolation_expression(source: &str) -> Result<Expression, String> {
+    let mut pairs = DartParser::parse(Rule::expression, source)
+        .map_err(|e| format!("Dart interpolation parse error: {}", e))?;
+    let pair = pairs.next().ok_or("empty interpolation expression")?;
+    walk_expression(pair)
+}
+
+fn read_interpolation_ident(source: &str) -> Option<(&str, usize)> {
+    let mut end = 0;
+    for (idx, ch) in source.char_indices() {
+        if idx == 0 {
+            if !(ch.is_ascii_alphabetic() || ch == '_') {
+                return None;
+            }
+        } else if !(ch.is_ascii_alphanumeric() || ch == '_') {
+            break;
+        }
+        end = idx + ch.len_utf8();
+    }
+    (end > 0).then_some((&source[..end], end))
+}
+
+fn read_escape(source: &str) -> Option<(String, usize)> {
+    let mut chars = source.chars();
+    if chars.next()? != '\\' {
+        return None;
+    }
+    let esc = chars.next()?;
+    let consumed = 1 + esc.len_utf8();
+    let text = match esc {
+        'n' => "\n".to_string(),
+        't' => "\t".to_string(),
+        'r' => "\r".to_string(),
+        '\\' => "\\".to_string(),
+        '\'' => "'".to_string(),
+        '"' => "\"".to_string(),
+        '$' => "$".to_string(),
+        '0' => "\0".to_string(),
+        'x' => {
+            let hex = source.get(consumed..consumed + 2)?;
+            let value = u32::from_str_radix(hex, 16).ok()?;
+            char::from_u32(value)?.to_string()
+        }
+        'u' => {
+            let hex = source.get(consumed..consumed + 4)?;
+            let value = u32::from_str_radix(hex, 16).ok()?;
+            char::from_u32(value)?.to_string()
+        }
+        other => format!("\\{}", other),
+    };
+    let total = match esc {
+        'x' => consumed + 2,
+        'u' => consumed + 4,
+        _ => consumed,
+    };
+    Some((text, total))
+}
+
+fn find_interpolation_close(source: &str, start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut i = start;
+    let mut quote: Option<char> = None;
+    while i < source.len() {
+        let rest = &source[i..];
+        let ch = rest.chars().next()?;
+        if let Some(q) = quote {
+            if ch == '\\' {
+                i += ch.len_utf8();
+                if let Some(next) = source[i..].chars().next() {
+                    i += next.len_utf8();
+                }
+                continue;
+            }
+            if ch == q {
+                quote = None;
+            }
+            i += ch.len_utf8();
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                i += ch.len_utf8();
+            }
+            '{' => {
+                depth += 1;
+                i += ch.len_utf8();
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+                i += ch.len_utf8();
+            }
+            _ => i += ch.len_utf8(),
+        }
+    }
+    None
 }
 
 // ════════════════════════════════════════════════════════════════════════════

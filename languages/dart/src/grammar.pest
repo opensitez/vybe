@@ -602,10 +602,13 @@ primary = {
     | false_kw
     | null_kw
     | numeric_literal
+    | string_literal_sequence
     | string_literal
     | typed_ident
     | ident_name
 }
+
+string_literal_sequence = { string_literal ~ string_literal+ }
 
 // `Stream<int>` / `Future<List<String>>` — type-parameterized identifier
 // used as an expression. Walker drops the type args (Vybe is dynamic).
