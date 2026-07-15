@@ -26,5 +26,7 @@ pub mod stdlib_adapter;
 pub mod stdlib_runtime;
 pub mod string_adapter;
 pub mod string_runtime;
+pub mod thread_adapter;
 pub mod time_adapter;
+pub mod uchar_adapter;
 pub mod wchar_adapter;

@@ -5,13 +5,13 @@
 //! `math_runtime`; the stdin / char-decode / wide-char / domain-error helpers
 //! are composed from their own adapters.
 
-use vybe_ast::{
-    Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Literal, ObjectProperty, Statement,
-    StmtKind, VarDeclKind, VarDeclarator,
-};
 use crate::emitter::build::*;
 use crate::emitter::math_runtime::{
     build_math_helper_fn, ecma_math_call, poly_erf, stirling_approx,
+};
+use vybe_ast::{
+    Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Literal, ObjectProperty, Statement,
+    StmtKind, VarDeclKind, VarDeclarator,
 };
 
 /// The libc runtime prelude is identical for every program, so build it once
@@ -240,6 +240,56 @@ fn build_prelude() -> Vec<Statement> {
         }),
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_file_error".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_file_append".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_file_readonly".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_file_closed".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_last_file_handle".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_file_binary".to_string()),
                 type_hint: None,
                 init: Some(expr(ExprKind::Object(vec![]))),
@@ -263,6 +313,456 @@ fn build_prelude() -> Vec<Statement> {
                 pattern: BindingPattern::Ident("__c_next_file_handle".to_string()),
                 type_hint: None,
                 init: Some(int_lit(2)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_next_fd".to_string()),
+                type_hint: None,
+                init: Some(int_lit(3)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_new_fd".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_dup_target".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_r".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_w".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_open".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_flags".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_cloexec".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_nonblock".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_size".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_content_by_fd".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fd_path_by_fd".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_next".to_string()),
+                type_hint: None,
+                init: Some(int_lit(100)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_by_name".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_msg".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_prio".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_has_msg".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_flags".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_mq_msgsize".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fenv_excepts".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_is_reader".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_is_writer".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_peer".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_writer_closed".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pipe_write_count".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_last_termsig".to_string()),
+                type_hint: None,
+                init: Some(int_lit(9)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_path_exists".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_shm_exists".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_next_shm_fd".to_string()),
+                type_hint: None,
+                init: Some(int_lit(30)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_sem_exists".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_sem_values".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_sem_handles".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_next_sem_handle".to_string()),
+                type_hint: None,
+                init: Some(int_lit(1)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_thread_results".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_thread_starts".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_thread_args".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_thread_result_tmp".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_next_thread_handle".to_string()),
+                type_hint: None,
+                init: Some(int_lit(1)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_cleanup_fn".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_cleanup_arg".to_string()),
+                type_hint: None,
+                init: None,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_tls_values".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_tls_destructors".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_tls_saved".to_string()),
+                type_hint: None,
+                init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_last_tls_key".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_next_tls_key".to_string()),
+                type_hint: None,
+                init: Some(int_lit(1)),
                 array_bounds: None,
                 with_events: false,
             }],
@@ -443,6 +943,38 @@ fn build_prelude() -> Vec<Statement> {
                         right: Box::new(int_lit(0)),
                     })),
                     then: Box::new(int_lit(1)),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
+                "append_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::GtEq,
+                        left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(int_lit(1)),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
+                "readonly_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("w")])),
+                        right: Box::new(int_lit(-1)),
+                    })),
+                    then: Box::new(expr(ExprKind::Ternary {
+                        cond: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
+                            right: Box::new(int_lit(-1)),
+                        })),
+                        then: Box::new(int_lit(1)),
+                        else_: Box::new(int_lit(0)),
+                    })),
                     else_: Box::new(int_lit(0)),
                 }),
             ),
@@ -969,6 +1501,14 @@ fn build_prelude() -> Vec<Statement> {
         "__c_fopen_h",
         vec!["path", "mode"],
         vec![
+            stmt(StmtKind::Expr(assign_expr(
+                ident("path"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("path")]),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("mode"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("mode")]),
+            ))),
             var_decl_stmt("handle", ident("__c_next_file_handle")),
             stmt(StmtKind::Expr(assign_expr(
                 ident("__c_next_file_handle"),
@@ -1064,19 +1604,43 @@ fn build_prelude() -> Vec<Statement> {
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_pos"), ident("handle")),
-                int_lit(0),
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(ident("append_mode")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(member(ident("content"), "length")),
+                    else_: Box::new(int_lit(0)),
+                }),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_eof"), ident("handle")),
                 int_lit(0),
             ))),
             stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_error"), ident("handle")),
+                int_lit(0),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_ungot"), ident("handle")),
-                null_lit(),
+                expr(ExprKind::Array(vec![])),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_dirty"), ident("handle")),
                 ident("write_mode"),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_append"), ident("handle")),
+                ident("append_mode"),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_readonly"), ident("handle")),
+                ident("readonly_mode"),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_closed"), ident("handle")),
+                int_lit(0),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_binary"), ident("handle")),
@@ -1120,6 +1684,19 @@ fn build_prelude() -> Vec<Statement> {
                 ],
                 None,
             ),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__c_fclose_h",
+        vec!["handle"],
+        vec![
+            stmt(StmtKind::Expr(call_expr(ident("__c_fsync_h"), vec![ident("handle")]))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_closed"), ident("handle")),
+                int_lit(1),
+            ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
     ));
@@ -1190,30 +1767,96 @@ fn build_prelude() -> Vec<Statement> {
                 None,
             ),
             if_stmt(
+                index_expr(ident("__c_file_readonly"), ident("handle")),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_error"), ident("handle")),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(-1)))),
+                ],
+                None,
+            ),
+            if_stmt(
+                index_expr(ident("__c_file_append"), ident("handle")),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    index_expr(ident("__c_file_pos"), ident("handle")),
+                    member(index_expr(ident("__c_file_content"), ident("handle")), "length"),
+                )))],
+                None,
+            ),
+            var_decl_stmt("pos", index_expr(ident("__c_file_pos"), ident("handle"))),
+            var_decl_stmt("content", index_expr(ident("__c_file_content"), ident("handle"))),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Gt,
+                    left: Box::new(ident("pos")),
+                    right: Box::new(member(ident("content"), "length")),
+                }),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    ident("content"),
+                    expr(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(ident("content")),
+                        right: Box::new(call_member(
+                            str_lit("\0"),
+                            "repeat",
+                            vec![expr(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(ident("pos")),
+                                right: Box::new(member(ident("content"), "length")),
+                            })],
+                        )),
+                    }),
+                )))],
+                None,
+            ),
+            if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::Eq,
-                    left: Box::new(index_expr(ident("__c_file_pos"), ident("handle"))),
-                    right: Box::new(int_lit(0)),
+                    left: Box::new(ident("pos")),
+                    right: Box::new(member(ident("content"), "length")),
                 }),
                 vec![stmt(StmtKind::Expr(assign_expr(
                     index_expr(ident("__c_file_content"), ident("handle")),
-                    ident("text"),
+                    expr(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(ident("content")),
+                        right: Box::new(ident("text")),
+                    }),
                 )))],
                 Some(vec![stmt(StmtKind::Expr(assign_expr(
                     index_expr(ident("__c_file_content"), ident("handle")),
                     expr(ExprKind::Binary {
                         op: BinOp::Add,
-                        left: Box::new(index_expr(ident("__c_file_content"), ident("handle"))),
-                        right: Box::new(ident("text")),
+                        left: Box::new(call_member(
+                            ident("content"),
+                            "substring",
+                            vec![int_lit(0), ident("pos")],
+                        )),
+                        right: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("text")),
+                            right: Box::new(call_member(
+                                ident("content"),
+                                "substring",
+                                vec![expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(ident("pos")),
+                                    right: Box::new(member(ident("text"), "length")),
+                                })],
+                            )),
+                        })),
                     }),
                 )))]),
             ),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_pos"), ident("handle")),
-                member(
-                    index_expr(ident("__c_file_content"), ident("handle")),
-                    "length",
-                ),
+                expr(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(ident("pos")),
+                    right: Box::new(member(ident("text"), "length")),
+                }),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_dirty"), ident("handle")),
@@ -1242,18 +1885,18 @@ fn build_prelude() -> Vec<Statement> {
         "__c_fgetc_h",
         vec!["handle"],
         vec![
+            var_decl_stmt(
+                "ungot",
+                index_expr(ident("__c_file_ungot"), ident("handle")),
+            ),
             if_stmt(
                 expr(ExprKind::Binary {
-                    op: BinOp::NotEq,
-                    left: Box::new(index_expr(ident("__c_file_ungot"), ident("handle"))),
-                    right: Box::new(null_lit()),
+                    op: BinOp::Gt,
+                    left: Box::new(member(ident("ungot"), "length")),
+                    right: Box::new(int_lit(0)),
                 }),
                 vec![
-                    var_decl_stmt("ch", index_expr(ident("__c_file_ungot"), ident("handle"))),
-                    stmt(StmtKind::Expr(assign_expr(
-                        index_expr(ident("__c_file_ungot"), ident("handle")),
-                        null_lit(),
-                    ))),
+                    var_decl_stmt("ch", call_member(ident("ungot"), "pop", vec![])),
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_file_eof"), ident("handle")),
                         int_lit(0),
@@ -1310,9 +1953,34 @@ fn build_prelude() -> Vec<Statement> {
         "__c_ungetc_h",
         vec!["code", "handle"],
         vec![
-            stmt(StmtKind::Expr(assign_expr(
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(ident("code")),
+                    right: Box::new(int_lit(-1)),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(expr(ExprKind::Unary {
+                        op: vybe_ast::UnaryOp::Typeof,
+                        expr: Box::new(index_expr(ident("__c_file_ungot"), ident("handle"))),
+                    })),
+                    right: Box::new(str_lit("undefined")),
+                }),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    index_expr(ident("__c_file_ungot"), ident("handle")),
+                    expr(ExprKind::Array(vec![])),
+                )))],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_member(
                 index_expr(ident("__c_file_ungot"), ident("handle")),
-                ident("code"),
+                "push",
+                vec![ident("code")],
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_eof"), ident("handle")),
@@ -1420,11 +2088,13 @@ fn build_prelude() -> Vec<Statement> {
     out.extend(crate::emitter::stdio_adapter::stdin_runtime_helpers());
     // char[] → string decoder for `%s`/`puts` (string / carray / code-point array).
     out.push(crate::emitter::stdio_adapter::char_to_str_runtime_helper());
+    out.extend(crate::emitter::string_adapter::strtok_runtime_helpers());
     // wide-char boundary helpers (code-point array ↔ string) for wchar.h.
     out.extend(crate::emitter::wchar_adapter::runtime_helpers());
 
     // math.h domain-error helpers (libc surface) — sqrt sets errno (EDOM).
     out.extend(crate::emitter::math_adapter::domain_error_helpers());
+    out.extend(crate::emitter::math_adapter::fenv_runtime_helpers());
 
     // setjmp.h: longjmp throws an exception carrying the buf token + value; the
     // matching setjmp's generated try/catch (see wrap_setjmp_in_block) unwinds
@@ -1496,22 +2166,59 @@ fn build_prelude() -> Vec<Statement> {
                 None,
             ),
             if_stmt(
-                expr(ExprKind::Binary {
-                    op: BinOp::Gt,
-                    left: Box::new(ident("pos")),
-                    right: Box::new(ident("len")),
-                }),
-                vec![stmt(StmtKind::Expr(assign_expr(
-                    ident("pos"),
-                    ident("len"),
-                )))],
+                index_expr(ident("__c_file_closed"), ident("handle")),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
+            stmt(StmtKind::Expr(assign_expr(index_expr(ident("__c_file_pos"), ident("handle")), ident("pos")))),
+            stmt(StmtKind::Expr(assign_expr(index_expr(ident("__c_file_eof"), ident("handle")), int_lit(0)))),
             stmt(StmtKind::Expr(assign_expr(
-                index_expr(ident("__c_file_pos"), ident("handle")),
-                ident("pos"),
+                index_expr(ident("__c_file_ungot"), ident("handle")),
+                expr(ExprKind::Array(vec![])),
             ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__c_ftell_h",
+        vec!["handle"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(ident("handle")),
+                    right: Box::new(int_lit(1)),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            if_stmt(
+                index_expr(ident("__c_file_closed"), ident("handle")),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            var_decl_stmt("pos", index_expr(ident("__c_file_pos"), ident("handle"))),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(expr(ExprKind::Unary {
+                        op: vybe_ast::UnaryOp::Typeof,
+                        expr: Box::new(ident("pos")),
+                    })),
+                    right: Box::new(str_lit("undefined")),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(ident("pos")),
+                right: Box::new(member(
+                    index_expr(ident("__c_file_ungot"), ident("handle")),
+                    "length",
+                )),
+            })))),
         ],
     ));
 
@@ -1538,11 +2245,51 @@ fn build_prelude() -> Vec<Statement> {
     out.push(function_stmt(
         "__c_fread_h",
         vec!["handle", "count"],
-        vec![stmt(StmtKind::Return(Some(call_member(
-            index_expr(ident("__c_file_content"), ident("handle")),
-            "slice",
-            vec![int_lit(0), ident("count")],
-        ))))],
+        vec![
+            var_decl_stmt("out", str_lit("")),
+            var_decl_stmt("i", int_lit(0)),
+            stmt(StmtKind::While {
+                cond: expr(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(ident("i")),
+                    right: Box::new(ident("count")),
+                }),
+                body: vec![
+                    var_decl_stmt("ch", call_expr(ident("__c_fgetc_h"), vec![ident("handle")])),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(ident("ch")),
+                            right: Box::new(int_lit(-1)),
+                        }),
+                        vec![stmt(StmtKind::Break(vybe_ast::BreakTarget::Implicit))],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("out"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("out")),
+                            right: Box::new(call_member(
+                                ident("String"),
+                                "fromCharCode",
+                                vec![ident("ch")],
+                            )),
+                        }),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("i"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("i")),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Return(Some(ident("out")))),
+        ],
     ));
 
     out.push(function_stmt(
@@ -1696,6 +2443,9 @@ fn build_prelude() -> Vec<Statement> {
 
     // regex.h runtime helpers (regcomp/regexec on the ECMA RegExp surface).
     out.extend(crate::emitter::regex_adapter::runtime_helpers());
+
+    // POSIX helpers for libc pointer-backed APIs such as mmap.
+    out.extend(crate::emitter::posix_adapter::runtime_helpers());
 
     // string.h runtime helpers (strcoll/strxfrm/strpbrk/strspn/strcspn).
     out.extend(crate::emitter::string_runtime::runtime_helpers());

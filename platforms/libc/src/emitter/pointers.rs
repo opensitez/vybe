@@ -37,10 +37,6 @@ fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
 }
 
-fn lit_int(n: i64) -> Expression {
-    e(ExprKind::Lit(Literal::Int(n)))
-}
-
 fn ident(name: &str) -> Expression {
     e(ExprKind::Ident(name.to_string()))
 }
@@ -214,31 +210,7 @@ pub fn is_carray_ptr_kind(ptr: Expression) -> Expression {
 /// `String.fromCharCode`.  Emitted as a call to a runtime helper expression.
 /// The walker should emit this wrapping puts()/log() arguments that are char*.
 pub fn carray_chars_to_string(ptr: Expression) -> Expression {
-    let base = member(ptr.clone(), CARRAY_BASE_KEY);
-    let idx = member(ptr, CARRAY_IDX_KEY);
-    let slice = call(member(base, "slice"), vec![idx]);
-    let string = e(ExprKind::Call {
-        callee: Box::new(e(ExprKind::Member {
-            object: Box::new(ident("String")),
-            field: "fromCharCode".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument {
-            value: slice,
-            name: None,
-            by_ref: false,
-            spread: true,
-        }],
-        optional: false,
-    });
-    e(ExprKind::Index {
-        object: Box::new(call(
-            member(string, "split"),
-            vec![e(ExprKind::Lit(Literal::Str("\0".to_string())))],
-        )),
-        index: Box::new(lit_int(0)),
-        null_safe: false,
-    })
+    call(ident("__libc_char_to_str"), vec![ptr])
 }
 
 /// Render a `char[]` value (e.g. a struct field / flexible array member) as a C

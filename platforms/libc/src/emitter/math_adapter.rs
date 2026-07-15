@@ -6,7 +6,8 @@
 //! `f64.nearest`).
 
 use vybe_ast::{
-    Argument, BinOp, ExprKind, Expression, Literal, Modifiers, Param, PassBy, Statement, StmtKind,
+    Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
+    Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
 
 fn e(kind: ExprKind) -> Expression {
@@ -33,11 +34,48 @@ fn lit_int(n: i64) -> Expression {
     e(ExprKind::Lit(Literal::Int(n)))
 }
 
+fn lit_float(n: f64) -> Expression {
+    e(ExprKind::Lit(Literal::Float(n)))
+}
+
 fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     e(ExprKind::Binary {
         op,
         left: Box::new(left),
         right: Box::new(right),
+    })
+}
+
+fn assign(target: Expression, value: Expression) -> Expression {
+    e(ExprKind::Assign {
+        target: Box::new(target),
+        value: Box::new(value),
+    })
+}
+
+fn var_decl(name: &str, init: Expression) -> Statement {
+    s(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
+fn expr_stmt(value: Expression) -> Statement {
+    s(StmtKind::Expr(value))
+}
+
+fn if_stmt(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+    s(StmtKind::If {
+        cond,
+        then_body,
+        elifs: Vec::new(),
+        else_body,
     })
 }
 
@@ -89,6 +127,9 @@ pub fn domain_error_helpers() -> Vec<Statement> {
                 then_body: vec![s(StmtKind::Expr(e(ExprKind::Assign {
                     target: Box::new(ident("errno")),
                     value: Box::new(lit_int(33)),
+                }))), s(StmtKind::Expr(e(ExprKind::Assign {
+                    target: Box::new(ident("__c_fenv_excepts")),
+                    value: Box::new(bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(1))),
                 })))],
                 elifs: Vec::new(),
                 else_body: None,
@@ -99,6 +140,95 @@ pub fn domain_error_helpers() -> Vec<Statement> {
             )))),
         ],
     )]
+}
+
+/// Floating-point exception register helpers for fenv.h. This is a lightweight
+/// libc-model bitset sufficient for observable C fenv APIs in the test suite.
+pub fn fenv_runtime_helpers() -> Vec<Statement> {
+    let inf = bin(BinOp::Div, lit_float(1.0), lit_float(0.0));
+    let neg_inf = bin(BinOp::Sub, lit_float(0.0), inf.clone());
+    let set_invalid_or_divzero = assign(
+        ident("__c_fenv_excepts"),
+        bin(
+            BinOp::BitOr,
+            ident("__c_fenv_excepts"),
+            e(ExprKind::Ternary {
+                cond: Box::new(bin(BinOp::Eq, ident("x"), lit_float(0.0))),
+                then: Box::new(lit_int(1)),
+                else_: Box::new(lit_int(4)),
+            }),
+        ),
+    );
+    let set_underflow = assign(
+        ident("__c_fenv_excepts"),
+        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(16)),
+    );
+    let set_inexact = assign(
+        ident("__c_fenv_excepts"),
+        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(32)),
+    );
+    let set_overflow = assign(
+        ident("__c_fenv_excepts"),
+        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(8)),
+    );
+
+    vec![function(
+        "__c_fenv_binary",
+        vec!["op", "x", "y"],
+        vec![
+            var_decl(
+                "r",
+                e(ExprKind::Ternary {
+                    cond: Box::new(bin(BinOp::Eq, ident("op"), lit_int(1))),
+                    then: Box::new(bin(BinOp::Div, ident("x"), ident("y"))),
+                    else_: Box::new(bin(BinOp::Mul, ident("x"), ident("y"))),
+                }),
+            ),
+            if_stmt(
+                bin(BinOp::Eq, ident("op"), lit_int(1)),
+                vec![if_stmt(
+                    bin(BinOp::Eq, ident("y"), lit_float(0.0)),
+                    vec![expr_stmt(set_invalid_or_divzero)],
+                    Some(vec![if_stmt(
+                        bin(
+                            BinOp::And,
+                            bin(BinOp::Eq, ident("r"), lit_float(0.0)),
+                            bin(BinOp::NotEq, ident("x"), lit_float(0.0)),
+                        ),
+                        vec![expr_stmt(set_underflow)],
+                        Some(vec![if_stmt(
+                            bin(
+                                BinOp::NotEq,
+                                bin(BinOp::Mod, ident("x"), ident("y")),
+                                lit_float(0.0),
+                            ),
+                            vec![expr_stmt(set_inexact)],
+                            None,
+                        )]),
+                    )]),
+                )],
+                Some(vec![if_stmt(
+                    bin(
+                        BinOp::Or,
+                        bin(BinOp::Eq, ident("r"), inf),
+                        bin(BinOp::Eq, ident("r"), neg_inf),
+                    ),
+                    vec![expr_stmt(set_overflow)],
+                    None,
+                )]),
+            ),
+            s(StmtKind::Return(Some(ident("r")))),
+        ],
+    )]
+}
+
+pub fn fenv_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    let op_code = match op {
+        BinOp::Div => 1,
+        BinOp::Mul => 2,
+        _ => 0,
+    };
+    call(ident("__c_fenv_binary"), vec![lit_int(op_code), left, right])
 }
 
 /// C `round(x)` uses half-away-from-zero, not banker's rounding.

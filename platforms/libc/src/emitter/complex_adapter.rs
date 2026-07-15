@@ -6,9 +6,9 @@
 //! resolved real/imag parts and compose the standard operations. Reusable by
 //! any front-end with the same `{real, imag}` representation.
 
-use vybe_ast::{BinOp, ExprKind, Expression, ObjectProperty, UnaryOp};
 use crate::emitter::build::{expr, str_lit};
 use crate::emitter::math_runtime::{ecma_math_call, ecma_math_call2};
+use vybe_ast::{BinOp, ExprKind, Expression, ObjectProperty, UnaryOp};
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {

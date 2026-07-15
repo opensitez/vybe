@@ -185,6 +185,80 @@ pub fn normalize_printf_literal_format(format_text: &str, arg_count: usize) -> S
     if arg_count == 0 {
         out = collapse_stray_triple_percents(&out);
     }
+    out = normalize_integer_precision_padding(&out);
+    out
+}
+
+fn normalize_integer_precision_padding(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '%' {
+            out.push('%');
+            out.push('%');
+            i += 2;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < chars.len() && matches!(chars[i], '-' | '+' | ' ' | '#') {
+            i += 1;
+        }
+        if i < chars.len() && chars[i] == '.' {
+            let precision_start = i + 1;
+            let mut j = precision_start;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > precision_start && j < chars.len() && matches!(chars[j], 'd' | 'i' | 'u') {
+                let precision: String = chars[precision_start..j].iter().collect();
+                if precision != "0" {
+                    out.extend(chars[start..precision_start - 1].iter());
+                    out.push('0');
+                    out.push_str(&precision);
+                    out.push(chars[j]);
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        let mut end = i;
+        while end < chars.len()
+            && !matches!(
+                chars[end],
+                'd' | 'i'
+                    | 'u'
+                    | 'o'
+                    | 'x'
+                    | 'X'
+                    | 'f'
+                    | 'F'
+                    | 'e'
+                    | 'E'
+                    | 'g'
+                    | 'G'
+                    | 'a'
+                    | 'A'
+                    | 'c'
+                    | 's'
+                    | 'p'
+                    | 'n'
+            )
+        {
+            end += 1;
+        }
+        if end < chars.len() {
+            end += 1;
+        }
+        out.extend(chars[start..end].iter());
+        i = end;
+    }
     out
 }
 
@@ -303,7 +377,8 @@ fn flush_printf_segment(
         return;
     }
     let rendered = sprintf_expr(lit_str(segment), rest, start, end);
-    let rendered_len = member(rendered, "length");
+    let rendered_len = member(rendered.clone(), "length");
+    seq.push(call(ident("__c_fputs_h"), vec![rendered, lit_int(1)]));
     seq.push(assign_expr(
         ident("__c_printf_n_count"),
         bin(BinOp::Add, current_printf_n_count(), rendered_len),
@@ -464,6 +539,7 @@ pub fn sscanf_literal(
     let mut format_index = 0usize;
     let mut dest_index = 0usize;
     let mut count = 0i64;
+    let mut input_failure = false;
     let mut stmts = Vec::new();
 
     let skip_source_ws = |source_index: &mut usize| {
@@ -526,6 +602,14 @@ pub fn sscanf_literal(
             break;
         }
 
+        let suppress_assignment =
+            if format_index < format_chars.len() && format_chars[format_index] == '*' {
+                format_index += 1;
+                true
+            } else {
+                false
+            };
+
         let mut width_digits = String::new();
         while format_index < format_chars.len() && format_chars[format_index].is_ascii_digit() {
             width_digits.push(format_chars[format_index]);
@@ -552,12 +636,21 @@ pub fn sscanf_literal(
         let spec = format_chars[format_index];
         format_index += 1;
 
-        let target = dest_targets[dest_index].clone();
-        dest_index += 1;
+        let target = if suppress_assignment {
+            lit_int(0)
+        } else {
+            let target = dest_targets[dest_index].clone();
+            dest_index += 1;
+            target
+        };
 
         match spec {
             'd' | 'u' | 'i' | 'o' | 'x' | 'X' => {
                 skip_source_ws(&mut source_index);
+                if source_index >= source_chars.len() {
+                    input_failure = true;
+                    break;
+                }
                 let start = source_index;
                 let limit = width
                     .map(|width| start.saturating_add(width).min(source_chars.len()))
@@ -624,14 +717,20 @@ pub fn sscanf_literal(
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 if let Some(value) = parse_int_token(&token, spec) {
-                    stmts.push(assign_expr(target, lit_int(value)));
-                    count += 1;
+                    if !suppress_assignment {
+                        stmts.push(assign_expr(target, lit_int(value)));
+                        count += 1;
+                    }
                 } else {
                     break;
                 }
             }
             'f' => {
                 skip_source_ws(&mut source_index);
+                if source_index >= source_chars.len() {
+                    input_failure = true;
+                    break;
+                }
                 let start = source_index;
                 while source_index < source_chars.len()
                     && matches!(
@@ -646,14 +745,17 @@ pub fn sscanf_literal(
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
                 if let Ok(value) = token.trim().parse::<f64>() {
-                    stmts.push(assign_expr(target, lit_float(value)));
-                    count += 1;
+                    if !suppress_assignment {
+                        stmts.push(assign_expr(target, lit_float(value)));
+                        count += 1;
+                    }
                 } else {
                     break;
                 }
             }
             'c' => {
                 if source_index >= source_chars.len() {
+                    input_failure = true;
                     break;
                 }
                 let take = width.unwrap_or(1).max(1);
@@ -661,16 +763,26 @@ pub fn sscanf_literal(
                 if take == 1 {
                     let ch = source_chars[source_index];
                     source_index += 1;
-                    stmts.push(assign_expr(target, lit_int(ch as i64)));
+                    if !suppress_assignment {
+                        stmts.push(assign_expr(target, lit_int(ch as i64)));
+                    }
                 } else {
                     let token: String = source_chars[source_index..end].iter().collect();
                     source_index = end;
-                    stmts.push(assign_expr(target, lit_str(&token)));
+                    if !suppress_assignment {
+                        stmts.push(assign_expr(target, lit_str(&token)));
+                    }
                 }
-                count += 1;
+                if !suppress_assignment {
+                    count += 1;
+                }
             }
             's' => {
                 skip_source_ws(&mut source_index);
+                if source_index >= source_chars.len() {
+                    input_failure = true;
+                    break;
+                }
                 let start = source_index;
                 let reserve_for_next_c = width.is_none()
                     && next_conversion_spec(&format_chars, format_index) == Some('c')
@@ -688,8 +800,10 @@ pub fn sscanf_literal(
                     break;
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
-                stmts.push(assign_expr(target, lit_str(&token)));
-                count += 1;
+                if !suppress_assignment {
+                    stmts.push(assign_expr(target, lit_str(&token)));
+                    count += 1;
+                }
             }
             '[' => {
                 let mut negate = false;
@@ -707,6 +821,10 @@ pub fn sscanf_literal(
                 }
                 let set_chars = expand_scan_set(&set_chars);
                 let start = source_index;
+                if source_index >= source_chars.len() {
+                    input_failure = true;
+                    break;
+                }
                 while source_index < source_chars.len() {
                     let ch = source_chars[source_index];
                     let in_set = set_chars.contains(&ch);
@@ -724,14 +842,25 @@ pub fn sscanf_literal(
                     break;
                 }
                 let token: String = source_chars[start..source_index].iter().collect();
-                stmts.push(assign_expr(target, lit_str(&token)));
-                count += 1;
+                if !suppress_assignment {
+                    stmts.push(assign_expr(target, lit_str(&token)));
+                    count += 1;
+                }
+            }
+            'n' => {
+                if !suppress_assignment {
+                    stmts.push(assign_expr(target, lit_int(source_index as i64)));
+                }
             }
             _ => {}
         }
     }
 
-    stmts.push(lit_int(count));
+    stmts.push(lit_int(if count == 0 && input_failure {
+        -1
+    } else {
+        count
+    }));
     if stmts.len() == 1 {
         stmts.pop().unwrap()
     } else {
@@ -1088,7 +1217,7 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 ))],
                 None,
             ),
-            var_decl("r", lit_str("")),
+            var_decl("parts", e(ExprKind::Array(vec![]))),
             var_decl("i", lit_int(0)),
             while_stmt(
                 bin(BinOp::Lt, ident("i"), member(ident("a"), "length")),
@@ -1096,16 +1225,24 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     var_decl("c", index_a_i),
                     if_stmt(
                         bin(BinOp::Eq, ident("c"), lit_int(0)),
-                        vec![ret(ident("r"))],
+                        vec![ret(call_member(ident("parts"), "join", vec![lit_str("")]))],
                         None,
                     ),
-                    expr_stmt(assign_expr(
-                        ident("r"),
-                        bin(
-                            BinOp::Add,
-                            ident("r"),
+                    expr_stmt(call_member(
+                        ident("parts"),
+                        "push",
+                        vec![ternary(
+                            bin(
+                                BinOp::Eq,
+                                e(ExprKind::Unary {
+                                    op: UnaryOp::Typeof,
+                                    expr: Box::new(ident("c")),
+                                }),
+                                lit_str("string"),
+                            ),
+                            ident("c"),
                             call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
-                        ),
+                        )],
                     )),
                     expr_stmt(assign_expr(
                         ident("i"),
@@ -1113,7 +1250,7 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     )),
                 ],
             ),
-            ret(ident("r")),
+            ret(call_member(ident("parts"), "join", vec![lit_str("")])),
         ],
     )
 }

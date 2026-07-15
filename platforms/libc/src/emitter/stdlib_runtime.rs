@@ -10,8 +10,8 @@
 //! sorting in place and returning the array (matches the prior bundled helper).
 //! `__c_bsearch` here is a linear scan returning the matching index or -1.
 
-use vybe_ast::{Argument, BinOp, BreakTarget, ExprKind, Expression, Statement, StmtKind};
 use crate::emitter::build::*;
+use vybe_ast::{Argument, BinOp, ExprKind, Expression, Statement, StmtKind};
 
 fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {
@@ -38,51 +38,62 @@ fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
 }
 
 pub fn runtime_helpers() -> Vec<Statement> {
-    vec![c_qsort(), c_bsearch_index()]
+    vec![
+        c_qsort(),
+        c_bsearch_index(),
+        c_qsort_key(),
+        c_qsort_auto(),
+        c_bsearch_index_auto(),
+    ]
 }
 
-/// `__c_qsort(arr, count, cmp)` — stable in-place insertion sort over the first
+/// `__c_qsort(arr, count, cmp)` — bounded in-place bubble sort over the first
 /// `count` elements; `cmp(a, b) > 0` means `a` sorts after `b`. Returns `arr`.
 fn c_qsort() -> Statement {
-    // arr[j + 1] = arr[j]
-    let shift = stmt(StmtKind::Expr(assign_expr(
-        index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
-        index_expr(ident("arr"), ident("j")),
-    )));
-    // while (j >= 0) { if (cmp(arr[j], key) <= 0) break; arr[j+1] = arr[j]; j -= 1; }
+    let swap = vec![
+        var_decl_stmt("tmp", index_expr(ident("arr"), ident("j"))),
+        stmt(StmtKind::Expr(assign_expr(
+            index_expr(ident("arr"), ident("j")),
+            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
+        ))),
+        stmt(StmtKind::Expr(assign_expr(
+            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
+            ident("tmp"),
+        ))),
+    ];
     let inner = while_stmt(
-        bin(BinOp::GtEq, ident("j"), int_lit(0)),
+        bin(
+            BinOp::Lt,
+            ident("j"),
+            bin(BinOp::Sub, ident("count"), int_lit(1)),
+        ),
         vec![
             if_stmt(
                 bin(
-                    BinOp::LtEq,
+                    BinOp::Gt,
                     call(
-                        ident("cmp"),
-                        vec![index_expr(ident("arr"), ident("j")), ident("key")],
+                        ident("__c_cmp_fn"),
+                        vec![
+                            index_expr(ident("arr"), ident("j")),
+                            index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
+                        ],
                     ),
                     int_lit(0),
                 ),
-                vec![stmt(StmtKind::Break(BreakTarget::Implicit))],
+                swap,
                 None,
             ),
-            shift,
             stmt(StmtKind::Expr(assign_expr(
                 ident("j"),
-                bin(BinOp::Sub, ident("j"), int_lit(1)),
+                bin(BinOp::Add, ident("j"), int_lit(1)),
             ))),
         ],
     );
-    // while (i < count) { key = arr[i]; j = i - 1; <inner>; arr[j+1] = key; i += 1; }
     let outer = while_stmt(
         bin(BinOp::Lt, ident("i"), ident("count")),
         vec![
-            var_decl_stmt("key", index_expr(ident("arr"), ident("i"))),
-            var_decl_stmt("j", bin(BinOp::Sub, ident("i"), int_lit(1))),
+            stmt(StmtKind::Expr(assign_expr(ident("j"), int_lit(0)))),
             inner,
-            stmt(StmtKind::Expr(assign_expr(
-                index_expr(ident("arr"), bin(BinOp::Add, ident("j"), int_lit(1))),
-                ident("key"),
-            ))),
             stmt(StmtKind::Expr(assign_expr(
                 ident("i"),
                 bin(BinOp::Add, ident("i"), int_lit(1)),
@@ -91,9 +102,10 @@ fn c_qsort() -> Statement {
     );
     function_stmt(
         "__c_qsort",
-        vec!["arr", "count", "cmp"],
+        vec!["arr", "count", "__c_cmp_fn"],
         vec![
-            var_decl_stmt("i", int_lit(1)),
+            var_decl_stmt("i", int_lit(0)),
+            var_decl_stmt("j", int_lit(0)),
             outer,
             stmt(StmtKind::Return(Some(ident("arr")))),
         ],
@@ -110,7 +122,7 @@ fn c_bsearch_index() -> Statement {
                 bin(
                     BinOp::Eq,
                     call(
-                        ident("cmp"),
+                        ident("__c_cmp_fn"),
                         vec![ident("key"), index_expr(ident("arr"), ident("i"))],
                     ),
                     int_lit(0),
@@ -126,7 +138,127 @@ fn c_bsearch_index() -> Statement {
     );
     function_stmt(
         "__c_bsearch_index",
-        vec!["arr", "count", "key", "cmp"],
+        vec!["arr", "count", "key", "__c_cmp_fn"],
+        vec![
+            var_decl_stmt("i", int_lit(0)),
+            loop_body,
+            stmt(StmtKind::Return(Some(int_lit(-1)))),
+        ],
+    )
+}
+
+/// `mode`: 0 = scalar/string value, 1 = `.k`, 2 = `.id`, 3 = referenced value.
+fn c_qsort_key() -> Statement {
+    function_stmt(
+        "__c_qsort_key",
+        vec!["v", "mode"],
+        vec![
+            if_stmt(
+                bin(BinOp::Eq, ident("mode"), int_lit(1)),
+                vec![stmt(StmtKind::Return(Some(member(ident("v"), "k"))))],
+                None,
+            ),
+            if_stmt(
+                bin(BinOp::Eq, ident("mode"), int_lit(2)),
+                vec![stmt(StmtKind::Return(Some(member(ident("v"), "id"))))],
+                None,
+            ),
+            if_stmt(
+                bin(BinOp::Eq, ident("mode"), int_lit(3)),
+                vec![stmt(StmtKind::Return(Some(expr(ExprKind::RefLoad(
+                    Box::new(ident("v")),
+                )))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(ident("v")))),
+        ],
+    )
+}
+
+/// `__c_qsort_auto(arr, count, mode, order)` — bounded in-place bubble sort using a
+/// walker-selected key mode, avoiding fragile C comparator function callbacks.
+/// Negative order sorts descending; non-negative order sorts ascending.
+fn c_qsort_auto() -> Statement {
+    let next_j = bin(BinOp::Add, ident("j"), int_lit(1));
+    let left = index_expr(ident("arr"), ident("j"));
+    let right = index_expr(ident("arr"), next_j.clone());
+    let left_key = call(ident("__c_qsort_key"), vec![left.clone(), ident("mode")]);
+    let right_key = call(ident("__c_qsort_key"), vec![right.clone(), ident("mode")]);
+    let should_swap = expr(ExprKind::Ternary {
+        cond: Box::new(bin(BinOp::Lt, ident("order"), int_lit(0))),
+        then: Box::new(bin(BinOp::Lt, left_key.clone(), right_key.clone())),
+        else_: Box::new(bin(BinOp::Gt, left_key, right_key)),
+    });
+    let swap = vec![
+        stmt(StmtKind::Expr(assign_expr(ident("tmp"), left.clone()))),
+        stmt(StmtKind::Expr(assign_expr(left, right.clone()))),
+        stmt(StmtKind::Expr(assign_expr(right, ident("tmp")))),
+    ];
+    let inner = while_stmt(
+        bin(
+            BinOp::Lt,
+            ident("j"),
+            bin(BinOp::Sub, ident("count"), int_lit(1)),
+        ),
+        vec![
+            if_stmt(should_swap, swap, None),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("j"),
+                bin(BinOp::Add, ident("j"), int_lit(1)),
+            ))),
+        ],
+    );
+    let outer = while_stmt(
+        bin(BinOp::Lt, ident("i"), ident("count")),
+        vec![
+            stmt(StmtKind::Expr(assign_expr(ident("j"), int_lit(0)))),
+            inner,
+            stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                bin(BinOp::Add, ident("i"), int_lit(1)),
+            ))),
+        ],
+    );
+    function_stmt(
+        "__c_qsort_auto",
+        vec!["arr", "count", "mode", "order"],
+        vec![
+            var_decl_stmt("i", int_lit(0)),
+            var_decl_stmt("j", int_lit(0)),
+            var_decl_stmt("tmp", null_lit()),
+            outer,
+            stmt(StmtKind::Return(Some(ident("arr")))),
+        ],
+    )
+}
+
+/// `__c_bsearch_index_auto(arr, count, key, mode)` — linear scan over the
+/// same key modes used by `__c_qsort_auto`.
+fn c_bsearch_index_auto() -> Statement {
+    let loop_body = while_stmt(
+        bin(BinOp::Lt, ident("i"), ident("count")),
+        vec![
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    call(ident("__c_qsort_key"), vec![ident("key"), ident("mode")]),
+                    call(
+                        ident("__c_qsort_key"),
+                        vec![index_expr(ident("arr"), ident("i")), ident("mode")],
+                    ),
+                ),
+                vec![stmt(StmtKind::Return(Some(ident("i"))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                bin(BinOp::Add, ident("i"), int_lit(1)),
+            ))),
+        ],
+    );
+    function_stmt(
+        "__c_bsearch_index_auto",
+        vec!["arr", "count", "key", "mode"],
         vec![
             var_decl_stmt("i", int_lit(0)),
             loop_body,

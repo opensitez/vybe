@@ -5,6 +5,7 @@
 //! point. These helpers cover the single-code-unit ASCII/UTF-8 path directly;
 //! stateful multibyte sequences can be layered on top without changing callers.
 
+use super::pointers;
 use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal};
 
 fn e(kind: ExprKind) -> Expression {
@@ -27,14 +28,6 @@ fn member(object: Expression, field: &str) -> Expression {
     })
 }
 
-fn index(object: Expression, idx: Expression) -> Expression {
-    e(ExprKind::Index {
-        object: Box::new(object),
-        index: Box::new(idx),
-        null_safe: false,
-    })
-}
-
 fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     e(ExprKind::Binary {
         op,
@@ -51,17 +44,6 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     })
 }
 
-fn call_member(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
-    call(member(object, field), args)
-}
-
-fn assign(target: Expression, value: Expression) -> Expression {
-    e(ExprKind::Assign {
-        target: Box::new(target),
-        value: Box::new(value),
-    })
-}
-
 fn byte_at(src: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Eq, member(src.clone(), "length"), lit_int(0))),
@@ -75,7 +57,7 @@ fn byte_at(src: Expression) -> Expression {
 /// the number of consumed bytes, or 0 for an empty input/NUL.
 pub fn mbrtoc(dst: Expression, src: Expression, n: Expression) -> Expression {
     let value = byte_at(src.clone());
-    let write = assign(index(dst, lit_int(0)), value.clone());
+    let write = pointers::carray_deref_write(dst, value.clone());
     e(ExprKind::Sequence(vec![
         write,
         e(ExprKind::Ternary {
@@ -93,6 +75,8 @@ pub fn mbrtoc(dst: Expression, src: Expression, n: Expression) -> Expression {
 /// `c16rtomb(s, c16, ps)` / `c32rtomb(s, c32, ps)` for ASCII code units.
 /// Stores a one-character string in the char buffer and returns one byte.
 pub fn crtomb(dst: Expression, ch: Expression) -> Expression {
-    let one = call(member(e(ExprKind::Ident("String".to_string())), "fromCharCode"), vec![ch]);
-    e(ExprKind::Sequence(vec![assign(dst, one), lit_int(1)]))
+    e(ExprKind::Sequence(vec![
+        pointers::carray_deref_write(dst, ch),
+        lit_int(1),
+    ]))
 }

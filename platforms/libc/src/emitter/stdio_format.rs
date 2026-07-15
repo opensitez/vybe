@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
-use vybe_emitter::instructions::core_wasm;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 
@@ -734,6 +734,8 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     conv_c(&mut c, num_num, str_fcc);
     c.emit_end(0);
     c.patch_block(conv_done);
+    apply_integer_precision(&mut c, str_pstart, str_cat, str_slice);
+    clear_zero_pad_for_integer_precision(&mut c);
 
     // pad char: custom `'X` wins; else if fzero && !fleft → "0" else " "
     {
@@ -1121,9 +1123,150 @@ fn conv_f(c: &mut Chunk, num_fixed: u16, str_cat: u16, math_pow: u16, math_round
     hc(c, num_fixed, 2);
     ls(c, RAW);
     normalize_negative_zero_raw(c);
+    force_decimal_point_for_alt_float(c, str_cat);
     sign_pos(c, str_cat);
     c.emit_end(0);
     c.patch_block(b);
+}
+
+fn force_decimal_point_for_alt_float(c: &mut Chunk, str_cat: u16) {
+    let b = c.emit_block(0);
+    lg(c, FALT);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    lg(c, PREC);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    lg(c, RAW);
+    cs(c, ".");
+    hc(c, str_cat, 2);
+    ls(c, RAW);
+    c.emit_end(0);
+    c.patch_block(b);
+}
+
+fn clear_zero_pad_for_integer_precision(c: &mut Chunk) {
+    let b = c.emit_block(0);
+    lg(c, PREC);
+    ci(c, 0);
+    c.emit_op(Op::I32_LT_S, 0);
+    c.emit_br_if(0, 0);
+    emit_integer_conversion_test(c);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    ci(c, 0);
+    ls(c, FZERO);
+    c.emit_end(0);
+    c.patch_block(b);
+}
+
+fn apply_integer_precision(c: &mut Chunk, str_pstart: u16, str_cat: u16, str_slice: u16) {
+    let b = c.emit_block(0);
+    lg(c, PREC);
+    ci(c, 0);
+    c.emit_op(Op::I32_LT_S, 0);
+    c.emit_br_if(0, 0);
+    emit_integer_conversion_test(c);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+    lg(c, RAW);
+    {
+        let idx = c.add_import("wasm:js-string", "length");
+        c.emit_call(idx, 1, 0);
+    }
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_br_if(0, 0);
+
+    {
+        let signed = c.emit_block(0);
+        lg(c, RAW);
+        ci(c, 0);
+        {
+            let idx = c.add_import("wasm:js-string", "charCodeAt");
+            c.emit_call(idx, 2, 0);
+        }
+        ci(c, 43);
+        c.emit_op(Op::I32_EQ, 0);
+        lg(c, RAW);
+        ci(c, 0);
+        {
+            let idx = c.add_import("wasm:js-string", "charCodeAt");
+            c.emit_call(idx, 2, 0);
+        }
+        ci(c, 45);
+        c.emit_op(Op::I32_EQ, 0);
+        c.emit_op(Op::I32_OR, 0);
+        lg(c, RAW);
+        ci(c, 0);
+        {
+            let idx = c.add_import("wasm:js-string", "charCodeAt");
+            c.emit_call(idx, 2, 0);
+        }
+        ci(c, 32);
+        c.emit_op(Op::I32_EQ, 0);
+        c.emit_op(Op::I32_OR, 0);
+        c.emit_op(Op::I32_EQZ, 0);
+        c.emit_br_if(0, 0);
+
+        lg(c, RAW);
+        ci(c, 0);
+        {
+            let idx = c.add_import("ecma:string", "charAt");
+            c.emit_call(idx, 2, 0);
+        }
+        lg(c, RAW);
+        ci(c, 1);
+        hc(c, str_slice, 2);
+        lg(c, PREC);
+        c.emit_op(Op::F64_FROM_I32, 0);
+        cs(c, "0");
+        hc(c, str_pstart, 3);
+        hc(c, str_cat, 2);
+        ls(c, RAW);
+        c.emit_br(1, 0);
+        c.emit_end(0);
+        c.patch_block(signed);
+    }
+
+    lg(c, RAW);
+    lg(c, PREC);
+    c.emit_op(Op::F64_FROM_I32, 0);
+    cs(c, "0");
+    hc(c, str_pstart, 3);
+    ls(c, RAW);
+    c.emit_end(0);
+    c.patch_block(b);
+}
+
+fn emit_integer_conversion_test(c: &mut Chunk) {
+    lg(c, CONV);
+    ci(c, 100);
+    c.emit_op(Op::I32_EQ, 0);
+    lg(c, CONV);
+    ci(c, 105);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
+    lg(c, CONV);
+    ci(c, 117);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
+    lg(c, CONV);
+    ci(c, 111);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
+    lg(c, CONV);
+    ci(c, 120);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
+    lg(c, CONV);
+    ci(c, 88);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
+    lg(c, CONV);
+    ci(c, 98);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_OR, 0);
 }
 
 fn push_precision_or_default(c: &mut Chunk, default_precision: f64) {

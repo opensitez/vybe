@@ -19,10 +19,10 @@
 //!
 //! Shared by any libc-targeting front-end.
 
+use crate::emitter::build::*;
 use vybe_ast::{
     Argument, BinOp, CatchClause, ExprKind, Expression, ObjectProperty, Statement, StmtKind,
 };
-use crate::emitter::build::*;
 
 // POSIX error codes (glibc values) used here.
 const REG_NOMATCH: i64 = 1;

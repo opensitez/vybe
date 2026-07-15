@@ -5,10 +5,10 @@
 //! same `__c_*_h` helpers without touching call sites. Shared by any
 //! libc-targeting front-end.
 
+use crate::emitter::build::*;
 use vybe_ast::{
     ArrayElement, BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind, UnaryOp,
 };
-use crate::emitter::build::*;
 
 // ── call-site lowerings (walker maps `time(...)` etc. through these) ─────────
 

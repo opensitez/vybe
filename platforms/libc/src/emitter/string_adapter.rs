@@ -8,6 +8,8 @@ use vybe_ast::{
     StmtKind, VarDeclKind, VarDeclarator,
 };
 
+use super::build::function_stmt;
+
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
 }
@@ -117,6 +119,11 @@ pub fn string_to_char_code(s: Expression) -> Expression {
     call(ident("__c_char_code_at"), vec![s, lit_int(0)])
 }
 
+/// `strnlen(s, maxlen)` — bounded count until NUL or maxlen.
+pub fn strnlen(s: Expression, maxlen: Expression) -> Expression {
+    call(ident("__c_strnlen_h"), vec![s, maxlen])
+}
+
 /// `strchr(s, c_code)` — find first occurrence, return suffix or null.
 /// `indexOf >= 0 ? s.slice(indexOf) : null`
 pub fn strchr(s: Expression, c_code: Expression) -> Expression {
@@ -155,13 +162,17 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
 /// C-facing `strchr` lowering with `needle == 0` handling.
 /// For `strchr(s, '\0')` we return non-null truthy sentinel `1`.
 pub fn strchr_c(s: Expression, c_code: Expression) -> Expression {
+    let zero_suffix = call(
+        member(s.clone(), "substring"),
+        vec![member(s.clone(), "length")],
+    );
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(c_code.clone()),
             right: Box::new(lit_int(0)),
         })),
-        then: Box::new(lit_int(1)),
+        then: Box::new(zero_suffix),
         else_: Box::new(strchr(s, c_code)),
     })
 }
@@ -169,13 +180,17 @@ pub fn strchr_c(s: Expression, c_code: Expression) -> Expression {
 /// C-facing `strrchr` lowering with `needle == 0` handling.
 /// For `strrchr(s, '\0')` we return non-null truthy sentinel `1`.
 pub fn strrchr_c(s: Expression, c_code: Expression) -> Expression {
+    let zero_suffix = call(
+        member(s.clone(), "substring"),
+        vec![member(s.clone(), "length")],
+    );
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(c_code.clone()),
             right: Box::new(lit_int(0)),
         })),
-        then: Box::new(lit_int(1)),
+        then: Box::new(zero_suffix),
         else_: Box::new(strrchr(s, c_code)),
     })
 }
@@ -187,6 +202,27 @@ pub fn strstr(haystack: Expression, needle: Expression) -> Expression {
         vec![haystack.clone(), needle.clone()],
     );
     let idx2 = call(ident("__c_str_index_of"), vec![haystack.clone(), needle]);
+    let cond = e(ExprKind::Binary {
+        op: BinOp::GtEq,
+        left: Box::new(idx1),
+        right: Box::new(lit_int(0)),
+    });
+    e(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(call(member(haystack, "slice"), vec![idx2])),
+        else_: Box::new(lit_null()),
+    })
+}
+
+/// GNU `strcasestr(haystack, needle)` — case-insensitive find, return original suffix.
+pub fn strcasestr(haystack: Expression, needle: Expression) -> Expression {
+    let lower_hay = call(ident("__lower__"), vec![haystack.clone()]);
+    let lower_needle = call(ident("__lower__"), vec![needle]);
+    let idx1 = call(
+        ident("__c_str_index_of"),
+        vec![lower_hay.clone(), lower_needle.clone()],
+    );
+    let idx2 = call(ident("__c_str_index_of"), vec![lower_hay, lower_needle]);
     let cond = e(ExprKind::Binary {
         op: BinOp::GtEq,
         left: Box::new(idx1),
@@ -213,6 +249,197 @@ pub fn strtok_stateful(
     source_present: Expression,
     source_value: Expression,
     delim_value: Expression,
+) -> Expression {
+    call(
+        ident("__c_strtok_h"),
+        vec![source_present, source_value, delim_value],
+    )
+}
+
+pub fn strtok_runtime_helpers() -> Vec<Statement> {
+    vec![function_stmt(
+        "__c_strtok_h",
+        vec!["source_present", "source_value", "delim_value"],
+        strtok_stateful_body(
+            ident("source_present"),
+            ident("source_value"),
+            ident("delim_value"),
+        ),
+    )]
+}
+
+fn strtok_stateful_body(
+    source_present: Expression,
+    source_value: Expression,
+    delim_value: Expression,
+) -> Vec<Statement> {
+    let leading_delim_cond = e(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(e(ExprKind::Binary {
+            op: BinOp::Gt,
+            left: Box::new(member(ident("rem"), "length")),
+            right: Box::new(lit_int(0)),
+        })),
+        right: Box::new(e(ExprKind::Binary {
+            op: BinOp::GtEq,
+            left: Box::new(call(
+                ident("__c_str_index_of"),
+                vec![
+                    ident("delim_text"),
+                    char_at_string(ident("rem"), lit_int(0)),
+                ],
+            )),
+            right: Box::new(lit_int(0)),
+        })),
+    });
+
+    let token_scan_cond = e(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(e(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(ident("i")),
+            right: Box::new(member(ident("rem"), "length")),
+        })),
+        right: Box::new(e(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(call(
+                ident("__c_str_index_of"),
+                vec![
+                    ident("delim_text"),
+                    char_at_string(ident("rem"), ident("i")),
+                ],
+            )),
+            right: Box::new(lit_int(0)),
+        })),
+    });
+
+    vec![
+        if_stmt(
+            source_present.clone(),
+            vec![
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_strtok_rem"),
+                    source_value,
+                ))),
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_strtok_delim"),
+                    delim_value,
+                ))),
+            ],
+            None,
+        ),
+        var_decl_stmt("rem", ident("__c_strtok_rem")),
+        var_decl_stmt("delim_text", ident("__c_strtok_delim")),
+        if_stmt(
+            e(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(ident("rem")),
+                right: Box::new(lit_null()),
+            }),
+            vec![stmt(StmtKind::Return(Some(lit_null())))],
+            None,
+        ),
+        if_stmt(
+            e(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(e(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(ident("delim_text")),
+                    right: Box::new(lit_null()),
+                })),
+                right: Box::new(e(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(member(ident("delim_text"), "length")),
+                    right: Box::new(lit_int(0)),
+                })),
+            }),
+            vec![stmt(StmtKind::Expr(assign_expr(
+                ident("delim_text"),
+                lit_str(" "),
+            )))],
+            None,
+        ),
+        while_leading_delims(leading_delim_cond),
+        if_stmt(
+            e(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(member(ident("rem"), "length")),
+                right: Box::new(lit_int(0)),
+            }),
+            vec![
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_strtok_rem"),
+                    lit_null(),
+                ))),
+                stmt(StmtKind::Return(Some(lit_null()))),
+            ],
+            None,
+        ),
+        var_decl_stmt("i", lit_int(0)),
+        stmt(StmtKind::While {
+            cond: token_scan_cond,
+            body: vec![stmt(StmtKind::Expr(assign_expr(
+                ident("i"),
+                e(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(ident("i")),
+                    right: Box::new(lit_int(1)),
+                }),
+            )))],
+            else_body: None,
+        }),
+        var_decl_stmt(
+            "tok",
+            e(ExprKind::Ternary {
+                cond: Box::new(e(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(ident("i")),
+                    right: Box::new(lit_int(0)),
+                })),
+                then: Box::new(lit_str("")),
+                else_: Box::new(call_member(
+                    ident("rem"),
+                    "substring",
+                    vec![lit_int(0), ident("i")],
+                )),
+            }),
+        ),
+        if_stmt(
+            e(ExprKind::Binary {
+                op: BinOp::Lt,
+                left: Box::new(ident("i")),
+                right: Box::new(member(ident("rem"), "length")),
+            }),
+            vec![stmt(StmtKind::Expr(assign_expr(
+                ident("__c_strtok_rem"),
+                call_member(
+                    ident("rem"),
+                    "substring",
+                    vec![e(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(ident("i")),
+                        right: Box::new(lit_int(1)),
+                    })],
+                ),
+            )))],
+            Some(vec![stmt(StmtKind::Expr(assign_expr(
+                ident("__c_strtok_rem"),
+                lit_null(),
+            )))]),
+        ),
+        stmt(StmtKind::Return(Some(ident("tok")))),
+    ]
+}
+
+/// Reentrant `strtok_r(source, delim, saveptr)`.
+///
+/// `save_target` is the C variable reached through `saveptr`; it stores the
+/// remaining string between calls, so independent save variables can be nested.
+pub fn strtok_r(
+    source_present: Expression,
+    source_value: Expression,
+    delim_value: Expression,
+    save_target: Expression,
 ) -> Expression {
     let leading_delim_cond = e(ExprKind::Binary {
         op: BinOp::And,
@@ -260,20 +487,14 @@ pub fn strtok_stateful(
             body: LambdaBody::Block(vec![
                 if_stmt(
                     source_present.clone(),
-                    vec![
-                        stmt(StmtKind::Expr(assign_expr(
-                            ident("__c_strtok_rem"),
-                            source_value,
-                        ))),
-                        stmt(StmtKind::Expr(assign_expr(
-                            ident("__c_strtok_delim"),
-                            delim_value,
-                        ))),
-                    ],
+                    vec![stmt(StmtKind::Expr(assign_expr(
+                        save_target.clone(),
+                        source_value,
+                    )))],
                     None,
                 ),
-                var_decl_stmt("rem", ident("__c_strtok_rem")),
-                var_decl_stmt("delim_text", ident("__c_strtok_delim")),
+                var_decl_stmt("rem", save_target.clone()),
+                var_decl_stmt("delim_text", delim_value),
                 if_stmt(
                     e(ExprKind::Binary {
                         op: BinOp::Eq,
@@ -303,18 +524,7 @@ pub fn strtok_stateful(
                     )))],
                     None,
                 ),
-                if_stmt(
-                    source_present.clone(),
-                    vec![stmt(StmtKind::While {
-                        cond: leading_delim_cond,
-                        body: vec![stmt(StmtKind::Expr(assign_expr(
-                            ident("rem"),
-                            call_member(ident("rem"), "substring", vec![lit_int(1)]),
-                        )))],
-                        else_body: None,
-                    })],
-                    None,
-                ),
+                while_leading_delims(leading_delim_cond),
                 if_stmt(
                     e(ExprKind::Binary {
                         op: BinOp::Eq,
@@ -322,10 +532,7 @@ pub fn strtok_stateful(
                         right: Box::new(lit_int(0)),
                     }),
                     vec![
-                        stmt(StmtKind::Expr(assign_expr(
-                            ident("__c_strtok_rem"),
-                            lit_null(),
-                        ))),
+                        stmt(StmtKind::Expr(assign_expr(save_target.clone(), lit_null()))),
                         stmt(StmtKind::Return(Some(lit_null()))),
                     ],
                     None,
@@ -366,7 +573,7 @@ pub fn strtok_stateful(
                         right: Box::new(member(ident("rem"), "length")),
                     }),
                     vec![stmt(StmtKind::Expr(assign_expr(
-                        ident("__c_strtok_rem"),
+                        save_target.clone(),
                         call_member(
                             ident("rem"),
                             "substring",
@@ -378,7 +585,7 @@ pub fn strtok_stateful(
                         ),
                     )))],
                     Some(vec![stmt(StmtKind::Expr(assign_expr(
-                        ident("__c_strtok_rem"),
+                        save_target,
                         lit_null(),
                     )))]),
                 ),
@@ -389,5 +596,16 @@ pub fn strtok_stateful(
         })),
         args: vec![],
         optional: false,
+    })
+}
+
+fn while_leading_delims(cond: Expression) -> Statement {
+    stmt(StmtKind::While {
+        cond,
+        body: vec![stmt(StmtKind::Expr(assign_expr(
+            ident("rem"),
+            call_member(ident("rem"), "substring", vec![lit_int(1)]),
+        )))],
+        else_body: None,
     })
 }

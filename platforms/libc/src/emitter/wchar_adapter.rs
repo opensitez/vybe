@@ -12,11 +12,11 @@
 //! display) — the analogue of the proposal's `fromCharCodeArray` /
 //! `intoCharCodeArray`.
 
+use crate::emitter::pointers;
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
-use crate::emitter::pointers;
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
