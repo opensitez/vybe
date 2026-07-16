@@ -107,7 +107,7 @@ ord             = { emit = "intrinsic:asc",                  min_args = 1, max_a
 hex             = { emit = "common:python.hex",                  min_args = 1, max_args = 1 }
 oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
 bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
-repr            = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
+repr            = { emit = "common:python.repr",             min_args = 1, max_args = 1 }
 bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────

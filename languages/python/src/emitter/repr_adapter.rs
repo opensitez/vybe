@@ -223,19 +223,53 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_end(line);
 
     // ── user object with __repr__ / __str__ ─────────────────────────────
+    // Class methods live on the PROTOTYPE, not as own properties, so look them
+    // up prototype-aware via `__vybe_js_get_method` (the same global the
+    // str-form dispatch uses) rather than `struct_get`, which only sees own
+    // properties and would miss a class-defined `__repr__`.
+    let test_undef = c.add_import("wasm:js-undefined", "test");
     for method in ["__repr__", "__str__"] {
         let m = c.alloc_scratch(1);
+        let gm = c.add_constant(Value::String(Arc::from("__vybe_js_get_method")));
+        c.emit_op_u16(Op::GLOBAL_GET, gm, line);
         lget(&mut c, value, line);
-        struct_get(&mut c, method, line);
+        str_const(&mut c, method, line);
+        c.emit_op_u8(Op::CALL_REF, 2, line);
         lset(&mut c, m, line);
         lget(&mut c, m, line);
-        c.emit_op(Op::REF_IS_NULL, line);
-        c.emit_op(Op::I32_EQZ, line);
+        c.emit_call(test_undef, 1, line); // 1 if undefined
+        c.emit_op(Op::I32_EQZ, line); // 1 if a method was found
         c.emit_if(line);
         lget(&mut c, m, line);
         lget(&mut c, value, line);
         c.emit_op(Op::CALL_REF, line);
         c.emit(1u8, line);
+        c.emit_op(Op::RETURN, line);
+        c.emit_end(line);
+    }
+
+    // ── class instance without __repr__ → `<ClassName object at 0x0>` ────
+    // A class instance carries a `__type` stamp (a plain dict does not); without
+    // this it falls to the dict branch and reprs as `{}`. Known gap: a
+    // `dict`/`list` subclass also has `__type` and renders here rather than as
+    // its container — indistinguishable structurally in this value model.
+    {
+        let has_own = c.add_import("ecma:object", "hasOwn");
+        lget(&mut c, value, line);
+        str_const(&mut c, "__type", line);
+        c.emit_call(has_own, 2, line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        c.emit_if(line);
+        str_const(&mut c, "<", line);
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__type", line);
+        {
+            let to_str = c.add_import("ecma:string", "String");
+            c.emit_call(to_str, 1, line);
+        }
+        concat(&mut c, line);
+        str_const(&mut c, " object at 0x0>", line);
+        concat(&mut c, line);
         c.emit_op(Op::RETURN, line);
         c.emit_end(line);
     }

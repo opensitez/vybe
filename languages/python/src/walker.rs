@@ -4163,6 +4163,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             args: Vec::new(),
                             optional: false,
                         });
+                    } else if field == "format"
+                        && let ExprKind::Lit(Literal::Str(tmpl)) = &object.kind
+                        && let Some(expanded) = expand_str_format(tmpl, &[])
+                    {
+                        // No-arg `"literal".format()` (e.g. `'{{}}'.format()`).
+                        expr = expanded;
                     } else if let Some(rewritten) = try_rewrite_bytes_method(object, field, &[]) {
                         // bytes string-like method with no args, e.g. `b'AB'.lower()`
                         expr = rewritten;
@@ -4198,6 +4204,19 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             null_safe,
                         } = &expr.kind
                         {
+                            // `"template".format(...)` on a string LITERAL is
+                            // expanded at compile time into an interpolation
+                            // (reusing str/repr and the `%` path). Non-literal
+                            // receivers, spreads, or Python-only specs fall
+                            // through to the existing behavior.
+                            if field == "format" {
+                                if let ExprKind::Lit(Literal::Str(tmpl)) = &object.kind {
+                                    if let Some(expanded) = expand_str_format(tmpl, &args) {
+                                        expr = expanded;
+                                        continue;
+                                    }
+                                }
+                            }
                             if field == "sort"
                                 && args.iter().any(|a| a.name.as_deref() == Some("reverse"))
                             {
@@ -5634,6 +5653,288 @@ fn walk_yield(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 // ── F-string ────────────────────────────────────────────────────────────────
 
+/// Expand a compile-time `"template".format(args)` call into an interpolation
+/// AST, reusing `str`/`repr` and the `%`-formatting path for `{:spec}` fields.
+/// Returns `None` when the template or a field uses something we can't expand
+/// statically (`**kwargs`/`*args` spreads, nested `{}` in a spec, Python-only
+/// specs like `,`/`^`/`%`), so the caller falls through to the current behavior
+/// — no regression. Only valid for a string-literal receiver.
+fn expand_str_format(template: &str, args: &[Argument]) -> Option<Expression> {
+    // Spreads (`*args`, `**kwargs`) can't be resolved to fields statically.
+    if args.iter().any(|a| a.spread) {
+        return None;
+    }
+    let positionals: Vec<Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| a.value.clone())
+        .collect();
+
+    let chars: Vec<char> = template.chars().collect();
+    let mut parts: Vec<InterpolPart> = Vec::new();
+    let mut text = String::new();
+    let mut auto_idx = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '{' {
+            if i + 1 < chars.len() && chars[i + 1] == '{' {
+                text.push('{');
+                i += 2;
+                continue;
+            }
+            if !text.is_empty() {
+                parts.push(InterpolPart::Text(std::mem::take(&mut text)));
+            }
+            // Scan to the matching '}'. A nested '{' inside the field (dynamic
+            // spec like `{:{w}}`) is unsupported → bail.
+            let mut j = i + 1;
+            let mut body = String::new();
+            while j < chars.len() && chars[j] != '}' {
+                if chars[j] == '{' {
+                    return None;
+                }
+                body.push(chars[j]);
+                j += 1;
+            }
+            if j >= chars.len() {
+                return None; // unterminated field
+            }
+            i = j + 1;
+            let field_expr = expand_format_field(&body, &positionals, args, &mut auto_idx)?;
+            parts.push(InterpolPart::Expr(field_expr));
+        } else if c == '}' {
+            if i + 1 < chars.len() && chars[i + 1] == '}' {
+                text.push('}');
+                i += 2;
+                continue;
+            }
+            return None; // lone '}'
+        } else {
+            text.push(c);
+            i += 1;
+        }
+    }
+    if !text.is_empty() {
+        parts.push(InterpolPart::Text(text));
+    }
+    Some(Expression::new(ExprKind::Interpolation(parts)))
+}
+
+/// Build one replacement field: `[name][!conv][:spec]`.
+fn expand_format_field(
+    body: &str,
+    positionals: &[Expression],
+    args: &[Argument],
+    auto_idx: &mut usize,
+) -> Option<Expression> {
+    let (head, spec) = match body.find(':') {
+        Some(p) => (&body[..p], Some(&body[p + 1..])),
+        None => (body, None),
+    };
+    let (name_part, conv) = match head.find('!') {
+        Some(p) => (&head[..p], Some(&head[p + 1..])),
+        None => (head, None),
+    };
+
+    let base = resolve_format_value(name_part, positionals, args, auto_idx)?;
+
+    // Apply the `!r` / `!s` conversion first (Python order: convert, then spec).
+    let converted = match conv {
+        None => base,
+        Some("r") | Some("a") => call_builtin1("repr", base),
+        Some("s") => call_builtin1("str", base),
+        Some(_) => return None,
+    };
+
+    if let Some(spec) = spec {
+        if !spec.is_empty() {
+            let fmt = format_spec_to_printf(spec)?;
+            // Reuse the `%` path: `fmt % value` via the `__pymod__` helper.
+            return Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident("__pymod__".into()))),
+                args: vec![
+                    Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(fmt)))),
+                    Argument::positional(converted),
+                ],
+                optional: false,
+            }));
+        }
+    }
+
+    // No spec: str() unless a conversion already produced a string.
+    Some(if conv.is_none() {
+        call_builtin1("str", converted)
+    } else {
+        converted
+    })
+}
+
+fn call_builtin1(name: &str, arg: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+        args: vec![Argument::positional(arg)],
+        optional: false,
+    })
+}
+
+/// Resolve a field name (`""` auto, `"0"` positional, `"name"` keyword) plus
+/// `[k]` / `.attr` accessors into a value expression.
+fn resolve_format_value(
+    name_part: &str,
+    positionals: &[Expression],
+    args: &[Argument],
+    auto_idx: &mut usize,
+) -> Option<Expression> {
+    let acc_start = name_part
+        .find(['[', '.'])
+        .unwrap_or(name_part.len());
+    let base_name = &name_part[..acc_start];
+    let mut rest = &name_part[acc_start..];
+
+    let mut expr = if base_name.is_empty() {
+        let idx = *auto_idx;
+        *auto_idx += 1;
+        positionals.get(idx)?.clone()
+    } else if let Ok(idx) = base_name.parse::<usize>() {
+        positionals.get(idx)?.clone()
+    } else {
+        args.iter()
+            .find(|a| a.name.as_deref() == Some(base_name))
+            .map(|a| a.value.clone())?
+    };
+
+    while !rest.is_empty() {
+        if let Some(stripped) = rest.strip_prefix('[') {
+            let end = stripped.find(']')?;
+            let key = &stripped[..end];
+            let index_expr = if let Ok(n) = key.parse::<i64>() {
+                Expression::new(ExprKind::Lit(Literal::Int(n)))
+            } else {
+                Expression::new(ExprKind::Lit(Literal::Str(key.to_string())))
+            };
+            expr = Expression::new(ExprKind::Index {
+                object: Box::new(expr),
+                index: Box::new(index_expr),
+                null_safe: false,
+            });
+            rest = &stripped[end + 1..];
+        } else if let Some(stripped) = rest.strip_prefix('.') {
+            let end = stripped.find(['[', '.']).unwrap_or(stripped.len());
+            let attr = &stripped[..end];
+            if attr.is_empty() {
+                return None;
+            }
+            expr = Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: attr.to_string(),
+                null_safe: false,
+            });
+            rest = &stripped[end..];
+        } else {
+            return None;
+        }
+    }
+    Some(expr)
+}
+
+/// Translate a Python format spec into an equivalent printf conversion
+/// (`>3` → `%3s`, `.2f` → `%.2f`, `+d` → `%+d`). Returns `None` for
+/// Python-only specs printf can't express (fill char, `^` center, `,`/`_`
+/// grouping, `%`/`n` types) so the caller bails cleanly.
+fn format_spec_to_printf(spec: &str) -> Option<String> {
+    let chars: Vec<char> = spec.chars().collect();
+    let mut idx = 0;
+
+    // [[fill]align]
+    let mut align: Option<char> = None;
+    let mut fill: Option<char> = None;
+    if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
+        fill = Some(chars[0]);
+        align = Some(chars[1]);
+        idx = 2;
+    } else if !chars.is_empty() && matches!(chars[0], '<' | '>' | '^' | '=') {
+        align = Some(chars[0]);
+        idx = 1;
+    }
+    // printf can't do a custom fill char, center, or pad-after-sign.
+    if let Some(f) = fill {
+        if f != ' ' && f != '0' {
+            return None;
+        }
+    }
+    if matches!(align, Some('^') | Some('=')) {
+        return None;
+    }
+
+    let mut flags = String::new();
+    if align == Some('<') {
+        flags.push('-');
+    }
+    // sign
+    if idx < chars.len() && matches!(chars[idx], '+' | '-' | ' ') {
+        flags.push(chars[idx]);
+        idx += 1;
+    }
+    // alternate form
+    if idx < chars.len() && chars[idx] == '#' {
+        flags.push('#');
+        idx += 1;
+    }
+    // zero-pad
+    if idx < chars.len() && chars[idx] == '0' {
+        if !flags.contains('0') {
+            flags.push('0');
+        }
+        idx += 1;
+    }
+    // width
+    let mut width = String::new();
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        width.push(chars[idx]);
+        idx += 1;
+    }
+    // grouping (Python-only)
+    if idx < chars.len() && matches!(chars[idx], ',' | '_') {
+        return None;
+    }
+    // precision
+    let mut precision = String::new();
+    if idx < chars.len() && chars[idx] == '.' {
+        precision.push('.');
+        idx += 1;
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
+            precision.push(chars[idx]);
+            idx += 1;
+        }
+    }
+    // type
+    let ty = if idx < chars.len() {
+        let t = chars[idx];
+        idx += 1;
+        t
+    } else {
+        's'
+    };
+    if idx != chars.len() {
+        return None; // trailing junk
+    }
+    let conv = match ty {
+        'd' | 's' | 'x' | 'X' | 'o' | 'b' | 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'c' => ty,
+        _ => return None, // 'n', '%', etc.
+    };
+
+    let mut out = String::from("%");
+    if fill == Some('0') && !flags.contains('0') {
+        out.push('0');
+    }
+    out.push_str(&flags);
+    out.push_str(&width);
+    out.push_str(&precision);
+    out.push(conv);
+    Some(out)
+}
+
 fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut parts = Vec::new();
     for p in pair.into_inner() {
@@ -5697,11 +5998,14 @@ fn expr_to_array_pattern_elem(e: &Expression) -> ArrayPatternElem {
 
 fn walk_expr_list(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
+    // A trailing comma makes a single element a 1-tuple (`x,` / `(x,)`), not a
+    // scalar. pest consumes the comma silently, so recover it from the source.
+    let trailing_comma = pair.as_str().trim_end().ends_with(',');
     let mut inner: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
         .collect();
-    if inner.len() == 1 {
+    if inner.len() == 1 && !trailing_comma {
         walk_expression(inner.remove(0))
     } else if inner.is_empty() {
         Ok(Expression::new(ExprKind::Tuple(Vec::new())))
@@ -5715,11 +6019,13 @@ fn walk_expr_list(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn walk_expr_list_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    // See `walk_expr_list`: a trailing comma on a single element is a 1-tuple.
+    let trailing_comma = pair.as_str().trim_end().ends_with(',');
     let inner: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
         .collect();
-    if inner.len() == 1 {
+    if inner.len() == 1 && !trailing_comma {
         walk_expr_kind(inner.into_iter().next().unwrap())
     } else if inner.is_empty() {
         Ok(ExprKind::Tuple(Vec::new()))

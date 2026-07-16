@@ -324,6 +324,24 @@ pub fn emit_str(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_py_repr(&mut chunks[current], repr_idx, line);
 }
 
+/// Python `repr(x)` — the repr *form* (strings quoted, `__repr__` dispatch,
+/// containers formatted recursively). Routes straight to the recursive
+/// `__py_repr` chunk, unlike `str()` which uses the str-form top level.
+pub fn emit_repr(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_string_const("", line);
+        return;
+    }
+    let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
+    let scratch = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, scratch, line);
+    chunks[current].emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
+    chunks[current].emit(0u8, line); // upvalue count
+    chunks[current].emit_op_u16(Op::LOCAL_GET, scratch, line);
+    chunks[current].emit_op(Op::CALL_REF, line);
+    chunks[current].emit(1u8, line);
+}
+
 /// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
 fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
@@ -715,34 +733,17 @@ pub fn emit_pymod(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     {
         // fmt = a
         chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
-        // args = (isArray(b) && b has __tuple tag) ? b : [b]
+        // args = isTuple(b) ? b : [b]
+        // Only a tagged tuple spreads into positional args; a scalar or list is
+        // a single argument. Keyed on the tuple tag alone — an `isArray` guard
+        // here misfires on an unboxed numeric operand.
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-        let is_array = chunks[current].add_import("ecma:array", "isArray");
-        chunks[current].emit_call(is_array, 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_emitter::tuples::emit_is_tuple(chunks, current, line);
         chunks[current].emit_if_value(line);
-        {
-            // b is an array — spread only if it carries the tuple tag
-            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            let tag = chunks[current].add_constant(vybe_bytecode::Value::String(
-                std::sync::Arc::from(vybe_emitter::tuples::TUPLE_TAG),
-            ));
-            chunks[current].emit_op_u16(Op::STRUCT_GET, tag, line);
-            chunks[current].emit_op(Op::REF_IS_NULL, line);
-            chunks[current].emit_op(Op::I32_EQZ, line);
-            chunks[current].emit_if_value(line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // tuple → spread
-            chunks[current].emit_else(line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // list → single arg
-            chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
-            chunks[current].emit_end(line);
-        }
+        chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // tuple → spread
         chunks[current].emit_else(line);
-        {
-            // scalar → single arg
-            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
-        }
+        chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // scalar/list → single arg
+        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
         chunks[current].emit_end(line);
         // stack: [fmt, args] → formatted string
         vybe_emitter::sprintf::emit_sprintf_from_array(chunks, current, line);

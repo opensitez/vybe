@@ -361,6 +361,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.str" => {
             crate::emitter::runtime_adapter::emit_str(chunks, current, argc, line)
         }
+        "python.repr" => {
+            crate::emitter::runtime_adapter::emit_repr(chunks, current, argc, line)
+        }
         "python.print" => {
             crate::emitter::runtime_adapter::emit_print(chunks, current, argc, line)
         }
