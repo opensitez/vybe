@@ -316,6 +316,7 @@ call_arg = {
     | "*" ~ expression                   // splat
     | "&" ~ expression                   // block arg (&:sym or &proc)
     | identifier ~ ":" ~ expression      // keyword arg
+    | expression ~ "=>" ~ expression     // hash rocket arg
     | expression
 }
 
@@ -462,7 +463,7 @@ integer_literal = @{
 }
 
 // ── Symbol ─────────────────────────────────────────────────────────────────
-symbol = @{ ":" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")? }
+symbol = @{ ":" ~ ((ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")? | operator_method_name) }
 
 // ── Variables ──────────────────────────────────────────────────────────────
 global_var   = @{ "$" ~ (ASCII_ALPHANUMERIC | "_")+ }

@@ -34,7 +34,7 @@ pub fn run_ruby(src: &str) -> Vec<String> {
 }
 
 pub fn run_ruby_one(src: &str) -> String {
-    run_ruby(src).into_iter().next().unwrap_or_default()
+    run_ruby(src).join("\n")
 }
 
 /// Parse-only: verify the grammar accepts the source without errors
