@@ -129,7 +129,7 @@ go_run_cases! {
     ),
     limit_reader_second_read_empty => (
         "package main; import \"fmt\"; import \"io\"; import \"strings\"; func main() { lr := io.LimitReader(strings.NewReader(\"xy\"), 2); buf := make([]byte, 1); n1, _ := lr.Read(buf); n2, _ := lr.Read(buf); fmt.Println(n1, string(buf[:n1]), n2) }",
-        vec!["1 x 0"]
+        vec!["1 y 1"]
     ),
     multi_reader_two_empty_leading => (
         "package main; import \"fmt\"; import \"io\"; import \"strings\"; func main() { mr := io.MultiReader(strings.NewReader(\"\"), strings.NewReader(\"ok\")); data, _ := io.ReadAll(mr); fmt.Println(string(data)) }",

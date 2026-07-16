@@ -67,10 +67,10 @@ go_run_cases! {
     ),
     binary_put_varint_negative_one_single_byte => (
         "package main; import \"fmt\"; import \"encoding/binary\"; func main() { buf := make([]byte, binary.MaxVarintLen64); n := binary.PutVarint(buf, -1); fmt.Println(n); fmt.Println(int(buf[0])) }",
-        vec!["1", "255"]
+        vec!["1", "1"]
     ),
     binary_varint_reads_negative_one => (
-        "package main; import \"fmt\"; import \"encoding/binary\"; func main() { v, n := binary.Varint([]byte{0xff}); fmt.Println(v); fmt.Println(n) }",
+        "package main; import \"fmt\"; import \"encoding/binary\"; func main() { v, n := binary.Varint([]byte{0x01}); fmt.Println(v); fmt.Println(n) }",
         vec!["-1", "1"]
     ),
     binary_size_uint16_field_is_two => (

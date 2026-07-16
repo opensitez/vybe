@@ -566,7 +566,13 @@ function_type = { "func"  ~ signature }
 // ── Rune literals ────────────────────────────────────────────────────────────
 
 rune_literal = @{
-    "'" ~ ("\\" ~ ANY | (!"'" ~ ANY)) ~ "'"
+    "'" ~ (
+        "\\" ~ "U" ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT
+        | "\\" ~ "u" ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT
+        | "\\" ~ "x" ~ ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT
+        | "\\" ~ ANY
+        | (!"'" ~ ANY)
+    ) ~ "'"
 }
 
 // ── Numeric literals ─────────────────────────────────────────────────────────

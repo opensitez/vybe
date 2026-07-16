@@ -55,6 +55,8 @@ materialize_bool_results = true
 "__go_json_stringify" = { emit = "host:ecma:json:stringify",    min_args = 1, max_args = 3 }
 "__go_json_parse"     = { emit = "host:ecma:json:parse",        min_args = 1, max_args = 2 }
 "__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
+"__go_btoa"           = { emit = "host:ecma:string:btoa",       min_args = 1, max_args = 1 }
+"__go_atob"           = { emit = "host:ecma:string:atob",       min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 

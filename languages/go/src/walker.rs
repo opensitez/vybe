@@ -44,7 +44,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Inject Go-source runtime preludes (small plain-Go helper libraries that
     // compile through the same pipeline — no adapter bytecode, no host fns)
     // when the program uses them.
-    let mut prelude: Vec<Statement> = Vec::new();
+    let mut prelude: Vec<Statement> = go_prelude_body(GO_CORE_PRELUDE)?;
     if go_uses_errors_runtime(source) {
         prelude.extend(go_prelude_body(GO_ERRORS_PRELUDE)?);
     }
@@ -86,6 +86,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("slices.") || source.contains("maps.") {
         prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
     }
+    if source.contains("unicode.") || source.contains("unicode/utf8") || source.contains("unicode/utf16") {
+        prelude.extend(go_prelude_body(GO_UNICODE_PRELUDE)?);
+    }
+    if source.contains("encoding/hex")
+        || source.contains("encoding/base64")
+        || source.contains("encoding/binary")
+    {
+        prelude.extend(go_prelude_body(GO_ENCODING_PRELUDE)?);
+    }
     // slog/XML handlers write to a bytes.Buffer, so those packages pull in the
     // bytes prelude too.
     if source.contains("bytes.")
@@ -93,8 +102,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
         || source.contains("log.")
         || source.contains("xml.")
         || source.contains("encoding/xml")
+        || source.contains("encoding/hex")
+        || source.contains("encoding/base64")
+        || source.contains("encoding/binary")
+        || source.contains("io.")
+        || source.contains("bufio.")
+        || source.contains("bytes.NewReader")
+        || source.contains("strings.NewReader")
     {
         prelude.extend(go_prelude_body(GO_BYTES_PRELUDE)?);
+    }
+    if source.contains("io.")
+        || source.contains("bufio.")
+        || source.contains("strings.NewReader")
+        || source.contains("bytes.NewReader")
+        || source.contains("encoding/binary")
+    {
+        prelude.extend(go_prelude_body(GO_IO_PRELUDE)?);
     }
     if source.contains("xml.") || source.contains("encoding/xml") {
         prelude.extend(go_prelude_body(GO_XML_PRELUDE)?);
@@ -127,6 +151,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
 fn go_uses_errors_runtime(source: &str) -> bool {
     source.contains("errors.") || source.contains("Errorf")
 }
+
+const GO_CORE_PRELUDE: &str = r#"package main
+
+func __go_io_bytes_to_string(buf []byte) string {
+	out := ""
+	for i := 0; i < len(buf); i++ {
+		out += string(rune(buf[i]))
+	}
+	return out
+}
+
+func __go_io_string_to_bytes(s string) []byte {
+	out := []byte{}
+	for i := 0; i < len(s); i++ {
+		out = append(out, s[i])
+	}
+	return out
+}
+
+func main() {}
+"#;
 
 const GO_FMT_PRELUDE: &str = r#"package main
 
@@ -779,6 +824,7 @@ const GO_BYTES_PRELUDE: &str = r#"package main
 
 type __goBuffer struct {
 	data string
+	pos  int
 }
 
 var __go_log_out *__goBuffer = nil
@@ -795,10 +841,36 @@ func (b *__goBuffer) WriteByte(c byte) error {
 	b.data = b.data + string(rune(c))
 	return nil
 }
-func (b *__goBuffer) String() string { return b.data }
-func (b *__goBuffer) Len() int       { return len(b.data) }
-func (b *__goBuffer) Reset()         { b.data = "" }
-func (b *__goBuffer) Bytes() []byte  { return []byte(b.data) }
+func (b *__goBuffer) String() string { return b.data[b.pos:] }
+func (b *__goBuffer) Len() int       { return len(b.data) - b.pos }
+func (b *__goBuffer) Reset()         { b.data = ""; b.pos = 0 }
+func (b *__goBuffer) Bytes() []byte  { return []byte(b.data[b.pos:]) }
+func (b *__goBuffer) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) && b.pos < len(b.data) {
+		p[n] = b.data[b.pos]
+		b.pos++
+		n++
+	}
+	if n == 0 {
+		return 0, "EOF"
+	}
+	return n, nil
+}
+func (b *__goBuffer) ReadByte() (string, error) {
+	if b.pos >= len(b.data) {
+		return "", "EOF"
+	}
+	ch := b.data[b.pos]
+	b.pos++
+	return string(rune(ch)), nil
+}
+func (b *__goBuffer) UnreadByte() error {
+	if b.pos > 0 {
+		b.pos--
+	}
+	return nil
+}
 
 func __go_bytes_WriteString(b *__goBuffer, s string) (int, error) {
 	b.data = b.data + s
@@ -812,21 +884,1134 @@ func __go_bytes_WriteByte(b *__goBuffer, c byte) error {
 	b.data = b.data + string(rune(c))
 	return nil
 }
-func __go_bytes_String(b *__goBuffer) string { return b.data }
-func __go_bytes_Len(b *__goBuffer) int       { return len(b.data) }
+func __go_bytes_String(b *__goBuffer) string { return b.data[b.pos:] }
+func __go_bytes_Len(b *__goBuffer) int       { return len(b.data) - b.pos }
 func __go_bytes_Reset(b *__goBuffer) {
 	b.data = ""
+	b.pos = 0
 	if __go_log_out != nil {
 		__go_log_out.data = ""
+		__go_log_out.pos = 0
 	}
 }
-func __go_bytes_Bytes(b *__goBuffer) []byte  { return []byte(b.data) }
+func __go_bytes_Bytes(b *__goBuffer) []byte  { return []byte(b.data[b.pos:]) }
 
 func __go_bytes_NewBuffer(p []byte) *__goBuffer {
 	return &__goBuffer{data: string(p)}
 }
 func __go_bytes_NewBufferString(s string) *__goBuffer {
 	return &__goBuffer{data: s}
+}
+
+func main() {}
+"#;
+
+const GO_IO_PRELUDE: &str = r#"package main
+
+import "strings"
+
+type __goReader struct {
+	data string
+	pos int
+	last int
+	tee *__goBuffer
+}
+
+type __goScanner struct {
+	tokens []string
+	pos int
+	cur string
+	mode string
+	source string
+}
+
+type __goBufioWriter struct {
+	out *__goBuffer
+	buf string
+}
+
+var __go_io_Discard = &__goBuffer{}
+
+func __go_reader_text(r *__goReader) string {
+	if r == nil {
+		return ""
+	}
+	if r.pos >= len(r.data) {
+		return ""
+	}
+	return r.data[r.pos:]
+}
+
+func __go_reader_take(r *__goReader, n int) string {
+	if r == nil || n <= 0 || r.pos >= len(r.data) {
+		return ""
+	}
+	remaining := len(r.data) - r.pos
+	if n > remaining {
+		n = remaining
+	}
+	start := r.pos
+	r.pos += n
+	r.last = n
+	out := r.data[start:r.pos]
+	if r.tee != nil {
+		__go_bytes_WriteString(r.tee, out)
+	}
+	return out
+}
+
+func __go_reader_all(r *__goReader) string {
+	return __go_reader_take(r, len(__go_reader_text(r)))
+}
+
+func __go_strings_NewReader(s string) *__goReader {
+	return &__goReader{data: s, pos: 0, last: 0}
+}
+
+func __go_bytes_NewReader(p []byte) *__goReader {
+	return __go_strings_NewReader(string(p))
+}
+
+func (r *__goReader) ReadByte() (string, error) {
+	s := __go_reader_take(r, 1)
+	if len(s) == 0 {
+		return "", "EOF"
+	}
+	return s, nil
+}
+
+func (r *__goReader) UnreadByte() error {
+	if r != nil && r.last > 0 {
+		r.pos -= r.last
+		if r.pos < 0 {
+			r.pos = 0
+		}
+		r.last = 0
+	}
+	return nil
+}
+
+func (r *__goReader) UnreadRune() error {
+	return r.UnreadByte()
+}
+
+func (r *__goReader) ReadRune() (string, int, error) {
+	if r == nil || r.pos >= len(r.data) {
+		return "", 0, "EOF"
+	}
+	for _, ch := range r.data[r.pos:] {
+		size := len(string(ch))
+		__go_reader_take(r, size)
+		return string(ch), size, nil
+	}
+	return "", 0, "EOF"
+}
+
+func (r *__goReader) Peek(n int) ([]byte, error) {
+	text := __go_reader_text(r)
+	if n > len(text) {
+		n = len(text)
+	}
+	if n < 0 {
+		n = 0
+	}
+	return []byte(text[:n]), nil
+}
+
+func (r *__goReader) ReadSlice(delim byte) ([]byte, error) {
+	s, err := r.ReadString(delim)
+	return []byte(s), err
+}
+
+func (r *__goReader) ReadBytes(delim byte) ([]byte, error) {
+	s, err := r.ReadString(delim)
+	return []byte(s), err
+}
+
+func (r *__goReader) ReadString(delim byte) (string, error) {
+	text := __go_reader_text(r)
+	for i := 0; i < len(text); i++ {
+		if text[i] == delim {
+			return __go_reader_take(r, i+1), nil
+		}
+	}
+	return __go_reader_all(r), "EOF"
+}
+
+func (r *__goReader) ReadLine() ([]byte, bool, error) {
+	s, err := r.ReadString('\n')
+	if strings.HasSuffix(s, "\n") {
+		s = s[:len(s)-1]
+	}
+	return []byte(s), false, err
+}
+
+func (r *__goReader) Buffered() int {
+	return len(__go_reader_text(r))
+}
+
+func (r *__goReader) Discard(n int) (int, error) {
+	s := __go_reader_take(r, n)
+	return len(s), nil
+}
+
+func (r *__goReader) Read(p []byte) (int, error) {
+	s := __go_reader_take(r, len(p))
+	for i := 0; i < len(s); i++ {
+		p[i] = s[i]
+	}
+	if len(s) == 0 {
+		return 0, "EOF"
+	}
+	return len(s), nil
+}
+
+func (r *__goReader) Close() error {
+	return nil
+}
+
+func (r *__goReader) Seek(offset int64, whence int) (int64, error) {
+	next := int(offset)
+	if whence == 1 {
+		next = r.pos + int(offset)
+	} else if whence == 2 {
+		next = len(r.data) + int(offset)
+	}
+	if next < 0 {
+		next = 0
+	}
+	if next > len(r.data) {
+		next = len(r.data)
+	}
+	r.pos = next
+	return int64(r.pos), nil
+}
+
+func __go_bufio_NewReader(r *__goReader) *__goReader { return r }
+func __go_bufio_NewReaderSize(r *__goReader, size int) *__goReader { return r }
+
+func __go_scanner_refresh(s *__goScanner) {
+	if s.mode == "words" {
+		s.tokens = strings.Fields(s.source)
+		return
+	}
+	if s.mode == "bytes" {
+		out := []string{}
+		for i := 0; i < len(s.source); i++ {
+			out = append(out, string(rune(s.source[i])))
+		}
+		s.tokens = out
+		return
+	}
+	if s.mode == "runes" {
+		out := []string{}
+		for _, ch := range s.source {
+			out = append(out, string(ch))
+		}
+		s.tokens = out
+		return
+	}
+	s.tokens = strings.Split(s.source, "\n")
+	if len(s.tokens) > 0 && s.tokens[len(s.tokens)-1] == "" {
+		s.tokens = s.tokens[:len(s.tokens)-1]
+	}
+}
+
+func __go_bufio_NewScanner(r *__goReader) *__goScanner {
+	s := &__goScanner{source: __go_reader_text(r), mode: "lines"}
+	__go_scanner_refresh(s)
+	return s
+}
+
+func (s *__goScanner) Split(name string) {
+	if name == "ScanWords" {
+		s.mode = "words"
+	} else if name == "ScanBytes" {
+		s.mode = "bytes"
+	} else if name == "ScanRunes" {
+		s.mode = "runes"
+	}
+	s.pos = 0
+	__go_scanner_refresh(s)
+}
+
+func __go_scanner_Split(s *__goScanner, name string) {
+	if name == "ScanWords" {
+		s.mode = "words"
+	} else if name == "ScanBytes" {
+		s.mode = "bytes"
+	} else if name == "ScanRunes" {
+		s.mode = "runes"
+	}
+	s.pos = 0
+	__go_scanner_refresh(s)
+}
+func __go_scanner_Scan(s *__goScanner) bool {
+	if s.pos >= len(s.tokens) {
+		s.cur = ""
+		return false
+	}
+	s.cur = s.tokens[s.pos]
+	s.pos++
+	return true
+}
+func __go_scanner_Text(s *__goScanner) string { return s.cur }
+func __go_scanner_Bytes(s *__goScanner) []byte { return []byte(s.cur) }
+
+func (s *__goScanner) Scan() bool {
+	if s.pos >= len(s.tokens) {
+		s.cur = ""
+		return false
+	}
+	s.cur = s.tokens[s.pos]
+	s.pos++
+	return true
+}
+
+func (s *__goScanner) Text() string { return s.cur }
+func (s *__goScanner) Bytes() []byte { return []byte(s.cur) }
+
+func __go_bufio_NewWriter(b *__goBuffer) *__goBufioWriter {
+	return &__goBufioWriter{out: b}
+}
+func __go_bufio_NewWriterSize(b *__goBuffer, size int) *__goBufioWriter {
+	return __go_bufio_NewWriter(b)
+}
+func (w *__goBufioWriter) WriteString(s string) (int, error) {
+	w.buf += s
+	return len(s), nil
+}
+func (w *__goBufioWriter) WriteByte(c byte) error {
+	w.buf += string(rune(c))
+	return nil
+}
+func (w *__goBufioWriter) WriteRune(r rune) (int, error) {
+	s := string(r)
+	w.buf += s
+	return len(s), nil
+}
+func (w *__goBufioWriter) Buffered() int { return len(w.buf) }
+func (w *__goBufioWriter) Flush() error {
+	if w.out != nil {
+		__go_bytes_WriteString(w.out, w.buf)
+	}
+	w.buf = ""
+	return nil
+}
+func (w *__goBufioWriter) Reset(b *__goBuffer) {
+	w.buf = ""
+	w.out = b
+}
+
+func __go_io_ReadAll(r *__goReader) ([]byte, error) {
+	return []byte(__go_reader_all(r)), nil
+}
+
+func __go_io_LimitReader(r *__goReader, n int64) *__goReader {
+	text := __go_reader_text(r)
+	if n < 0 {
+		n = 0
+	}
+	if int(n) > len(text) {
+		n = int64(len(text))
+	}
+	return __go_strings_NewReader(text[:int(n)])
+}
+
+func __go_io_NopCloser(r *__goReader) *__goReader { return r }
+
+func __go_io_MultiReader(readers ...*__goReader) *__goReader {
+	out := ""
+	for _, r := range readers {
+		out += __go_reader_all(r)
+	}
+	return __go_strings_NewReader(out)
+}
+
+func __go_io_TeeReader(r *__goReader, w *__goBuffer) *__goReader {
+	return &__goReader{data: __go_reader_text(r), tee: w}
+}
+
+func __go_io_WriteString(w *__goBuffer, s string) (int, error) {
+	return __go_bytes_WriteString(w, s)
+}
+
+func __go_io_Copy(dst *__goBuffer, src *__goReader) (int64, error) {
+	text := __go_reader_all(src)
+	if dst != nil {
+		__go_bytes_WriteString(dst, text)
+	}
+	return int64(len(text)), nil
+}
+
+func __go_io_CopyN(dst *__goBuffer, src *__goReader, n int64) (int64, error) {
+	text := __go_reader_take(src, int(n))
+	if dst != nil {
+		__go_bytes_WriteString(dst, text)
+	}
+	if int64(len(text)) < n {
+		return int64(len(text)), "EOF"
+	}
+	return int64(len(text)), nil
+}
+
+func __go_io_CopyBuffer(dst *__goBuffer, src *__goReader, buf []byte) (int64, error) {
+	return __go_io_Copy(dst, src)
+}
+
+func __go_io_ReadAtLeast(r *__goReader, buf []byte, min int) (int, error) {
+	text := __go_reader_take(r, len(buf))
+	for i := 0; i < len(text); i++ {
+		buf[i] = text[i]
+	}
+	if len(text) < min {
+		return len(text), "EOF"
+	}
+	return len(text), nil
+}
+
+func __go_io_ReadFull(r *__goReader, buf []byte) (int, error) {
+	return __go_io_ReadAtLeast(r, buf, len(buf))
+}
+
+func main() {}
+"#;
+
+const GO_ENCODING_PRELUDE: &str = r#"package main
+
+const __go_binary_MaxVarintLen64 = 10
+
+func __go_hex_digit(n int) byte {
+	if n < 10 {
+		return byte('0' + n)
+	}
+	return byte('a' + n - 10)
+}
+
+func __go_hex_value(c byte) int {
+	if c >= '0' && c <= '9' {
+		return int(c - '0')
+	}
+	if c >= 'a' && c <= 'f' {
+		return int(c-'a') + 10
+	}
+	if c >= 'A' && c <= 'F' {
+		return int(c-'A') + 10
+	}
+	return -1
+}
+
+func __go_hex_EncodedLen(n int) int { return n * 2 }
+func __go_hex_DecodedLen(n int) int { return n / 2 }
+
+func __go_hex_Encode(dst []byte, src []byte) int {
+	for i, b := range src {
+		dst[i*2] = __go_hex_digit(int(b) >> 4)
+		dst[i*2+1] = __go_hex_digit(int(b) & 15)
+	}
+	return len(src) * 2
+}
+
+func __go_hex_EncodeToString(src []byte) string {
+	dst := make([]byte, len(src)*2)
+	__go_hex_Encode(dst, src)
+	return string(dst)
+}
+
+func __go_hex_AppendEncode(dst []byte, src []byte) []byte {
+	return append(dst, []byte(__go_hex_EncodeToString(src))...)
+}
+
+func __go_hex_Decode(dst []byte, src []byte) (int, error) {
+	if len(src)%2 != 0 {
+		return 0, "odd length hex string"
+	}
+	for i := 0; i < len(src); i = i + 2 {
+		hi := __go_hex_value(src[i])
+		lo := __go_hex_value(src[i+1])
+		if hi < 0 || lo < 0 {
+			return i / 2, "invalid byte"
+		}
+		dst[i/2] = byte(hi<<4 | lo)
+	}
+	return len(src) / 2, nil
+}
+
+func __go_hex_DecodeString(s string) ([]byte, error) {
+	dst := make([]byte, len(s)/2)
+	n, err := __go_hex_Decode(dst, []byte(s))
+	return dst[:n], err
+}
+
+func __go_hex_Dump(src []byte) string {
+	if len(src) == 0 {
+		return ""
+	}
+	return "00000000  " + __go_hex_EncodeToString(src) + "  |" + string(src) + "|\n"
+}
+
+type __goHexDumper struct { out *__goBuffer }
+func __go_hex_Dumper(w *__goBuffer) *__goHexDumper { return &__goHexDumper{out: w} }
+func (d *__goHexDumper) Write(p []byte) (int, error) {
+	__go_bytes_WriteString(d.out, __go_hex_Dump(p))
+	return len(p), nil
+}
+func (d *__goHexDumper) Close() error { return nil }
+
+type __goBase64Encoding struct { raw bool; url bool }
+
+var __go_base64_StdEncoding = __goBase64Encoding{}
+var __go_base64_RawStdEncoding = __goBase64Encoding{raw: true}
+var __go_base64_URLEncoding = __goBase64Encoding{url: true}
+
+func __go_base64_input_text(src []byte) string {
+	out := ""
+	for i := 0; i < len(src); i++ {
+		out += string(rune(src[i]))
+	}
+	return out
+}
+
+func __go_base64_output_bytes(s string) []byte {
+	out := []byte{}
+	for i := 0; i < len(s); i++ {
+		out = append(out, byte(s[i]))
+	}
+	return out
+}
+
+func __go_base64_replace_all(s string, old string, repl string) string {
+	out := ""
+	i := 0
+	for i < len(s) {
+		if len(old) > 0 && i+len(old) <= len(s) && s[i:i+len(old)] == old {
+			out += repl
+			i = i + len(old)
+		} else {
+			out += s[i:i+1]
+			i++
+		}
+	}
+	return out
+}
+
+func __go_base64_trim_padding(s string) string {
+	for len(s) > 0 && s[len(s)-1] == '=' {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func __go_base64_valid_char(c byte) bool {
+	if c >= 'A' && c <= 'Z' { return true }
+	if c >= 'a' && c <= 'z' { return true }
+	if c >= '0' && c <= '9' { return true }
+	if c == '+' || c == '/' || c == '-' || c == '_' || c == '=' { return true }
+	return false
+}
+
+func __go_base64_valid_text(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !__go_base64_valid_char(s[i]) { return false }
+	}
+	return len(s)%4 != 1
+}
+
+func (e __goBase64Encoding) EncodedLen(n int) int { return __go_base64_EncodedLen(e, n) }
+func (e __goBase64Encoding) DecodedLen(n int) int { return __go_base64_DecodedLen(e, n) }
+func (e __goBase64Encoding) WithPadding(p rune) __goBase64Encoding { return __go_base64_WithPadding(e, p) }
+func (e __goBase64Encoding) EncodeToString(src []byte) string { return __go_base64_EncodeToString(e, src) }
+func (e __goBase64Encoding) Decode(dst []byte, src []byte) (int, error) { return __go_base64_Decode(e, dst, src) }
+func (e __goBase64Encoding) DecodeString(s string) ([]byte, error) { return __go_base64_DecodeString(e, s) }
+
+func __go_base64_EncodeToString(e __goBase64Encoding, src []byte) string {
+	out := __go_btoa(__go_base64_input_text(src))
+	if e.url {
+		out = __go_base64_replace_all(out, "+", "-")
+		out = __go_base64_replace_all(out, "/", "_")
+	}
+	if e.raw {
+		out = __go_base64_trim_padding(out)
+	}
+	return out
+}
+
+func __go_base64_Decode(e __goBase64Encoding, dst []byte, src []byte) (int, error) {
+	out, err := __go_base64_DecodeString(e, string(src))
+	if err != nil {
+		return 0, err
+	}
+	for i := 0; i < len(out); i++ {
+		dst[i] = out[i]
+	}
+	return len(out), nil
+}
+
+func __go_base64_DecodeString(e __goBase64Encoding, s string) ([]byte, error) {
+	if e.url {
+		s = __go_base64_replace_all(s, "-", "+")
+		s = __go_base64_replace_all(s, "_", "/")
+	}
+	for len(s)%4 != 0 {
+		s += "="
+	}
+	if !__go_base64_valid_text(s) {
+		return nil, "invalid base64"
+	}
+	return __go_base64_output_bytes(__go_atob(s)), nil
+}
+func __go_base64_EncodedLen(e __goBase64Encoding, n int) int {
+	if e.raw { return (n*8 + 5) / 6 }
+	return ((n + 2) / 3) * 4
+}
+func __go_base64_DecodedLen(e __goBase64Encoding, n int) int { return (n / 4) * 3 }
+func __go_base64_WithPadding(e __goBase64Encoding, p rune) __goBase64Encoding { e.raw = false; return e }
+
+type __goByteOrder struct { little bool }
+var __go_binary_BigEndian = __goByteOrder{little: false}
+var __go_binary_LittleEndian = __goByteOrder{little: true}
+var __go_binary_NativeEndian = __go_binary_LittleEndian
+
+func __go_binary_u8(v int) byte {
+	v = v % 256
+	if v < 0 { v += 256 }
+	return byte(v)
+}
+
+func __go_binary_u8u(v uint64) byte {
+	return byte(v % 256)
+}
+
+func (o __goByteOrder) PutUint16(b []byte, v uint16) {
+	if o.little { b[0] = __go_binary_u8(int(v)); b[1] = __go_binary_u8(int(v >> 8)) } else { b[0] = __go_binary_u8(int(v >> 8)); b[1] = __go_binary_u8(int(v)) }
+}
+func (o __goByteOrder) Uint16(b []byte) uint16 {
+	if o.little { return uint16(b[0]) | uint16(b[1])<<8 }
+	return uint16(b[0])<<8 | uint16(b[1])
+}
+func (o __goByteOrder) PutInt16(b []byte, v int16) {
+	if o.little { b[0] = __go_binary_u8(int(v)); b[1] = __go_binary_u8(int(v >> 8)) } else { b[0] = __go_binary_u8(int(v >> 8)); b[1] = __go_binary_u8(int(v)) }
+}
+func (o __goByteOrder) PutUint32(b []byte, v uint32) {
+	if o.little {
+		for i := 0; i < 4; i++ { b[i] = __go_binary_u8(int(v >> (8*i))) }
+	} else {
+		for i := 0; i < 4; i++ { b[i] = __go_binary_u8(int(v >> (8*(3-i)))) }
+	}
+}
+func (o __goByteOrder) Uint32(b []byte) uint32 {
+	v := uint32(0)
+	if o.little {
+		for i := 0; i < 4; i++ { v |= uint32(b[i]) << (8*i) }
+	} else {
+		for i := 0; i < 4; i++ { v = (v << 8) | uint32(b[i]) }
+	}
+	return v
+}
+func (o __goByteOrder) Int32(b []byte) int32 {
+	v := o.Uint32(b)
+	if v >= 2147483648 { return int32(int(v) - 4294967296) }
+	return int32(v)
+}
+func (o __goByteOrder) PutUint64(b []byte, v uint64) {
+	tmp := make([]byte, 8)
+	var x uint64 = v
+	for i := 0; i < 8; i++ {
+		tmp[i] = __go_binary_u8u(x)
+		x = x / uint64(256)
+	}
+	if o.little {
+		for i := 0; i < 8; i++ { b[i] = tmp[i] }
+	} else {
+		for i := 0; i < 8; i++ { b[i] = tmp[7-i] }
+	}
+}
+func __go_binary_PutUint64Parts(o __goByteOrder, b []byte, hi uint32, lo uint32) {
+	if o.little {
+		b[0] = __go_binary_u8(int(lo))
+		b[1] = __go_binary_u8(int(lo >> 8))
+		b[2] = __go_binary_u8(int(lo >> 16))
+		b[3] = __go_binary_u8(int(lo >> 24))
+		b[4] = __go_binary_u8(int(hi))
+		b[5] = __go_binary_u8(int(hi >> 8))
+		b[6] = __go_binary_u8(int(hi >> 16))
+		b[7] = __go_binary_u8(int(hi >> 24))
+	} else {
+		b[0] = __go_binary_u8(int(hi >> 24))
+		b[1] = __go_binary_u8(int(hi >> 16))
+		b[2] = __go_binary_u8(int(hi >> 8))
+		b[3] = __go_binary_u8(int(hi))
+		b[4] = __go_binary_u8(int(lo >> 24))
+		b[5] = __go_binary_u8(int(lo >> 16))
+		b[6] = __go_binary_u8(int(lo >> 8))
+		b[7] = __go_binary_u8(int(lo))
+	}
+}
+func (o __goByteOrder) Uint64(b []byte) uint64 {
+	v := uint64(0)
+	if o.little {
+		for i := 0; i < 8; i++ { v |= uint64(b[i]) << (8*i) }
+	} else {
+		for i := 0; i < 8; i++ { v = (v << 8) | uint64(b[i]) }
+	}
+	return v
+}
+func (o __goByteOrder) AppendUint16(b []byte, v uint16) []byte {
+	tmp := make([]byte, 2); o.PutUint16(tmp, v); return append(b, tmp...)
+}
+func (o __goByteOrder) AppendUint32(b []byte, v uint32) []byte {
+	tmp := make([]byte, 4); o.PutUint32(tmp, v); return append(b, tmp...)
+}
+
+func __go_binary_PutUint16(o __goByteOrder, b []byte, v uint16) { o.PutUint16(b, v) }
+func __go_binary_Uint16(o __goByteOrder, b []byte) uint16 { return o.Uint16(b) }
+func __go_binary_PutInt16(o __goByteOrder, b []byte, v int16) { o.PutInt16(b, v) }
+func __go_binary_PutUint32(o __goByteOrder, b []byte, v uint32) { o.PutUint32(b, v) }
+func __go_binary_Uint32(o __goByteOrder, b []byte) uint32 { return o.Uint32(b) }
+func __go_binary_Int32(o __goByteOrder, b []byte) int32 { return o.Int32(b) }
+func __go_binary_PutUint64(o __goByteOrder, b []byte, v uint64) { o.PutUint64(b, v) }
+func __go_binary_PutUint64PartsWrap(o __goByteOrder, b []byte, hi uint32, lo uint32) { __go_binary_PutUint64Parts(o, b, hi, lo) }
+func __go_binary_Uint64(o __goByteOrder, b []byte) uint64 { return o.Uint64(b) }
+func __go_binary_AppendUint16(o __goByteOrder, b []byte, v uint16) []byte { return o.AppendUint16(b, v) }
+func __go_binary_AppendUint32(o __goByteOrder, b []byte, v uint32) []byte { return o.AppendUint32(b, v) }
+
+func __go_binary_PutUvarint(buf []byte, x uint64) int {
+	i := 0
+	for x >= 0x80 {
+		buf[i] = __go_binary_u8(int(x) | 0x80)
+		x >>= 7
+		i++
+	}
+	buf[i] = __go_binary_u8(int(x))
+	return i + 1
+}
+
+func __go_binary_Uvarint(buf []byte) (uint64, int) {
+	x := uint64(0)
+	s := uint(0)
+	for i, b := range buf {
+		if b < 0x80 {
+			return x | uint64(b)<<s, i + 1
+		}
+		x |= uint64(b&0x7f) << s
+		s += 7
+	}
+	return 0, 0
+}
+
+func __go_binary_PutVarint(buf []byte, x int64) int {
+	if x < 0 {
+		return __go_binary_PutUvarint(buf, uint64((-x)*2 - 1))
+	}
+	return __go_binary_PutUvarint(buf, uint64(x) * 2)
+}
+
+func __go_binary_Varint(buf []byte) (int64, int) {
+	ux, n := __go_binary_Uvarint(buf)
+	if n <= 0 { return 0, n }
+	if ux&1 != 0 { return -int64((ux + 1) / 2), n }
+	return int64(ux / 2), n
+}
+
+func __go_binary_AppendUvarint(buf []byte, x uint64) []byte {
+	tmp := make([]byte, __go_binary_MaxVarintLen64)
+	n := __go_binary_PutUvarint(tmp, x)
+	return append(buf, tmp[:n]...)
+}
+
+func __go_binary_Size(v any) int { return 2 }
+func __go_binary_Read(r *__goReader, order __goByteOrder, data *uint16) error {
+	buf := make([]byte, 2)
+	_, err := r.Read(buf)
+	if err != nil { return err }
+	*data = order.Uint16(buf)
+	return nil
+}
+func __go_binary_Write(w *__goBuffer, order __goByteOrder, data any) error { return nil }
+func __go_binary_ReadFull(r *__goReader, dst []byte) (int, error) { return r.Read(dst) }
+
+func main() {}
+"#;
+
+const GO_UNICODE_PRELUDE: &str = r#"package main
+
+const __go_utf8_RuneError = 65533
+const __go_utf8_RuneSelf = 128
+const __go_utf8_MaxRune = 1114111
+const __go_utf8_UTFMax = 4
+
+func __go_utf8_rune_len(r rune) int {
+	if r < 0 || r > 0x10FFFF || (r >= 0xD800 && r <= 0xDFFF) {
+		return -1
+	}
+	if r < 0x80 {
+		return 1
+	}
+	if r < 0x800 {
+		return 2
+	}
+	if r < 0x10000 {
+		return 3
+	}
+	return 4
+}
+
+func __go_utf8_ValidRune(r rune) bool {
+	return __go_utf8_rune_len(r) > 0
+}
+
+func __go_utf8_RuneLen(r rune) int {
+	return __go_utf8_rune_len(r)
+}
+
+func __go_utf8_decode_bytes(p []byte) (rune, int) {
+	if len(p) == 0 {
+		return __go_utf8_RuneError, 0
+	}
+	b0 := int(p[0])
+	if b0 < 0x80 {
+		return rune(b0), 1
+	}
+	if b0 >= 0xC2 && b0 <= 0xDF {
+		if len(p) < 2 {
+			return __go_utf8_RuneError, 1
+		}
+		b1 := int(p[1])
+		if b1 < 0x80 || b1 > 0xBF {
+			return __go_utf8_RuneError, 1
+		}
+		return rune((b0&0x1F)<<6 | (b1 & 0x3F)), 2
+	}
+	if b0 >= 0xE0 && b0 <= 0xEF {
+		if len(p) < 3 {
+			return __go_utf8_RuneError, 1
+		}
+		b1 := int(p[1])
+		b2 := int(p[2])
+		if b1 < 0x80 || b1 > 0xBF || b2 < 0x80 || b2 > 0xBF {
+			return __go_utf8_RuneError, 1
+		}
+		if b0 == 0xE0 && b1 < 0xA0 {
+			return __go_utf8_RuneError, 1
+		}
+		if b0 == 0xED && b1 >= 0xA0 {
+			return __go_utf8_RuneError, 1
+		}
+		return rune((b0&0x0F)<<12 | (b1&0x3F)<<6 | (b2 & 0x3F)), 3
+	}
+	if b0 >= 0xF0 && b0 <= 0xF4 {
+		if len(p) < 4 {
+			return __go_utf8_RuneError, 1
+		}
+		b1 := int(p[1])
+		b2 := int(p[2])
+		b3 := int(p[3])
+		if b1 < 0x80 || b1 > 0xBF || b2 < 0x80 || b2 > 0xBF || b3 < 0x80 || b3 > 0xBF {
+			return __go_utf8_RuneError, 1
+		}
+		if b0 == 0xF0 && b1 < 0x90 {
+			return __go_utf8_RuneError, 1
+		}
+		if b0 == 0xF4 && b1 > 0x8F {
+			return __go_utf8_RuneError, 1
+		}
+		return rune((b0&0x07)<<18 | (b1&0x3F)<<12 | (b2&0x3F)<<6 | (b3 & 0x3F)), 4
+	}
+	return __go_utf8_RuneError, 1
+}
+
+func __go_utf8_Valid(p []byte) bool {
+	for i := 0; i < len(p); {
+		r, size := __go_utf8_decode_bytes(p[i:])
+		if r == __go_utf8_RuneError && size == 1 && int(p[i]) >= 0x80 {
+			return false
+		}
+		if size <= 0 {
+			return false
+		}
+		i += size
+	}
+	return true
+}
+
+func __go_utf8_ValidString(s string) bool {
+	return __go_utf8_Valid([]byte(s))
+}
+
+func __go_utf8_RuneCount(p []byte) int {
+	n := 0
+	for i := 0; i < len(p); {
+		_, size := __go_utf8_decode_bytes(p[i:])
+		if size <= 0 {
+			break
+		}
+		n++
+		i += size
+	}
+	return n
+}
+
+func __go_utf8_RuneCountInString(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
+}
+
+func __go_utf8_EncodeRune(p []byte, r rune) int {
+	if r < 0 || r > 0x10FFFF || (r >= 0xD800 && r <= 0xDFFF) {
+		r = __go_utf8_RuneError
+	}
+	if r < 0x80 {
+		p[0] = byte(r)
+		return 1
+	}
+	if r < 0x800 {
+		p[0] = byte(0xC0 | (r >> 6))
+		p[1] = byte(0x80 | (r & 0x3F))
+		return 2
+	}
+	if r < 0x10000 {
+		p[0] = byte(0xE0 | (r >> 12))
+		p[1] = byte(0x80 | ((r >> 6) & 0x3F))
+		p[2] = byte(0x80 | (r & 0x3F))
+		return 3
+	}
+	p[0] = byte(0xF0 | (r >> 18))
+	p[1] = byte(0x80 | ((r >> 12) & 0x3F))
+	p[2] = byte(0x80 | ((r >> 6) & 0x3F))
+	p[3] = byte(0x80 | (r & 0x3F))
+	return 4
+}
+
+func __go_utf8_AppendRune(p []byte, r rune) []byte {
+	buf := make([]byte, 4)
+	n := __go_utf8_EncodeRune(buf, r)
+	for i := 0; i < n; i++ {
+		p = append(p, buf[i])
+	}
+	return p
+}
+
+func __go_utf8_EncodeRuneToString(r rune) string {
+	return string(r)
+}
+
+func __go_utf8_DecodeRune(p []byte) (rune, int) {
+	return __go_utf8_decode_bytes(p)
+}
+
+func __go_utf8_DecodeRuneInString(s string) (rune, int) {
+	for _, r := range s {
+		return r, __go_utf8_rune_len(r)
+	}
+	return __go_utf8_RuneError, 0
+}
+
+func __go_utf8_DecodeLastRuneInString(s string) (rune, int) {
+	last := rune(__go_utf8_RuneError)
+	size := 0
+	for _, r := range s {
+		last = r
+		size = __go_utf8_rune_len(r)
+	}
+	if size == 0 {
+		return __go_utf8_RuneError, 0
+	}
+	return last, size
+}
+
+func __go_utf8_FullRune(p []byte) bool {
+	if len(p) == 0 {
+		return false
+	}
+	_, size := __go_utf8_decode_bytes(p)
+	return len(p) >= size && !(size == 1 && int(p[0]) >= 0x80)
+}
+
+func __go_utf8_FullRuneInString(s string) bool {
+	return len(s) > 0
+}
+
+func __go_utf8_FullRuneAt(p []byte, i int) bool {
+	return __go_utf8_FullRune(p[i:])
+}
+
+func __go_utf8_FullRuneInStringAt(s string, i int) bool {
+	return i >= 0 && i < len(s)
+}
+
+func __go_utf16_EncodeRune(r rune) (rune, rune) {
+	if r < 0x10000 || r > 0x10FFFF {
+		return r, 0xFFFF
+	}
+	r -= 0x10000
+	return 0xD800 + (r >> 10), 0xDC00 + (r & 0x3FF)
+}
+
+func __go_utf16_DecodeRune(r1 rune, r2 rune) rune {
+	if r1 >= 0xD800 && r1 <= 0xDBFF && r2 >= 0xDC00 && r2 <= 0xDFFF {
+		return (r1-0xD800)<<10 + (r2 - 0xDC00) + 0x10000
+	}
+	if r2 == 0xFFFF {
+		return r1
+	}
+	return __go_utf8_RuneError
+}
+
+func __go_utf16_IsSurrogate(r rune) bool {
+	return r >= 0xD800 && r <= 0xDFFF
+}
+
+func __go_utf16_Encode(rs []rune) []uint16 {
+	out := []uint16{}
+	for _, r := range rs {
+		if r >= 0x10000 && r <= 0x10FFFF {
+			r1, r2 := __go_utf16_EncodeRune(r)
+			out = append(out, uint16(r1), uint16(r2))
+		} else {
+			out = append(out, uint16(r))
+		}
+	}
+	return out
+}
+
+func __go_utf16_Decode(s []uint16) []rune {
+	out := []rune{}
+	for i := 0; i < len(s); i++ {
+		r := rune(s[i])
+		if r >= 0xD800 && r <= 0xDBFF {
+			if i+1 < len(s) {
+				r2 := rune(s[i+1])
+				if r2 >= 0xDC00 && r2 <= 0xDFFF {
+					out = append(out, __go_utf16_DecodeRune(r, r2))
+					i++
+					continue
+				}
+			}
+			out = append(out, __go_utf8_RuneError)
+		} else if r >= 0xDC00 && r <= 0xDFFF {
+			out = append(out, __go_utf8_RuneError)
+		} else {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func __go_unicode_IsLetter(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
+		(r >= 0x0370 && r <= 0x03FF) || (r >= 0x0400 && r <= 0x04FF) ||
+		(r >= 0x0590 && r <= 0x05FF) || (r >= 0x0600 && r <= 0x06FF) ||
+		(r >= 0x0900 && r <= 0x097F) || (r >= 0x0E00 && r <= 0x0E7F) ||
+		(r >= 0x3040 && r <= 0x30FF) || (r >= 0x3400 && r <= 0x9FFF) ||
+		(r >= 0xAC00 && r <= 0xD7AF)
+}
+
+func __go_unicode_IsDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 0x0660 && r <= 0x0669) ||
+		(r >= 0x0966 && r <= 0x096F) || (r >= 0x0E50 && r <= 0x0E59) ||
+		(r >= 0xFF10 && r <= 0xFF19)
+}
+
+func __go_unicode_IsUpper(r rune) bool { return __go_unicode_ToUpper(r) == r && __go_unicode_ToLower(r) != r }
+func __go_unicode_IsLower(r rune) bool { return __go_unicode_ToLower(r) == r && __go_unicode_ToUpper(r) != r }
+func __go_unicode_IsNumber(r rune) bool { return __go_unicode_IsDigit(r) || r == 0x00B2 }
+func __go_unicode_IsSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }
+
+func __go_unicode_ToUpper(r rune) rune {
+	if r >= 'a' && r <= 'z' {
+		return r - 32
+	}
+	if r == 0x03BB {
+		return 0x039B
+	}
+	if r == 0x0436 {
+		return 0x0416
+	}
+	if r == 0x00DF {
+		return 0x1E9E
+	}
+	return r
+}
+
+func __go_unicode_ToLower(r rune) rune {
+	if r >= 'A' && r <= 'Z' {
+		return r + 32
+	}
+	if r == 0x039B {
+		return 0x03BB
+	}
+	if r == 0x1E9E {
+		return 0x00DF
+	}
+	return r
+}
+
+func __go_unicode_SimpleFold(r rune) rune {
+	if r == 0x03A3 || r == 0x03C2 {
+		return 0x03C3
+	}
+	if r == 0x212A {
+		return 'k'
+	}
+	if r == 0x00C5 {
+		return 0x00E5
+	}
+	if r == 0x017F {
+		return 's'
+	}
+	if r == 0x00B5 {
+		return 0x039C
+	}
+	return r
+}
+
+func __go_unicode_table_contains(name string, r rune) bool {
+	if name == "Greek" {
+		return r >= 0x0370 && r <= 0x03FF
+	}
+	if name == "Latin" {
+		return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+	}
+	if name == "Digit" {
+		return __go_unicode_IsDigit(r)
+	}
+	if name == "Number" {
+		return __go_unicode_IsNumber(r)
+	}
+	if name == "Letter" {
+		return __go_unicode_IsLetter(r)
+	}
+	if name == "Han" {
+		return r >= 0x3400 && r <= 0x9FFF
+	}
+	if name == "Punct" {
+		return r == '!' || r == '.' || r == ',' || r == '?' || r == ';' || r == ':'
+	}
+	if name == "Cyrillic" {
+		return r >= 0x0400 && r <= 0x04FF
+	}
+	if name == "Space" {
+		return __go_unicode_IsSpace(r)
+	}
+	if name == "Upper" {
+		return __go_unicode_IsUpper(r)
+	}
+	if name == "Lower" {
+		return __go_unicode_IsLower(r)
+	}
+	return false
+}
+
+func __go_unicode_In(r rune, tables ...string) bool {
+	for _, table := range tables {
+		if __go_unicode_table_contains(table, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {}
@@ -5324,6 +6509,13 @@ fn normalize_go_statement(
                 if let Some((name, type_name)) = go_decl_binding_type(&next_decl, env, signatures) {
                     env.value_types.insert(name, type_name);
                 }
+                if let Some(type_hints) = next_decl
+                    .init
+                    .as_ref()
+                    .and_then(|init| go_expr_tuple_type_hints(init, env, signatures))
+                {
+                    go_record_binding_pattern_type_hints(&next_decl.pattern, &type_hints, env);
+                }
                 if let Some(name) = go_binding_name(&next_decl.pattern) {
                     if let Some(view) = next_decl
                         .init
@@ -5406,6 +6598,12 @@ fn normalize_go_statement(
                             .or_else(|| go_bound_slice_capacity_expr(&next_value, env))
                     {
                         env.slice_caps.insert(name.clone(), cap_expr);
+                    }
+                }
+                if let ExprKind::Tuple(tuple_targets) = &target.kind {
+                    if let Some(type_hints) = go_expr_tuple_type_hints(&next_value, env, signatures)
+                    {
+                        go_record_tuple_target_type_hints(tuple_targets, &type_hints, env);
                     }
                 }
             }
@@ -5748,6 +6946,41 @@ fn normalize_go_expr(
                     return rewritten;
                 }
             }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "utf8") {
+                if let Some(rewritten) = go_rewrite_utf8_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "unicode") {
+                if let Some(rewritten) = go_rewrite_unicode_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "hex") {
+                if let Some(rewritten) = go_rewrite_encoding_member("hex", field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "base64") {
+                if let Some(rewritten) = go_rewrite_encoding_member("base64", field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "binary") {
+                if let Some(rewritten) = go_rewrite_encoding_member("binary", field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "io") {
+                if let Some(rewritten) = go_rewrite_io_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "bufio") {
+                if let Some(rewritten) = go_rewrite_bufio_member(field) {
+                    return rewritten;
+                }
+            }
             if matches!(&object.kind, ExprKind::Ident(name) if name == "slog") {
                 if let Some(rewritten) = go_rewrite_slog_member(field) {
                     return rewritten;
@@ -5852,6 +7085,12 @@ fn normalize_go_expr(
                 return rewritten_call;
             }
 
+            if let Some(rewritten_call) =
+                go_rewrite_io_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
             if let Some(rewritten_call) = go_rewrite_slog_method_call(&next_callee, &next_args) {
                 return rewritten_call;
             }
@@ -5936,9 +7175,21 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_bytes_call(name, &next_args) {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_io_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_bufio_call(name, &next_args) {
+                    return rewritten;
+                }
                 if let Some(rewritten) =
                     go_rewrite_xml_call(name, &next_args, env, signatures, state)
                 {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_unicode_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_encoding_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
@@ -6210,6 +7461,11 @@ fn normalize_go_expr(
                     expr: Box::new(go_builtin_call("__go_string_runes", vec![normalized_expr])),
                     type_name: type_name.clone(),
                 });
+            }
+            if matches!(type_name.trim(), "[]byte" | "[]uint8")
+                && go_expr_type_hint(&normalized_expr, env, signatures).as_deref() == Some("string")
+            {
+                return go_builtin_call("__go_io_string_to_bytes", vec![normalized_expr]);
             }
             go_normalize_typed_composite_expr(normalized_expr, type_name, env)
         }
@@ -7014,6 +8270,7 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
         "strings.SplitN" => "__go_strings_SplitN",
         "strings.SplitAfter" => "__go_strings_SplitAfter",
         "strings.SplitAfterN" => "__go_strings_SplitAfterN",
+        "strings.NewReader" => "__go_strings_NewReader",
         _ => return None,
     };
     Some(go_builtin_call(
@@ -7369,8 +8626,65 @@ fn go_rewrite_bytes_call(call_name: &str, args: &[Argument]) -> Option<Expressio
             "__go_bytes_NewBufferString",
             vec![go_arg_value(args, 0)],
         )),
+        "bytes.NewReader" => Some(go_builtin_call(
+            "__go_bytes_NewReader",
+            vec![go_arg_value(args, 0)],
+        )),
         _ => None,
     }
+}
+
+fn go_rewrite_io_member(field: &str) -> Option<Expression> {
+    match field {
+        "Discard" => Some(Expression::ident("__go_io_Discard")),
+        _ => None,
+    }
+}
+
+fn go_rewrite_bufio_member(field: &str) -> Option<Expression> {
+    match field {
+        "ScanLines" => Some(Expression::string("ScanLines")),
+        "ScanWords" => Some(Expression::string("ScanWords")),
+        "ScanBytes" => Some(Expression::string("ScanBytes")),
+        "ScanRunes" => Some(Expression::string("ScanRunes")),
+        _ => None,
+    }
+}
+
+fn go_rewrite_io_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let mapped = match call_name {
+        "io.ReadAll" | "ioutil.ReadAll" => "__go_io_ReadAll",
+        "io.LimitReader" => "__go_io_LimitReader",
+        "io.NopCloser" | "ioutil.NopCloser" => "__go_io_NopCloser",
+        "io.MultiReader" => "__go_io_MultiReader",
+        "io.TeeReader" => "__go_io_TeeReader",
+        "io.WriteString" => "__go_io_WriteString",
+        "io.Copy" => "__go_io_Copy",
+        "io.CopyN" => "__go_io_CopyN",
+        "io.CopyBuffer" => "__go_io_CopyBuffer",
+        "io.ReadAtLeast" => "__go_io_ReadAtLeast",
+        "io.ReadFull" => "__go_io_ReadFull",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        mapped,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
+}
+
+fn go_rewrite_bufio_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let mapped = match call_name {
+        "bufio.NewReader" => "__go_bufio_NewReader",
+        "bufio.NewReaderSize" => "__go_bufio_NewReaderSize",
+        "bufio.NewScanner" => "__go_bufio_NewScanner",
+        "bufio.NewWriter" => "__go_bufio_NewWriter",
+        "bufio.NewWriterSize" => "__go_bufio_NewWriterSize",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        mapped,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
 }
 
 fn go_rewrite_bytes_method_call(
@@ -7401,11 +8715,213 @@ fn go_rewrite_bytes_method_call(
     Some(go_builtin_call(helper, values))
 }
 
+fn go_rewrite_io_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    if go_named_receiver_type(&receiver_type).as_deref() != Some("__goScanner") {
+        return None;
+    }
+    let helper = match field.as_str() {
+        "Split" => "__go_scanner_Split",
+        "Scan" => "__go_scanner_Scan",
+        "Text" => "__go_scanner_Text",
+        "Bytes" => "__go_scanner_Bytes",
+        _ => return None,
+    };
+    let mut values = vec![object.as_ref().clone()];
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
+}
+
 fn go_rewrite_xml_member(field: &str) -> Option<Expression> {
     match field {
         "Header" => Some(Expression::string("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")),
         _ => None,
     }
+}
+
+fn go_rewrite_utf8_member(field: &str) -> Option<Expression> {
+    match field {
+        "RuneError" => Some(Expression::int(65533)),
+        "RuneSelf" => Some(Expression::int(128)),
+        "MaxRune" => Some(Expression::int(1114111)),
+        "UTFMax" => Some(Expression::int(4)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_unicode_member(field: &str) -> Option<Expression> {
+    match field {
+        "Greek" | "Latin" | "Digit" | "Number" | "Letter" | "Han" | "Punct" | "Cyrillic"
+        | "Space" | "Upper" | "Lower" => Some(Expression::string(field)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_unicode_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let helper = match call_name {
+        "utf8.Valid" => "__go_utf8_Valid",
+        "utf8.ValidString" => "__go_utf8_ValidString",
+        "utf8.RuneCount" => "__go_utf8_RuneCount",
+        "utf8.RuneCountInString" => "__go_utf8_RuneCountInString",
+        "utf8.EncodeRune" => "__go_utf8_EncodeRune",
+        "utf8.AppendRune" => "__go_utf8_AppendRune",
+        "utf8.EncodeRuneToString" => "__go_utf8_EncodeRuneToString",
+        "utf8.DecodeRune" => "__go_utf8_DecodeRune",
+        "utf8.DecodeRuneInString" => "__go_utf8_DecodeRuneInString",
+        "utf8.DecodeLastRuneInString" => "__go_utf8_DecodeLastRuneInString",
+        "utf8.FullRune" => "__go_utf8_FullRune",
+        "utf8.FullRuneInString" => "__go_utf8_FullRuneInString",
+        "utf8.FullRuneAt" => "__go_utf8_FullRuneAt",
+        "utf8.FullRuneInStringAt" => "__go_utf8_FullRuneInStringAt",
+        "utf8.ValidRune" => "__go_utf8_ValidRune",
+        "utf8.RuneLen" => "__go_utf8_RuneLen",
+        "utf16.Encode" => "__go_utf16_Encode",
+        "utf16.Decode" => "__go_utf16_Decode",
+        "utf16.EncodeRune" => "__go_utf16_EncodeRune",
+        "utf16.DecodeRune" => "__go_utf16_DecodeRune",
+        "utf16.IsSurrogate" => "__go_utf16_IsSurrogate",
+        "unicode.IsLetter" => "__go_unicode_IsLetter",
+        "unicode.IsDigit" => "__go_unicode_IsDigit",
+        "unicode.IsUpper" => "__go_unicode_IsUpper",
+        "unicode.IsLower" => "__go_unicode_IsLower",
+        "unicode.IsSpace" => "__go_unicode_IsSpace",
+        "unicode.IsNumber" => "__go_unicode_IsNumber",
+        "unicode.ToUpper" => "__go_unicode_ToUpper",
+        "unicode.ToLower" => "__go_unicode_ToLower",
+        "unicode.SimpleFold" => "__go_unicode_SimpleFold",
+        "unicode.In" => "__go_unicode_In",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        helper,
+        args.iter().map(|arg| arg.value.clone()).collect(),
+    ))
+}
+
+fn go_rewrite_encoding_member(package: &str, field: &str) -> Option<Expression> {
+    match (package, field) {
+        ("hex", "InvalidByte") => Some(Expression::int(0)),
+        ("base64", "StdEncoding") => Some(Expression::ident("__go_base64_StdEncoding")),
+        ("base64", "RawStdEncoding") => Some(Expression::ident("__go_base64_RawStdEncoding")),
+        ("base64", "URLEncoding") => Some(Expression::ident("__go_base64_URLEncoding")),
+        ("binary", "BigEndian") => Some(Expression::ident("__go_binary_BigEndian")),
+        ("binary", "LittleEndian") => Some(Expression::ident("__go_binary_LittleEndian")),
+        ("binary", "NativeEndian") => Some(Expression::ident("__go_binary_NativeEndian")),
+        ("binary", "MaxVarintLen64") => Some(Expression::int(10)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_encoding_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    if matches!(
+        call_name,
+        "__go_binary_BigEndian.PutUint64"
+            | "__go_binary_LittleEndian.PutUint64"
+            | "__go_binary_NativeEndian.PutUint64"
+    ) && args.len() == 2
+    {
+        if let ExprKind::Lit(Literal::Int(value)) = &args[1].value.kind {
+            let unsigned = *value as u64;
+            let hi = ((unsigned >> 32) & 0xffff_ffff) as i64;
+            let lo = (unsigned & 0xffff_ffff) as i64;
+            if let Some((receiver, _)) = call_name.split_once('.') {
+                return Some(go_builtin_call(
+                    "__go_binary_PutUint64PartsWrap",
+                    vec![
+                        Expression::ident(receiver),
+                        args[0].value.clone(),
+                        Expression::int(hi),
+                        Expression::int(lo),
+                    ],
+                ));
+            }
+        }
+    }
+
+    let helper = match call_name {
+        "hex.EncodedLen" => "__go_hex_EncodedLen",
+        "hex.DecodedLen" => "__go_hex_DecodedLen",
+        "hex.Encode" => "__go_hex_Encode",
+        "hex.EncodeToString" => "__go_hex_EncodeToString",
+        "hex.AppendEncode" => "__go_hex_AppendEncode",
+        "hex.Decode" => "__go_hex_Decode",
+        "hex.DecodeString" => "__go_hex_DecodeString",
+        "hex.Dump" => "__go_hex_Dump",
+        "hex.Dumper" => "__go_hex_Dumper",
+        "binary.PutUvarint" => "__go_binary_PutUvarint",
+        "binary.Uvarint" => "__go_binary_Uvarint",
+        "binary.PutVarint" => "__go_binary_PutVarint",
+        "binary.Varint" => "__go_binary_Varint",
+        "binary.AppendUvarint" => "__go_binary_AppendUvarint",
+        "binary.Size" => "__go_binary_Size",
+        "binary.Read" => "__go_binary_Read",
+        "binary.Write" => "__go_binary_Write",
+        "binary.ReadFull" => "__go_binary_ReadFull",
+        "__go_base64_StdEncoding.EncodeToString"
+        | "__go_base64_RawStdEncoding.EncodeToString"
+        | "__go_base64_URLEncoding.EncodeToString" => "__go_base64_EncodeToString",
+        "__go_base64_StdEncoding.DecodeString"
+        | "__go_base64_RawStdEncoding.DecodeString"
+        | "__go_base64_URLEncoding.DecodeString" => "__go_base64_DecodeString",
+        "__go_base64_StdEncoding.Decode"
+        | "__go_base64_RawStdEncoding.Decode"
+        | "__go_base64_URLEncoding.Decode" => "__go_base64_Decode",
+        "__go_base64_StdEncoding.EncodedLen"
+        | "__go_base64_RawStdEncoding.EncodedLen"
+        | "__go_base64_URLEncoding.EncodedLen" => "__go_base64_EncodedLen",
+        "__go_base64_StdEncoding.DecodedLen"
+        | "__go_base64_RawStdEncoding.DecodedLen"
+        | "__go_base64_URLEncoding.DecodedLen" => "__go_base64_DecodedLen",
+        "__go_base64_StdEncoding.WithPadding" => "__go_base64_WithPadding",
+        "__go_binary_BigEndian.PutUint16"
+        | "__go_binary_LittleEndian.PutUint16"
+        | "__go_binary_NativeEndian.PutUint16" => "__go_binary_PutUint16",
+        "__go_binary_BigEndian.Uint16"
+        | "__go_binary_LittleEndian.Uint16"
+        | "__go_binary_NativeEndian.Uint16" => "__go_binary_Uint16",
+        "__go_binary_BigEndian.PutInt16"
+        | "__go_binary_LittleEndian.PutInt16"
+        | "__go_binary_NativeEndian.PutInt16" => "__go_binary_PutInt16",
+        "__go_binary_BigEndian.PutUint32"
+        | "__go_binary_LittleEndian.PutUint32"
+        | "__go_binary_NativeEndian.PutUint32" => "__go_binary_PutUint32",
+        "__go_binary_BigEndian.Uint32"
+        | "__go_binary_LittleEndian.Uint32"
+        | "__go_binary_NativeEndian.Uint32" => "__go_binary_Uint32",
+        "__go_binary_BigEndian.Int32"
+        | "__go_binary_LittleEndian.Int32"
+        | "__go_binary_NativeEndian.Int32" => "__go_binary_Int32",
+        "__go_binary_BigEndian.PutUint64"
+        | "__go_binary_LittleEndian.PutUint64"
+        | "__go_binary_NativeEndian.PutUint64" => "__go_binary_PutUint64",
+        "__go_binary_BigEndian.Uint64"
+        | "__go_binary_LittleEndian.Uint64"
+        | "__go_binary_NativeEndian.Uint64" => "__go_binary_Uint64",
+        "__go_binary_BigEndian.AppendUint16"
+        | "__go_binary_LittleEndian.AppendUint16"
+        | "__go_binary_NativeEndian.AppendUint16" => "__go_binary_AppendUint16",
+        "__go_binary_BigEndian.AppendUint32"
+        | "__go_binary_LittleEndian.AppendUint32"
+        | "__go_binary_NativeEndian.AppendUint32" => "__go_binary_AppendUint32",
+        _ => return None,
+    };
+
+    let mut values: Vec<Expression> = Vec::new();
+    if let Some((receiver, _)) = call_name.split_once('.') {
+        if receiver.starts_with("__go_base64_") || receiver.starts_with("__go_binary_") {
+            values.push(Expression::ident(receiver));
+        }
+    }
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
 }
 
 fn go_rewrite_xml_call(
@@ -10188,6 +11704,9 @@ fn go_expr_type_hint(
             ExprKind::Ident(name) if name == "__go_type_assert" => args
                 .get(1)
                 .and_then(|arg| go_type_name_from_expr(&arg.value)),
+            ExprKind::Member { object, field, .. } if field == "slice" => {
+                go_expr_type_hint(object, env, signatures)
+            }
             ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
             _ => None,
@@ -10474,6 +11993,101 @@ fn go_decl_binding_type(
         .map(|type_name| (name.clone(), type_name))
 }
 
+fn go_expr_tuple_type_hints(
+    expr: &Expression,
+    _env: &GoNormalizeEnv,
+    _signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Vec<Option<String>>> {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    match go_expr_call_name(callee).as_deref()? {
+        "__go_io_ReadAll" => Some(vec![Some("[]byte".to_string()), Some("error".to_string())]),
+        "__go_io_Copy" | "__go_io_CopyN" | "__go_io_CopyBuffer" => {
+            Some(vec![Some("int64".to_string()), Some("error".to_string())])
+        }
+        "__go_io_ReadAtLeast" | "__go_io_ReadFull" => {
+            Some(vec![Some("int".to_string()), Some("error".to_string())])
+        }
+        "__go_io_WriteString" => Some(vec![Some("int".to_string()), Some("error".to_string())]),
+        "__go_scanner_Bytes" => Some(vec![Some("[]byte".to_string())]),
+        "__go_utf8_DecodeRune" | "__go_utf8_DecodeRuneInString"
+        | "__go_utf8_DecodeLastRuneInString" => {
+            Some(vec![Some("rune".to_string()), Some("int".to_string())])
+        }
+        "__go_utf16_EncodeRune" => {
+            Some(vec![Some("rune".to_string()), Some("rune".to_string())])
+        }
+        "__go_hex_Decode" | "__go_base64_Decode" | "__go_binary_ReadFull" => {
+            Some(vec![Some("int".to_string()), Some("error".to_string())])
+        }
+        "__go_hex_DecodeString" | "__go_base64_DecodeString" => {
+            Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
+        }
+        "__go_binary_Uvarint" => Some(vec![Some("uint64".to_string()), Some("int".to_string())]),
+        "__go_binary_Varint" => Some(vec![Some("int64".to_string()), Some("int".to_string())]),
+        name if name.ends_with(".Peek")
+            || name.ends_with(".ReadSlice")
+            || name.ends_with(".ReadBytes") =>
+        {
+            Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
+        }
+        name if name.ends_with(".ReadLine") => Some(vec![
+            Some("[]byte".to_string()),
+            Some("bool".to_string()),
+            Some("error".to_string()),
+        ]),
+        name if name.ends_with(".ReadByte") => {
+            Some(vec![Some("string".to_string()), Some("error".to_string())])
+        }
+        name if name.ends_with(".ReadRune") => Some(vec![
+            Some("string".to_string()),
+            Some("int".to_string()),
+            Some("error".to_string()),
+        ]),
+        name if name.ends_with(".ReadString") => {
+            Some(vec![Some("string".to_string()), Some("error".to_string())])
+        }
+        name if name.ends_with(".Read") || name.ends_with(".Discard") => {
+            Some(vec![Some("int".to_string()), Some("error".to_string())])
+        }
+        _ => None,
+    }
+}
+
+fn go_record_binding_pattern_type_hints(
+    pattern: &BindingPattern,
+    type_hints: &[Option<String>],
+    env: &mut GoNormalizeEnv,
+) {
+    let BindingPattern::Array(elements) = pattern else {
+        return;
+    };
+    for (idx, element) in elements.iter().enumerate() {
+        let Some(Some(type_hint)) = type_hints.get(idx) else {
+            continue;
+        };
+        if let ArrayPatternElem::Pattern(BindingPattern::Ident(name), None) = element {
+            env.value_types.insert(name.clone(), type_hint.clone());
+        }
+    }
+}
+
+fn go_record_tuple_target_type_hints(
+    targets: &[Expression],
+    type_hints: &[Option<String>],
+    env: &mut GoNormalizeEnv,
+) {
+    for (idx, target) in targets.iter().enumerate() {
+        let Some(Some(type_hint)) = type_hints.get(idx) else {
+            continue;
+        };
+        if let ExprKind::Ident(name) = &target.kind {
+            env.value_types.insert(name.clone(), type_hint.clone());
+        }
+    }
+}
+
 fn go_single_named_binding_pattern(pattern: &BindingPattern) -> Option<BindingPattern> {
     let BindingPattern::Array(elements) = pattern else {
         return None;
@@ -10581,6 +12195,14 @@ fn go_normalize_type_conversion(
         return go_builtin_call("__go_str_from_char_code", vec![expr]);
     }
 
+    if type_name == "string"
+        && go_expr_type_hint(&expr, env, signatures)
+            .as_deref()
+            .is_some_and(|ty| matches!(go_array_element_type(ty).as_deref(), Some("byte" | "uint8")))
+    {
+        return go_builtin_call("__go_io_bytes_to_string", vec![expr]);
+    }
+
     if type_name.trim() == "[]rune" {
         return Expression::new(ExprKind::Cast {
             expr: Box::new(go_builtin_call("__go_string_runes", vec![expr])),
@@ -10663,6 +12285,69 @@ fn unquote(s: &str) -> String {
             Some('\\') => out.push('\\'),
             Some('"') => out.push('"'),
             Some('\'') => out.push('\''),
+            Some('0') => out.push('\0'),
+            Some('x') => {
+                let mut hex = String::new();
+                if let Some(first) = chars.next() {
+                    hex.push(first);
+                }
+                if let Some(second) = chars.next() {
+                    hex.push(second);
+                }
+                if hex.len() == 2 {
+                    if let Ok(value) = u8::from_str_radix(&hex, 16) {
+                        out.push(value as char);
+                    } else {
+                        out.push('x');
+                        out.push_str(&hex);
+                    }
+                } else {
+                    out.push('x');
+                    out.push_str(&hex);
+                }
+            }
+            Some('u') => {
+                let mut hex = String::new();
+                for _ in 0..4 {
+                    if let Some(ch) = chars.next() {
+                        hex.push(ch);
+                    }
+                }
+                if hex.len() == 4 {
+                    if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(value) {
+                            out.push(ch);
+                        }
+                    } else {
+                        out.push('u');
+                        out.push_str(&hex);
+                    }
+                } else {
+                    out.push('u');
+                    out.push_str(&hex);
+                }
+            }
+            Some('U') => {
+                let mut hex = String::new();
+                for _ in 0..8 {
+                    if let Some(ch) = chars.next() {
+                        hex.push(ch);
+                    }
+                }
+                if hex.len() == 8 {
+                    if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(value) {
+                            out.push(ch);
+                        }
+                    } else {
+                        out.push('U');
+                        out.push_str(&hex);
+                    }
+                } else {
+                    out.push('U');
+                    out.push_str(&hex);
+                }
+            }
             Some(other) => out.push(other),
             None => out.push('\\'),
         }
