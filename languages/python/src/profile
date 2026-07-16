@@ -174,6 +174,23 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "math.isinf"    = { emit = "common:python.isinf",                  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
 
+# ── Time module ──────────────────────────────────────────────────────────────
+# struct_time is a named tuple (indexable + tm_* fields) built via the shared
+# tuples::emit_named_tuple. Composed from ecma:date.* — no new host fns.
+
+"time.gmtime"       = { emit = "common:python.time_gmtime",       min_args = 0, max_args = 1 }
+"time.localtime"    = { emit = "common:python.time_gmtime",       min_args = 0, max_args = 1 }
+"time.struct_time"  = { emit = "common:python.time_struct_time",  min_args = 1, max_args = 1 }
+"time.mktime"       = { emit = "common:python.time_mktime",       min_args = 1, max_args = 1 }
+"time.monotonic"    = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+"time.perf_counter" = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+"time.process_time" = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+"time.thread_time"  = { emit = "common:python.time_clock_seconds", min_args = 0, max_args = 0 }
+"time.time_ns"          = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
+"time.monotonic_ns"     = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
+"time.perf_counter_ns"  = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
+"time.thread_time_ns"   = { emit = "common:python.time_clock_ns", min_args = 0, max_args = 0 }
+
 # ── Datetime module ──────────────────────────────────────────────────────────
 # Composed from `ecma:date.*` in `emitter/datetime_adapter.rs` — no
 # Python-only host fns. Values carry their components as properties, so
@@ -219,6 +236,93 @@ __py_timedelta_resolution = { emit = "common:python.timedelta_resolution", min_a
 __py_dt_replace           = { emit = "common:python.dt_replace", min_args = 7, max_args = 7 }
 # The padded component a compile-time-expanded `strftime` emits.
 __py_dt_pad               = { emit = "common:python.dt_pad",     min_args = 2, max_args = 2 }
+
+# ── Itertools / functools / operator ─────────────────────────────────────────
+# List transforms with no ECMA counterpart (Array.prototype has no `product`),
+# emitted in `emitter/itertools_adapter.rs`. Eager: each returns a list, which
+# `list(...)`/`next(...)`/iteration all accept.
+
+"itertools.chain"      = { emit = "common:python.it_chain",      min_args = 0, max_args = 8 }
+"itertools.repeat"     = { emit = "common:python.it_repeat",     min_args = 1, max_args = 2 }
+"itertools.count"      = { emit = "common:python.it_count",      min_args = 0, max_args = 2 }
+"itertools.cycle"      = { emit = "common:python.it_cycle",      min_args = 1, max_args = 1 }
+"itertools.islice"     = { emit = "common:python.it_islice",     min_args = 2, max_args = 4 }
+"itertools.accumulate" = { emit = "common:python.it_accumulate", min_args = 1, max_args = 2 }
+"itertools.pairwise"   = { emit = "common:python.it_pairwise",   min_args = 1, max_args = 1 }
+"itertools.batched"    = { emit = "common:python.it_batched",    min_args = 2, max_args = 2 }
+"itertools.tee"        = { emit = "common:python.it_tee",        min_args = 1, max_args = 2 }
+
+# `operator.*` are the operators themselves — they reuse the very emits the
+# `__py*__` lowerings already route to, so there is nothing new to write.
+"operator.add"      = { emit = "common:python.pyadd",       min_args = 2, max_args = 2 }
+"operator.sub"      = { emit = "common:python.pysub",       min_args = 2, max_args = 2 }
+"operator.mul"      = { emit = "common:python.pymul",       min_args = 2, max_args = 2 }
+"operator.truediv"  = { emit = "common:python.pytruediv",   min_args = 2, max_args = 2 }
+"operator.floordiv" = { emit = "common:python.pyfloordiv",  min_args = 2, max_args = 2 }
+"operator.mod"      = { emit = "common:python.pymod",       min_args = 2, max_args = 2 }
+"operator.pow"      = { emit = "common:python.pypow",       min_args = 2, max_args = 2 }
+"operator.neg"      = { emit = "common:python.pyneg",       min_args = 1, max_args = 1 }
+"operator.lt"       = { emit = "common:python.pylt",        min_args = 2, max_args = 2 }
+"operator.gt"       = { emit = "common:python.pygt",        min_args = 2, max_args = 2 }
+"operator.le"       = { emit = "common:python.pyle",        min_args = 2, max_args = 2 }
+"operator.ge"       = { emit = "common:python.pyge",        min_args = 2, max_args = 2 }
+"operator.truth"    = { emit = "common:python.op_truth",    min_args = 1, max_args = 1 }
+"operator.not_"     = { emit = "common:python.op_not",      min_args = 1, max_args = 1 }
+"operator.eq"       = { emit = "common:python.op_eq",       min_args = 2, max_args = 2 }
+"operator.ne"       = { emit = "common:python.op_ne",       min_args = 2, max_args = 2 }
+"operator.pos"      = { emit = "common:python.op_pos",      min_args = 1, max_args = 1 }
+"operator.abs"      = { emit = "common:python.op_abs",      min_args = 1, max_args = 1 }
+"operator.inv"      = { emit = "common:python.op_inv",      min_args = 1, max_args = 1 }
+"operator.invert"   = { emit = "common:python.op_inv",      min_args = 1, max_args = 1 }
+"operator.and_"     = { emit = "common:python.op_and",      min_args = 2, max_args = 2 }
+"operator.or_"      = { emit = "common:python.op_or",       min_args = 2, max_args = 2 }
+"operator.xor"      = { emit = "common:python.op_xor",      min_args = 2, max_args = 2 }
+"operator.lshift"   = { emit = "common:python.op_lshift",   min_args = 2, max_args = 2 }
+"operator.rshift"   = { emit = "common:python.op_rshift",   min_args = 2, max_args = 2 }
+"operator.getitem"  = { emit = "common:python.op_getitem",  min_args = 2, max_args = 2 }
+"operator.setitem"  = { emit = "common:python.op_setitem",  min_args = 3, max_args = 3 }
+"operator.concat"   = { emit = "common:python.op_concat",   min_args = 2, max_args = 2 }
+# `operator.contains(a, b)` is `b in a` — same argument order as the lowering.
+"operator.contains" = { emit = "common:python.contains",    min_args = 2, max_args = 2 }
+
+# `functools.reduce(f, xs[, init])` IS Array.prototype.reduce.
+# `functools.reduce(f, xs)` IS Array.prototype.reduce, but Python puts the
+# function first — the adapter swaps them.
+"functools.reduce"  = { emit = "common:python.it_reduce", min_args = 2, max_args = 3 }
+"itertools.filterfalse" = { emit = "common:python.it_filterfalse", min_args = 2, max_args = 2 }
+"itertools.takewhile"   = { emit = "common:python.it_takewhile",   min_args = 2, max_args = 2 }
+"itertools.dropwhile"   = { emit = "common:python.it_dropwhile",   min_args = 2, max_args = 2 }
+"itertools.zip_longest"  = { emit = "common:python.it_zip_longest", min_args = 2, max_args = 2 }
+
+# ── Array module ─────────────────────────────────────────────────────────────
+# An `array.array` IS an array carrying `typecode`/`itemsize` — indexing, len,
+# append, extend, count and reverse come free from the list surface below.
+
+"array.array" = { emit = "common:python.array_new", min_args = 1, max_args = 2 }
+
+# ── Heapq module ─────────────────────────────────────────────────────────────
+# The list is kept sorted, which IS the min-heap invariant — see
+# `emitter/heapq_adapter.rs`.
+
+"heapq.heapify"     = { emit = "common:python.heapify",     min_args = 1, max_args = 1 }
+"heapq.heappush"    = { emit = "common:python.heappush",    min_args = 2, max_args = 2 }
+"heapq.heappop"     = { emit = "common:python.heappop",     min_args = 1, max_args = 1 }
+"heapq.heapreplace" = { emit = "common:python.heapreplace", min_args = 2, max_args = 2 }
+"heapq.heappushpop" = { emit = "common:python.heappushpop", min_args = 2, max_args = 2 }
+"heapq.pushpop"     = { emit = "common:python.heappushpop", min_args = 2, max_args = 2 }
+"heapq.nsmallest"   = { emit = "common:python.nsmallest",   min_args = 2, max_args = 2 }
+"heapq.nlargest"    = { emit = "common:python.nlargest",    min_args = 2, max_args = 2 }
+"heapq.merge"       = { emit = "common:python.heapmerge",   min_args = 0, max_args = 8 }
+
+# ── Bisect module ────────────────────────────────────────────────────────────
+# Binary search over a sorted list — emitted in `emitter/bisect_adapter.rs`.
+
+"bisect.bisect_left"   = { emit = "common:python.bisect_left",   min_args = 2, max_args = 4 }
+"bisect.bisect_right"  = { emit = "common:python.bisect_right",  min_args = 2, max_args = 4 }
+"bisect.bisect"        = { emit = "common:python.bisect_right",  min_args = 2, max_args = 4 }
+"bisect.insort_left"   = { emit = "common:python.insort_left",   min_args = 2, max_args = 4 }
+"bisect.insort_right"  = { emit = "common:python.insort_right",  min_args = 2, max_args = 4 }
+"bisect.insort"        = { emit = "common:python.insort_right",  min_args = 2, max_args = 4 }
 
 # ── Statistics module ────────────────────────────────────────────────────────
 # Ordinary arithmetic over a list — there is no `Math.mean` in ECMA to route
@@ -442,6 +546,10 @@ close           = { emit = "host:wasi:filesystem:close",      min_args = 0, max_
 isoformat       = { emit = "common:python.dt_isoformat",      min_args = 0, max_args = 0 }
 weekday         = { emit = "common:python.date_weekday",      min_args = 0, max_args = 0 }
 total_seconds   = { emit = "common:python.total_seconds",     min_args = 0, max_args = 0 }
+# array.array instance methods (the rest are plain list methods).
+tolist          = { emit = "common:python.array_tolist",      min_args = 0, max_args = 0 }
+buffer_info     = { emit = "common:python.array_buffer_info", min_args = 0, max_args = 0 }
+frombytes       = { emit = "common:python.array_frombytes",   min_args = 1, max_args = 1 }
 toordinal       = { emit = "common:python.toordinal",         min_args = 0, max_args = 0 }
 timestamp       = { emit = "common:python.timestamp",         min_args = 0, max_args = 0 }
 timetuple       = { emit = "common:python.timetuple",         min_args = 0, max_args = 0 }

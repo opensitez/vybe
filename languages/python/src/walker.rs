@@ -3328,6 +3328,120 @@ fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
     )
 }
 
+/// `time.strftime(fmt, t)` — same compile-time expansion as `dt.strftime`, but
+/// over a `struct_time`'s `tm_*` fields, and it is a two-arg module function
+/// rather than a method. `%A` reads the Monday=0 weekday name; `%j` is the
+/// zero-padded day of year; `%%` is a literal `%`.
+fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(module) = &object.kind else {
+        return None;
+    };
+    if resolve_module_alias(module).unwrap_or_else(|| module.clone()) != "time"
+        || field != "strftime"
+        || args.len() != 2
+    {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(fmt)) = &args[0].value.kind else {
+        return None;
+    };
+    let t = args[1].value.clone();
+
+    let field_read = |prop: &str| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(t.clone()),
+            index: Box::new(Expression::string(prop)),
+            null_safe: false,
+        })
+    };
+    let padded = |prop: &str, width: i64| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__py_dt_pad")),
+            args: vec![
+                Argument::positional(field_read(prop)),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(width)))),
+            ],
+            optional: false,
+        })
+    };
+    // `%A` → `['Monday', …][tm_wday]`.
+    let weekday_name = || {
+        let names = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
+        Expression::new(ExprKind::Index {
+            object: Box::new(Expression::new(ExprKind::Array(
+                names
+                    .iter()
+                    .map(|n| ArrayElement {
+                        value: Expression::string(n),
+                        spread: false,
+                        key: None,
+                        by_ref: false,
+                    })
+                    .collect(),
+            ))),
+            index: Box::new(field_read("tm_wday")),
+            null_safe: false,
+        })
+    };
+
+    let mut parts: Vec<Expression> = Vec::new();
+    let mut lit = String::new();
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            lit.push(c);
+            continue;
+        }
+        let part = match chars.next() {
+            Some('%') => {
+                lit.push('%');
+                continue;
+            }
+            Some('Y') => padded("tm_year", 4),
+            Some('m') => padded("tm_mon", 2),
+            Some('d') => padded("tm_mday", 2),
+            Some('H') => padded("tm_hour", 2),
+            Some('M') => padded("tm_min", 2),
+            Some('S') => padded("tm_sec", 2),
+            Some('j') => padded("tm_yday", 3),
+            Some('A') => weekday_name(),
+            _ => return None,
+        };
+        if !lit.is_empty() {
+            parts.push(Expression::string(&lit));
+            lit.clear();
+        }
+        parts.push(part);
+    }
+    if !lit.is_empty() {
+        parts.push(Expression::string(&lit));
+    }
+
+    let mut iter = parts.into_iter();
+    let first = iter.next().unwrap_or_else(|| Expression::string(""));
+    Some(
+        iter.fold(first, |acc, part| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(acc),
+                right: Box::new(part),
+            })
+        })
+        .kind,
+    )
+}
+
 /// The components a datetime `replace` accepts, in the order the emitter
 /// reads them. `microsecond`/`tzinfo`/`fold` are accepted as keywords but
 /// have no effect on the ms-resolution, UTC-only value.
@@ -3501,6 +3615,9 @@ fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
         return kind;
     }
     if let Some(kind) = strftime_expand(&callee, &args) {
+        return kind;
+    }
+    if let Some(kind) = time_strftime_expand(&callee, &args) {
         return kind;
     }
     if let Some(params) = datetime_kwarg_signature(&callee) {

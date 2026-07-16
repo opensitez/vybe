@@ -649,10 +649,8 @@ pub fn emit_cal_monthrange(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_weekday_of_ymd(&mut chunks[current], line);
     emit_days_in_month(&mut chunks[current], y, m, line);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
-    // Python's monthrange returns a real tuple, so it carries the tag every
-    // other tuple does.
-    vybe_emitter::tuples::emit_tag(chunks, current, line);
+    // Python's monthrange returns a real tuple — built the one canonical way.
+    vybe_emitter::tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// The arithmetic this adapter implements for its own values.

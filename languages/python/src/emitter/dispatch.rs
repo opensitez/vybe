@@ -26,6 +26,156 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.next" => {
             crate::emitter::collections_adapter::emit_pynext(chunks, current, argc, line)
         }
+        "python.it_reduce" => {
+            crate::emitter::itertools_adapter::emit_reduce(chunks, current, argc, line)
+        }
+        "python.it_filterfalse" => {
+            crate::emitter::itertools_adapter::emit_filterfalse(chunks, current, argc, line)
+        }
+        "python.it_takewhile" => {
+            crate::emitter::itertools_adapter::emit_takewhile(chunks, current, argc, line)
+        }
+        "python.it_dropwhile" => {
+            crate::emitter::itertools_adapter::emit_dropwhile(chunks, current, argc, line)
+        }
+        "python.it_zip_longest" => {
+            crate::emitter::itertools_adapter::emit_zip_longest(chunks, current, argc, line)
+        }
+        "python.op_truth" => {
+            crate::emitter::itertools_adapter::emit_op_truth(chunks, current, argc, line)
+        }
+        "python.op_not" => {
+            crate::emitter::itertools_adapter::emit_op_not(chunks, current, argc, line)
+        }
+        "python.op_eq" => {
+            crate::emitter::itertools_adapter::emit_op_eq(chunks, current, argc, line)
+        }
+        "python.op_ne" => {
+            crate::emitter::itertools_adapter::emit_op_ne(chunks, current, argc, line)
+        }
+        "python.op_pos" => {
+            crate::emitter::itertools_adapter::emit_op_pos(chunks, current, argc, line)
+        }
+        "python.op_abs" => {
+            crate::emitter::itertools_adapter::emit_op_abs(chunks, current, argc, line)
+        }
+        "python.op_inv" => {
+            crate::emitter::itertools_adapter::emit_op_inv(chunks, current, argc, line)
+        }
+        "python.op_and" => {
+            crate::emitter::itertools_adapter::emit_op_and(chunks, current, argc, line)
+        }
+        "python.op_or" => {
+            crate::emitter::itertools_adapter::emit_op_or(chunks, current, argc, line)
+        }
+        "python.op_xor" => {
+            crate::emitter::itertools_adapter::emit_op_xor(chunks, current, argc, line)
+        }
+        "python.op_lshift" => {
+            crate::emitter::itertools_adapter::emit_op_lshift(chunks, current, argc, line)
+        }
+        "python.op_rshift" => {
+            crate::emitter::itertools_adapter::emit_op_rshift(chunks, current, argc, line)
+        }
+        "python.op_getitem" => {
+            crate::emitter::itertools_adapter::emit_op_getitem(chunks, current, argc, line)
+        }
+        "python.op_setitem" => {
+            crate::emitter::itertools_adapter::emit_op_setitem(chunks, current, argc, line)
+        }
+        "python.op_concat" => {
+            crate::emitter::itertools_adapter::emit_op_concat(chunks, current, argc, line)
+        }
+        "python.it_chain" => {
+            crate::emitter::itertools_adapter::emit_chain(chunks, current, argc, line)
+        }
+        "python.it_repeat" => {
+            crate::emitter::itertools_adapter::emit_repeat(chunks, current, argc, line)
+        }
+        "python.it_count" => {
+            crate::emitter::itertools_adapter::emit_count(chunks, current, argc, line)
+        }
+        "python.it_cycle" => {
+            crate::emitter::itertools_adapter::emit_cycle(chunks, current, argc, line)
+        }
+        "python.it_islice" => {
+            crate::emitter::itertools_adapter::emit_islice(chunks, current, argc, line)
+        }
+        "python.it_accumulate" => {
+            crate::emitter::itertools_adapter::emit_accumulate(chunks, current, argc, line)
+        }
+        "python.it_pairwise" => {
+            crate::emitter::itertools_adapter::emit_pairwise(chunks, current, argc, line)
+        }
+        "python.it_batched" => {
+            crate::emitter::itertools_adapter::emit_batched(chunks, current, argc, line)
+        }
+        "python.it_tee" => {
+            crate::emitter::itertools_adapter::emit_tee(chunks, current, argc, line)
+        }
+        "python.time_gmtime" => {
+            crate::emitter::time_adapter::emit_gmtime(chunks, current, argc, line)
+        }
+        "python.time_struct_time" => {
+            crate::emitter::time_adapter::emit_struct_time(chunks, current, argc, line)
+        }
+        "python.time_mktime" => {
+            crate::emitter::time_adapter::emit_mktime(chunks, current, argc, line)
+        }
+        "python.time_clock_seconds" => {
+            crate::emitter::time_adapter::emit_clock_seconds(chunks, current, argc, line)
+        }
+        "python.time_clock_ns" => {
+            crate::emitter::time_adapter::emit_clock_ns(chunks, current, argc, line)
+        }
+        "python.array_new" => {
+            crate::emitter::array_adapter::emit_array_new(chunks, current, argc, line)
+        }
+        "python.array_tolist" => {
+            crate::emitter::array_adapter::emit_tolist(chunks, current, argc, line)
+        }
+        "python.array_buffer_info" => {
+            crate::emitter::array_adapter::emit_buffer_info(chunks, current, argc, line)
+        }
+        "python.array_frombytes" => {
+            crate::emitter::array_adapter::emit_frombytes(chunks, current, argc, line)
+        }
+        "python.heapify" => {
+            crate::emitter::heapq_adapter::emit_heapify(chunks, current, argc, line)
+        }
+        "python.heappush" => {
+            crate::emitter::heapq_adapter::emit_heappush(chunks, current, argc, line)
+        }
+        "python.heappop" => {
+            crate::emitter::heapq_adapter::emit_heappop(chunks, current, argc, line)
+        }
+        "python.heapreplace" => {
+            crate::emitter::heapq_adapter::emit_heapreplace(chunks, current, argc, line)
+        }
+        "python.heappushpop" => {
+            crate::emitter::heapq_adapter::emit_heappushpop(chunks, current, argc, line)
+        }
+        "python.nsmallest" => {
+            crate::emitter::heapq_adapter::emit_nsmallest(chunks, current, argc, line)
+        }
+        "python.nlargest" => {
+            crate::emitter::heapq_adapter::emit_nlargest(chunks, current, argc, line)
+        }
+        "python.heapmerge" => {
+            crate::emitter::heapq_adapter::emit_merge(chunks, current, argc, line)
+        }
+        "python.bisect_left" => {
+            crate::emitter::bisect_adapter::emit_bisect_left(chunks, current, argc, line)
+        }
+        "python.bisect_right" => {
+            crate::emitter::bisect_adapter::emit_bisect_right(chunks, current, argc, line)
+        }
+        "python.insort_left" => {
+            crate::emitter::bisect_adapter::emit_insort_left(chunks, current, argc, line)
+        }
+        "python.insort_right" => {
+            crate::emitter::bisect_adapter::emit_insort_right(chunks, current, argc, line)
+        }
         "python.stat_quantiles" => {
             crate::emitter::statistics_adapter::emit_quantiles(chunks, current, argc, line)
         }

@@ -1,0 +1,386 @@
+//! Python recursive `repr` — a self-recursive bytecode chunk.
+//!
+//! Renders a value to its Python `repr` form, recursing into containers so
+//! NESTED tuples/lists/dicts display correctly (`[(1, 2), (3, 4)]`, not
+//! `[[1, 2], [3, 4]]`). This replaces the old `emit_py_repr` array path, which
+//! went through `ecma:json.stringify` — JSON flattens tuples to `[...]` and
+//! cannot tell a tuple from a list.
+//!
+//! Pattern mirrors PHP's `build_php_json_normalize_helper`
+//! (`languages/php/src/emitter/misc_adapter.rs`): a `create_function_chunk`
+//! that recurses on itself via `REF_FUNC` + `CALL_REF`. NO addition to the
+//! retiring `__vybe_*`/`__stdlib_*` bundle, and NO Python semantics in the
+//! host — Python's display stays in the Python crate.
+//!
+//! The chunk's name is `__py_repr`; it is built once per module (deduped by
+//! scanning `chunks` for that name), since `repr` runs on every `print`/`str`.
+
+use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::functions::create_function_chunk;
+use vybe_emitter::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
+
+const REPR_CHUNK: &str = "__py_repr";
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+fn str_const(chunk: &mut Chunk, s: &str, line: u32) {
+    chunk.emit_string_const(s, line);
+}
+/// String concatenation of the top two stack strings. `[a, b] -> [a+b]`.
+fn concat(chunk: &mut Chunk, line: u32) {
+    let idx = chunk.add_import("wasm:js-string", "concat");
+    chunk.emit_call(idx, 2, line);
+}
+/// Recurse: `[value] -> [repr_string]` by calling this same chunk.
+fn recurse(chunk: &mut Chunk, self_idx: usize, line: u32) {
+    // ref to self, then the value is already on the stack ABOVE where we want
+    // the fn — so callers arrange `[fn, value]`. Here we assume value on top:
+    // stash it, push fn, push value, call.
+    let tmp = chunk.alloc_scratch(1);
+    lset(chunk, tmp, line);
+    chunk.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
+    chunk.emit(0, line);
+    lget(chunk, tmp, line);
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(1u8, line);
+}
+
+/// Return the index of the `__py_repr` chunk, building it once per module.
+pub fn ensure_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    if let Some(idx) = chunks.iter().position(|c| c.name == REPR_CHUNK) {
+        return idx;
+    }
+    build_py_repr_chunk(chunks, line)
+}
+
+fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let self_idx = chunks.len();
+    let mut c = create_function_chunk(REPR_CHUNK, 1);
+    c.alloc_scratch(1); // reserve arg slot 0
+
+    let value = 0u16;
+    let out = c.alloc_scratch(1);
+    let i = c.alloc_scratch(1);
+    let n = c.alloc_scratch(1);
+    let keys = c.alloc_scratch(1);
+    let key = c.alloc_scratch(1);
+    let fields = c.alloc_scratch(1);
+
+    // ── None ────────────────────────────────────────────────────────────
+    lget(&mut c, value, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_if(line);
+    str_const(&mut c, "None", line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── bool → True / False ─────────────────────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-boolean", "test");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_if(line);
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-boolean", "cast");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_if_value(line);
+    str_const(&mut c, "True", line);
+    c.emit_else(line);
+    str_const(&mut c, "False", line);
+    c.emit_end(line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── string → 'quoted' (repr form; nested strings are quoted) ─────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-string", "test");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_if(line);
+    str_const(&mut c, "'", line);
+    lget(&mut c, value, line);
+    concat(&mut c, line);
+    str_const(&mut c, "'", line);
+    concat(&mut c, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── number → its string form ────────────────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-number", "test");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_if(line);
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:string", "String");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── array → named tuple / tuple / list ──────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:array", "isArray");
+        c.emit_call(idx, 1, line);
+    }
+    vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_if(line);
+    {
+        // n = value.length; i = 0
+        lget(&mut c, value, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut c, n, line);
+
+        // Named tuple? `__typename` present → `Name(f=v, …)`.
+        lget(&mut c, value, line);
+        struct_get(&mut c, TYPENAME_TAG, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_if(line);
+        {
+            lget(&mut c, value, line);
+            struct_get(&mut c, TYPENAME_TAG, line);
+            str_const(&mut c, "(", line);
+            concat(&mut c, line);
+            lset(&mut c, out, line);
+            lget(&mut c, value, line);
+            struct_get(&mut c, FIELDS_TAG, line);
+            lset(&mut c, fields, line);
+            emit_i32_zero(&mut c, i, line);
+            let lp = loop_start(&mut c, line);
+            loop_break_if_ge(&mut c, i, n, line);
+            // out += (i>0 ? ", " : "") + fields[i] + "=" + repr(value[i])
+            emit_sep_comma(&mut c, out, i, line);
+            lget(&mut c, out, line);
+            lget(&mut c, fields, line);
+            lget(&mut c, i, line);
+            c.emit_op(Op::ARRAY_GET, line);
+            concat(&mut c, line);
+            str_const(&mut c, "=", line);
+            concat(&mut c, line);
+            lget(&mut c, value, line);
+            lget(&mut c, i, line);
+            c.emit_op(Op::ARRAY_GET, line);
+            recurse(&mut c, self_idx, line);
+            concat(&mut c, line);
+            lset(&mut c, out, line);
+            bump(&mut c, i, line);
+            loop_end(&mut c, lp, line);
+            lget(&mut c, out, line);
+            str_const(&mut c, ")", line);
+            concat(&mut c, line);
+            c.emit_op(Op::RETURN, line);
+        }
+        c.emit_end(line);
+
+        // Plain tuple? `__tuple` present → `(a, b)` / `(a,)`.
+        lget(&mut c, value, line);
+        struct_get(&mut c, TUPLE_TAG, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_if(line);
+        {
+            emit_join(&mut c, self_idx, value, out, i, n, "(", ")", line);
+            // 1-tuple gets a trailing comma: `(x,)`. `out` currently is `(x)`;
+            // rebuild with the comma when n == 1.
+            lget(&mut c, n, line);
+            emit_i32_const(&mut c, 1, line);
+            c.emit_op(Op::I32_EQ, line);
+            c.emit_if(line);
+            str_const(&mut c, "(", line);
+            lget(&mut c, value, line);
+            emit_i32_zero_val(&mut c, line);
+            c.emit_op(Op::ARRAY_GET, line);
+            recurse(&mut c, self_idx, line);
+            concat(&mut c, line);
+            str_const(&mut c, ",)", line);
+            concat(&mut c, line);
+            lset(&mut c, out, line);
+            c.emit_end(line);
+            lget(&mut c, out, line);
+            c.emit_op(Op::RETURN, line);
+        }
+        c.emit_end(line);
+
+        // Plain list → `[a, b]`.
+        emit_join(&mut c, self_idx, value, out, i, n, "[", "]", line);
+        lget(&mut c, out, line);
+        c.emit_op(Op::RETURN, line);
+    }
+    c.emit_end(line);
+
+    // ── user object with __repr__ / __str__ ─────────────────────────────
+    for method in ["__repr__", "__str__"] {
+        let m = c.alloc_scratch(1);
+        lget(&mut c, value, line);
+        struct_get(&mut c, method, line);
+        lset(&mut c, m, line);
+        lget(&mut c, m, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_if(line);
+        lget(&mut c, m, line);
+        lget(&mut c, value, line);
+        c.emit_op(Op::CALL_REF, line);
+        c.emit(1u8, line);
+        c.emit_op(Op::RETURN, line);
+        c.emit_end(line);
+    }
+
+    // ── dict (ordinary object) → {k: v, …} ──────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:object", "keys");
+        c.emit_call(idx, 1, line);
+    }
+    lset(&mut c, keys, line);
+    lget(&mut c, keys, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut c, n, line);
+    str_const(&mut c, "{", line);
+    lset(&mut c, out, line);
+    emit_i32_zero(&mut c, i, line);
+    let lp = loop_start(&mut c, line);
+    loop_break_if_ge(&mut c, i, n, line);
+    emit_sep_comma(&mut c, out, i, line);
+    // key = keys[i]; out += repr(key) + ": " + repr(value[key])
+    lget(&mut c, keys, line);
+    lget(&mut c, i, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    lset(&mut c, key, line);
+    lget(&mut c, out, line);
+    lget(&mut c, key, line);
+    recurse(&mut c, self_idx, line);
+    concat(&mut c, line);
+    str_const(&mut c, ": ", line);
+    concat(&mut c, line);
+    lget(&mut c, value, line);
+    lget(&mut c, key, line);
+    emit_dyn_index(&mut c, line);
+    recurse(&mut c, self_idx, line);
+    concat(&mut c, line);
+    lset(&mut c, out, line);
+    bump(&mut c, i, line);
+    loop_end(&mut c, lp, line);
+    lget(&mut c, out, line);
+    str_const(&mut c, "}", line);
+    concat(&mut c, line);
+    c.emit_op(Op::RETURN, line);
+
+    chunks.push(c);
+    self_idx
+}
+
+// ── small emit helpers ──────────────────────────────────────────────────
+
+fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
+    let k = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
+}
+
+fn emit_i32_const(chunk: &mut Chunk, v: i32, line: u32) {
+    vybe_emitter::instructions::core_wasm::i32_const(chunk, line, v);
+}
+fn emit_i32_zero_val(chunk: &mut Chunk, line: u32) {
+    emit_i32_const(chunk, 0, line);
+}
+fn emit_i32_zero(chunk: &mut Chunk, slot: u16, line: u32) {
+    emit_i32_const(chunk, 0, line);
+    lset(chunk, slot, line);
+}
+fn bump(chunk: &mut Chunk, slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    emit_i32_const(chunk, 1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, slot, line);
+}
+
+/// `d[key]` where key may be a string — the dynamic-collection get.
+fn emit_dyn_index(chunk: &mut Chunk, line: u32) {
+    // ecma:object.get(obj, key) handles string keys.
+    let idx = chunk.add_import("ecma:object", "get");
+    chunk.emit_call(idx, 2, line);
+}
+
+fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_emitter::loops::LoopState {
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    vybe_emitter::loops::LoopState {
+        block_patch,
+        loop_patch,
+        body_block_patch: None,
+    }
+}
+fn loop_end(chunk: &mut Chunk, state: vybe_emitter::loops::LoopState, line: u32) {
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(state.loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(state.block_patch);
+}
+/// Break out of the loop when `!(i < n)`.
+fn loop_break_if_ge(chunk: &mut Chunk, i: u16, n: u16, line: u32) {
+    lget(chunk, i, line);
+    lget(chunk, n, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+}
+/// `out += ", "` when `i > 0`.
+fn emit_sep_comma(chunk: &mut Chunk, out: u16, i: u16, line: u32) {
+    lget(chunk, i, line);
+    emit_i32_const(chunk, 0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_if(line);
+    lget(chunk, out, line);
+    str_const(chunk, ", ", line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+    chunk.emit_end(line);
+}
+
+/// `out = prefix + join(", ", repr(value[0..n])) + suffix`, stored in `out`.
+#[allow(clippy::too_many_arguments)]
+fn emit_join(
+    chunk: &mut Chunk,
+    self_idx: usize,
+    value: u16,
+    out: u16,
+    i: u16,
+    n: u16,
+    prefix: &str,
+    suffix: &str,
+    line: u32,
+) {
+    str_const(chunk, prefix, line);
+    lset(chunk, out, line);
+    emit_i32_zero(chunk, i, line);
+    let lp = loop_start(chunk, line);
+    loop_break_if_ge(chunk, i, n, line);
+    emit_sep_comma(chunk, out, i, line);
+    lget(chunk, out, line);
+    lget(chunk, value, line);
+    lget(chunk, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    recurse(chunk, self_idx, line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+    bump(chunk, i, line);
+    loop_end(chunk, lp, line);
+    lget(chunk, out, line);
+    str_const(chunk, suffix, line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+}

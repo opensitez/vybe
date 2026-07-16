@@ -68,7 +68,8 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
 /// `arg0 = sep`, `arg1 = end`, `args[2..] = items`. A bare `print()` compiles
 /// with `argc == 0` and emits just the default end (`"\n"`). Each item is
 /// converted to its Python display form via `emit_py_repr`.
-pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
     let chunk = &mut chunks[current];
     let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
     let rd_slot = chunk.alloc_scratch(1);
@@ -99,7 +100,7 @@ pub fn emit_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
                 part_count += 1;
             }
             chunk.emit_op_u16(Op::LOCAL_GET, item, line);
-            emit_py_repr(chunk, line);
+            emit_py_repr(chunk, repr_idx, line);
             part_count += 1;
         }
         chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
@@ -314,22 +315,20 @@ fn emit_object_binop_or(
 /// Python `str(x)` — the same display form `print` uses (dict → `{'k': v}`,
 /// list → `[..]`, True/False/None), so `str({'a':1})` isn't `[object Object]`.
 /// Stack: `[x]` → `[string]`.
-pub fn emit_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
+pub fn emit_str(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        chunk.emit_string_const("", line);
+        chunks[current].emit_string_const("", line);
         return;
     }
-    emit_py_repr(chunk, line);
+    let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
+    emit_py_repr(&mut chunks[current], repr_idx, line);
 }
 
 /// Inline Python repr: Bool→True/False, None→None, Array→[elem, ...], else passthrough.
-fn emit_py_repr(chunk: &mut Chunk, line: u32) {
+fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let is_array = chunk.add_import("ecma:array", "isArray");
-    let json_str = chunk.add_import("ecma:json", "stringify");
-    let replace_all = chunk.add_import("ecma:string", "replaceAll");
     let is_view = chunk.add_import("ecma:arraybuffer", "isView");
     let test_undef = chunk.add_import("wasm:js-undefined", "test");
     let scratch = chunk.alloc_scratch(1);
@@ -406,58 +405,15 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(is_array, 1, line);
     chunk.emit_if_value(line);
+    // Recurse through the shared `__py_repr` chunk so NESTED tuples/lists/dicts
+    // render correctly. `JSON.stringify` flattened every nested array to `[...]`
+    // and erased the `__tuple`/`__typename` tags; the chunk walks each element
+    // and renders it per Python repr rules at any depth.
+    chunk.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
+    chunk.emit(0u8, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_call(json_str, 1, line);
-    // Fix spacing (`: ` for dicts nested inside the list, then `, `)
-    chunk.emit_string_const(":", line);
-    chunk.emit_string_const(": ", line);
-    chunk.emit_call(replace_all, 3, line);
-    chunk.emit_string_const(",", line);
-    chunk.emit_string_const(", ", line);
-    chunk.emit_call(replace_all, 3, line);
-    // Fix Python bool/None capitalization
-    chunk.emit_string_const("true", line);
-    chunk.emit_string_const("True", line);
-    chunk.emit_call(replace_all, 3, line);
-    chunk.emit_string_const("false", line);
-    chunk.emit_string_const("False", line);
-    chunk.emit_call(replace_all, 3, line);
-    chunk.emit_string_const("null", line);
-    chunk.emit_string_const("None", line);
-    chunk.emit_call(replace_all, 3, line);
-    // Python uses single quotes for strings inside lists
-    chunk.emit_string_const("\"", line);
-    chunk.emit_string_const("'", line);
-    chunk.emit_call(replace_all, 3, line);
-    // Named tuple (has `__typename`) → `Name(f=v, ...)`; this repr form is
-    // Python-specific (a C# named tuple stays `(a, b)`), so it lives here.
-    let tn_k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
-        vybe_emitter::tuples::TYPENAME_TAG,
-    )));
-    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, tn_k, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line); // 1 when a type name is present
-    chunk.emit_if(line); // [list_string] → [named_string], net-zero height
-    emit_py_named_tuple_repr(chunk, scratch, line);
-    chunk.emit_end(line);
-    // Plain tuple (tagged array, no type name): rewrite `[a, b]` → `(a, b)` via
-    // the shared tuple emitter — element formatting stays Python's, the
-    // structural transform is cross-language.
-    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    let tag_k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
-        vybe_emitter::tuples::TUPLE_TAG,
-    )));
-    chunk.emit_op_u16(Op::STRUCT_GET, tag_k, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line); // 1 when tuple tag present
-    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, tn_k, line);
-    chunk.emit_op(Op::REF_IS_NULL, line); // 1 when NO type name (plain tuple)
-    chunk.emit_op(Op::I32_AND, line); // tuple tag present AND not a named tuple
-    chunk.emit_if(line); // [list_string] → [tuple_string], net-zero height
-    vybe_emitter::tuples::emit_list_string_to_tuple(chunk, line);
-    chunk.emit_end(line);
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(1u8, line);
     chunk.emit_else(line);
 
     // Not array: a string/number coerces straight to string; anything else is
@@ -497,22 +453,13 @@ fn emit_py_repr(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const("message", line);
     chunk.emit_call(obj_get, 2, line);
     chunk.emit_else(line);
-    // dict → JSON stringify then Python-ify (`: ` sep, `, `, single quotes,
-    // True/False/None).
+    // dict → recurse through `__py_repr` (keys and values repr'd; nested tuples
+    // preserved), instead of `JSON.stringify` which flattened them.
+    chunk.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
+    chunk.emit(0u8, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_call(json_str, 1, line);
-    for (from, to) in [
-        (":", ": "),
-        (",", ", "),
-        ("true", "True"),
-        ("false", "False"),
-        ("null", "None"),
-        ("\"", "'"),
-    ] {
-        chunk.emit_string_const(from, line);
-        chunk.emit_string_const(to, line);
-        chunk.emit_call(replace_all, 3, line);
-    }
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(1u8, line);
     chunk.emit_end(line);
 
     chunk.emit_end(line);
@@ -748,8 +695,65 @@ pub fn emit_pyfloordiv(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// `a % b` with `__mod__` dispatch on object operands.
-pub fn emit_pymod(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_arith_dunder(&mut chunks[current], "__mod__", emit_py_mod, line);
+/// Python `%` is overloaded: a string left operand means printf-style
+/// formatting (`'%d' % 42`), a number means modulo, and an object may define
+/// `__mod__`. Detect a string left at runtime and route to the shared sprintf
+/// helper; otherwise fall through to the arithmetic/dunder path unchanged.
+/// A tuple right operand spreads into positional args (Python semantics); a
+/// scalar or list is a single argument.
+pub fn emit_pymod(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let b_slot = chunks[current].alloc_scratch(1);
+    let a_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    // if isString(a) → printf-style formatting
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    let str_test = chunks[current].add_import("wasm:js-string", "test");
+    chunks[current].emit_call(str_test, 1, line);
+    chunks[current].emit_if_value(line);
+    {
+        // fmt = a
+        chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        // args = (isArray(b) && b has __tuple tag) ? b : [b]
+        chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        let is_array = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(is_array, 1, line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        {
+            // b is an array — spread only if it carries the tuple tag
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            let tag = chunks[current].add_constant(vybe_bytecode::Value::String(
+                std::sync::Arc::from(vybe_emitter::tuples::TUPLE_TAG),
+            ));
+            chunks[current].emit_op_u16(Op::STRUCT_GET, tag, line);
+            chunks[current].emit_op(Op::REF_IS_NULL, line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
+            chunks[current].emit_if_value(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // tuple → spread
+            chunks[current].emit_else(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // list → single arg
+            chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+            chunks[current].emit_end(line);
+        }
+        chunks[current].emit_else(line);
+        {
+            // scalar → single arg
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+            chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+        }
+        chunks[current].emit_end(line);
+        // stack: [fmt, args] → formatted string
+        vybe_emitter::sprintf::emit_sprintf_from_array(chunks, current, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        emit_arith_dunder(&mut chunks[current], "__mod__", emit_py_mod, line);
+    }
+    chunks[current].emit_end(line);
 }
 
 /// `a ** b` with `__pow__` dispatch on object operands.
@@ -820,6 +824,9 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
     // semantics). Shared `vybe_emitter` op; `argc` = number of iterables.
+    // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
+    // semantics). Shared `vybe_emitter` op — now builds real (tagged) tuples
+    // per row, so `list(zip(...))` reprs `[(a, b), …]`.
     if name == "python.zip" {
         collections::emit_zip(chunks, current, argc, collections::ZipLen::Shortest, line);
         return true;
@@ -908,7 +915,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "python.oct" => "__vybe_pyoct",
         "python.bin" => "__vybe_pybin",
         "python.bytes" | "python.encode" => "__vybe_to_bytes",
-        "python.enumerate" => "__vybe_enumerate",
         "python.map" => "__vybe_pymap",
         "python.filter" => "__vybe_pyfilter",
         "python.any" => "__vybe_pyany",
