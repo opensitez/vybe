@@ -50,6 +50,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.regexp_group" => {
             crate::emitter::string_adapter::emit_dart_regexp_group(chunks, current, line)
         }
+        "dart.exception" => {
+            crate::emitter::string_adapter::emit_dart_exception(chunks, current, argc, line)
+        }
+        "dart.format_exception" => {
+            crate::emitter::string_adapter::emit_dart_format_exception(chunks, current, argc, line)
+        }
+        "dart.range_error" => {
+            crate::emitter::string_adapter::emit_dart_range_error(chunks, current, argc, line)
+        }
+        "dart.state_error" => {
+            crate::emitter::string_adapter::emit_dart_state_error(chunks, current, argc, line)
+        }
+        "dart.argument_error" => {
+            crate::emitter::string_adapter::emit_dart_argument_error(chunks, current, argc, line)
+        }
+        "dart.unimplemented_error" => {
+            crate::emitter::string_adapter::emit_dart_unimplemented_error(chunks, current, argc, line)
+        }
+        "dart.stack_trace" => {
+            crate::emitter::string_adapter::emit_dart_stack_trace(chunks, current, line)
+        }
+        "dart.index_get" => {
+            crate::emitter::string_adapter::emit_dart_index_get(chunks, current, line)
+        }
+        "dart.eq" => {
+            crate::emitter::string_adapter::emit_dart_eq(chunks, current, line)
+        }
+        "dart.identical" => {
+            crate::emitter::string_adapter::emit_dart_identical(chunks, current, line)
+        }
+        "dart.hash_code" => {
+            crate::emitter::string_adapter::emit_dart_hash_code(chunks, current, line)
+        }
         "dart.duration_new" => crate::emitter::core_adapter::emit_duration_new(chunks, current, argc, line),
         "dart.duration_zero" => crate::emitter::core_adapter::emit_duration_zero(chunks, current, line),
         "dart.abs" => crate::emitter::core_adapter::emit_dart_abs(chunks, current, line),
@@ -60,11 +93,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.num_to_double" => crate::emitter::core_adapter::emit_num_to_double(chunks, current, line),
         "dart.num_remainder" => crate::emitter::core_adapter::emit_num_remainder(chunks, current, line),
         "dart.num_is_negative" => crate::emitter::core_adapter::emit_num_is_negative(chunks, current, line),
+        "dart.num_is_infinite" => crate::emitter::core_adapter::emit_num_is_infinite(chunks, current, line),
         "dart.num_sign" => crate::emitter::core_adapter::emit_num_sign(chunks, current, line),
         "dart.duration_negate" => crate::emitter::core_adapter::emit_duration_negate(chunks, current, line),
         "dart.datetime_new" => crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, false, line),
         "dart.datetime_utc" => crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, true, line),
-        "dart.add" => crate::emitter::core_adapter::emit_dart_add(chunks, current, line),
+        "dart.add_general" => crate::emitter::string_adapter::emit_dart_add_general(chunks, current, argc, line),
+        "dart.index_set" => crate::emitter::string_adapter::emit_dart_index_set(chunks, current, line),
+        "dart.difference" => crate::emitter::string_adapter::emit_dart_difference(chunks, current, line),
         "dart.datetime_add" => crate::emitter::core_adapter::emit_datetime_add(chunks, current, line),
         "dart.datetime_subtract" => crate::emitter::core_adapter::emit_datetime_subtract(chunks, current, line),
         "dart.datetime_difference" => crate::emitter::core_adapter::emit_datetime_difference(chunks, current, line),
@@ -81,6 +117,37 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.uri_resolve" => crate::emitter::core_adapter::emit_uri_resolve(chunks, current, line),
         "dart.uri_resolve_uri" => crate::emitter::core_adapter::emit_uri_resolve_uri(chunks, current, line),
         "dart.list_filled" => crate::emitter::core_adapter::emit_list_filled(chunks, current, line),
+        "dart.list_generate" => crate::emitter::string_adapter::emit_dart_list_generate(chunks, current, argc, line),
+        "dart.list_from" => crate::emitter::string_adapter::emit_dart_list_from(chunks, current, argc, line),
+        "dart.list_unmodifiable" => {
+            crate::emitter::string_adapter::emit_dart_list_unmodifiable(chunks, current, line)
+        }
+        "dart.map_new" => crate::emitter::string_adapter::emit_dart_map_new(chunks, current, line),
+        "dart.set_new" => crate::emitter::string_adapter::emit_dart_set_new(chunks, current, line),
+        "dart.set_from" => crate::emitter::string_adapter::emit_dart_set_from(chunks, current, line),
+        "dart.set_unmodifiable" => {
+            crate::emitter::string_adapter::emit_dart_set_unmodifiable(chunks, current, line)
+        }
+        "dart.map_entry" => crate::emitter::string_adapter::emit_dart_map_entry(chunks, current, line),
+        "dart.map_from" => crate::emitter::string_adapter::emit_dart_map_from(chunks, current, line),
+        "dart.map_unmodifiable" => {
+            crate::emitter::string_adapter::emit_dart_map_unmodifiable(chunks, current, line)
+        }
+        "dart.map_unmodifiable_entries" => {
+            crate::emitter::string_adapter::emit_dart_map_unmodifiable_entries(chunks, current, line)
+        }
+        "dart.map_from_entries" => crate::emitter::string_adapter::emit_dart_map_from_entries(chunks, current, line),
+        "dart.map_from_iterables" => crate::emitter::string_adapter::emit_dart_map_from_iterables(chunks, current, line),
+        "dart.identity" => crate::emitter::string_adapter::emit_dart_identity(chunks, current, line),
+        "dart.string_from_char_codes" => {
+            crate::emitter::string_adapter::emit_dart_string_from_char_codes(chunks, current, line)
+        }
+        "dart.string_code_units" => {
+            crate::emitter::string_adapter::emit_dart_string_code_units(chunks, current, line)
+        }
+        "dart.string_runes" => {
+            crate::emitter::string_adapter::emit_dart_string_runes(chunks, current, line)
+        }
         "dart.replace_first" => {
             crate::emitter::string_adapter::emit_dart_replace_first(chunks, current, line)
         }
@@ -90,14 +157,254 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.list_last" => {
             crate::emitter::string_adapter::emit_dart_list_last(chunks, current, line)
         }
+        "dart.list_single" => {
+            crate::emitter::string_adapter::emit_dart_list_single(chunks, current, false, line)
+        }
+        "dart.list_single_or_null" => {
+            crate::emitter::string_adapter::emit_dart_list_single(chunks, current, true, line)
+        }
         "dart.length" => {
             crate::emitter::string_adapter::emit_dart_length(chunks, current, line)
+        }
+        "dart.map_keys" => {
+            crate::emitter::string_adapter::emit_dart_map_keys(chunks, current, line)
+        }
+        "dart.map_values" => {
+            crate::emitter::string_adapter::emit_dart_map_values(chunks, current, line)
+        }
+        "dart.map_entries" => {
+            crate::emitter::string_adapter::emit_dart_map_entries(chunks, current, line)
+        }
+        "dart.map_contains_value" => {
+            crate::emitter::string_adapter::emit_dart_map_contains_value(chunks, current, line)
+        }
+        "dart.add_all" => {
+            crate::emitter::string_adapter::emit_dart_add_all(chunks, current, line)
+        }
+        "dart.index_of" => {
+            crate::emitter::string_adapter::emit_dart_index_of(chunks, current, argc, false, line)
+        }
+        "dart.last_index_of" => {
+            crate::emitter::string_adapter::emit_dart_index_of(chunks, current, argc, true, line)
+        }
+        "dart.list_insert" => {
+            crate::emitter::string_adapter::emit_dart_list_insert(chunks, current, line)
+        }
+        "dart.list_remove_at" => {
+            crate::emitter::string_adapter::emit_dart_list_remove_at(chunks, current, line)
+        }
+        "dart.list_remove_last" => {
+            crate::emitter::string_adapter::emit_dart_list_remove_last(chunks, current, line)
+        }
+        "dart.list_remove_range" => {
+            crate::emitter::string_adapter::emit_dart_list_remove_range(chunks, current, line)
+        }
+        "dart.list_get_range" => {
+            crate::emitter::string_adapter::emit_dart_list_get_range(chunks, current, line)
+        }
+        "dart.list_fill_range" => {
+            crate::emitter::string_adapter::emit_dart_list_fill_range(chunks, current, line)
+        }
+        "dart.list_set_all" => {
+            crate::emitter::string_adapter::emit_dart_list_set_all(chunks, current, line)
+        }
+        "dart.list_set_range" => {
+            crate::emitter::string_adapter::emit_dart_list_set_range(chunks, current, line)
+        }
+        "dart.list_as_map" => {
+            crate::emitter::string_adapter::emit_dart_list_as_map(chunks, current, line)
+        }
+        "dart.list_sort" => {
+            crate::emitter::string_adapter::emit_dart_list_sort(chunks, current, argc, line)
+        }
+        "dart.list_reversed" => {
+            crate::emitter::string_adapter::emit_dart_list_reversed(chunks, current, line)
+        }
+        "dart.remove" => {
+            crate::emitter::string_adapter::emit_dart_remove(chunks, current, line)
+        }
+        "dart.clear" => {
+            crate::emitter::string_adapter::emit_dart_clear(chunks, current, line)
+        }
+        "dart.lookup" => {
+            crate::emitter::string_adapter::emit_dart_lookup(chunks, current, line)
+        }
+        "dart.remove_where" => {
+            crate::emitter::string_adapter::emit_dart_remove_where(chunks, current, line)
+        }
+        "dart.set_remove_all" => {
+            crate::emitter::string_adapter::emit_dart_set_remove_all(chunks, current, line)
+        }
+        "dart.set_retain_all" => {
+            crate::emitter::string_adapter::emit_dart_set_retain_all(chunks, current, line)
+        }
+        "dart.set_retain_where" => {
+            crate::emitter::string_adapter::emit_dart_set_retain_where(chunks, current, line)
+        }
+        "dart.set_union" => {
+            crate::emitter::string_adapter::emit_dart_set_union(chunks, current, line)
+        }
+        "dart.set_intersection" => {
+            crate::emitter::string_adapter::emit_dart_set_intersection(chunks, current, line)
+        }
+        "dart.set_contains_all" => {
+            crate::emitter::string_adapter::emit_dart_set_contains_all(chunks, current, line)
+        }
+        "dart.map_update" => {
+            crate::emitter::string_adapter::emit_dart_map_update(chunks, current, argc, line)
+        }
+        "dart.map_put_if_absent" => {
+            crate::emitter::string_adapter::emit_dart_map_put_if_absent(chunks, current, line)
+        }
+        "dart.map_update_all" => {
+            crate::emitter::string_adapter::emit_dart_map_update_all(chunks, current, line)
+        }
+        "dart.iter_to_list" => {
+            crate::emitter::string_adapter::emit_dart_iter_to_list(chunks, current, line)
+        }
+        "dart.iter_join" => {
+            crate::emitter::string_adapter::emit_dart_iter_join(chunks, current, argc, line)
+        }
+        "dart.int_parse" => {
+            crate::emitter::string_adapter::emit_dart_int_parse(chunks, current, argc, line)
+        }
+        "dart.int_try_parse" => {
+            crate::emitter::string_adapter::emit_dart_int_try_parse(chunks, current, argc, line)
+        }
+        "dart.double_parse" => {
+            crate::emitter::string_adapter::emit_dart_double_parse(chunks, current, line)
+        }
+        "dart.double_try_parse" => {
+            crate::emitter::string_adapter::emit_dart_double_try_parse(chunks, current, line)
+        }
+        "dart.bigint_from" => {
+            crate::emitter::string_adapter::emit_dart_bigint_from(chunks, current, line)
+        }
+        "dart.stream_value" => {
+            crate::emitter::string_adapter::emit_dart_stream_value(chunks, current, line)
+        }
+        "dart.stream_empty" => {
+            crate::emitter::string_adapter::emit_dart_stream_empty(chunks, current, line)
+        }
+        "dart.stream_error" => {
+            crate::emitter::string_adapter::emit_dart_stream_error(chunks, current, line)
+        }
+        "dart.stream_listen" => {
+            crate::emitter::string_adapter::emit_dart_stream_listen(chunks, current, argc, line)
+        }
+        "dart.stream_as_future" => {
+            crate::emitter::string_adapter::emit_dart_stream_as_future(chunks, current, line)
+        }
+        "dart.stream_cancel" => {
+            crate::emitter::string_adapter::emit_dart_stream_cancel(chunks, current, line)
+        }
+        "dart.queue_remove_first" => {
+            crate::emitter::string_adapter::emit_dart_queue_remove_first(chunks, current, line)
+        }
+        "dart.bigint_parse" => {
+            crate::emitter::string_adapter::emit_dart_bigint_parse(chunks, current, argc, line)
+        }
+        "dart.bigint_gcd" => {
+            crate::emitter::string_adapter::emit_dart_bigint_gcd(chunks, current, line)
+        }
+        "dart.stopwatch_new" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_new(chunks, current, line)
+        }
+        "dart.stopwatch_start" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_start(chunks, current, line)
+        }
+        "dart.stopwatch_stop" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_stop(chunks, current, line)
+        }
+        "dart.stopwatch_reset" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_reset(chunks, current, line)
+        }
+        "dart.stopwatch_is_running" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_is_running(chunks, current, line)
+        }
+        "dart.stopwatch_elapsed" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed(chunks, current, line)
+        }
+        "dart.stopwatch_elapsed_milliseconds" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_milliseconds(chunks, current, line)
+        }
+        "dart.stopwatch_elapsed_microseconds" => {
+            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_microseconds(chunks, current, line)
+        }
+        "dart.future_call0" => {
+            crate::emitter::string_adapter::emit_dart_future_call0(chunks, current, line)
+        }
+        "dart.future_delayed" => {
+            crate::emitter::string_adapter::emit_dart_future_delayed(chunks, current, line)
+        }
+        "dart.contains" => {
+            crate::emitter::string_adapter::emit_dart_contains(chunks, current, line)
+        }
+        "dart.iter_element_at" => {
+            crate::emitter::string_adapter::emit_dart_iter_element_at(chunks, current, line)
+        }
+        "dart.list_index_where" => {
+            crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 0, line)
+        }
+        "dart.list_last_index_where" => {
+            crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 1, line)
+        }
+        "dart.list_first_where" => {
+            crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 2, line)
+        }
+        "dart.list_last_where" => {
+            crate::emitter::string_adapter::emit_dart_list_where_search(chunks, current, 3, line)
+        }
+        "dart.map_general" => {
+            crate::emitter::string_adapter::emit_dart_map_general(chunks, current, line)
+        }
+        "dart.iter_async_map" => {
+            crate::emitter::string_adapter::emit_dart_iter_async_map(chunks, current, line)
+        }
+        "dart.iter_where" => {
+            crate::emitter::string_adapter::emit_dart_iter_where(chunks, current, line)
+        }
+        "dart.iter_expand" => {
+            crate::emitter::string_adapter::emit_dart_iter_expand(chunks, current, line)
+        }
+        "dart.iter_followed_by" => {
+            crate::emitter::string_adapter::emit_dart_iter_followed_by(chunks, current, line)
+        }
+        "dart.iter_take" => {
+            crate::emitter::string_adapter::emit_dart_iter_take(chunks, current, line)
+        }
+        "dart.iter_skip" => {
+            crate::emitter::string_adapter::emit_dart_iter_skip(chunks, current, line)
+        }
+        "dart.iter_take_while" => {
+            crate::emitter::string_adapter::emit_dart_iter_take_while(chunks, current, line)
+        }
+        "dart.iter_skip_while" => {
+            crate::emitter::string_adapter::emit_dart_iter_skip_while(chunks, current, line)
+        }
+        "dart.iter_distinct" => {
+            crate::emitter::string_adapter::emit_dart_iter_distinct(chunks, current, argc, line)
+        }
+        "dart.iter_any" => {
+            crate::emitter::string_adapter::emit_dart_iter_any(chunks, current, line)
+        }
+        "dart.iter_every" => {
+            crate::emitter::string_adapter::emit_dart_iter_every(chunks, current, line)
+        }
+        "dart.iter_reduce" => {
+            crate::emitter::string_adapter::emit_dart_iter_reduce(chunks, current, argc, line)
+        }
+        "dart.iter_for_each" => {
+            crate::emitter::string_adapter::emit_dart_for_each_general(chunks, current, line)
         }
         "dart.print" => {
             crate::emitter::string_adapter::emit_dart_print(chunks, current, argc, line)
         }
         "dart.to_string" => {
             crate::emitter::string_adapter::emit_dart_to_string(chunks, current, line)
+        }
+        "dart.double_to_string" => {
+            crate::emitter::string_adapter::emit_dart_double_to_string(chunks, current, line)
         }
 
         // ── Ruby `obj.dig(k1, k2, ..., kN)` — variadic property walk.

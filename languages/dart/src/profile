@@ -19,6 +19,11 @@ string_indexing = "zero_based"
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md).
 uses_normalize_class = true
+# Dart instance calls use the same receiver semantics as ECMAScript classes:
+# `this` is supplied by member-call dispatch rather than as a source-visible
+# positional parameter. Reuse the common prototype emitter path used by JS.
+class_method_dispatch = "prototype"
+ambient_this_binding = true
 # namespaceplan.md: namespace-shaped entry points resolve through the
 # common resolver (compiler::resolver) instead of the legacy hardcoded
 # arms — same flip as JS/VB/C#/PHP/C, driven by the esm_default data below.
@@ -26,6 +31,11 @@ uses_common_resolver = true
 entry_point = "main"
 # Dart `+` on strings concatenates (per dart:core String.+).
 dynamic_add = true
+# Dart operator overloads are method dispatch (`operator +`, `operator ==`,
+# etc.), not ECMA ToPrimitive coercion. This puts Dart on the same shared rich
+# operator machinery as Python/C# while preserving `dynamic_add` as the
+# primitive/string fallback.
+ecma_operator_coercion = false
 # Dart `bool` is a real boolean (like C#), not a C-style int: comparison and
 # equality results print as `true`/`false`. Materialize them so `print(a == b)`
 # / `print(x < y)` render correctly instead of `1`/`0`.
@@ -40,6 +50,8 @@ tuple_literals_tagged = true
 # the eager run-to-completion fallback, so `for (v in gen())` with `break`
 # and infinite generators suspend per yield.
 has_generators = true
+ecma_promise_methods = true
+throwable_is_root = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -47,29 +59,91 @@ has_generators = true
 
 [builtins]
 
-# `identical(a, b)` is Dart's reference equality — the same comparison C#
-# spells `Object.ReferenceEquals`, so it shares that emit.
-identical           = { emit = "common:ref_eq",                  min_args = 2, max_args = 2 }
+# `identical(a, b)` is Dart's reference equality, materialized as Dart bool.
+identical           = { emit = "common:dart.identical",          min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print               = { emit = "common:dart.print",              min_args = 1, max_args = 1 }
 StringBuffer        = { emit = "common:dart.sb_new",             min_args = 0, max_args = 0 }
 RegExp              = { emit = "common:dart.regexp_new",         min_args = 1, max_args = 4 }
+Map                 = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+Queue               = { emit = "common:dart.stream_empty",       min_args = 0, max_args = 0 }
+Expando             = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, max_args = 2 }
+"Map.from"          = { emit = "common:dart.map_from",           min_args = 1, max_args = 1 }
+"Map.of"            = { emit = "common:dart.map_from",           min_args = 1, max_args = 1 }
+"Map.unmodifiable"  = { emit = "common:dart.map_unmodifiable",   min_args = 1, max_args = 1 }
+"__dart_map_unmodifiable_entries" = { emit = "common:dart.map_unmodifiable_entries", min_args = 1, max_args = 1 }
+"Map.fromEntries"   = { emit = "common:dart.map_from_entries",   min_args = 1, max_args = 1 }
+"Map.fromIterables" = { emit = "common:dart.map_from_iterables", min_args = 2, max_args = 2 }
+"Map.identity"      = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+"Set.from"          = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+"Set.of"            = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+"Set.unmodifiable"  = { emit = "common:dart.set_unmodifiable",   min_args = 1, max_args = 1 }
+"Set.identity"      = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
+"Queue.from"        = { emit = "common:dart.list_from",          min_args = 1, max_args = 1 }
+Exception           = { emit = "common:dart.exception",          min_args = 0, max_args = 1 }
+FormatException     = { emit = "common:dart.format_exception",   min_args = 0, max_args = 1 }
+RangeError          = { emit = "common:dart.range_error",        min_args = 0, max_args = 1 }
+StateError          = { emit = "common:dart.state_error",        min_args = 0, max_args = 1 }
+ArgumentError       = { emit = "common:dart.argument_error",     min_args = 0, max_args = 1 }
+UnimplementedError  = { emit = "common:dart.unimplemented_error", min_args = 0, max_args = 1 }
+__dart_exception    = { emit = "common:dart.exception",          min_args = 0, max_args = 1 }
+__dart_format_exception = { emit = "common:dart.format_exception", min_args = 0, max_args = 1 }
+__dart_range_error  = { emit = "common:dart.range_error",        min_args = 0, max_args = 1 }
+__dart_state_error  = { emit = "common:dart.state_error",        min_args = 0, max_args = 1 }
+__dart_argument_error = { emit = "common:dart.argument_error",   min_args = 0, max_args = 1 }
+__dart_unimplemented_error = { emit = "common:dart.unimplemented_error", min_args = 0, max_args = 1 }
+__dart_stack_trace  = { emit = "common:dart.stack_trace",        min_args = 1, max_args = 1 }
+__dart_index_get    = { emit = "common:dart.index_get",          min_args = 2, max_args = 2 }
+__dart_index_set    = { emit = "common:dart.index_set",          min_args = 3, max_args = 3 }
+__dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+__dart_eq           = { emit = "common:dart.eq",                 min_args = 2, max_args = 2 }
+__dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
+__dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
 Duration            = { emit = "common:dart.duration_new",       min_args = 0, max_args = 1 }
 DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, max_args = 6 }
 "DateTime.utc"      = { emit = "common:dart.datetime_utc",       min_args = 3, max_args = 6 }
+"Future.value"      = { emit = "host:ecma:promise:resolve",       min_args = 1, max_args = 1 }
+"Future.error"      = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
+"Future.sync"       = { emit = "common:dart.future_call0",        min_args = 1, max_args = 1 }
+"Future.microtask"  = { emit = "common:dart.future_call0",        min_args = 1, max_args = 1 }
+"Future.delayed"    = { emit = "common:dart.future_delayed",      min_args = 2, max_args = 2 }
+"Stream.fromIterable" = { emit = "common:dart.identity",         min_args = 1, max_args = 1 }
+"Stream.value"      = { emit = "common:dart.stream_value",        min_args = 1, max_args = 1 }
+"Stream.empty"      = { emit = "common:dart.stream_empty",        min_args = 0, max_args = 0 }
+"Stream.error"      = { emit = "common:dart.stream_error",        min_args = 1, max_args = 1 }
+"Promise.resolve"   = { emit = "host:ecma:promise:resolve",       min_args = 1, max_args = 1 }
+"Promise.reject"    = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
+"Promise.all"       = { emit = "host:ecma:promise:all",           min_args = 1, max_args = 1 }
+"Promise.race"      = { emit = "host:ecma:promise:race",          min_args = 1, max_args = 1 }
+"Promise.try"       = { emit = "host:ecma:promise:try",           min_args = 1, max_args = 1 }
 "Duration.zero"     = { emit = "common:dart.duration_zero",      min_args = 0, max_args = 0 }
 "Uri.parse"         = { emit = "common:dart.uri_parse",          min_args = 1, max_args = 1 }
 "Uri.http"          = { emit = "common:dart.uri_http",           min_args = 2, max_args = 4 }
 "Uri.https"         = { emit = "common:dart.uri_https",          min_args = 2, max_args = 4 }
 "Uri.file"          = { emit = "common:dart.uri_file",           min_args = 1, max_args = 1 }
 "List.filled"       = { emit = "common:dart.list_filled",        min_args = 2, max_args = 2 }
+"List.generate"     = { emit = "common:dart.list_generate",      min_args = 2, max_args = 3 }
+"List.from"         = { emit = "common:dart.list_from",          min_args = 1, max_args = 2 }
+"List.of"           = { emit = "common:dart.list_from",          min_args = 1, max_args = 2 }
+"List.unmodifiable" = { emit = "common:dart.list_unmodifiable",  min_args = 1, max_args = 1 }
+"BigInt.from"       = { emit = "common:dart.bigint_from",        min_args = 1, max_args = 1 }
+"BigInt.parse"      = { emit = "common:dart.bigint_parse",       min_args = 1, max_args = 2 }
+"BigInt.gcd"        = { emit = "common:dart.bigint_gcd",         min_args = 2, max_args = 2 }
+"__dart_bigint_from" = { emit = "common:dart.bigint_from",       min_args = 1, max_args = 1 }
+"String.fromCharCode" = { emit = "host:wasm:js-string:fromCharCode", min_args = 1, max_args = 1 }
+"String.fromCharCodes" = { emit = "common:dart.string_from_char_codes", min_args = 1, max_args = 1 }
+"__dart_string_code_units" = { emit = "common:dart.string_code_units", min_args = 1, max_args = 1 }
+"__dart_string_runes" = { emit = "common:dart.string_runes", min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-"int.parse"         = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-"double.parse"      = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
+"int.parse"         = { emit = "common:dart.int_parse",          min_args = 1, max_args = 2 }
+"double.parse"      = { emit = "common:dart.double_parse",       min_args = 1, max_args = 1 }
+"double.isNaN"      = { emit = "host:ecma:number:isNaN",          min_args = 1, max_args = 1 }
+"double.isInfinite" = { emit = "common:dart.num_is_infinite",     min_args = 1, max_args = 1 }
 "num.parse"         = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 
 # ── Math functions (dart:math) ───────────────────────────────────────────────
@@ -90,8 +164,8 @@ DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, m
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-"int.tryParse"      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-"double.tryParse"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
+"int.tryParse"      = { emit = "common:dart.int_try_parse",      min_args = 1, max_args = 2 }
+"double.tryParse"   = { emit = "common:dart.double_try_parse",   min_args = 1, max_args = 1 }
 
 # ── JSON (dart:convert) ─────────────────────────────────────────────────────
 
@@ -125,9 +199,9 @@ trimLeft      = { emit = "common:str_trim_start",      min_args = 0, max_args = 
 trimRight     = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
 startsWith    = { emit = "host:ecma:string:startsWith", min_args = 1, max_args = 2 }
 endsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
-contains      = { emit = "common:str_contains",        min_args = 1, max_args = 1 }
-indexOf       = { emit = "host:ecma:string:indexOf",   min_args = 1, max_args = 2 }
-lastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
+contains      = { emit = "common:dart.contains",       min_args = 1, max_args = 1 }
+indexOf       = { emit = "common:dart.index_of",       min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "common:dart.last_index_of",  min_args = 1, max_args = 2 }
 replaceAll    = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
 split         = { emit = "common:strings.split",       min_args = 1, max_args = 1 }
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
@@ -135,23 +209,32 @@ padLeft       = { emit = "host:ecma:string:padStart",  min_args = 1, max_args = 
 padRight      = { emit = "host:ecma:string:padEnd",    min_args = 1, max_args = 2 }
 toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 0 }
 codeUnitAt    = { emit = "common:str_char_code_at",    min_args = 1, max_args = 1 }
+codeUnits     = { emit = "common:dart.string_code_units", min_args = 0, max_args = 0 }
 isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }
 isNotEmpty    = { emit = "common:dart.is_not_empty",   min_args = 0, max_args = 0 }
 isEven        = { emit = "common:dart.is_even",        min_args = 0, max_args = 0 }
 isOdd         = { emit = "common:dart.is_odd",         min_args = 0, max_args = 0 }
 compareTo     = { emit = "common:dart.compare_to",     min_args = 1, max_args = 1 }
 replaceFirst  = { emit = "host:ecma:string:replace",   min_args = 2, max_args = 2 }
-runes         = { emit = "host:ecma:array:from",        min_args = 0, max_args = 0 }
+runes         = { emit = "common:dart.string_runes",   min_args = 0, max_args = 0 }
 write         = { emit = "common:dart.sb_write",       min_args = 1, max_args = 1 }
 writeln       = { emit = "common:dart.sb_writeln",     min_args = 0, max_args = 1 }
 writeAll      = { emit = "common:dart.sb_write_all",   min_args = 1, max_args = 2 }
 writeCharCode = { emit = "common:dart.sb_write_char_code", min_args = 1, max_args = 1 }
-clear         = { emit = "common:dart.sb_clear",       min_args = 0, max_args = 0 }
+clear         = { emit = "common:dart.clear",          min_args = 0, max_args = 0 }
+start         = { emit = "common:dart.stopwatch_start", min_args = 0, max_args = 0 }
+stop          = { emit = "common:dart.stopwatch_stop", min_args = 0, max_args = 0 }
+reset         = { emit = "common:dart.stopwatch_reset", min_args = 0, max_args = 0 }
+isRunning     = { emit = "common:dart.stopwatch_is_running", min_args = 0, max_args = 0 }
+elapsed       = { emit = "common:dart.stopwatch_elapsed", min_args = 0, max_args = 0 }
+elapsedMilliseconds = { emit = "common:dart.stopwatch_elapsed_milliseconds", min_args = 0, max_args = 0 }
+elapsedMicroseconds = { emit = "common:dart.stopwatch_elapsed_microseconds", min_args = 0, max_args = 0 }
 hasMatch      = { emit = "common:dart.regexp_has_match", min_args = 1, max_args = 1 }
 firstMatch    = { emit = "common:dart.regexp_first_match", min_args = 1, max_args = 1 }
 allMatches    = { emit = "common:dart.regexp_all_matches", min_args = 1, max_args = 1 }
 group         = { emit = "common:dart.regexp_group",   min_args = 1, max_args = 1 }
 abs           = { emit = "common:dart.abs",            min_args = 0, max_args = 0 }
+sqrt          = { emit = "opcode:f64_sqrt",            min_args = 0, max_args = 0 }
 floor         = { emit = "common:dart.num_floor",      min_args = 0, max_args = 0 }
 ceil          = { emit = "common:dart.num_ceil",       min_args = 0, max_args = 0 }
 round         = { emit = "common:dart.num_round",      min_args = 0, max_args = 0 }
@@ -160,11 +243,14 @@ toInt         = { emit = "common:dart.num_truncate",   min_args = 0, max_args = 
 toDouble      = { emit = "common:dart.num_to_double",  min_args = 0, max_args = 0 }
 remainder     = { emit = "common:dart.num_remainder",  min_args = 1, max_args = 1 }
 isNegative    = { emit = "common:dart.num_is_negative", min_args = 0, max_args = 0 }
+isNaN         = { emit = "host:ecma:number:isNaN",      min_args = 0, max_args = 0 }
+isFinite      = { emit = "host:ecma:number:isFinite",   min_args = 0, max_args = 0 }
+isInfinite    = { emit = "common:dart.num_is_infinite", min_args = 0, max_args = 0 }
 sign          = { emit = "common:dart.num_sign",       min_args = 0, max_args = 0 }
 negate        = { emit = "common:dart.duration_negate", min_args = 0, max_args = 0 }
-add           = { emit = "common:dart.add",            min_args = 1, max_args = 1 }
+add           = { emit = "common:dart.add_general",    min_args = 1, max_args = 2 }
 subtract      = { emit = "common:dart.datetime_subtract", min_args = 1, max_args = 1 }
-difference    = { emit = "common:dart.datetime_difference", min_args = 1, max_args = 1 }
+difference    = { emit = "common:dart.difference",     min_args = 1, max_args = 1 }
 isBefore      = { emit = "common:dart.datetime_is_before", min_args = 1, max_args = 1 }
 isAfter       = { emit = "common:dart.datetime_is_after", min_args = 1, max_args = 1 }
 isAtSameMomentAs = { emit = "common:dart.datetime_same_moment", min_args = 1, max_args = 1 }
@@ -175,36 +261,77 @@ resolveUri    = { emit = "common:dart.uri_resolve_uri", min_args = 1, max_args =
 
 # List/Iterable property-style accessors (zero-arg getters).
 first         = { emit = "common:dart.list_first",     min_args = 0, max_args = 0 }
+single        = { emit = "common:dart.list_single",    min_args = 0, max_args = 0 }
+singleOrNull  = { emit = "common:dart.list_single_or_null", min_args = 0, max_args = 0 }
 containsKey   = { emit = "host:ecma:object:has",       min_args = 1, max_args = 1 }
-containsValue = { emit = "host:ecma:object:hasOwn",    min_args = 1, max_args = 1 }
-keys          = { emit = "host:ecma:object:keys",      min_args = 0, max_args = 0 }
+containsValue = { emit = "common:dart.map_contains_value", min_args = 1, max_args = 1 }
+keys          = { emit = "common:dart.map_keys",       min_args = 0, max_args = 0 }
+values        = { emit = "common:dart.map_values",     min_args = 0, max_args = 0 }
+entries       = { emit = "common:dart.map_entries",    min_args = 0, max_args = 0 }
 last          = { emit = "common:dart.list_last",      min_args = 0, max_args = 0 }
 length        = { emit = "common:dart.length",         min_args = 0, max_args = 0 }
 
 # Array/List instance methods
-removeLast    = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
-insert        = { emit = "host:ecma:array:splice",     min_args = 2, max_args = 2 }
+removeLast    = { emit = "common:dart.list_remove_last", min_args = 0, max_args = 0 }
+addAll        = { emit = "common:dart.add_all",        min_args = 1, max_args = 1 }
+remove        = { emit = "common:dart.remove",         min_args = 1, max_args = 1 }
+lookup        = { emit = "common:dart.lookup",         min_args = 1, max_args = 1 }
+removeAll     = { emit = "common:dart.set_remove_all", min_args = 1, max_args = 1 }
+retainAll     = { emit = "common:dart.set_retain_all", min_args = 1, max_args = 1 }
+removeWhere   = { emit = "common:dart.remove_where",   min_args = 1, max_args = 1 }
+retainWhere   = { emit = "common:dart.set_retain_where", min_args = 1, max_args = 1 }
+union         = { emit = "common:dart.set_union",      min_args = 1, max_args = 1 }
+intersection  = { emit = "common:dart.set_intersection", min_args = 1, max_args = 1 }
+containsAll   = { emit = "common:dart.set_contains_all", min_args = 1, max_args = 1 }
+cast          = { emit = "common:dart.identity",       min_args = 0, max_args = 0 }
+update        = { emit = "common:dart.map_update",     min_args = 2, max_args = 3 }
+updateAll     = { emit = "common:dart.map_update_all", min_args = 1, max_args = 1 }
+insert        = { emit = "common:dart.list_insert",    min_args = 2, max_args = 2 }
+removeAt      = { emit = "common:dart.list_remove_at", min_args = 1, max_args = 1 }
+removeFirst   = { emit = "common:dart.queue_remove_first", min_args = 0, max_args = 0 }
+removeRange   = { emit = "common:dart.list_remove_range", min_args = 2, max_args = 2 }
+getRange      = { emit = "common:dart.list_get_range", min_args = 2, max_args = 2 }
+fillRange     = { emit = "common:dart.list_fill_range", min_args = 3, max_args = 3 }
+setAll        = { emit = "common:dart.list_set_all",   min_args = 2, max_args = 2 }
+setRange      = { emit = "common:dart.list_set_range", min_args = 3, max_args = 3 }
+asMap         = { emit = "common:dart.list_as_map",    min_args = 0, max_args = 0 }
 sublist       = { emit = "host:ecma:array:slice",      min_args = 1, max_args = 2 }
-join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
-reversed      = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-toList        = { emit = "noop",                       min_args = 0, max_args = 0 }
+sort          = { emit = "common:dart.list_sort",      min_args = 0, max_args = 1 }
+join          = { emit = "common:dart.iter_join",      min_args = 0, max_args = 1 }
+reversed      = { emit = "common:dart.list_reversed",  min_args = 0, max_args = 0 }
+toList        = { emit = "common:dart.iter_to_list",   min_args = 0, max_args = 0 }
 toSet         = { emit = "host:ecma:set:fromIterable",  min_args = 0, max_args = 0 }
+elementAt     = { emit = "common:dart.iter_element_at", min_args = 1, max_args = 1 }
+map           = { emit = "common:dart.map_general",    min_args = 1, max_args = 1 }
+asyncMap      = { emit = "common:dart.iter_async_map", min_args = 1, max_args = 1 }
+where         = { emit = "common:dart.iter_where",     min_args = 1, max_args = 1 }
+expand        = { emit = "common:dart.iter_expand",    min_args = 1, max_args = 1 }
+followedBy    = { emit = "common:dart.iter_followed_by", min_args = 1, max_args = 1 }
+take          = { emit = "common:dart.iter_take",      min_args = 1, max_args = 1 }
+skip          = { emit = "common:dart.iter_skip",      min_args = 1, max_args = 1 }
+takeWhile     = { emit = "common:dart.iter_take_while", min_args = 1, max_args = 1 }
+skipWhile     = { emit = "common:dart.iter_skip_while", min_args = 1, max_args = 1 }
+distinct      = { emit = "common:dart.iter_distinct",  min_args = 0, max_args = 1 }
+any           = { emit = "common:dart.iter_any",       min_args = 1, max_args = 1 }
+every         = { emit = "common:dart.iter_every",     min_args = 1, max_args = 1 }
+reduce        = { emit = "common:dart.iter_reduce",    min_args = 1, max_args = 2 }
+forEach       = { emit = "common:dart.iter_for_each",  min_args = 1, max_args = 1 }
+listen        = { emit = "common:dart.stream_listen",  min_args = 1, max_args = 3 }
+asFuture      = { emit = "common:dart.stream_as_future", min_args = 0, max_args = 0 }
+cancel        = { emit = "common:dart.stream_cancel",  min_args = 0, max_args = 0 }
+indexWhere    = { emit = "common:dart.list_index_where", min_args = 1, max_args = 1 }
+lastIndexWhere = { emit = "common:dart.list_last_index_where", min_args = 1, max_args = 1 }
+firstWhere    = { emit = "common:dart.list_first_where", min_args = 1, max_args = 1 }
+lastWhere     = { emit = "common:dart.list_last_where", min_args = 1, max_args = 1 }
 
 # Map methods
-putIfAbsent   = { emit = "invoke:putIfAbsent",          min_args = 2, max_args = 2 }
+putIfAbsent   = { emit = "common:dart.map_put_if_absent", min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY METHODS — higher-order functions routed to compiler_common::loops
 # ────────────────────────────────────────────────────────────────────────────
 
 [array_methods]
-map       = "__array_map"
-where     = "__array_filter"
-forEach   = "__array_forEach"
-reduce    = "__array_reduce"
-any       = "__array_some"
-every     = "__array_every"
-sort      = "__array_sort"
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Dart library prefixes → host modules, ECMA-262 §16.2 shape
@@ -332,8 +459,10 @@ module = "web:encoding"
 "math.ln10"             = 2.302585092994046
 "math.sqrt2"            = 1.4142135623730951
 "double.infinity"       = "Infinity"
+"double.negativeInfinity" = "-Infinity"
 "double.nan"            = "NaN"
 "double.maxFinite"      = 1.7976931348623157e308
+"double.minPositive"    = 5e-324
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor resolution for `new X()` / `X()`
@@ -343,7 +472,7 @@ module = "web:encoding"
 # DateTime / StringBuffer retired — handled by the dotnet wrapper
 # Component Model at compile time (`datetime_adapter`, `stringbuilder_adapter`).
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
-Stopwatch       = ["common", "dotnet.stopwatch_new"]
+Stopwatch       = ["common", "dart.stopwatch_new"]
 RegExp          = ["common", "dart.regexp_new"]
 Duration        = ["common", "dart.duration_new"]
 DateTime        = ["common", "dart.datetime_new"]

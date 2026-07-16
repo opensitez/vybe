@@ -42,7 +42,9 @@ use super::{DartParser, Rule};
 use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+const DART_USER_ADD_METHOD: &str = "__dart_user_add";
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
@@ -80,6 +82,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // shared class compiler sees a single flat class instead of
     // multi-mixin inheritance.
     apply_mixins(&mut body, &mixin_names);
+    apply_inherited_concrete_members(&mut body, &mixin_names);
+    rewrite_inherited_instance_member_idents(&mut body, &mixin_names);
+    rewrite_user_add_methods(&mut body);
 
     Ok(Module {
         name: String::new(),
@@ -98,13 +103,42 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
     if mixin_names.is_empty() {
         return;
     }
-    // First pass: collect mixin members keyed by mixin name.
+    let mut class_members_by_name: HashMap<String, Vec<ClassMember>> = HashMap::new();
+    let mut class_parents_by_name: HashMap<String, Vec<String>> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            class_members_by_name.insert(name.clone(), members.clone());
+            class_parents_by_name.insert(name.clone(), parents.clone());
+        }
+    }
+
+    // First pass: collect normalized mixin members keyed by mixin name.
     let mut mixin_members: std::collections::HashMap<String, Vec<ClassMember>> =
         std::collections::HashMap::new();
     for stmt in body.iter() {
-        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
             if mixin_names.contains(name) {
-                mixin_members.insert(name.clone(), members.clone());
+                let mut normalized = members.clone();
+                let extra_members = collect_instance_member_names_for_types(
+                    parents,
+                    &class_members_by_name,
+                    &class_parents_by_name,
+                );
+                let extra_refs: Vec<&str> = extra_members.iter().map(String::as_str).collect();
+                rewrite_instance_member_idents(&mut normalized, &extra_refs);
+                mixin_members.insert(name.clone(), normalized);
             }
         }
     }
@@ -120,23 +154,26 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
             if mixin_names.contains(cname) {
                 continue;
             }
+            let original_member_names: std::collections::HashSet<String> =
+                members.iter().filter_map(member_name).collect();
             let mut new_parents = Vec::new();
             for parent in parents.drain(..) {
                 if let Some(mm) = mixin_members.get(&parent) {
-                    // Inject mixin members at the END so user-declared
-                    // members in the class body win on name conflict.
-                    // For Dart's `extends Base with Mixin`, the mixin
-                    // override semantics still need work — currently
-                    // the class's own methods take priority over the
-                    // mixin's, which is the inverse of Dart's "linearization"
-                    // rule. Acceptable for simple cases.
+                    // Dart linearization is left-to-right with later mixins
+                    // overriding earlier mixins; members declared directly on
+                    // the class still win over all mixins.
                     for m in mm {
-                        if !members
-                            .iter()
-                            .any(|existing| member_name(existing) == member_name(m))
-                        {
-                            members.push(m.clone());
+                        if let Some(name) = member_name(m) {
+                            if original_member_names.contains(&name) {
+                                continue;
+                            }
+                            if same_name_property_member_exists(members, m) {
+                                members.push(m.clone());
+                                continue;
+                            }
+                            members.retain(|existing| member_name(existing).as_deref() != Some(name.as_str()));
                         }
+                        members.push(m.clone());
                     }
                 } else {
                     new_parents.push(parent);
@@ -144,6 +181,1379 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
             }
             *parents = new_parents;
         }
+    }
+}
+
+fn same_name_property_member_exists(members: &[ClassMember], incoming: &ClassMember) -> bool {
+    let ClassMember::Property { name, .. } = incoming else {
+        return false;
+    };
+    members.iter().any(|existing| {
+        matches!(existing, ClassMember::Property { name: existing_name, .. } if existing_name == name)
+    })
+}
+
+fn collect_instance_member_names_for_types(
+    type_names: &[String],
+    class_members_by_name: &HashMap<String, Vec<ClassMember>>,
+    class_parents_by_name: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen_names = HashSet::new();
+    let mut seen_types = HashSet::new();
+    for type_name in type_names {
+        collect_instance_member_names_for_type(
+            type_name,
+            class_members_by_name,
+            class_parents_by_name,
+            &mut seen_types,
+            &mut seen_names,
+            &mut names,
+        );
+    }
+    names
+}
+
+fn collect_instance_member_names_for_type(
+    type_name: &str,
+    class_members_by_name: &HashMap<String, Vec<ClassMember>>,
+    class_parents_by_name: &HashMap<String, Vec<String>>,
+    seen_types: &mut HashSet<String>,
+    seen_names: &mut HashSet<String>,
+    names: &mut Vec<String>,
+) {
+    if !seen_types.insert(type_name.to_string()) {
+        return;
+    }
+    if let Some(parents) = class_parents_by_name.get(type_name) {
+        for parent in parents {
+            collect_instance_member_names_for_type(
+                parent,
+                class_members_by_name,
+                class_parents_by_name,
+                seen_types,
+                seen_names,
+                names,
+            );
+        }
+    }
+    if let Some(members) = class_members_by_name.get(type_name) {
+        for member in members {
+            if let Some(name) = instance_member_name(member) {
+                if seen_names.insert(name.clone()) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+}
+
+fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
+    let mut add_return_types: HashMap<String, Option<String>> = HashMap::new();
+    let mut operator_return_types: HashMap<(String, String), Option<String>> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            for member in members {
+                if let ClassMember::Method(method) = member {
+                    if let StmtKind::FunctionDecl {
+                        name: method_name,
+                        return_type,
+                        modifiers,
+                        ..
+                    } = &method.kind
+                    {
+                        if !modifiers.is_static {
+                            operator_return_types.insert(
+                                (name.clone(), method_name.clone()),
+                                return_type.clone(),
+                            );
+                        }
+                        if method_name == "add" && !modifiers.is_static {
+                            add_return_types.insert(name.clone(), return_type.clone());
+                            operator_return_types.insert(
+                                (name.clone(), DART_USER_ADD_METHOD.to_string()),
+                                return_type.clone(),
+                            );
+                        }
+                    }
+                } else if let ClassMember::Field {
+                    name: field_name,
+                    type_hint: Some(type_hint),
+                    modifiers,
+                    ..
+                } = member
+                {
+                    if !modifiers.is_static {
+                        operator_return_types
+                            .insert((name.clone(), field_name.clone()), Some(type_hint.clone()));
+                    }
+                } else if let ClassMember::Property {
+                    name: property_name,
+                    type_hint,
+                    getter: Some(_),
+                    modifiers,
+                    ..
+                } = member
+                {
+                    if !modifiers.is_static {
+                        if let Some(type_hint) = type_hint {
+                            operator_return_types.insert(
+                                (name.clone(), property_name.clone()),
+                                Some(type_hint.clone()),
+                            );
+                        }
+                    }
+                    if property_name == "hashCode" && !modifiers.is_static {
+                        operator_return_types.insert(
+                            (name.clone(), "__get_hash".to_string()),
+                            type_hint.clone(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for stmt in body.iter_mut() {
+        if let StmtKind::ClassDecl { members, .. } = &mut stmt.kind {
+            for member in members {
+                if let ClassMember::Method(method) = member {
+                    if let StmtKind::FunctionDecl {
+                        name, modifiers, ..
+                    } = &mut method.kind
+                    {
+                        if name == "add" && !modifiers.is_static {
+                            *name = DART_USER_ADD_METHOD.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut env = HashMap::new();
+    rewrite_user_add_calls_in_stmts(
+        body,
+        &mut env,
+        None,
+        &add_return_types,
+        &operator_return_types,
+    );
+}
+
+fn rewrite_user_add_calls_in_stmts(
+    stmts: &mut [Statement],
+    env: &mut HashMap<String, String>,
+    current_class: Option<&str>,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => {
+                rewrite_user_add_calls_in_expr(
+                    expr,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::Block(body) => {
+                let mut block_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut block_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        rewrite_user_add_calls_in_expr(
+                            init,
+                            env,
+                            current_class,
+                            add_return_types,
+                            operator_return_types,
+                        );
+                    }
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if let Some(type_name) = decl
+                            .type_hint
+                            .as_deref()
+                            .filter(|hint| {
+                                dart_user_known_class(hint, add_return_types, operator_return_types)
+                            })
+                            .map(str::to_string)
+                            .or_else(|| {
+                                decl.init
+                                    .as_ref()
+                                    .and_then(|init| {
+                                        dart_user_add_expr_type(
+                                            init,
+                                            env,
+                                            current_class,
+                                            add_return_types,
+                                            operator_return_types,
+                                        )
+                                    })
+                            })
+                        {
+                            env.insert(name.clone(), type_name);
+                        }
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut fn_env = HashMap::new();
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut fn_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::ClassDecl { name, members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                                let mut method_env = HashMap::new();
+                                rewrite_user_add_calls_in_stmts(
+                                    body,
+                                    &mut method_env,
+                                    Some(name),
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            let mut ctor_env = HashMap::new();
+                            rewrite_user_add_calls_in_stmts(
+                                body,
+                                &mut ctor_env,
+                                Some(name),
+                                add_return_types,
+                                operator_return_types,
+                            );
+                        }
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(body) = getter {
+                                let mut prop_env = HashMap::new();
+                                rewrite_user_add_calls_in_stmts(
+                                    body,
+                                    &mut prop_env,
+                                    Some(name),
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                            if let Some(setter) = setter {
+                                let mut prop_env = HashMap::new();
+                                rewrite_user_add_calls_in_stmts(
+                                    &mut setter.body,
+                                    &mut prop_env,
+                                    Some(name),
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                rewrite_user_add_calls_in_expr(
+                    cond,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                let mut then_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    then_body,
+                    &mut then_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                for (elif_cond, elif_body) in elifs {
+                    rewrite_user_add_calls_in_expr(
+                        elif_cond,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                    let mut elif_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        elif_body,
+                        &mut elif_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(body) = else_body {
+                    let mut else_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        body,
+                        &mut else_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                let mut loop_env = env.clone();
+                if let Some(init) = init {
+                    rewrite_user_add_calls_in_stmts(
+                        std::slice::from_mut(init),
+                        &mut loop_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(cond) = cond {
+                    rewrite_user_add_calls_in_expr(
+                        cond,
+                        &mut loop_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(update) = update {
+                    rewrite_user_add_calls_in_expr(
+                        update,
+                        &mut loop_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut loop_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::ForIn { iter, body, .. } => {
+                rewrite_user_add_calls_in_expr(
+                    iter,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                let mut loop_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut loop_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+                rewrite_user_add_calls_in_expr(
+                    cond,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                let mut loop_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut loop_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::Return(expr) | StmtKind::Throw { expr, .. } => {
+                if let Some(expr) = expr {
+                    rewrite_user_add_calls_in_expr(
+                        expr,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                if targets.len() == 1 {
+                    if let Some(call) = dart_user_index_set_call(
+                        &targets[0],
+                        value.clone(),
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    ) {
+                        stmt.kind = StmtKind::Expr(call);
+                        continue;
+                    }
+                    if let Some(call) = dart_index_set_call(&targets[0], value.clone()) {
+                        stmt.kind = StmtKind::Expr(call);
+                        continue;
+                    }
+                }
+                for target in targets {
+                    rewrite_user_add_calls_in_expr(
+                        target,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                rewrite_user_add_calls_in_expr(
+                    value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_user_add_calls_in_expr(
+                    target,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                rewrite_user_add_calls_in_expr(
+                    value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                rewrite_user_add_calls_in_expr(
+                    expr,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                for case in cases {
+                    for cond in &mut case.conditions {
+                        match cond {
+                            CaseCondition::Value(value)
+                            | CaseCondition::Comparison { expr: value, .. } => {
+                                rewrite_user_add_calls_in_expr(
+                                    value,
+                                    env,
+                                    current_class,
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                            CaseCondition::Range { from, to } => {
+                                rewrite_user_add_calls_in_expr(
+                                    from,
+                                    env,
+                                    current_class,
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                                rewrite_user_add_calls_in_expr(
+                                    to,
+                                    env,
+                                    current_class,
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                        }
+                    }
+                    let mut case_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        &mut case.body,
+                        &mut case_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(body) = default {
+                    let mut default_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        body,
+                        &mut default_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                let mut try_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    body,
+                    &mut try_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+                for catch in catches {
+                    let mut catch_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        &mut catch.body,
+                        &mut catch_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(body) = else_body {
+                    let mut else_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        body,
+                        &mut else_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                if let Some(body) = finally {
+                    let mut finally_env = env.clone();
+                    rewrite_user_add_calls_in_stmts(
+                        body,
+                        &mut finally_env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_user_add_calls_in_expr(
+    expr: &mut Expression,
+    env: &HashMap<String, String>,
+    current_class: Option<&str>,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            rewrite_user_add_calls_in_expr(
+                object,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            if field == "add" {
+                if let Some(type_name) =
+                    dart_user_add_expr_type(
+                        object,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    )
+                {
+                    if add_return_types.contains_key(&type_name) {
+                        *field = DART_USER_ADD_METHOD.to_string();
+                    }
+                }
+            } else if field == "hashCode" {
+                if let Some(type_name) = dart_user_add_expr_type(
+                    object,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types.contains_key(&(type_name, "__get_hash".to_string())) {
+                        let object = (**object).clone();
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(object),
+                                field: "__get_hash".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        };
+                    } else {
+                        let object = (**object).clone();
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_hash_code")),
+                            args: vec![Argument::positional(object)],
+                            optional: false,
+                        };
+                    }
+                } else {
+                    let object = (**object).clone();
+                    expr.kind = ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dart_hash_code")),
+                        args: vec![Argument::positional(object)],
+                        optional: false,
+                    };
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_user_add_calls_in_expr(
+                callee,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            for arg in &mut *args {
+                rewrite_user_add_calls_in_expr(
+                    &mut arg.value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__dart_index_get")
+                && args.len() == 2
+            {
+                let object = args[0].value.clone();
+                let index = args[1].value.clone();
+                if let Some(type_name) = dart_user_add_expr_type(
+                    &object,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types
+                        .contains_key(&(type_name, "__getitem__".to_string()))
+                    {
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(object),
+                                field: "__getitem__".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(index)],
+                            optional: false,
+                        };
+                    }
+                }
+            } else if matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if matches!(&object.kind, ExprKind::Ident(name) if name == "int")
+                        && matches!(field.as_str(), "parse" | "tryParse")
+            ) {
+                for arg in args {
+                    if matches!(arg.name.as_deref(), Some("radix")) {
+                        arg.name = None;
+                    }
+                }
+            } else if matches!(&callee.kind, ExprKind::Ident(name) if name == "__dart_eq")
+                && args.len() == 2
+            {
+                let left = args[0].value.clone();
+                let right = args[1].value.clone();
+                if let Some(type_name) = dart_user_add_expr_type(
+                    &left,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types.contains_key(&(type_name, "__eq__".to_string())) {
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(left),
+                                field: "__eq__".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(right)],
+                            optional: false,
+                        };
+                    }
+                }
+            } else if !matches!(&callee.kind, ExprKind::Member { field, .. } if field == "call")
+            {
+                if let Some(type_name) = dart_user_add_expr_type(
+                    callee,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types.contains_key(&(type_name, "call".to_string())) {
+                        let object = (**callee).clone();
+                        let call_args = args.clone();
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Index {
+                                object: Box::new(object),
+                                index: Box::new(Expression::string("call")),
+                                null_safe: false,
+                            })),
+                            args: call_args,
+                            optional: false,
+                        };
+                    }
+                }
+            }
+        }
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                rewrite_user_add_calls_in_expr(
+                    &mut arg.value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_user_add_calls_in_expr(
+                left,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            rewrite_user_add_calls_in_expr(
+                right,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            if let ExprKind::Binary { op, left, right } = &expr.kind {
+                if let Some(method_name) = dart_user_binary_operator_method(op) {
+                    if let Some(type_name) = dart_user_add_expr_type(
+                        left,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    ) {
+                        if operator_return_types
+                            .contains_key(&(type_name, method_name.to_string()))
+                        {
+                            expr.kind = ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new((**left).clone()),
+                                    field: method_name.to_string(),
+                                    null_safe: false,
+                                })),
+                                args: vec![Argument::positional((**right).clone())],
+                                optional: false,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            rewrite_user_add_calls_in_expr(
+                inner,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            if let Some(method_name) = dart_user_unary_operator_method(op) {
+                if let Some(type_name) = dart_user_add_expr_type(
+                    inner,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types.contains_key(&(type_name, method_name.to_string())) {
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new((**inner).clone()),
+                                field: method_name.to_string(),
+                                null_safe: false,
+                            })),
+                            args: Vec::new(),
+                            optional: false,
+                        };
+                    }
+                }
+            }
+        }
+        ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Spread(inner)
+        | ExprKind::RefLoad(inner)
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner) => {
+            rewrite_user_add_calls_in_expr(
+                inner,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_user_add_calls_in_expr(
+                cond,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            rewrite_user_add_calls_in_expr(
+                then,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            rewrite_user_add_calls_in_expr(
+                else_,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_user_add_calls_in_expr(
+                object,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            rewrite_user_add_calls_in_expr(
+                index,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            if let ExprKind::Index { object, index, .. } = &expr.kind {
+                if let Some(type_name) = dart_user_add_expr_type(
+                    object,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                ) {
+                    if operator_return_types
+                        .contains_key(&(type_name, "__getitem__".to_string()))
+                    {
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new((**object).clone()),
+                                field: "__getitem__".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional((**index).clone())],
+                            optional: false,
+                        };
+                    }
+                }
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_user_add_calls_in_expr(
+                value,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            if let Some(call) = dart_user_index_set_call(
+                target,
+                (**value).clone(),
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            ) {
+                expr.kind = call.kind;
+            } else if let Some(call) = dart_index_set_call(target, (**value).clone()) {
+                *expr = call;
+                return;
+            } else {
+                rewrite_user_add_calls_in_expr(
+                    target,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                if let Some(key) = &mut elem.key {
+                    rewrite_user_add_calls_in_expr(
+                        key,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+                rewrite_user_add_calls_in_expr(
+                    &mut elem.value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_user_add_calls_in_expr(
+                    item,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_user_add_calls_in_expr(
+                    value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { value, .. } = prop {
+                    rewrite_user_add_calls_in_expr(
+                        value,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(value) | InterpolPart::Formatted(value, _) = part {
+                    rewrite_user_add_calls_in_expr(
+                        value,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    );
+                }
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(value) => {
+                rewrite_user_add_calls_in_expr(
+                    value,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+            LambdaBody::Block(stmts) => {
+                let mut lambda_env = env.clone();
+                rewrite_user_add_calls_in_stmts(
+                    stmts,
+                    &mut lambda_env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        },
+        ExprKind::IsType { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
+            rewrite_user_add_calls_in_expr(
+                inner,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_user_add_calls_in_expr(
+                left,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            rewrite_user_add_calls_in_expr(
+                right,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_user_add_calls_in_expr(
+                subject,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            );
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        rewrite_user_add_calls_in_expr(
+                            condition,
+                            env,
+                            current_class,
+                            add_return_types,
+                            operator_return_types,
+                        );
+                    }
+                }
+                rewrite_user_add_calls_in_expr(
+                    &mut arm.body,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn dart_user_binary_operator_method(op: &BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator+"),
+        BinOp::Sub => Some("operator-"),
+        BinOp::Mul => Some("operator*"),
+        BinOp::Div => Some("operator/"),
+        BinOp::IDiv => Some("operator~/"),
+        BinOp::Mod => Some("operator%"),
+        BinOp::Eq | BinOp::StrictEq => Some("__eq__"),
+        BinOp::Lt => Some("operator<"),
+        BinOp::Gt => Some("operator>"),
+        BinOp::LtEq => Some("operator<="),
+        BinOp::GtEq => Some("operator>="),
+        BinOp::BitAnd => Some("operator&"),
+        BinOp::BitOr => Some("operator|"),
+        BinOp::BitXor => Some("operator^"),
+        BinOp::Shl => Some("operator<<"),
+        BinOp::Shr => Some("operator>>"),
+        BinOp::UShr => Some("operator>>>"),
+        _ => None,
+    }
+}
+
+fn dart_user_unary_operator_method(op: &UnaryOp) -> Option<&'static str> {
+    match op {
+        UnaryOp::Neg => Some("operator-@unary"),
+        UnaryOp::BitNot => Some("operator~"),
+        _ => None,
+    }
+}
+
+fn dart_user_known_class(
+    name: &str,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) -> bool {
+    add_return_types.contains_key(name)
+        || operator_return_types
+            .keys()
+            .any(|(class_name, _)| class_name == name)
+}
+
+fn dart_index_set_call(target: &Expression, value: Expression) -> Option<Expression> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__dart_index_set")),
+        args: vec![
+            Argument::positional((**object).clone()),
+            Argument::positional((**index).clone()),
+            Argument::positional(value),
+        ],
+        optional: false,
+    }))
+}
+
+fn dart_user_index_set_call(
+    target: &Expression,
+    value: Expression,
+    env: &HashMap<String, String>,
+    current_class: Option<&str>,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) -> Option<Expression> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    let type_name = dart_user_add_expr_type(
+        object,
+        env,
+        current_class,
+        add_return_types,
+        operator_return_types,
+    )?;
+    if !operator_return_types.contains_key(&(type_name, "__setitem__".to_string())) {
+        return None;
+    }
+    let mut object = (**object).clone();
+    let mut index = (**index).clone();
+    rewrite_user_add_calls_in_expr(
+        &mut object,
+        env,
+        current_class,
+        add_return_types,
+        operator_return_types,
+    );
+    rewrite_user_add_calls_in_expr(
+        &mut index,
+        env,
+        current_class,
+        add_return_types,
+        operator_return_types,
+    );
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: "__setitem__".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(index), Argument::positional(value)],
+        optional: false,
+    }))
+}
+
+fn dart_user_add_expr_type(
+    expr: &Expression,
+    env: &HashMap<String, String>,
+    current_class: Option<&str>,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::This => current_class.map(str::to_string),
+        ExprKind::Ident(name) => env.get(name).cloned(),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name)
+                if dart_user_known_class(name, add_return_types, operator_return_types) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        },
+        ExprKind::Member { object, field, .. } => {
+            let owner = dart_user_add_expr_type(
+                object,
+                env,
+                current_class,
+                add_return_types,
+                operator_return_types,
+            )?;
+            operator_return_types
+                .get(&(owner, field.clone()))
+                .and_then(|ret| ret.clone())
+        }
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name)
+                if dart_user_known_class(name, add_return_types, operator_return_types) =>
+            {
+                Some(name.clone())
+            }
+            ExprKind::Member { object, field, .. } => {
+                let owner = dart_user_add_expr_type(
+                    object,
+                    env,
+                    current_class,
+                    add_return_types,
+                    operator_return_types,
+                )?;
+                operator_return_types
+                    .get(&(owner, field.clone()))
+                    .and_then(|ret| ret.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn rewrite_inherited_instance_member_idents(
+    body: &mut Vec<Statement>,
+    mixin_names: &std::collections::HashSet<String>,
+) {
+    let mut class_members_by_name: HashMap<String, Vec<ClassMember>> = HashMap::new();
+    let mut class_parents_by_name: HashMap<String, Vec<String>> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            class_members_by_name.insert(name.clone(), members.clone());
+            class_parents_by_name.insert(name.clone(), parents.clone());
+        }
+    }
+
+    for stmt in body.iter_mut() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &mut stmt.kind
+        {
+            if mixin_names.contains(name) || parents.is_empty() {
+                continue;
+            }
+            let extra_members = collect_instance_member_names_for_types(
+                parents,
+                &class_members_by_name,
+                &class_parents_by_name,
+            );
+            let extra_refs: Vec<&str> = extra_members.iter().map(String::as_str).collect();
+            rewrite_instance_member_idents(members, &extra_refs);
+        }
+    }
+}
+
+fn apply_inherited_concrete_members(
+    body: &mut Vec<Statement>,
+    mixin_names: &std::collections::HashSet<String>,
+) {
+    let mut classes: HashMap<String, (Vec<String>, Vec<ClassMember>)> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            classes.insert(name.clone(), (parents.clone(), members.clone()));
+        }
+    }
+
+    for stmt in body.iter_mut() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &mut stmt.kind
+        {
+            if mixin_names.contains(name) || parents.is_empty() {
+                continue;
+            }
+            let mut existing: HashSet<String> =
+                members.iter().filter_map(member_name).collect();
+            let mut inherited = Vec::new();
+            for parent in parents.iter() {
+                collect_inherited_concrete_members(parent, &classes, &mut HashSet::new(), &mut inherited);
+            }
+            for member in inherited {
+                if let Some(name) = member_name(&member) {
+                    if existing.insert(name) {
+                        members.push(member);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_inherited_concrete_members(
+    class_name: &str,
+    classes: &HashMap<String, (Vec<String>, Vec<ClassMember>)>,
+    seen: &mut HashSet<String>,
+    out: &mut Vec<ClassMember>,
+) {
+    if !seen.insert(class_name.to_string()) {
+        return;
+    }
+    let Some((parents, members)) = classes.get(class_name) else {
+        return;
+    };
+    for parent in parents {
+        collect_inherited_concrete_members(parent, classes, seen, out);
+    }
+    for member in members {
+        if let Some(member) = inheritable_concrete_member(member) {
+            out.push(member);
+        }
+    }
+}
+
+fn inheritable_concrete_member(member: &ClassMember) -> Option<ClassMember> {
+    match member {
+        ClassMember::Method(stmt) => match &stmt.kind {
+            StmtKind::FunctionDecl {
+                body, modifiers, ..
+            } if !modifiers.is_static && !modifiers.is_abstract && !body.is_empty() => {
+                Some(member.clone())
+            }
+            _ => None,
+        },
+        ClassMember::Property {
+            getter,
+            setter,
+            modifiers,
+            ..
+        } if !modifiers.is_static && (getter.is_some() || setter.is_some()) => Some(member.clone()),
+        _ => None,
     }
 }
 
@@ -160,6 +1570,24 @@ fn member_name(m: &ClassMember) -> Option<String> {
     }
 }
 
+fn instance_member_name(m: &ClassMember) -> Option<String> {
+    match m {
+        ClassMember::Field {
+            name, modifiers, ..
+        } if !modifiers.is_static => Some(name.clone()),
+        ClassMember::Method(stmt) => match &stmt.kind {
+            StmtKind::FunctionDecl {
+                name, modifiers, ..
+            } if !modifiers.is_static => Some(name.clone()),
+            _ => None,
+        },
+        ClassMember::Property {
+            name, modifiers, ..
+        } if !modifiers.is_static => Some(name.clone()),
+        _ => None,
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Top-level items
 // ════════════════════════════════════════════════════════════════════════════
@@ -169,6 +1597,7 @@ fn walk_top_level(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     let kind = match pair.as_rule() {
         Rule::class_declaration => walk_class_decl(pair)?,
         Rule::mixin_declaration => walk_mixin_decl(pair)?,
+        Rule::extension_type_declaration => walk_extension_type_decl(pair)?,
         Rule::extension_declaration => walk_extension_decl(pair)?,
         Rule::enum_declaration => walk_enum_decl(pair)?,
         Rule::typedef_declaration => return Ok(None), // type aliases are discarded
@@ -322,6 +1751,25 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             })
         }
 
+        Rule::labeled_statement => {
+            let mut inner = pair.into_inner();
+            let label = inner
+                .next()
+                .ok_or("labeled statement: missing label")?
+                .as_str()
+                .to_string();
+            let body = walk_statement(
+                inner
+                    .next()
+                    .ok_or("labeled statement: missing body")?,
+            )?
+            .ok_or("labeled statement: empty body")?;
+            StmtKind::Labeled {
+                label,
+                body: Box::new(body),
+            }
+        }
+
         Rule::throw_statement => {
             let inner = pair.into_inner().next().ok_or("throw: missing expr")?;
             let expr = walk_expression(inner)?;
@@ -423,9 +1871,27 @@ fn walk_var_decl_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
             }
-            Rule::var_declarator => {
+            Rule::typed_var_declarator => {
                 let decl = walk_var_declarator(p, type_hint.clone())?;
                 declarations.push(decl);
+            }
+            Rule::var_declarator => {
+                if let Some(block) =
+                    lower_destructuring_var_declarator(p.clone(), var_kind.clone(), declarations.len())?
+                {
+                    if !declarations.is_empty() {
+                        let mut body = vec![Statement::new(StmtKind::VarDecl {
+                            declarations,
+                            kind: var_kind,
+                        })];
+                        body.extend(block);
+                        return Ok(StmtKind::Block(body));
+                    }
+                    return Ok(StmtKind::Block(block));
+                } else {
+                    let decl = walk_var_declarator(p, type_hint.clone())?;
+                    declarations.push(decl);
+                }
             }
             _ => {}
         }
@@ -465,6 +1931,256 @@ fn walk_var_declarator(
     })
 }
 
+fn lower_destructuring_var_declarator(
+    pair: Pair<Rule>,
+    kind: VarDeclKind,
+    ordinal: usize,
+) -> Result<Option<Vec<Statement>>, String> {
+    let span = to_span(&pair);
+    let mut pattern = None;
+    let mut init = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::destructuring_pattern => {
+                pattern = p.into_inner().next();
+            }
+            Rule::assignment_expression => init = Some(walk_expression(p)?),
+            _ => {}
+        }
+    }
+    let Some(pattern) = pattern else {
+        return Ok(None);
+    };
+    let tmp = format!(
+        "__dart_destructure_{}_{}_{}",
+        span.start_line, span.start_col, ordinal
+    );
+    let subject = Expression::ident(&tmp);
+    let bindings = dart_decl_pattern_bindings(pattern, &subject)?;
+    let mut body = Vec::new();
+    body.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(tmp),
+            type_hint: None,
+            init: Some(init.unwrap_or_else(Expression::null)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+    for (name, value) in bindings {
+        body.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name),
+                type_hint: None,
+                init: Some(value),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: kind.clone(),
+        }));
+    }
+    Ok(Some(body))
+}
+
+fn lower_for_in_header_parts(
+    header_inner: Pair<Rule>,
+    mut body: Vec<Statement>,
+) -> Result<(String, Expression, Vec<Statement>), String> {
+    let span = to_span(&header_inner);
+    let mut var_name = String::new();
+    let mut iter_expr = None;
+    let mut pattern = None;
+
+    for p in header_inner.into_inner() {
+        match p.as_rule() {
+            Rule::final_kw | Rule::var_kw | Rule::type_annotation => {}
+            Rule::destructuring_pattern => pattern = p.into_inner().next(),
+            Rule::ident_name => var_name = p.as_str().to_string(),
+            _ => iter_expr = Some(walk_expression(p)?),
+        }
+    }
+
+    if let Some(pattern) = pattern {
+        var_name = format!("__dart_for_in_{}_{}", span.start_line, span.start_col);
+        let subject = Expression::ident(&var_name);
+        let bindings = dart_decl_pattern_bindings(pattern, &subject)?;
+        let mut prefix = Vec::new();
+        for (name, value) in bindings {
+            prefix.push(Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name),
+                    type_hint: None,
+                    init: Some(value),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }));
+        }
+        prefix.extend(body);
+        body = prefix;
+    }
+
+    Ok((
+        var_name,
+        iter_expr.ok_or("for-in: missing iterable")?,
+        body,
+    ))
+}
+
+fn dart_decl_pattern_bindings(
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Result<Vec<(String, Expression)>, String> {
+    match pair.as_rule() {
+        Rule::destructuring_pattern | Rule::pattern | Rule::primary_pattern => {
+            let mut out = Vec::new();
+            for child in pair.into_inner() {
+                out.extend(dart_decl_pattern_bindings(child, subject)?);
+            }
+            Ok(out)
+        }
+        Rule::record_pattern => {
+            let is_grouping_pattern = !pair.as_str().contains(',');
+            let mut out = Vec::new();
+            let mut index = 0usize;
+            let fields: Vec<Pair<Rule>> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::record_pattern_field)
+                .collect();
+            if is_grouping_pattern && fields.len() == 1 {
+                let children: Vec<Pair<Rule>> = fields[0].clone().into_inner().collect();
+                if children.len() == 1 {
+                    return dart_decl_pattern_bindings(children[0].clone(), subject);
+                }
+            }
+            for field in fields {
+                let children: Vec<Pair<Rule>> = field.into_inner().collect();
+                let (target, pat) = if children.len() == 2 {
+                    (
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(subject.clone()),
+                            field: children[0].as_str().to_string(),
+                            null_safe: false,
+                        }),
+                        children[1].clone(),
+                    )
+                } else {
+                    let target = Expression::new(ExprKind::Index {
+                        object: Box::new(subject.clone()),
+                        index: Box::new(Expression::int(index as i64)),
+                        null_safe: false,
+                    });
+                    index += 1;
+                    (target, children[0].clone())
+                };
+                out.extend(dart_decl_pattern_bindings(pat, &target)?);
+            }
+            Ok(out)
+        }
+        Rule::list_pattern => {
+            let mut out = Vec::new();
+            let mut index = 0usize;
+            for elem in pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::list_pattern_element)
+            {
+                let child = elem.into_inner().next().ok_or("list pattern: empty")?;
+                if child.as_rule() == Rule::rest_pattern {
+                    if let Some(name) = child
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::ident_name)
+                        .map(|p| p.as_str().to_string())
+                    {
+                        if name != "_" {
+                            out.push((
+                                name,
+                                dart_method_call(
+                                    subject.clone(),
+                                    "sublist",
+                                    vec![Expression::int(index as i64)],
+                                ),
+                            ));
+                        }
+                    }
+                    continue;
+                }
+                let target = Expression::new(ExprKind::Index {
+                    object: Box::new(subject.clone()),
+                    index: Box::new(Expression::int(index as i64)),
+                    null_safe: false,
+                });
+                out.extend(dart_decl_pattern_bindings(child, &target)?);
+                index += 1;
+            }
+            Ok(out)
+        }
+        Rule::map_pattern => {
+            let mut out = Vec::new();
+            for entry in pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::map_pattern_entry)
+            {
+                let mut inner = entry.into_inner();
+                let key = walk_expression(inner.next().ok_or("map pattern: missing key")?)?;
+                let pat = inner.next().ok_or("map pattern: missing value")?;
+                let target = Expression::new(ExprKind::Index {
+                    object: Box::new(subject.clone()),
+                    index: Box::new(key),
+                    null_safe: false,
+                });
+                out.extend(dart_decl_pattern_bindings(pat, &target)?);
+            }
+            Ok(out)
+        }
+        Rule::object_pattern => {
+            let mut out = Vec::new();
+            for field in pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::object_pattern_field)
+            {
+                let mut inner = field.into_inner();
+                let name = inner
+                    .next()
+                    .ok_or("object pattern: missing field")?
+                    .as_str()
+                    .to_string();
+                let pat = inner.next().ok_or("object pattern: missing pattern")?;
+                let target = Expression::new(ExprKind::Member {
+                    object: Box::new(subject.clone()),
+                    field: name,
+                    null_safe: false,
+                });
+                out.extend(dart_decl_pattern_bindings(pat, &target)?);
+            }
+            Ok(out)
+        }
+        Rule::variable_pattern => {
+            let name = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::ident_name)
+                .map(|p| p.as_str().to_string());
+            Ok(name
+                .filter(|name| name != "_")
+                .map(|name| vec![(name, subject.clone())])
+                .unwrap_or_default())
+        }
+        Rule::constant_pattern => {
+            let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if children.len() == 1 && children[0].as_rule() == Rule::ident_name {
+                let name = children[0].as_str().to_string();
+                if name != "_" {
+                    return Ok(vec![(name, subject.clone())]);
+                }
+            }
+            Ok(Vec::new())
+        }
+        Rule::wildcard_pattern => Ok(Vec::new()),
+        _ => Ok(Vec::new()),
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Function declarations
 // ════════════════════════════════════════════════════════════════════════════
@@ -499,6 +2215,11 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    if is_async && !is_generator && body.is_empty() {
+        body.push(Statement::new(StmtKind::Return(Some(dart_future_value(
+            Expression::null(),
+        )))));
+    }
     is_generator = is_generator || body_has_yield(&body);
 
     Ok(StmtKind::FunctionDecl {
@@ -523,6 +2244,13 @@ fn walk_function_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             Rule::arrow_body => {
                 // arrow_body = { "=>" ~ expression ~ ";" }
                 let expr_pair = p.into_inner().next().ok_or("arrow body: no expr")?;
+                if expr_pair.as_rule() == Rule::throw_expression {
+                    let thrown = walk_throw_expression(expr_pair)?;
+                    return Ok(vec![Statement::new(StmtKind::Throw {
+                        expr: Some(thrown),
+                        cause: None,
+                    })]);
+                }
                 let expr = walk_expression(expr_pair)?;
                 Ok(vec![Statement::new(StmtKind::Return(Some(expr)))])
             }
@@ -574,11 +2302,61 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     Ok(out)
 }
 
+fn walk_lambda_param_pair(lparam: Pair<Rule>) -> Result<Param, String> {
+    let mut name = String::new();
+    let mut type_hint: Option<String> = None;
+    let mut default = None;
+    for inner in lparam.into_inner() {
+        match inner.as_rule() {
+            Rule::ident_name => name = inner.as_str().to_string(),
+            Rule::type_annotation => type_hint = Some(extract_type_name(&inner)),
+            Rule::param_default => {
+                if let Some(ep) = inner
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::assignment_expression)
+                {
+                    default = Some(walk_expression(ep)?);
+                }
+            }
+            Rule::typed_lambda_param => {
+                for ti in inner.into_inner() {
+                    match ti.as_rule() {
+                        Rule::ident_name => name = ti.as_str().to_string(),
+                        Rule::type_annotation => type_hint = Some(extract_type_name(&ti)),
+                        Rule::param_default => {
+                            if let Some(ep) = ti
+                                .into_inner()
+                                .find(|c| c.as_rule() == Rule::assignment_expression)
+                            {
+                                default = Some(walk_expression(ep)?);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let is_optional = default.is_some();
+    Ok(Param {
+        name,
+        type_hint,
+        default,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional,
+        is_nullable: false,
+    })
+}
+
 fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut is_this_param = false;
+    let mut is_super_param = false;
 
     fn handle(
         p: Pair<Rule>,
@@ -586,16 +2364,18 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
         type_hint: &mut Option<String>,
         default: &mut Option<Expression>,
         is_this: &mut bool,
+        is_super: &mut bool,
     ) -> Result<(), String> {
         match p.as_rule() {
             Rule::required_kw | Rule::covariant_kw | Rule::final_kw => {}
             Rule::this_param_prefix => *is_this = true,
+            Rule::super_param_prefix => *is_super = true,
             Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
             Rule::ident_name => *name = p.as_str().to_string(),
-            Rule::this_param | Rule::typed_or_untyped_param => {
+            Rule::this_param | Rule::super_param | Rule::typed_or_untyped_param => {
                 // Unwrap the wrapper rule and recurse into its children.
                 for inner in p.into_inner() {
-                    handle(inner, name, type_hint, default, is_this)?;
+                    handle(inner, name, type_hint, default, is_this, is_super)?;
                 }
             }
             Rule::param_default => {
@@ -617,12 +2397,13 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
             &mut type_hint,
             &mut default,
             &mut is_this_param,
+            &mut is_super_param,
         )?;
     }
 
     // this.field params: we keep the bare name. The constructor walker
     // will synthesise `this.name = name;` assignments.
-    let _ = is_this_param; // info consumed by constructor_declaration walker
+    let _ = (is_this_param, is_super_param); // info consumed by constructor_declaration walker
 
     let is_optional = default.is_some();
     Ok(Param {
@@ -637,12 +2418,13 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
     })
 }
 
-/// Walk a param and also return whether it was a `this.x` param.
-fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool), String> {
+/// Walk a param and also return whether it was a `this.x` or `super.x` param.
+fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool, bool), String> {
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut is_this_param = false;
+    let mut is_super_param = false;
 
     fn handle(
         p: Pair<Rule>,
@@ -650,15 +2432,17 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool), String> {
         type_hint: &mut Option<String>,
         default: &mut Option<Expression>,
         is_this: &mut bool,
+        is_super: &mut bool,
     ) -> Result<(), String> {
         match p.as_rule() {
             Rule::required_kw | Rule::covariant_kw | Rule::final_kw => {}
             Rule::this_param_prefix => *is_this = true,
+            Rule::super_param_prefix => *is_super = true,
             Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
             Rule::ident_name => *name = p.as_str().to_string(),
-            Rule::this_param | Rule::typed_or_untyped_param => {
+            Rule::this_param | Rule::super_param | Rule::typed_or_untyped_param => {
                 for inner in p.into_inner() {
-                    handle(inner, name, type_hint, default, is_this)?;
+                    handle(inner, name, type_hint, default, is_this, is_super)?;
                 }
             }
             Rule::param_default => {
@@ -680,6 +2464,7 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool), String> {
             &mut type_hint,
             &mut default,
             &mut is_this_param,
+            &mut is_super_param,
         )?;
     }
 
@@ -694,7 +2479,7 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool), String> {
         is_optional,
         is_nullable: false,
     };
-    Ok((param, is_this_param))
+    Ok((param, is_this_param, is_super_param))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -812,6 +2597,9 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
+    rewrite_instance_member_idents(&mut members, &[]);
+
+    rewrite_instance_member_idents(&mut members, &[]);
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -907,7 +2695,11 @@ fn rewrite_static_idents_expr(expr: &mut Expression, class_name: &str, static_fi
             if static_fields.iter().any(|f| f == n) {
                 let name = n.clone();
                 expr.kind = ExprKind::Member {
-                    object: Box::new(Expression::ident(class_name)),
+                    object: Box::new(if class_name == "__dart_instance" {
+                        Expression::new(ExprKind::This)
+                    } else {
+                        Expression::ident(class_name)
+                    }),
                     field: name,
                     null_safe: false,
                 };
@@ -954,9 +2746,188 @@ fn rewrite_static_idents_expr(expr: &mut Expression, class_name: &str, static_fi
                 }
             }
         }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(value) | InterpolPart::Formatted(value, _) = part {
+                    rewrite_static_idents_expr(value, class_name, static_fields);
+                }
+            }
+        }
         _ => {}
     }
 }
+
+/// Dart permits unqualified reads, writes, and calls of instance members in
+/// instance methods. The common ECMA class path receives `this` ambiently, so
+/// make that receiver explicit in the AST instead of relying on a synthetic
+/// positional self argument.
+fn rewrite_instance_member_idents(members: &mut [ClassMember], extra_members: &[&str]) {
+    let mut instance_members: Vec<String> = members
+        .iter()
+        .filter_map(instance_member_name)
+        .collect();
+    instance_members.extend(extra_members.iter().map(|name| (*name).to_string()));
+    if instance_members.is_empty() {
+        return;
+    }
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl {
+                    body, modifiers, ..
+                } = &mut stmt.kind
+                {
+                    if !modifiers.is_static {
+                        for stmt in body {
+                            rewrite_static_idents(stmt, "__dart_instance", &instance_members);
+                        }
+                    }
+                }
+            }
+            ClassMember::Property {
+                name,
+                getter: Some(body),
+                modifiers,
+                ..
+            } if name == "hashCode" && !modifiers.is_static => {
+                for stmt in body {
+                    rewrite_static_idents(stmt, "__dart_instance", &instance_members);
+                    rewrite_this_to_self_ident(stmt);
+                }
+            }
+            ClassMember::Property {
+                getter: Some(body),
+                modifiers,
+                ..
+            } if !modifiers.is_static => {
+                for stmt in body {
+                    rewrite_static_idents(stmt, "__dart_instance", &instance_members);
+                    rewrite_this_to_self_ident(stmt);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_this_to_self_ident(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            rewrite_this_to_self_ident_expr(expr);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_this_to_self_ident_expr(init);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_this_to_self_ident_expr(target);
+            }
+            rewrite_this_to_self_ident_expr(value);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_this_to_self_ident_expr(target);
+            rewrite_this_to_self_ident_expr(value);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_this_to_self_ident_expr(cond);
+            for stmt in then_body {
+                rewrite_this_to_self_ident(stmt);
+            }
+            for (cond, body) in elifs {
+                rewrite_this_to_self_ident_expr(cond);
+                for stmt in body {
+                    rewrite_this_to_self_ident(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_this_to_self_ident(stmt);
+                }
+            }
+        }
+        StmtKind::Block(body) => {
+            for stmt in body {
+                rewrite_this_to_self_ident(stmt);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_this_to_self_ident_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::This => {
+            *expr = Expression::ident("this");
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_this_to_self_ident_expr(left);
+            rewrite_this_to_self_ident_expr(right);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Cast { expr, .. } => rewrite_this_to_self_ident_expr(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_this_to_self_ident_expr(cond);
+            rewrite_this_to_self_ident_expr(then);
+            rewrite_this_to_self_ident_expr(else_);
+        }
+        ExprKind::Member { object, .. } => rewrite_this_to_self_ident_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_this_to_self_ident_expr(object);
+            rewrite_this_to_self_ident_expr(index);
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            rewrite_this_to_self_ident_expr(callee);
+            for arg in args {
+                rewrite_this_to_self_ident_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_this_to_self_ident_expr(target);
+            rewrite_this_to_self_ident_expr(value);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_this_to_self_ident_expr(&mut item.value);
+                if let Some(key) = &mut item.key {
+                    rewrite_this_to_self_ident_expr(key);
+                }
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_this_to_self_ident_expr(key);
+                        rewrite_this_to_self_ident_expr(value);
+                    }
+                    ObjectProperty::Spread(value) => rewrite_this_to_self_ident_expr(value),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_this_to_self_ident_expr(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 
 fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
@@ -1015,6 +2986,8 @@ fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    rewrite_instance_member_idents(&mut members, &[]);
+
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -1068,6 +3041,114 @@ fn walk_extension_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             is_static: true,
             ..Default::default()
         },
+        decorators: vec![],
+    })
+}
+
+fn walk_extension_type_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut name = String::new();
+    let mut representation_name = String::new();
+    let mut representation_type: Option<String> = None;
+    let mut interfaces = Vec::new();
+    let mut members = Vec::new();
+
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            Rule::ident_name => {
+                if name.is_empty() {
+                    name = part.as_str().to_string();
+                } else if representation_name.is_empty() {
+                    representation_name = part.as_str().to_string();
+                }
+            }
+            Rule::type_annotation => {
+                if representation_type.is_none() {
+                    representation_type = Some(extract_type_name(&part));
+                }
+            }
+            Rule::implements_clause => {
+                for item in part.into_inner() {
+                    if item.as_rule() == Rule::type_annotation_list {
+                        for ty in item.into_inner() {
+                            if ty.as_rule() == Rule::type_annotation {
+                                interfaces.push(extract_type_name(&ty));
+                            }
+                        }
+                    }
+                }
+            }
+            Rule::class_body => {
+                for member in part.into_inner() {
+                    match member.as_rule() {
+                        Rule::constructor_declaration
+                        | Rule::operator_declaration
+                        | Rule::getter_declaration
+                        | Rule::setter_declaration
+                        | Rule::method_declaration
+                        | Rule::field_declaration => {
+                            if let Some(member) = walk_class_member(member, &name)? {
+                                members.push(member);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if representation_name.is_empty() {
+        representation_name = "representation".to_string();
+    }
+    rewrite_instance_member_idents(&mut members, &[representation_name.as_str()]);
+    let type_hint = representation_type.unwrap_or_else(|| "dynamic".to_string());
+    members.insert(
+        0,
+        ClassMember::Field {
+            name: representation_name.clone(),
+            type_hint: Some(type_hint.clone()),
+            init: None,
+            modifiers: Modifiers::default(),
+            with_events: false,
+            array_bounds: None,
+        },
+    );
+    members.insert(
+        1,
+        ClassMember::Constructor {
+            name: None,
+            params: vec![Param {
+                name: representation_name.clone(),
+                type_hint: Some(type_hint),
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: vec![Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: representation_name.clone(),
+                        null_safe: false,
+                    })),
+                    value: Box::new(Expression::ident(&representation_name)),
+                },
+            )))],
+            base_args: None,
+            initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        },
+    );
+    Ok(StmtKind::ClassDecl {
+        name,
+        parents: Vec::new(),
+        interfaces,
+        members,
+        modifiers: ClassModifiers::default(),
         decorators: vec![],
     })
 }
@@ -1150,14 +3231,157 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::EnumDecl {
+    // Ordinary enums use the compiler's compact Dart enum representation.
+    // Enhanced enums need real instances: their value constructors initialize
+    // fields and their methods run with an instance receiver. Normalize those
+    // to the shared class model, as PHP does for its enum singletons.
+    let is_enhanced = !body_members.is_empty()
+        || members
+            .iter()
+            .any(|member| !member.constructor_args.is_empty());
+    if !is_enhanced {
+        return Ok(StmtKind::EnumDecl {
+            name,
+            interfaces,
+            members,
+            visibility: Visibility::Public,
+            is_flags: false,
+            backing_type: None,
+            body_members,
+            decorators: vec![],
+        });
+    }
+
+    rewrite_instance_member_idents(&mut body_members, &["index", "name"]);
+
+    let static_modifiers = Modifiers {
+        is_static: true,
+        ..Modifiers::default()
+    };
+    let assign_this = |field: &str, value: Expression| {
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: field.to_string(),
+                null_safe: false,
+            })),
+            value: Box::new(value),
+        })))
+    };
+    let enum_param = |param_name: &str| Param {
+        name: param_name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+
+    let mut class_members = body_members;
+    class_members.insert(
+        0,
+        ClassMember::Field {
+            name: "index".to_string(),
+            type_hint: Some("int".to_string()),
+            init: None,
+            modifiers: Modifiers::default(),
+            with_events: false,
+            array_bounds: None,
+        },
+    );
+    class_members.insert(
+        1,
+        ClassMember::Field {
+            name: "name".to_string(),
+            type_hint: Some("String".to_string()),
+            init: None,
+            modifiers: Modifiers::default(),
+            with_events: false,
+            array_bounds: None,
+        },
+    );
+
+    let constructor_index = class_members
+        .iter()
+        .position(|member| matches!(member, ClassMember::Constructor { name: None, .. }));
+    if let Some(index) = constructor_index {
+        if let ClassMember::Constructor { params, body, .. } = &mut class_members[index] {
+            params.push(enum_param("__enum_index"));
+            params.push(enum_param("__enum_name"));
+            body.insert(0, assign_this("name", Expression::ident("__enum_name")));
+            body.insert(0, assign_this("index", Expression::ident("__enum_index")));
+        }
+    } else {
+        class_members.insert(
+            2,
+            ClassMember::Constructor {
+                name: None,
+                params: vec![enum_param("__enum_index"), enum_param("__enum_name")],
+                body: vec![
+                    assign_this("index", Expression::ident("__enum_index")),
+                    assign_this("name", Expression::ident("__enum_name")),
+                ],
+                base_args: None,
+                initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            },
+        );
+    }
+
+    let mut values = Vec::new();
+    for (index, member) in members.iter().enumerate() {
+        let mut args: Vec<Argument> = member
+            .constructor_args
+            .iter()
+            .cloned()
+            .map(Argument::positional)
+            .collect();
+        args.push(Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(
+            index as i64,
+        )))));
+        args.push(Argument::positional(Expression::string(&member.name)));
+        let singleton = Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(&name)),
+            args,
+        });
+        class_members.push(ClassMember::Field {
+            name: member.name.clone(),
+            type_hint: Some(name.clone()),
+            init: Some(singleton),
+            modifiers: static_modifiers.clone(),
+            with_events: false,
+            array_bounds: None,
+        });
+        values.push(ArrayElement {
+            key: None,
+            value: Expression::new(ExprKind::StaticAccess {
+                class: Box::new(Expression::ident(&name)),
+                member: Box::new(Expression::ident(&member.name)),
+            }),
+            spread: false,
+            by_ref: false,
+        });
+    }
+    class_members.push(ClassMember::Field {
+        name: "values".to_string(),
+        type_hint: None,
+        init: Some(Expression::new(ExprKind::Array(values))),
+        modifiers: static_modifiers,
+        with_events: false,
+        array_bounds: None,
+    });
+
+    Ok(StmtKind::ClassDecl {
         name,
+        // `Enum` is metadata in Dart, not a constructible runtime parent.
+        // Adding it here sends the shared class emitter down its derived
+        // constructor path and drops the receiver of bound instance methods.
+        parents: Vec::new(),
         interfaces,
-        members,
-        visibility: Visibility::Public,
-        is_flags: false,
-        backing_type: None,
-        body_members,
+        members: class_members,
+        modifiers: ClassModifiers::default(),
         decorators: vec![],
     })
 }
@@ -1202,6 +3426,7 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
     let mut body = Vec::new();
     let mut base_args: Option<Vec<Expression>> = None;
     let mut this_params: Vec<String> = Vec::new();
+    let mut super_params: Vec<String> = Vec::new();
     let mut field_inits: Vec<Statement> = Vec::new();
     let mut is_factory = false;
     let mut _named_ctor: Option<String> = None;
@@ -1233,20 +3458,26 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
                             for inner in pg.into_inner() {
                                 match inner.as_rule() {
                                     Rule::param => {
-                                        let (param, is_this) = walk_param_with_this(inner)?;
+                                        let (param, is_this, is_super) = walk_param_with_this(inner)?;
                                         if is_this {
                                             this_params.push(param.name.clone());
+                                        }
+                                        if is_super {
+                                            super_params.push(param.name.clone());
                                         }
                                         params.push(param);
                                     }
                                     Rule::optional_positional_params | Rule::named_params => {
                                         for op in inner.into_inner() {
                                             if op.as_rule() == Rule::param {
-                                                let (mut param, is_this) =
+                                                let (mut param, is_this, is_super) =
                                                     walk_param_with_this(op)?;
                                                 param.is_optional = true;
                                                 if is_this {
                                                     this_params.push(param.name.clone());
+                                                }
+                                                if is_super {
+                                                    super_params.push(param.name.clone());
                                                 }
                                                 params.push(param);
                                             }
@@ -1257,9 +3488,12 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
                             }
                         }
                         Rule::param => {
-                            let (param, is_this) = walk_param_with_this(pg)?;
+                            let (param, is_this, is_super) = walk_param_with_this(pg)?;
                             if is_this {
                                 this_params.push(param.name.clone());
+                            }
+                            if is_super {
+                                super_params.push(param.name.clone());
                             }
                             params.push(param);
                         }
@@ -1366,6 +3600,15 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
         }
     }
 
+    if base_args.is_none() && !super_params.is_empty() {
+        base_args = Some(
+            super_params
+                .iter()
+                .map(|name| Expression::ident(name))
+                .collect(),
+        );
+    }
+
     // Synthesize this.field = field assignments for this.* params
     let mut this_assigns: Vec<Statement> = this_params
         .iter()
@@ -1463,11 +3706,22 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
             Rule::param_list => params = walk_params(p)?,
             Rule::async_kw => is_async = true,
             Rule::generator_marker => is_generator = true,
-            Rule::function_body => body = walk_function_body(p)?,
+            Rule::function_body => {
+                let is_abstract_body = p.as_str().trim() == ";";
+                body = walk_function_body(p)?;
+                if is_abstract_body {
+                    modifiers.is_abstract = true;
+                }
+            }
             _ => {}
         }
     }
 
+    if is_async && !is_generator && body.is_empty() {
+        body.push(Statement::new(StmtKind::Return(Some(dart_future_value(
+            Expression::null(),
+        )))));
+    }
     is_generator = is_generator || body_has_yield(&body);
 
     Ok(ClassMember::Method(Box::new(Statement::new(
@@ -1644,28 +3898,28 @@ fn walk_operator(pair: Pair<Rule>) -> Result<ClassMember, String> {
             }
             Rule::operator_symbol => {
                 op_name = match p.as_str().trim() {
-                    "+" => "__add__".to_string(),
-                    "-" => "__sub__".to_string(),
-                    "*" => "__mul__".to_string(),
-                    "/" => "__div__".to_string(),
-                    "~/" => "__idiv__".to_string(),
-                    "%" => "__mod__".to_string(),
+                    "+" => "operator+".to_string(),
+                    "-" => "operator-".to_string(),
+                    "*" => "operator*".to_string(),
+                    "/" => "operator/".to_string(),
+                    "~/" => "operator~/".to_string(),
+                    "%" => "operator%".to_string(),
                     "==" => "__eq__".to_string(),
-                    "!=" => "__ne__".to_string(),
-                    "<" => "__lt__".to_string(),
-                    ">" => "__gt__".to_string(),
-                    "<=" => "__le__".to_string(),
-                    ">=" => "__ge__".to_string(),
+                    "!=" => "operator!=".to_string(),
+                    "<" => "operator<".to_string(),
+                    ">" => "operator>".to_string(),
+                    "<=" => "operator<=".to_string(),
+                    ">=" => "operator>=".to_string(),
                     "[]" => "__getitem__".to_string(),
                     "[]=" => "__setitem__".to_string(),
-                    "~" => "__bitnot__".to_string(),
-                    "&" => "__bitand__".to_string(),
-                    "|" => "__bitor__".to_string(),
-                    "^" => "__bitxor__".to_string(),
-                    "<<" => "__shl__".to_string(),
-                    ">>" => "__shr__".to_string(),
-                    ">>>" => "__ushr__".to_string(),
-                    other => format!("__op_{}__", other),
+                    "~" => "operator~".to_string(),
+                    "&" => "operator&".to_string(),
+                    "|" => "operator|".to_string(),
+                    "^" => "operator^".to_string(),
+                    "<<" => "operator<<".to_string(),
+                    ">>" => "operator>>".to_string(),
+                    ">>>" => "operator>>>".to_string(),
+                    other => format!("operator{}", other),
                 };
             }
             Rule::param_list => params = walk_params(p)?,
@@ -1679,8 +3933,8 @@ fn walk_operator(pair: Pair<Rule>) -> Result<ClassMember, String> {
     // them apart by arity: `operator -()` negates, `operator -(other)`
     // subtracts. They are different methods, so a zero-parameter `-` is
     // `__neg__` — otherwise a class defining both binds only one of them.
-    if op_name == "__sub__" && params.is_empty() {
-        op_name = "__neg__".to_string();
+    if op_name == "operator-" && params.is_empty() {
+        op_name = "operator-@unary".to_string();
     }
 
     Ok(ClassMember::Method(Box::new(Statement::new(
@@ -1791,8 +4045,20 @@ fn build_is_type(expr: Expression, type_name: &str) -> Expression {
 fn is_dart_zero_arg_getter(name: &str) -> bool {
     matches!(
         name,
-        "isEmpty" | "isNotEmpty" | "isEven" | "isOdd" | "isNegative" | "sign" | "first" | "last" | "length" | "runes"
+        "isEmpty" | "isNotEmpty" | "isEven" | "isOdd" | "isNegative" | "isNaN" | "isFinite" | "isInfinite" | "sign" | "first" | "last" | "single" | "singleOrNull" | "length" | "runes" | "codeUnits" | "keys" | "values" | "entries" | "reversed" | "isRunning" | "elapsed" | "elapsedMilliseconds" | "elapsedMicroseconds"
     )
+}
+
+fn dart_exception_constructor_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "Exception" => Some("__dart_exception"),
+        "FormatException" => Some("__dart_format_exception"),
+        "RangeError" => Some("__dart_range_error"),
+        "StateError" => Some("__dart_state_error"),
+        "ArgumentError" => Some("__dart_argument_error"),
+        "UnimplementedError" => Some("__dart_unimplemented_error"),
+        _ => None,
+    }
 }
 
 /// Dart record positional field name `$1`/`$2`/… → its 0-based index. Records
@@ -1907,23 +4173,204 @@ fn lower_list_element(el: Pair<Rule>, acc: &str) -> Result<Statement, String> {
     }
 }
 
+fn lower_set_comprehension(elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let acc = "__set_compr_acc";
+    let mut body: Vec<Statement> = Vec::new();
+    body.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(acc.to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Array(Vec::new()))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+    for el in elements {
+        body.push(lower_set_element(el, acc)?);
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Ident(acc.to_string()),
+    )))));
+    Ok(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+fn lower_set_element(el: Pair<Rule>, acc: &str) -> Result<Statement, String> {
+    let inner = el.into_inner().next().ok_or("empty set element")?;
+    match inner.as_rule() {
+        Rule::map_collection_for => {
+            let mut header_pair = None;
+            let mut body_pair = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::for_header => header_pair = Some(p),
+                    Rule::map_or_set_element => body_pair = Some(p),
+                    _ => {}
+                }
+            }
+            let header = header_pair.ok_or("set collection_for: missing header")?;
+            let body_el = body_pair.ok_or("set collection_for: missing body")?;
+            let body_stmt = lower_set_element(body_el, acc)?;
+            build_for_with_body(header, vec![body_stmt])
+        }
+        Rule::map_collection_if => {
+            let mut cond = None;
+            let mut then_el = None;
+            let mut else_el = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::expression if cond.is_none() => cond = Some(walk_expression(p)?),
+                    Rule::map_or_set_element => {
+                        if then_el.is_none() {
+                            then_el = Some(p);
+                        } else {
+                            else_el = Some(p);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let cond = cond.ok_or("set collection_if: missing cond")?;
+            let then_stmt = lower_set_element(then_el.ok_or("set collection_if: missing then")?, acc)?;
+            let else_stmt = match else_el {
+                Some(el) => Some(vec![lower_set_element(el, acc)?]),
+                None => None,
+            };
+            Ok(Statement::new(StmtKind::If {
+                cond,
+                then_body: vec![then_stmt],
+                elifs: Vec::new(),
+                else_body: else_stmt,
+            }))
+        }
+        _ => {
+            let value = walk_expression(inner)?;
+            let push_call = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::Ident(acc.to_string()))),
+                    field: "add".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(value)],
+                optional: false,
+            });
+            Ok(Statement::new(StmtKind::Expr(push_call)))
+        }
+    }
+}
+
+fn lower_map_comprehension(elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let acc = "__map_compr_acc";
+    let mut body: Vec<Statement> = Vec::new();
+    body.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(acc.to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Object(Vec::new()))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+    for el in elements {
+        body.push(lower_map_element(el, acc)?);
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(acc)))));
+    Ok(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+fn lower_map_element(el: Pair<Rule>, acc: &str) -> Result<Statement, String> {
+    let inner = el.into_inner().next().ok_or("empty map element")?;
+    match inner.as_rule() {
+        Rule::map_collection_for => {
+            let mut header_pair = None;
+            let mut body_pair = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::for_header => header_pair = Some(p),
+                    Rule::map_or_set_element => body_pair = Some(p),
+                    _ => {}
+                }
+            }
+            let header = header_pair.ok_or("map collection_for: missing header")?;
+            let body_el = body_pair.ok_or("map collection_for: missing body")?;
+            let body_stmt = lower_map_element(body_el, acc)?;
+            build_for_with_body(header, vec![body_stmt])
+        }
+        Rule::map_collection_if => {
+            let mut cond = None;
+            let mut then_el = None;
+            let mut else_el = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::expression if cond.is_none() => cond = Some(walk_expression(p)?),
+                    Rule::map_or_set_element => {
+                        if then_el.is_none() {
+                            then_el = Some(p);
+                        } else {
+                            else_el = Some(p);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let cond = cond.ok_or("map collection_if: missing cond")?;
+            let then_stmt = lower_map_element(then_el.ok_or("map collection_if: missing then")?, acc)?;
+            let else_stmt = match else_el {
+                Some(el) => Some(vec![lower_map_element(el, acc)?]),
+                None => None,
+            };
+            Ok(Statement::new(StmtKind::If {
+                cond,
+                then_body: vec![then_stmt],
+                elifs: Vec::new(),
+                else_body: else_stmt,
+            }))
+        }
+        Rule::map_entry => {
+            let mut parts = inner.into_inner();
+            let key = walk_expression(parts.next().ok_or("map comprehension: missing key")?)?;
+            let value = walk_expression(parts.next().ok_or("map comprehension: missing value")?)?;
+            Ok(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::ident(acc)),
+                    index: Box::new(key),
+                    null_safe: false,
+                })),
+                value: Box::new(value),
+            }))))
+        }
+        _ => Err(format!("map comprehension: unexpected element {:?}", inner.as_rule())),
+    }
+}
+
 fn build_for_with_body(header_pair: Pair<Rule>, body: Vec<Statement>) -> Result<Statement, String> {
     let header_inner = header_pair.into_inner().next().ok_or("for: empty header")?;
     match header_inner.as_rule() {
         Rule::for_in_header => {
-            let mut var_name = String::new();
-            let mut iter_expr = None;
-            for p in header_inner.into_inner() {
-                match p.as_rule() {
-                    Rule::final_kw | Rule::var_kw | Rule::type_annotation => {}
-                    Rule::ident_name => var_name = p.as_str().to_string(),
-                    _ => iter_expr = Some(walk_expression(p)?),
-                }
-            }
+            let (var_name, iter, body) = lower_for_in_header_parts(header_inner, body)?;
             Ok(Statement::new(StmtKind::ForIn {
                 var: var_name,
                 key: None,
-                iter: iter_expr.ok_or("for-in: missing iterable")?,
+                iter,
                 body,
                 of: true,
                 else_body: None,
@@ -2000,20 +4447,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     match header_inner.as_rule() {
         Rule::for_in_header => {
-            // for_in_header = { (final_kw | var_kw)? ~ type_annotation? ~ ident_name ~ "in" ~ expression }
-            let mut var_name = String::new();
-            let mut iter_expr = None;
-            for p in header_inner.into_inner() {
-                match p.as_rule() {
-                    Rule::final_kw | Rule::var_kw | Rule::type_annotation => {}
-                    Rule::ident_name => var_name = p.as_str().to_string(),
-                    _ => iter_expr = Some(walk_expression(p)?),
-                }
-            }
+            let (var_name, iter, body) = lower_for_in_header_parts(header_inner, body)?;
             Ok(StmtKind::ForIn {
                 var: var_name,
                 key: None,
-                iter: iter_expr.ok_or("for-in: missing iterable")?,
+                iter,
                 body,
                 of: true, // Dart for-in iterates values
                 else_body: None,
@@ -2093,7 +4531,7 @@ fn walk_var_decl_no_semi(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
             }
-            Rule::var_declarator => {
+            Rule::typed_var_declarator | Rule::var_declarator => {
                 let decl = walk_var_declarator(p, type_hint.clone())?;
                 declarations.push(decl);
             }
@@ -2132,8 +4570,13 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let expr = walk_expression(inner.next().ok_or("switch: missing expr")?)?;
-    let mut cases = Vec::new();
+    let subject = walk_expression(inner.next().ok_or("switch: missing expr")?)?;
+    let subject_name = "__dart_switch_subject".to_string();
+    let subject_expr = Expression::ident(&subject_name);
+    let mut arms: Vec<(Expression, Vec<Statement>)> = Vec::new();
+    let mut simple_cases: Vec<SwitchCase> = Vec::new();
+    let mut default_body: Option<Vec<Statement>> = None;
+    let mut needs_pattern_lowering = false;
 
     for p in inner {
         if p.as_rule() != Rule::switch_case {
@@ -2146,40 +4589,179 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let mut children: Vec<Pair<Rule>> = p.into_inner().collect();
 
         if is_default {
-            // Default case: all children are body statements
             let stmts = children
                 .into_iter()
                 .filter_map(|c| walk_statement(c).transpose())
                 .collect::<Result<Vec<_>, _>>()?;
-            cases.push(SwitchCase {
-                conditions: vec![], // empty = default
-                body: stmts,
+            simple_cases.push(SwitchCase {
+                conditions: vec![],
+                body: stmts.clone(),
             });
+            default_body = Some(stmts);
         } else {
-            // case expr: stmts...
-            // First child that is an expression is the case value
-            let case_val = if !children.is_empty() {
-                let first = children.remove(0);
-                walk_expression(first)?
+            let pattern = children
+                .iter()
+                .position(|c| c.as_rule() == Rule::pattern)
+                .map(|idx| children.remove(idx))
+                .ok_or("switch: missing case pattern")?;
+            let guard_idx = children.iter().position(|c| c.as_rule() == Rule::when_guard);
+            let simple_value = if guard_idx.is_none() {
+                simple_switch_pattern_expr(pattern.clone())?
             } else {
-                Expression::null()
+                None
             };
-            let stmts = children
+            let original_pattern = pattern.clone();
+            let mut analysis = analyze_dart_pattern(pattern, &subject_expr)?;
+            if let Some(guard_idx) = guard_idx {
+                let guard = children.remove(guard_idx);
+                if let Some(guard_pair) = guard
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::conditional_expression)
+                {
+                    let guard_expr =
+                        substitute_pattern_bindings(walk_expression(guard_pair)?, &analysis.bindings);
+                    analysis.cond = and_expr(analysis.cond, guard_expr);
+                }
+            }
+            let mut stmts = children
                 .into_iter()
                 .filter_map(|c| walk_statement(c).transpose())
                 .collect::<Result<Vec<_>, _>>()?;
-            cases.push(SwitchCase {
-                conditions: vec![CaseCondition::Value(case_val)],
-                body: stmts,
-            });
+            for stmt in &mut stmts {
+                substitute_pattern_bindings_stmt(stmt, &analysis.bindings);
+            }
+            if let Some(value) = simple_value {
+                simple_cases.push(SwitchCase {
+                    conditions: vec![CaseCondition::Value(value.clone())],
+                    body: stmts.clone(),
+                });
+            } else {
+                needs_pattern_lowering = true;
+                let _ = original_pattern;
+            }
+            arms.push((analysis.cond, stmts));
         }
     }
 
-    Ok(StmtKind::Switch {
-        expr,
-        cases,
-        default: None,
+    if !needs_pattern_lowering {
+        return Ok(StmtKind::Switch {
+            expr: subject,
+            cases: simple_cases,
+            default: default_body,
+        });
+    }
+
+    let mut else_body = default_body;
+    for (cond, body) in arms.into_iter().rev() {
+        let next = Statement::new(StmtKind::If {
+            cond,
+            then_body: body,
+            elifs: Vec::new(),
+            else_body,
+        });
+        else_body = Some(vec![next]);
+    }
+
+    let mut block = vec![Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(subject_name),
+            type_hint: None,
+            init: Some(subject),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })];
+    if let Some(mut chain) = else_body {
+        block.append(&mut chain);
+    }
+    Ok(StmtKind::Block(block))
+}
+
+fn simple_switch_pattern_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    match pair.as_rule() {
+        Rule::pattern => {
+            let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if children.len() == 1 {
+                simple_switch_pattern_expr(children.into_iter().next().unwrap())
+            } else {
+                Ok(None)
+            }
+        }
+        Rule::primary_pattern => {
+            let Some(inner) = pair.into_inner().next() else {
+                return Ok(None);
+            };
+            simple_switch_pattern_expr(inner)
+        }
+        Rule::null_pattern => Ok(Some(Expression::null())),
+        Rule::bool_pattern => Ok(Some(Expression::bool(pair.as_str().trim() == "true"))),
+        Rule::signed_numeric_pattern => {
+            let Some(n) = pair.into_inner().find(|p| p.as_rule() == Rule::numeric_literal) else {
+                return Ok(None);
+            };
+            let lit = Expression::new(walk_expr_kind(n)?);
+            Ok(Some(Expression::new(ExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(lit),
+            })))
+        }
+        Rule::constant_pattern => {
+            let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if children.len() != 1 {
+                return Ok(None);
+            }
+            let child = children.into_iter().next().unwrap();
+            match child.as_rule() {
+                Rule::signed_numeric_pattern => simple_switch_pattern_expr(child),
+                Rule::qualified_constant_pattern => {
+                    let mut parts = child.into_inner();
+                    let class = parts.next().ok_or("qualified pattern: missing class")?;
+                    let member = parts.next().ok_or("qualified pattern: missing member")?;
+                    Ok(Some(Expression::new(ExprKind::StaticAccess {
+                        class: Box::new(Expression::ident(class.as_str())),
+                        member: Box::new(Expression::ident(member.as_str())),
+                    })))
+                }
+                Rule::numeric_literal | Rule::string_literal => {
+                    Ok(Some(Expression::new(walk_expr_kind(child)?)))
+                }
+                Rule::ident_name => Ok(Some(Expression::ident(child.as_str()))),
+                _ => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn dart_stack_trace_binding(name: &str, caught: Option<&str>) -> Statement {
+    let caught_expr = caught
+        .map(Expression::ident)
+        .unwrap_or_else(Expression::null);
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: Some("StackTrace".to_string()),
+            init: Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__dart_stack_trace")),
+                args: vec![Argument::positional(caught_expr)],
+                optional: false,
+            })),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
     })
+}
+
+fn rewrite_direct_rethrow(body: &mut [Statement], caught: &str) {
+    for stmt in body {
+        if let StmtKind::Throw { expr, .. } = &mut stmt.kind {
+            if expr.is_none() {
+                *expr = Some(Expression::ident(caught));
+            }
+        }
+    }
 }
 
 fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2223,6 +4805,12 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 _ => {}
                             }
                         }
+                        if let Some(caught) = var_name.as_deref() {
+                            rewrite_direct_rethrow(&mut catch_body, caught);
+                        }
+                        if let Some(stack_name) = stack_var.take() {
+                            catch_body.insert(0, dart_stack_trace_binding(&stack_name, var_name.as_deref()));
+                        }
                         catches.push(CatchClause {
                             types,
                             var_name,
@@ -2251,6 +4839,12 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 }
                                 _ => {}
                             }
+                        }
+                        if let Some(caught) = var_name.as_deref() {
+                            rewrite_direct_rethrow(&mut catch_body, caught);
+                        }
+                        if let Some(stack_name) = stack_var.take() {
+                            catch_body.insert(0, dart_stack_trace_binding(&stack_name, var_name.as_deref()));
                         }
                         catches.push(CatchClause {
                             types: Vec::new(),
@@ -2306,7 +4900,298 @@ fn walk_yield_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let kind = walk_expr_kind(pair)?;
-    Ok(Expression::with_span(kind, span))
+    Ok(normalize_dart_index_reads(Expression::with_span(kind, span), false))
+}
+
+fn dart_is_duration_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => matches!(name.as_str(), "Duration" | "Duration.zero"),
+            ExprKind::Member { field, .. } => field == "elapsed",
+            _ => false,
+        },
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "Duration") && field == "zero"
+        }
+        _ => false,
+    }
+}
+
+fn dart_duration_millis_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: "inMilliseconds".to_string(),
+        null_safe: false,
+    })
+}
+
+fn normalize_dart_index_reads(expr: Expression, preserve_place: bool) -> Expression {
+    let span = expr.span.clone();
+    match expr.kind {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => {
+            let object = normalize_dart_index_reads(*object, false);
+            let index = normalize_dart_index_reads(*index, false);
+            if preserve_place {
+                Expression::with_span(
+                    ExprKind::Index {
+                        object: Box::new(object),
+                        index: Box::new(index),
+                        null_safe,
+                    },
+                    span,
+                )
+            } else {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dart_index_get")),
+                        args: vec![Argument::positional(object), Argument::positional(index)],
+                        optional: false,
+                    },
+                    span,
+                )
+            }
+        }
+        ExprKind::Assign { target, value } => Expression::with_span(
+            ExprKind::Assign {
+                target: Box::new(normalize_dart_assignment_target(*target)),
+                value: Box::new(normalize_dart_index_reads(*value, false)),
+            },
+            span,
+        ),
+        ExprKind::Binary { op, left, right } => Expression::with_span(
+            match op {
+                BinOp::Eq | BinOp::NotEq => {
+                    let left = normalize_dart_index_reads(*left, false);
+                    let right = normalize_dart_index_reads(*right, false);
+                    let eq = if dart_is_duration_expr(&left) && dart_is_duration_expr(&right) {
+                        Expression::new(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(dart_duration_millis_expr(left)),
+                            right: Box::new(dart_duration_millis_expr(right)),
+                        })
+                    } else {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_eq")),
+                            args: vec![Argument::positional(left), Argument::positional(right)],
+                            optional: false,
+                        })
+                    };
+                    if op == BinOp::NotEq {
+                        ExprKind::Unary {
+                            op: UnaryOp::Not,
+                            expr: Box::new(eq),
+                        }
+                    } else {
+                        eq.kind
+                    }
+                }
+                BinOp::Add | BinOp::Sub => {
+                    let left = normalize_dart_index_reads(*left, false);
+                    let right = normalize_dart_index_reads(*right, false);
+                    if dart_is_duration_expr(&left) && dart_is_duration_expr(&right) {
+                        ExprKind::Call {
+                            callee: Box::new(Expression::ident("Duration")),
+                            args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                                op,
+                                left: Box::new(dart_duration_millis_expr(left)),
+                                right: Box::new(dart_duration_millis_expr(right)),
+                            }))],
+                            optional: false,
+                        }
+                    } else {
+                        ExprKind::Binary {
+                            op,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        }
+                    }
+                }
+                _ => ExprKind::Binary {
+                    op,
+                    left: Box::new(normalize_dart_index_reads(*left, false)),
+                    right: Box::new(normalize_dart_index_reads(*right, false)),
+                },
+            },
+            span,
+        ),
+        ExprKind::Unary { op, expr } => Expression::with_span(
+            ExprKind::Unary {
+                op,
+                expr: Box::new(normalize_dart_index_reads(*expr, false)),
+            },
+            span,
+        ),
+        ExprKind::Ternary { cond, then, else_ } => Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(normalize_dart_index_reads(*cond, false)),
+                then: Box::new(normalize_dart_index_reads(*then, false)),
+                else_: Box::new(normalize_dart_index_reads(*else_, false)),
+            },
+            span,
+        ),
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::with_span(
+            ExprKind::Member {
+                object: Box::new(normalize_dart_index_reads(*object, false)),
+                field,
+                null_safe,
+            },
+            span,
+        ),
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => Expression::with_span(
+            ExprKind::Call {
+                callee: Box::new(normalize_dart_index_reads(*callee, false)),
+                args: args
+                    .into_iter()
+                    .map(|mut arg| {
+                        arg.value = normalize_dart_index_reads(arg.value, false);
+                        arg
+                    })
+                    .collect(),
+                optional,
+            },
+            span,
+        ),
+        ExprKind::New { class, args } => Expression::with_span(
+            ExprKind::New {
+                class: Box::new(normalize_dart_index_reads(*class, false)),
+                args: args
+                    .into_iter()
+                    .map(|mut arg| {
+                        arg.value = normalize_dart_index_reads(arg.value, false);
+                        arg
+                    })
+                    .collect(),
+            },
+            span,
+        ),
+        ExprKind::Array(items) => Expression::with_span(
+            ExprKind::Array(
+                items
+                    .into_iter()
+                    .map(|mut item| {
+                        item.value = normalize_dart_index_reads(item.value, false);
+                        item.key = item.key.map(|key| normalize_dart_index_reads(key, false));
+                        item
+                    })
+                    .collect(),
+            ),
+            span,
+        ),
+        ExprKind::Object(items) => Expression::with_span(
+            ExprKind::Object(
+                items
+                    .into_iter()
+                    .map(|item| match item {
+                        ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
+                            key: normalize_dart_index_reads(key, false),
+                            value: normalize_dart_index_reads(value, false),
+                        },
+                        ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
+                            key: normalize_dart_index_reads(key, false),
+                            value: normalize_dart_index_reads(value, false),
+                        },
+                        ObjectProperty::Spread(value) => {
+                            ObjectProperty::Spread(normalize_dart_index_reads(value, false))
+                        }
+                        other => other,
+                    })
+                    .collect(),
+            ),
+            span,
+        ),
+        ExprKind::Tuple(items) => Expression::with_span(
+            ExprKind::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| normalize_dart_index_reads(item, false))
+                    .collect(),
+            ),
+            span,
+        ),
+        ExprKind::Await(inner) => Expression::with_span(
+            ExprKind::Await(Box::new(normalize_dart_index_reads(*inner, false))),
+            span,
+        ),
+        ExprKind::Yield(Some(inner)) => Expression::with_span(
+            ExprKind::Yield(Some(Box::new(normalize_dart_index_reads(*inner, false)))),
+            span,
+        ),
+        ExprKind::YieldFrom(inner) => Expression::with_span(
+            ExprKind::YieldFrom(Box::new(normalize_dart_index_reads(*inner, false))),
+            span,
+        ),
+        ExprKind::Cast { expr, type_name } => Expression::with_span(
+            ExprKind::Cast {
+                expr: Box::new(normalize_dart_index_reads(*expr, false)),
+                type_name,
+            },
+            span,
+        ),
+        ExprKind::TypeOf(inner) => Expression::with_span(
+            ExprKind::TypeOf(Box::new(normalize_dart_index_reads(*inner, false))),
+            span,
+        ),
+        other => Expression::with_span(other, span),
+    }
+}
+
+fn normalize_dart_assignment_target(expr: Expression) -> Expression {
+    let span = expr.span.clone();
+    match expr.kind {
+        ExprKind::Call {
+            callee,
+            mut args,
+            optional: false,
+        } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__dart_index_get") && args.len() == 2 => {
+            let index = args.pop().unwrap().value;
+            let object = args.pop().unwrap().value;
+            Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(normalize_dart_index_reads(object, false)),
+                    index: Box::new(normalize_dart_index_reads(index, false)),
+                    null_safe: false,
+                },
+                span,
+            )
+        }
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::with_span(
+            ExprKind::Member {
+                object: Box::new(normalize_dart_index_reads(*object, false)),
+                field,
+                null_safe,
+            },
+            span,
+        ),
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::with_span(
+            ExprKind::Index {
+                object: Box::new(normalize_dart_index_reads(*object, false)),
+                index: Box::new(normalize_dart_index_reads(*index, false)),
+                null_safe,
+            },
+            span,
+        ),
+        other => normalize_dart_index_reads(Expression::with_span(other, span), false),
+    }
 }
 
 fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -2369,6 +5254,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let inner = pair.into_inner().next().ok_or("empty string")?;
             walk_string_literal(inner)
         }
+
+        Rule::symbol_literal => Ok(ExprKind::Lit(Literal::Str(pair.as_str().to_string()))),
 
         Rule::raw_string => {
             let s = pair.as_str();
@@ -2437,7 +5324,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     return walk_expr_kind(inner.remove(0));
                 }
                 // conditional_expression ~ (assignment_op ~ assignment_expression)?
-                let left = walk_expression(inner.remove(0))?;
+                let left_pair = inner.remove(0);
+                let left_span = to_span(&left_pair);
+                let left = Expression::with_span(walk_expr_kind(left_pair)?, left_span);
                 if inner.is_empty() {
                     return Ok(left.kind);
                 }
@@ -2480,6 +5369,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
 
+        Rule::throw_expression => Ok(walk_throw_expression(pair)?.kind),
+
         // ── Lambda / arrow function ─────────────────────────────────────
         Rule::lambda_expression => {
             let mut params = Vec::new();
@@ -2493,57 +5384,42 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         for lp in p.into_inner() {
                             match lp.as_rule() {
                                 Rule::lambda_param_list => {
-                                    for lparam in lp.into_inner() {
-                                        if lparam.as_rule() != Rule::lambda_param {
-                                            continue;
-                                        }
-                                        let mut name = String::new();
-                                        let mut type_hint: Option<String> = None;
-                                        let mut default = None;
-                                        for inner in lparam.into_inner() {
-                                            match inner.as_rule() {
-                                                Rule::ident_name => {
-                                                    name = inner.as_str().to_string()
-                                                }
-                                                Rule::type_annotation => {
-                                                    type_hint = Some(extract_type_name(&inner))
-                                                }
-                                                Rule::param_default => {
-                                                    if let Some(ep) = inner.into_inner().find(|c| {
-                                                        c.as_rule() == Rule::assignment_expression
-                                                    }) {
-                                                        default = Some(walk_expression(ep)?);
-                                                    }
-                                                }
-                                                Rule::typed_lambda_param => {
-                                                    for ti in inner.into_inner() {
-                                                        match ti.as_rule() {
-                                                            Rule::ident_name => name = ti.as_str().to_string(),
-                                                            Rule::type_annotation => type_hint = Some(extract_type_name(&ti)),
-                                                            Rule::param_default => {
-                                                                if let Some(ep) = ti.into_inner()
-                                                                    .find(|c| c.as_rule() == Rule::assignment_expression) {
-                                                                    default = Some(walk_expression(ep)?);
+                                    for item in lp.into_inner() {
+                                        match item.as_rule() {
+                                            Rule::lambda_param => {
+                                                params.push(walk_lambda_param_pair(item)?);
+                                            }
+                                            Rule::lambda_param_item => {
+                                                for inner in item.into_inner() {
+                                                    match inner.as_rule() {
+                                                        Rule::lambda_param => {
+                                                            params.push(walk_lambda_param_pair(inner)?);
+                                                        }
+                                                        Rule::named_lambda_params => {
+                                                            for named in inner.into_inner() {
+                                                                if named.as_rule() == Rule::lambda_param {
+                                                                    let mut param =
+                                                                        walk_lambda_param_pair(named)?;
+                                                                    param.is_optional = true;
+                                                                    params.push(param);
                                                                 }
                                                             }
-                                                            _ => {}
                                                         }
+                                                        _ => {}
                                                     }
                                                 }
-                                                _ => {}
                                             }
+                                            Rule::named_lambda_params => {
+                                                for named in item.into_inner() {
+                                                    if named.as_rule() == Rule::lambda_param {
+                                                        let mut param = walk_lambda_param_pair(named)?;
+                                                        param.is_optional = true;
+                                                        params.push(param);
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
                                         }
-                                        let is_optional = default.is_some();
-                                        params.push(Param {
-                                            name,
-                                            type_hint,
-                                            default,
-                                            pass_by: PassBy::Value,
-                                            is_rest: false,
-                                            is_kwargs: false,
-                                            is_optional,
-                                            is_nullable: false,
-                                        });
                                     }
                                 }
                                 Rule::ident_name => {
@@ -2563,6 +5439,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                     Rule::arrow_op => {}
+                    Rule::throw_expression => {
+                        body = LambdaBody::Block(vec![Statement::new(StmtKind::Throw {
+                            expr: Some(walk_throw_expression(p)?),
+                            cause: None,
+                        })]);
+                    }
                     Rule::assignment_expression => {
                         body = LambdaBody::Expr(Box::new(walk_expression(p)?));
                     }
@@ -2739,6 +5621,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             let class_name = class_parts.join(".");
+            if let Some(alias) = dart_exception_constructor_alias(&class_name) {
+                return Ok(ExprKind::Call {
+                    callee: Box::new(Expression::ident(alias)),
+                    args,
+                    optional: false,
+                });
+            }
             Ok(ExprKind::New {
                 class: Box::new(Expression::ident(&class_name)),
                 args,
@@ -2759,6 +5648,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             let class_name = class_parts.join(".");
+            if let Some(alias) = dart_exception_constructor_alias(&class_name) {
+                return Ok(ExprKind::Call {
+                    callee: Box::new(Expression::ident(alias)),
+                    args,
+                    optional: false,
+                });
+            }
             Ok(ExprKind::New {
                 class: Box::new(Expression::ident(&class_name)),
                 args,
@@ -2938,6 +5834,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut props = Vec::new();
             let mut is_set = false;
             let mut is_map = false;
+            let mut elements = Vec::new();
 
             fn walk_one(
                 elem: Pair<Rule>,
@@ -2947,6 +5844,18 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             ) -> Result<(), String> {
                 match elem.as_rule() {
                     Rule::map_or_set_element => {
+                        let src = elem.as_str().trim_start();
+                        if src.starts_with("...") {
+                            if let Some(value_pair) = elem
+                                .clone()
+                                .into_inner()
+                                .find(|p| p.as_rule() == Rule::assignment_expression)
+                            {
+                                let value = walk_expression(value_pair)?;
+                                props.push(ObjectProperty::Spread(value));
+                                return Ok(());
+                            }
+                        }
                         for inner in elem.into_inner() {
                             walk_one(inner, props, is_map, is_set)?;
                         }
@@ -2966,8 +5875,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             value,
                         });
                     }
-                    // map_collection_if/for / spread — skip body for now;
-                    // grammar tolerates them so source compiles.
+                    Rule::map_collection_if | Rule::map_collection_for => {
+                        if elem.as_str().contains(':') {
+                            *is_map = true;
+                        } else {
+                            *is_set = true;
+                        }
+                    }
+                    // spread — skip body for now; grammar tolerates it so source compiles.
                     _ => {}
                 }
                 Ok(())
@@ -2975,9 +5890,16 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
             for p in pair.into_inner() {
                 match p.as_rule() {
-                    Rule::type_args => {}
+                    Rule::type_args => {
+                        if p.as_str().contains(',') {
+                            is_map = true;
+                        } else {
+                            is_set = true;
+                        }
+                    }
                     Rule::map_or_set_body => {
                         for entry in p.into_inner() {
+                            elements.push(entry.clone());
                             walk_one(entry, &mut props, &mut is_map, &mut is_set)?;
                         }
                     }
@@ -2985,8 +5907,36 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
 
+            let has_comprehension = elements.iter().any(|p| {
+                p.clone()
+                    .into_inner()
+                    .next()
+                    .map(|c| {
+                        matches!(
+                            c.as_rule(),
+                            Rule::map_collection_for | Rule::map_collection_if
+                        )
+                    })
+                    .unwrap_or(false)
+            });
+            if is_map && has_comprehension {
+                return Ok(lower_map_comprehension(elements)?);
+            }
             if is_set && !is_map {
-                // Set literal — emit as array for now
+                let has_comprehension = elements.iter().any(|p| {
+                    p.clone()
+                        .into_inner()
+                        .next()
+                        .map(|c| matches!(c.as_rule(), Rule::map_collection_for | Rule::map_collection_if))
+                        .unwrap_or(false)
+                });
+                if has_comprehension {
+                    return Ok(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__dart_set_from")),
+                        args: vec![Argument::positional(Expression::new(lower_set_comprehension(elements)?))],
+                        optional: false,
+                    });
+                }
                 let elements: Vec<ArrayElement> = props
                     .into_iter()
                     .filter_map(|p| match p {
@@ -2996,10 +5946,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             spread: false,
                             by_ref: false,
                         }),
+                        ObjectProperty::Spread(value) => Some(ArrayElement {
+                            key: None,
+                            value,
+                            spread: true,
+                            by_ref: false,
+                        }),
                         _ => None,
                     })
                     .collect();
-                Ok(ExprKind::Array(elements))
+                Ok(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__dart_set_from")),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Array(elements)))],
+                    optional: false,
+                })
             } else {
                 Ok(ExprKind::Object(props))
             }
@@ -3173,6 +6133,14 @@ fn analyze_constant_pattern(
                     op: UnaryOp::Neg,
                     expr: Box::new(lit),
                 }))
+            } else if child.as_rule() == Rule::qualified_constant_pattern {
+                let mut parts = child.into_inner();
+                let class = parts.next().ok_or("qualified pattern: missing class")?;
+                let member = parts.next().ok_or("qualified pattern: missing member")?;
+                Ok(Expression::new(ExprKind::StaticAccess {
+                    class: Box::new(Expression::ident(class.as_str())),
+                    member: Box::new(Expression::ident(member.as_str())),
+                }))
             } else {
                 walk_expression(child)
             }
@@ -3265,12 +6233,20 @@ fn analyze_record_pattern(
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
+    let is_grouping_pattern = !pair.as_str().contains(',');
     let mut out = pattern_cond(Expression::bool(true));
     let mut index = 0usize;
-    for field in pair
+    let fields: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::record_pattern_field)
-    {
+        .collect();
+    if is_grouping_pattern && fields.len() == 1 {
+        let children: Vec<Pair<Rule>> = fields[0].clone().into_inner().collect();
+        if children.len() == 1 {
+            return analyze_dart_pattern(children[0].clone(), subject);
+        }
+    }
+    for field in fields {
         let children: Vec<Pair<Rule>> = field.into_inner().collect();
         let (target, pat) = if children.len() == 2 {
             (
@@ -3301,11 +6277,14 @@ fn analyze_object_pattern(
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
-    let mut out = pattern_cond(Expression::bool(true));
-    for field in pair
-        .into_inner()
-        .filter(|p| p.as_rule() == Rule::object_pattern_field)
-    {
+    let mut inner = pair.into_inner();
+    let type_name = inner
+        .next()
+        .ok_or("object pattern: missing type")?
+        .as_str()
+        .to_string();
+    let mut out = pattern_cond(build_is_type(subject.clone(), &type_name));
+    for field in inner.filter(|p| p.as_rule() == Rule::object_pattern_field) {
         let mut inner = field.into_inner();
         let name = inner
             .next()
@@ -3576,6 +6555,517 @@ fn dart_length(value: Expression) -> Expression {
     dart_method_call(value, "length", Vec::new())
 }
 
+fn dart_future_value(value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(dart_promise_member("resolve")),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
+fn walk_throw_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+    let expr_pair = pair
+        .into_inner()
+        .next()
+        .ok_or_else(|| "throw expression: missing value".to_string())?;
+    walk_expression(expr_pair)
+}
+
+fn dart_promise_member(name: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident("Promise")),
+        field: name.to_string(),
+        null_safe: false,
+    })
+}
+
+fn dart_future_promise_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "value" => Some("resolve"),
+        "error" => Some("reject"),
+        "wait" => Some("all"),
+        "any" => Some("race"),
+        "sync" | "microtask" => Some("try"),
+        _ => None,
+    }
+}
+
+fn dart_rejected_literal(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Member { object, field, .. }
+                if field == "reject"
+                    && matches!(&object.kind, ExprKind::Ident(name) if name == "Promise") =>
+            {
+                args.first().and_then(|arg| literal_string(&arg.value))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn dart_catch_test_handles(test: &Expression, reason: &str) -> Option<bool> {
+    match &test.kind {
+        ExprKind::Lambda {
+            params,
+            body: LambdaBody::Expr(body),
+            ..
+        } => {
+            let param = params.first()?.name.as_str();
+            match &body.kind {
+                ExprKind::Binary { op, left, right } if *op == BinOp::Eq => {
+                    dart_ident_eq_literal(left, right, param).map(|lit| lit == reason)
+                }
+                ExprKind::Binary { op, left, right } if *op == BinOp::NotEq => {
+                    dart_ident_eq_literal(left, right, param).map(|lit| lit != reason)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn dart_ident_eq_literal<'a>(
+    left: &'a Expression,
+    right: &'a Expression,
+    ident: &str,
+) -> Option<String> {
+    if matches!(&left.kind, ExprKind::Ident(name) if name == ident) {
+        literal_string(right)
+    } else if matches!(&right.kind, ExprKind::Ident(name) if name == ident) {
+        literal_string(left)
+    } else {
+        None
+    }
+}
+
+fn dart_raw_catch_test_handles(raw: &str, reason: &str) -> Option<bool> {
+    let test_pos = raw.find("test:")?;
+    let test = &raw[test_pos..];
+    let (op, op_pos) = if let Some(pos) = test.find("==") {
+        ("==", pos)
+    } else if let Some(pos) = test.find("!=") {
+        ("!=", pos)
+    } else {
+        return None;
+    };
+    let after_op = &test[op_pos + op.len()..];
+    let quote_pos = after_op.find(|ch| ch == '\'' || ch == '"')?;
+    let quote = after_op.as_bytes()[quote_pos] as char;
+    let literal_start = quote_pos + 1;
+    let literal_end = after_op[literal_start..].find(quote)? + literal_start;
+    let literal = &after_op[literal_start..literal_end];
+    Some(if op == "==" {
+        literal == reason
+    } else {
+        literal != reason
+    })
+}
+
+fn normalize_dart_print_args(mut args: Vec<Argument>) -> Vec<Argument> {
+    if args.len() == 1 && args[0].name.is_none() && !args[0].spread {
+        if let Some(text) = dart_print_zero_div_infinity(&args[0].value) {
+            args[0].value = Expression::string(&text);
+        } else if dart_is_negative_zero_literal(&args[0].value) {
+            args[0].value = Expression::string("0.0");
+        } else if dart_expr_prints_as_double(&args[0].value) {
+            args[0].value = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__dart_double_to_string")),
+                args: vec![Argument::positional(args[0].value.clone())],
+                optional: false,
+            });
+        }
+    }
+    args
+}
+
+fn dart_is_negative_zero_literal(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } if matches!(&expr.kind, ExprKind::Lit(Literal::Float(value)) if *value == 0.0)
+    )
+}
+
+fn dart_expr_prints_as_double(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => dart_expr_prints_as_double(expr),
+        ExprKind::Binary { op, left, right } => match op {
+            BinOp::Div => true,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod => {
+                dart_expr_prints_as_double(left) || dart_expr_prints_as_double(right)
+            }
+            _ => false,
+        },
+        ExprKind::Call { callee, .. } => dart_call_prints_as_double(callee),
+        _ => false,
+    }
+}
+
+fn dart_call_prints_as_double(callee: &Expression) -> bool {
+    match &callee.kind {
+        ExprKind::Ident(name) => matches!(
+            name.as_str(),
+            "double.parse" | "double.tryParse" | "__dart_double_to_string"
+        ),
+        ExprKind::Member { object, field, .. } => {
+            matches!(field.as_str(), "toDouble" | "sign")
+                || (field == "abs" && dart_expr_prints_as_double(object))
+                || (matches!(&object.kind, ExprKind::Ident(name) if name == "double")
+                    && matches!(field.as_str(), "parse" | "tryParse"))
+        }
+        ExprKind::StaticAccess { class, member } => {
+            matches!(&class.kind, ExprKind::Ident(name) if name == "double")
+                && matches!(&member.kind, ExprKind::Ident(name) if matches!(name.as_str(), "parse" | "tryParse"))
+        }
+        _ => false,
+    }
+}
+
+fn normalize_dart_call_args(callee: &Expression, args: &mut [Argument]) {
+    if is_dart_radix_parse_callee(callee) {
+        for arg in args {
+            if arg.name.as_deref() == Some("radix") {
+                arg.name = None;
+            }
+        }
+    }
+}
+
+fn dart_function_apply(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let is_apply = match &callee.kind {
+        ExprKind::Ident(name) => name == "Function.apply",
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "Function") && field == "apply"
+        }
+        ExprKind::StaticAccess { class, member } => {
+            matches!(&class.kind, ExprKind::Ident(name) if name == "Function")
+                && matches!(&member.kind, ExprKind::Ident(name) if name == "apply")
+        }
+        _ => false,
+    };
+    if !is_apply || args.len() < 2 || args[0].spread || args[1].spread {
+        return None;
+    }
+    let ExprKind::Array(positional) = &args[1].value.kind else {
+        return None;
+    };
+    let mut call_args = positional
+        .iter()
+        .map(|element| Argument::positional(element.value.clone()))
+        .collect::<Vec<_>>();
+    if let Some(named) = args.get(2) {
+        if let ExprKind::Object(props) = &named.value.kind {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    if let Some(name) = dart_function_apply_name(key) {
+                        call_args.push(Argument {
+                            value: value.clone(),
+                            name: Some(name),
+                            by_ref: false,
+                            spread: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(args[0].value.clone()),
+        args: call_args,
+        optional: false,
+    }))
+}
+
+fn dart_function_apply_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(name)) => Some(name.trim_start_matches('#').to_string()),
+        ExprKind::Ident(name) => Some(name.trim_start_matches('#').to_string()),
+        _ => None,
+    }
+}
+
+fn is_dart_int_try_parse_callee(callee: &Expression) -> bool {
+    match &callee.kind {
+        ExprKind::Ident(name) => name == "int.tryParse",
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "int") && field == "tryParse"
+        }
+        ExprKind::StaticAccess { class, member } => {
+            matches!(&class.kind, ExprKind::Ident(name) if name == "int")
+                && matches!(&member.kind, ExprKind::Ident(name) if name == "tryParse")
+        }
+        _ => false,
+    }
+}
+
+fn dart_fold_try_parse(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    if !is_dart_int_try_parse_callee(callee) {
+        return None;
+    }
+    let text = args.first().and_then(|arg| literal_string(&arg.value))?;
+    let radix = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("radix"))
+        .or_else(|| args.get(1))
+        .and_then(|arg| literal_i64(&arg.value))
+        .unwrap_or(10);
+    if !(2..=36).contains(&radix) {
+        return Some(Expression::new(ExprKind::Lit(Literal::Null)));
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with("0x") || trimmed.starts_with("-0x") || trimmed.starts_with("+0x") {
+        return Some(Expression::new(ExprKind::Lit(Literal::Null)));
+    }
+    let (sign, digits) = match trimmed.as_bytes().first().copied() {
+        Some(b'-') => (-1_i64, &trimmed[1..]),
+        Some(b'+') => (1_i64, &trimmed[1..]),
+        _ => (1_i64, trimmed),
+    };
+    if digits.is_empty() {
+        return Some(Expression::new(ExprKind::Lit(Literal::Null)));
+    }
+    match i64::from_str_radix(digits, radix as u32) {
+        Ok(value) => Some(Expression::int(value.saturating_mul(sign))),
+        Err(_) => Some(Expression::new(ExprKind::Lit(Literal::Null))),
+    }
+}
+
+fn literal_i64(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Lit(Literal::Float(value)) if value.fract() == 0.0 => Some(*value as i64),
+        _ => None,
+    }
+}
+
+fn dart_int_array(values: impl IntoIterator<Item = i64>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value: Expression::int(value),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn dart_array_expr(values: impl IntoIterator<Item = Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn dart_map_literal_entries(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut entries = Vec::new();
+    for prop in props {
+        match prop {
+            ObjectProperty::KeyValue { key, value } => {
+                entries.push(dart_array_expr([key.clone(), value.clone()]));
+            }
+            ObjectProperty::Shorthand(name) => {
+                entries.push(dart_array_expr([
+                    Expression::string(name),
+                    Expression::ident(name),
+                ]));
+            }
+            _ => return None,
+        }
+    }
+    Some(dart_array_expr(entries))
+}
+
+fn dart_literal_string_units(expr: &Expression, name: &str) -> Option<Expression> {
+    let text = literal_string(expr)?;
+    match name {
+        "codeUnits" => Some(dart_int_array(
+            text.encode_utf16().map(|unit| i64::from(unit)),
+        )),
+        "runes" => Some(dart_int_array(
+            text.chars().map(|ch| i64::from(ch as u32)),
+        )),
+        _ => None,
+    }
+}
+
+fn dart_expr_can_be_callable_object(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => !matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "print"
+                        | "identical"
+                        | "int.parse"
+                        | "int.tryParse"
+                        | "double.parse"
+                        | "double.tryParse"
+                        | "BigInt.from"
+                        | "BigInt.parse"
+                        | "BigInt.gcd"
+                )
+        ),
+        ExprKind::New { .. } | ExprKind::Object(_) | ExprKind::Array(_) => true,
+        _ => false,
+    }
+}
+
+fn is_dart_radix_parse_callee(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            matches!(name.as_str(), "int.parse" | "int.tryParse" | "BigInt.parse")
+        }
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name == "int" || name == "BigInt")
+                && matches!(field.as_str(), "parse" | "tryParse")
+        }
+        ExprKind::StaticAccess { class, member } => {
+            matches!(&class.kind, ExprKind::Ident(name) if name == "int" || name == "BigInt")
+                && matches!(&member.kind, ExprKind::Ident(name) if matches!(name.as_str(), "parse" | "tryParse"))
+        }
+        _ => false,
+    }
+}
+
+fn dart_print_zero_div_infinity(expr: &Expression) -> Option<String> {
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if *op != BinOp::Div {
+        return None;
+    }
+    let sign = dart_finite_nonzero_sign(left)? * dart_infinity_sign(right)?;
+    Some(if sign < 0 { "-0.0" } else { "0.0" }.to_string())
+}
+
+fn dart_finite_nonzero_sign(expr: &Expression) -> Option<i32> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) if *n > 0 => Some(1),
+        ExprKind::Lit(Literal::Int(n)) if *n < 0 => Some(-1),
+        ExprKind::Lit(Literal::Float(n)) if n.is_finite() && *n > 0.0 => Some(1),
+        ExprKind::Lit(Literal::Float(n)) if n.is_finite() && *n < 0.0 => Some(-1),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => dart_finite_nonzero_sign(expr).map(|sign| -sign),
+        _ => None,
+    }
+}
+
+fn dart_infinity_sign(expr: &Expression) -> Option<i32> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "double")
+                && field == "infinity" =>
+        {
+            Some(1)
+        }
+        ExprKind::Member { object, field, .. }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "double")
+                && field == "negativeInfinity" =>
+        {
+            Some(-1)
+        }
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => dart_infinity_sign(expr).map(|sign| -sign),
+        _ => None,
+    }
+}
+
+/// `Iterable.generate(count, mapper)` is lazy in Dart. Lower it to a real
+/// generator function so iteration, `take`, and early `break` all use the
+/// shared continuation emitter (`generators.rs`) rather than eagerly building
+/// an array in a Dart adapter. The original arguments are function parameters
+/// so they retain Dart's eager argument-evaluation order.
+fn dart_iterable_generate(args: Vec<Argument>) -> Option<Expression> {
+    if args.len() != 2 || args.iter().any(|arg| arg.name.is_some() || arg.spread) {
+        return None;
+    }
+    let param = |name: &str| Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let index = "__dart_iterable_index";
+    let length = "__dart_iterable_length";
+    let mapper = "__dart_iterable_mapper";
+    let yield_value = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(mapper)),
+        args: vec![Argument::positional(Expression::ident(index))],
+        optional: false,
+    });
+    let body = vec![Statement::new(StmtKind::For {
+        init: Some(Box::new(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(index.to_string()),
+                type_hint: Some("int".to_string()),
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }))),
+        cond: Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(Expression::ident(index)),
+            right: Box::new(Expression::ident(length)),
+        })),
+        update: Some(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(index)),
+            value: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(index)),
+                right: Box::new(Expression::int(1)),
+            })),
+        })),
+        body: vec![Statement::new(StmtKind::Expr(Expression::new(ExprKind::Yield(
+            Some(Box::new(yield_value)),
+        ))))],
+    })];
+    let generator = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: vec![param(length), param(mapper)],
+            return_type: Some("Iterable".to_string()),
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        },
+    ))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(generator),
+        args,
+        optional: false,
+    }))
+}
+
 fn dart_method_call(object: Expression, name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -3761,6 +7251,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     null_safe: true,
                 });
                 if let Some(args) = call_args {
+                    let mut args = args;
+                    normalize_dart_call_args(&expr, &mut args);
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args,
@@ -3803,6 +7295,26 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
+                if name == "catchError" {
+                    if let Some(args) = &call_args {
+                        if let Some(test) = args
+                            .iter()
+                            .find(|arg| arg.name.as_deref() == Some("test"))
+                            .map(|arg| &arg.value)
+                        {
+                            if let Some(reason) = dart_rejected_literal(&expr) {
+                                let handles = dart_catch_test_handles(test, &reason)
+                                    .or_else(|| dart_raw_catch_test_handles(chain_src, &reason));
+                                if handles == Some(false) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    name = "catch".to_string();
+                } else if name == "whenComplete" {
+                    name = "finally".to_string();
+                }
                 if let Some(uri) = dart_uri_from_expr(&expr) {
                     if name == "normalizePath" && (has_call || call_args.is_some()) {
                         expr = dart_uri_expr(uri.normalize_path());
@@ -3829,8 +7341,69 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
+                if call_args.is_none() && !has_call {
+                    if let Some(units) = dart_literal_string_units(&expr, &name) {
+                        expr = units;
+                        continue;
+                    }
+                    if matches!(name.as_str(), "codeUnits" | "runes") {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(if name == "codeUnits" {
+                                "__dart_string_code_units"
+                            } else {
+                                "__dart_string_runes"
+                            })),
+                            args: vec![Argument::positional(expr)],
+                            optional: false,
+                        });
+                        continue;
+                    }
+                }
                 if let ExprKind::Ident(class_name) = expr.kind.clone() {
-                    if matches!(class_name.as_str(), "DateTime" | "Duration" | "Uri" | "List") {
+                    if matches!(class_name.as_str(), "DateTime" | "Duration" | "Uri" | "List" | "Iterable" | "Map" | "Set" | "String" | "Future" | "Stream" | "Queue" | "BigInt" | "int" | "double") {
+                        if class_name == "BigInt" && call_args.is_none() && !has_call {
+                            if let Some(value) = match name.as_str() {
+                                "zero" => Some(0),
+                                "one" => Some(1),
+                                "two" => Some(2),
+                                _ => None,
+                            } {
+                                expr = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__dart_bigint_from")),
+                                    args: vec![Argument::positional(Expression::int(value))],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                        }
+                        if class_name == "Iterable" && name == "generate" {
+                            if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(generator) = dart_iterable_generate(args) {
+                                    expr = generator;
+                                    continue;
+                                }
+                            }
+                        }
+                        if class_name == "Future" {
+                            if let Some(alias) = dart_future_promise_alias(&name) {
+                                expr = dart_promise_member(alias);
+                                let static_args = if let Some(args) = call_args {
+                                    Some(args)
+                                } else if has_call {
+                                    Some(Vec::new())
+                                } else {
+                                    None
+                                };
+                                if let Some(args) = static_args {
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(expr),
+                                        args,
+                                        optional: false,
+                                    });
+                                }
+                                continue;
+                            }
+                        }
                         let static_name = format!("{}.{}", class_name, name);
                         expr = Expression::ident(&static_name);
                         let static_args = if let Some(args) = call_args {
@@ -3845,6 +7418,29 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 args = normalize_regexp_args(args);
                             } else if static_name == "Duration" {
                                 args = normalize_duration_args(args);
+                            } else if static_name == "int.tryParse" {
+                                normalize_dart_call_args(&expr, &mut args);
+                                if let Some(folded) = dart_fold_try_parse(&expr, &args) {
+                                    expr = folded;
+                                    continue;
+                                }
+                            } else if matches!(static_name.as_str(), "Map.from" | "Map.of" | "Map.unmodifiable") {
+                                if let Some(first) = args.first_mut() {
+                                    if let Some(entries) = dart_map_literal_entries(&first.value) {
+                                        first.value = entries;
+                                        expr = Expression::ident(if static_name == "Map.unmodifiable" {
+                                            "__dart_map_unmodifiable_entries"
+                                        } else {
+                                            "Map.fromEntries"
+                                        });
+                                    }
+                                }
+                            } else if matches!(static_name.as_str(), "int.parse" | "BigInt.parse") {
+                                for arg in &mut args {
+                                    if arg.name.as_deref() == Some("radix") {
+                                        arg.name = None;
+                                    }
+                                }
                             } else if static_name == "Uri.parse" {
                                 if let Some(text) = args.first().and_then(|arg| literal_string(&arg.value)) {
                                     expr = dart_uri_expr(DartUri::parse(&text));
@@ -3894,7 +7490,15 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // need to look like Calls so the value-method dispatch
                 // kicks in. Wrap the bare property access in a Call(0)
                 // for known property names.
-                let force_call = !has_call && call_args.is_none() && is_dart_zero_arg_getter(&name);
+                let type_qualified = matches!(
+                    &expr.kind,
+                    ExprKind::Ident(class_name)
+                        if class_name.chars().next().is_some_and(char::is_uppercase)
+                );
+                let force_call = !type_qualified
+                    && !has_call
+                    && call_args.is_none()
+                    && is_dart_zero_arg_getter(&name);
                 // Dart record positional field `.$1`/`.$2` → indexed read (records
                 // are array-backed). Only a bare getter, never a call.
                 if let Some(idx) =
@@ -3906,17 +7510,30 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         null_safe: false,
                     });
                 } else {
-                    expr = Expression::new(ExprKind::Member {
-                        object: Box::new(expr),
-                        field: name,
-                        null_safe: false,
-                    });
+                    expr = if type_qualified {
+                        Expression::new(ExprKind::StaticAccess {
+                            class: Box::new(expr),
+                            member: Box::new(Expression::ident(&name)),
+                        })
+                    } else {
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(expr),
+                            field: name,
+                            null_safe: false,
+                        })
+                    };
                     if let Some(args) = call_args {
-                        expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(expr),
-                            args,
-                            optional: false,
-                        });
+                        let mut args = args;
+                        if let Some(applied) = dart_function_apply(&expr, &args) {
+                            expr = applied;
+                        } else {
+                            normalize_dart_call_args(&expr, &mut args);
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(expr),
+                                args,
+                                optional: false,
+                            });
+                        }
                     } else if has_call || force_call {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
@@ -3967,7 +7584,42 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = dart_uri_expr(DartUri::from_file(&path));
                         continue;
                     }
+                } else if is_ident_expr(&expr, "Stopwatch") {
+                    expr = Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("Stopwatch")),
+                        args,
+                    });
+                    continue;
                 }
+                if let ExprKind::Ident(name) = &expr.kind {
+                    if let Some(alias) = dart_exception_constructor_alias(name) {
+                        expr = Expression::ident(alias);
+                    }
+                }
+                if let Some(applied) = dart_function_apply(&expr, &args) {
+                    expr = applied;
+                    continue;
+                }
+                if let Some(folded) = dart_fold_try_parse(&expr, &args) {
+                    expr = folded;
+                    continue;
+                }
+                if dart_expr_can_be_callable_object(&expr) {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Index {
+                            object: Box::new(expr),
+                            index: Box::new(Expression::string("call")),
+                            null_safe: false,
+                        })),
+                        args,
+                        optional: false,
+                    });
+                    continue;
+                }
+                if is_ident_expr(&expr, "print") {
+                    args = normalize_dart_print_args(args);
+                }
+                normalize_dart_call_args(&expr, &mut args);
                 expr = Expression::new(ExprKind::Call {
                     callee: Box::new(expr),
                     args,
@@ -4011,6 +7663,8 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         .map(walk_arguments)
                         .transpose()?
                         .unwrap_or_default();
+                    let mut args = args;
+                    normalize_dart_call_args(&expr, &mut args);
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args,
@@ -4624,6 +8278,24 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
     if let Some(buffer) = fold_string_buffer_cascade(&receiver, &sections)? {
         return Ok(buffer);
     }
+    if let Some(stopwatch) = fold_stopwatch_cascade(&receiver, &sections)? {
+        return Ok(stopwatch);
+    }
+
+    if sections.len() == 1 {
+        let section = sections[0].clone();
+        if section.as_str().trim() == "sort()" {
+            return Ok(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(receiver),
+                    field: "sort".to_string(),
+                    null_safe: false,
+                })),
+                args: Vec::new(),
+                optional: false,
+            }));
+        }
+    }
 
     let mut ops = Vec::new();
 
@@ -4691,6 +8363,51 @@ fn walk_cascade(receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Ex
 
     ops.push(receiver);
     Ok(Expression::new(ExprKind::Sequence(ops)))
+}
+
+fn fold_stopwatch_cascade(
+    receiver: &Expression,
+    sections: &[Pair<Rule>],
+) -> Result<Option<Expression>, String> {
+    if !is_dart_stopwatch_constructor(receiver) {
+        return Ok(None);
+    }
+    let mut running = false;
+    for section in sections {
+        let mut inner = section.clone().into_inner();
+        let Some(first) = inner.next() else {
+            return Ok(None);
+        };
+        if first.as_rule() != Rule::ident_name {
+            return Ok(None);
+        }
+        let name = first.as_str();
+        let has_args = inner.any(|p| p.as_rule() == Rule::argument_list);
+        if !has_args && !section.as_str().contains('(') {
+            return Ok(None);
+        }
+        match name {
+            "start" => running = true,
+            "stop" | "reset" => running = false,
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(Expression::new(ExprKind::Object(vec![
+        obj_prop("__dart_stopwatch_marker", Expression::bool(true)),
+        obj_prop("isrunning", Expression::bool(running)),
+    ]))))
+}
+
+fn is_dart_stopwatch_constructor(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::New { class, .. } => {
+            matches!(&class.kind, ExprKind::Ident(name) if name == "Stopwatch")
+        }
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "Stopwatch")
+        }
+        _ => false,
+    }
 }
 
 fn fold_string_buffer_cascade(

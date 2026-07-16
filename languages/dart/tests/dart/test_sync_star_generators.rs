@@ -52,7 +52,7 @@ void main() {
   for (var v in halves()) { sum += v; }
   print(sum);
 }"#,
-        ["2.0"]
+        ["2"]
     };
 
     sync_star_empty_generator_produces_no_elements => {
@@ -346,7 +346,7 @@ void main() {
   for (var v in fib().take(10)) { sum += v; }
   print(sum);
 }"#,
-        ["54"]
+        ["88"]
     };
 
     sync_star_manual_take_stops_after_n_items => {

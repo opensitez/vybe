@@ -19,6 +19,7 @@ top_level_item = _{
         import_declaration
         | class_declaration
         | mixin_declaration
+        | extension_type_declaration
         | extension_declaration
         | enum_declaration
         | typedef_declaration
@@ -190,8 +191,8 @@ generator_marker = { "*" }
 // ── Field ───────────────────────────────────────────────────────────────────
 
 field_declaration = {
-    member_modifiers ~ type_annotation?
-    ~ ident_name ~ ("=" ~ assignment_expression)?
+    member_modifiers ~ (type_annotation ~ ident_name | ident_name)
+    ~ ("=" ~ assignment_expression)?
     ~ ("," ~ ident_name ~ ("=" ~ assignment_expression)?)*
     ~ ";"
 }
@@ -201,6 +202,15 @@ field_declaration = {
 extension_declaration = {
     "extension" ~ ident_name? ~ type_params? ~ "on" ~ type_annotation
     ~ "{" ~ class_member* ~ "}"
+}
+
+// Dart 3 extension types are nominal wrappers at the source level. The walker
+// lowers them to the common class model around their representation field.
+extension_type_declaration = {
+    "extension" ~ "type" ~ ident_name ~ type_params?
+    ~ "(" ~ type_annotation ~ ident_name ~ ")"
+    ~ implements_clause?
+    ~ class_body
 }
 
 // ── Top-level function or variable ──────────────────────────────────────────
@@ -249,12 +259,13 @@ named_params = {
 
 param = {
     required_kw? ~ covariant_kw? ~ final_kw?
-    ~ (this_param | typed_or_untyped_param)
+    ~ (this_param | super_param | typed_or_untyped_param)
     ~ param_default?
 }
 
 // `this.field` shorthand — no type annotation, field name follows directly
 this_param = { this_param_prefix ~ ident_name }
+super_param = { super_param_prefix ~ ident_name }
 
 // Regular param: typed (two idents) or untyped (one ident).
 // Try typed first — if type_annotation matches AND ident_name follows,
@@ -262,6 +273,7 @@ this_param = { this_param_prefix ~ ident_name }
 typed_or_untyped_param = { type_annotation ~ ident_name | ident_name }
 
 this_param_prefix = { "this" ~ "." }
+super_param_prefix = { "super" ~ "." }
 param_default = { ("=" | ":") ~ assignment_expression }
 
 // ── Statements ──────────────────────────────────────────────────────────────
@@ -288,6 +300,7 @@ statement = _{
     | try_statement
     | assert_statement
     | yield_statement
+    | labeled_statement
     | expression_statement
 }
 
@@ -300,16 +313,15 @@ block_statement = { "{" ~ statement* ~ "}" }
 // ── Variable declarations ───────────────────────────────────────────────────
 
 variable_declaration_statement = {
-    // Order matters — try the strict (with type) form first, then fall
-    // back to the modifier-only form which omits the type. The strict
-    // form requires var_declarator to follow type, so PEG won't accept
-    // partial matches that consume the identifier and stall.
-    var_modifiers ~ type_or_var ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
-  | var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
+    // Order matters: explicit `var`/`final`/`const` declarations may use
+    // destructuring patterns, while typed declarations require plain
+    // identifiers so calls like `print(i);` cannot parse as declarations.
+    var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
+  | var_modifiers ~ type_or_var ~ typed_var_declarator ~ ("," ~ typed_var_declarator)* ~ ";"
 }
 
-// `final` or `const` (with optional `late`) — type spec optional.
-var_modifiers_required = { late_kw? ~ (final_kw | const_kw) }
+// `var`, `final`, or `const` (with optional `late`) — type spec optional.
+var_modifiers_required = { late_kw? ~ (var_kw | final_kw | const_kw) }
 var_modifiers = { late_kw? ~ (final_kw | const_kw)? }
 
 type_or_var = {
@@ -319,7 +331,10 @@ type_or_var = {
 
 var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
 
-var_declarator = { ident_name ~ ("=" ~ assignment_expression)? }
+var_declarator = { (destructuring_pattern | ident_name) ~ ("=" ~ assignment_expression)? }
+typed_var_declarator = { ident_name ~ ("=" ~ assignment_expression)? }
+
+destructuring_pattern = { record_pattern | list_pattern | map_pattern | object_pattern }
 
 // ── If ──────────────────────────────────────────────────────────────────────
 
@@ -333,6 +348,8 @@ if_case_condition = {
 
 else_clause = { "else" ~ statement }
 
+labeled_statement = { ident_name ~ ":" ~ statement }
+
 // ── For ─────────────────────────────────────────────────────────────────────
 
 for_statement = {
@@ -344,7 +361,7 @@ for_header = {
 }
 
 for_in_header = {
-    (final_kw | var_kw)? ~ (type_annotation ~ ident_name | ident_name) ~ "in" ~ expression
+    (final_kw | var_kw)? ~ (destructuring_pattern | type_annotation ~ ident_name | ident_name) ~ "in" ~ expression
 }
 
 for_c_header = {
@@ -356,8 +373,8 @@ for_c_init = {
 }
 
 variable_declaration_no_semi = {
-    var_modifiers ~ type_or_var ~ var_declarator ~ ("," ~ var_declarator)*
-  | var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)*
+    var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)*
+  | var_modifiers ~ type_or_var ~ typed_var_declarator ~ ("," ~ typed_var_declarator)*
 }
 
 for_c_update = { expression ~ ("," ~ expression)* }
@@ -375,7 +392,7 @@ switch_statement = {
 }
 
 switch_case = {
-    ("case" ~ expression | "default") ~ ":" ~ statement*
+    ("case" ~ pattern ~ when_guard? | "default") ~ ":" ~ statement*
 }
 
 // ── Jump statements ─────────────────────────────────────────────────────────
@@ -422,8 +439,11 @@ expression = { assignment_expression ~ ("," ~ assignment_expression)* }
 
 assignment_expression = {
     &lambda_lookahead ~ lambda_expression
+    | throw_expression
     | conditional_expression ~ (assignment_op ~ assignment_expression)?
 }
+
+throw_expression = { "throw" ~ expression }
 
 // Cheap lookahead so `assignment_expression` doesn't descend through
 // `lambda_expression` → `lambda_params` → `typed_lambda_param` →
@@ -449,7 +469,7 @@ assignment_op = {
 // ── Lambda (arrow functions) ────────────────────────────────────────────────
 
 lambda_expression = {
-    async_kw? ~ lambda_params ~ (arrow_op ~ assignment_expression | function_body_block)
+    async_kw? ~ lambda_params ~ async_kw? ~ (arrow_op ~ (throw_expression | assignment_expression) | function_body_block)
 }
 
 lambda_params = {
@@ -459,7 +479,9 @@ lambda_params = {
 
 // Lambda params: try bare ident first (most common), then typed.
 // Ordered choice ensures `x` matches as bare name, not as a type.
-lambda_param_list = { lambda_param ~ ("," ~ lambda_param)* ~ ","? }
+lambda_param_list = { lambda_param_item ~ ("," ~ lambda_param_item)* ~ ","? }
+lambda_param_item = { named_lambda_params | lambda_param }
+named_lambda_params = { "{" ~ lambda_param ~ ("," ~ lambda_param)* ~ ","? ~ "}" }
 lambda_param = { typed_lambda_param | ident_name }
 typed_lambda_param = { final_kw? ~ type_annotation ~ ident_name ~ param_default? }
 
@@ -569,7 +591,7 @@ cascade_continuation = {
 }
 
 null_safe_member_access = { "?." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")")? }
-member_access = { "." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")")? }
+member_access = { "." ~ ident_or_keyword ~ type_args? ~ ("(" ~ argument_list? ~ ")")? }
 call_args = { "(" ~ argument_list? ~ ")" }
 index_access = { "[" ~ expression ~ "]" }
 // Postfix `!` (null-assert). Negative lookahead on `=` keeps `!=`
@@ -602,11 +624,14 @@ primary = {
     | false_kw
     | null_kw
     | numeric_literal
+    | symbol_literal
     | string_literal_sequence
     | string_literal
     | typed_ident
     | ident_name
 }
+
+symbol_literal = { "#" ~ ident_name }
 
 string_literal_sequence = { string_literal ~ string_literal+ }
 
@@ -670,10 +695,12 @@ bool_pattern = { true_kw | false_kw }
 
 constant_pattern = {
     signed_numeric_pattern
+    | qualified_constant_pattern
     | numeric_literal
     | string_literal
     | ident_name ~ (ident_name)?   // type + variable binding, or plain identifier constant
 }
+qualified_constant_pattern = { ident_name ~ "." ~ ident_name }
 signed_numeric_pattern = { "-" ~ numeric_literal }
 
 // ── Record / parenthesized expression ───────────────────────────────────────
