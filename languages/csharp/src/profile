@@ -51,8 +51,8 @@ tuple_literals_tagged = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"Console.WriteLine"       = { emit = "common:dotnet.console_writeline", min_args = 1, max_args = 1 }
-"Console.Write"           = { emit = "common:dotnet.console_writeline", min_args = 1, max_args = 1 }
+"Console.WriteLine"       = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 1 }
+"Console.Write"           = { emit = "common:dotnet.console_write",      min_args = 1, max_args = 1 }
 "Console.ReadLine"        = { emit = "host:wasi:cli:readLine",    min_args = 0, max_args = 0 }
 "Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }

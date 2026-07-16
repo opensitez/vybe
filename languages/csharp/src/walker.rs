@@ -4527,6 +4527,7 @@ fn synthesize_attribute_class(name: &str) -> Statement {
             },
             interfaces: Vec::new(),
             members: vec![ClassMember::Constructor {
+                name: None,
                 params: Vec::new(),
                 body: Vec::new(),
                 base_args: None,
@@ -4723,6 +4724,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
     // resolves (each parent has a 0-arg ctor). The typed ctors set their own
     // fields on `this`; `base()` runs the parent's 0-arg ctor.
     members.push(ClassMember::Constructor {
+        name: None,
         params: Vec::new(),
         body: vec![assign_extype.clone()],
         base_args: None,
@@ -4730,6 +4732,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         visibility: Visibility::Public,
     });
     members.push(ClassMember::Constructor {
+        name: None,
         params,
         body,
         base_args: None,
@@ -4738,6 +4741,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
     });
     if name == "ArgumentException" {
         members.push(ClassMember::Constructor {
+            name: None,
             params: vec![mk_param("msg")],
             body: vec![assign("Message", "msg"), assign_extype.clone()],
             base_args: None,
@@ -4749,6 +4753,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         // `(message, innerException)` — .NET's exception-chaining ctor, so
         // `throw new Exception("wrap", e)` preserves `e` as `.InnerException`.
         members.push(ClassMember::Constructor {
+            name: None,
             params: vec![mk_param("msg"), mk_param("inner")],
             body: vec![
                 assign("Message", "msg"),
@@ -6148,6 +6153,32 @@ fn csharp_storage_type_hint(type_name: &str) -> String {
     }
 }
 
+/// True for the contiguous-view shapes (`Span<T>`, `ReadOnlyMemory<T>`, …).
+///
+/// A span IS an array on this runtime, so `default(Span<T>)` is an empty array
+/// — NOT null. Without this, `Span<int> s = default; s.Length` reads a length
+/// off null.
+fn is_span_like_type_name(normalized_hint: &str) -> bool {
+    let base = normalized_hint
+        .split('<')
+        .next()
+        .unwrap_or(normalized_hint)
+        .rsplit('.')
+        .next()
+        .unwrap_or(normalized_hint);
+    matches!(base, "span" | "readonlyspan" | "memory" | "readonlymemory")
+}
+
+/// The value a target-typed `default` stands for, given the declared type.
+fn default_value_expr_for_type(type_hint: &str, normalized_hint: &str) -> Expression {
+    if is_span_like_type_name(normalized_hint) {
+        return Expression::new(ExprKind::Array(vec![]));
+    }
+    // Everything else keeps `DefaultOf`, now carrying the declared type so the
+    // shared emitter can pick the right zero value.
+    Expression::new(ExprKind::DefaultOf(type_hint.to_string()))
+}
+
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
@@ -6182,6 +6213,12 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
             decl.type_hint = Some(csharp_storage_type_hint(&type_hint));
+            // Resolve a target-typed `default` against the declared type.
+            if let Some(init) = &decl.init {
+                if matches!(&init.kind, vybe_ast::ExprKind::DefaultOf(t) if t.is_empty()) {
+                    decl.init = Some(default_value_expr_for_type(&type_hint, &normalized_hint));
+                }
+            }
             if matches!(normalized_hint.as_str(), "object" | "system.object") {
                 if let Some(ref init) = decl.init {
                     if let vybe_ast::ExprKind::New { class, .. } = &init.kind {
@@ -6432,6 +6469,7 @@ fn apply_primary_constructor(
     members.insert(
         0,
         ClassMember::Constructor {
+            name: None,
             params,
             body: ctor_body,
             base_args,
@@ -7806,6 +7844,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
     }
 
     Ok(ClassMember::Constructor {
+        name: None,
         params,
         body,
         base_args,
@@ -7981,6 +8020,30 @@ thread_local! {
     // `obj.E += h` / `-= h` route to `obj.add_E(h)` / `obj.remove_E(h)`.
     static CUSTOM_EVENTS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+thread_local! {
+    // Declared enum type names. A pattern's dotted name is ambiguous —
+    // `is Color.Green` is a CONSTANT but `is System.String` is a TYPE, and the
+    // grammar matches both as `pattern_type`. Knowing which roots are enums is
+    // the only way to tell them apart, so enum declarations record their name
+    // here as they are walked.
+    static DECLARED_ENUMS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Splits `<KnownEnum>.<Member>` — a constant pattern rather than a type test.
+/// `None` for anything else, including `System.String` (root is not an enum)
+/// and multi-segment paths.
+fn enum_member_path_parts(name: &str) -> Option<(String, String)> {
+    let (root, member) = name.split_once('.')?;
+    if member.contains('.') {
+        return None;
+    }
+    let (root, member) = (root.trim(), member.trim());
+    DECLARED_ENUMS
+        .with(|enums| enums.borrow().contains(root))
+        .then(|| (root.to_string(), member.to_string()))
 }
 
 thread_local! {
@@ -8868,6 +8931,7 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
                     members.insert(
                         0,
                         ClassMember::Constructor {
+                            name: None,
                             params: ctor_params,
                             body: field_inits,
                             base_args: None,
@@ -9245,6 +9309,10 @@ fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKin
         }
     }
 
+    // Record the name so a later `is Color.Green` reads as a constant pattern
+    // rather than a type test — see `is_enum_member_path`.
+    DECLARED_ENUMS.with(|enums| enums.borrow_mut().insert(name.clone()));
+
     Ok(StmtKind::EnumDecl {
         name,
         members,
@@ -9339,6 +9407,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             })
             .collect();
         members.push(ClassMember::Constructor {
+            name: None,
             params: params.clone(),
             body: ctor_body,
             base_args,
@@ -11220,6 +11289,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // New expression
         Rule::new_expression => walk_new_expr(pair),
+        Rule::stackalloc_expression => walk_stackalloc_expr(pair),
 
         // Primary
         Rule::primary => {
@@ -11271,11 +11341,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::type_name)
                 .map(|p| p.as_str().to_string());
-            if let Some(type_name) = type_name {
-                Ok(ExprKind::DefaultOf(type_name))
-            } else {
-                Ok(ExprKind::Lit(Literal::Null))
-            }
+            // A bare `default` is TARGET-TYPED: the type comes from the
+            // declaration, not the expression. Carry it as `DefaultOf("")` so
+            // the declaration walker can fill the type in; an empty type hint
+            // already lowers to null, which is what the untyped form meant.
+            Ok(ExprKind::DefaultOf(type_name.unwrap_or_default()))
         }
 
         // checked/unchecked → just evaluate inner
@@ -11791,6 +11861,61 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 }
 
 // ── New expression walker ───────────────────────────────────────────────────
+
+/// `stackalloc T[n]` / `stackalloc T[n] { a, b }`.
+///
+/// Stack allocation has no meaning on a GC/array runtime, and a `Span<T>` IS
+/// the array here — so this lowers exactly like `new T[n]` / `new T[n] { … }`,
+/// reusing their two paths: an initializer becomes an array literal, a size
+/// becomes a zero-filled sized array.
+fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let mut element_type = String::new();
+    let mut size: Option<Expression> = None;
+    let mut elements: Vec<Expression> = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::stackalloc_kw => {}
+            Rule::type_name_for_new => {
+                element_type = strip_csharp_type_path_generic_args(p.as_str());
+            }
+            Rule::array_initializer => {
+                for ap in p.into_inner() {
+                    if let Ok(expr) = walk_collection_element(ap) {
+                        elements.push(expr);
+                    }
+                }
+            }
+            // The bracketed length.
+            _ => {
+                if let Ok(expr) = walk_expression(p) {
+                    size = Some(expr);
+                }
+            }
+        }
+    }
+
+    // `stackalloc int[3] { 10, 20, 30 }` — the initializer supplies the values,
+    // so the length is redundant (C# requires them to agree).
+    if !elements.is_empty() {
+        return Ok(ExprKind::Array(
+            elements
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ));
+    }
+
+    match size {
+        Some(length) => Ok(build_csharp_sized_array_expr(&[length], &element_type, 0).kind),
+        None => Ok(ExprKind::Array(Vec::new())),
+    }
+}
 
 fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut type_name = String::new();
@@ -12771,6 +12896,16 @@ fn build_switch_primary_cond(
 ) -> Result<Expression, String> {
     let pat_src = pattern.as_str().trim();
     let span = subject.span.clone();
+    // A property pattern means the same thing in a switch arm as under `is`
+    // (`o switch { Token { Kind: "add" } => … }`), so it reuses that builder
+    // rather than growing a second implementation here.
+    if let Some(property) = pattern
+        .clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::property_pattern)
+    {
+        return build_general_pattern_cond(subject, property);
+    }
     // Relational pattern: `>= 90`, `<= 50`, `< 0`, `> 0`.
     let rel_op = if pat_src.starts_with(">=") {
         Some(BinOp::GtEq)
@@ -12870,6 +13005,23 @@ fn build_switch_pattern_binding(
             .filter(|p| p.as_rule() == Rule::switch_pat_primary)
         {
             let inner: Vec<Pair<Rule>> = prim.into_inner().collect();
+            // `Wallet { Balance: var b } => b` — a property pattern can bind
+            // several names, each rooted at a member, so it goes through the
+            // shared collector rather than the fixed `T x` shape below.
+            if let Some(property) = inner
+                .iter()
+                .find(|p| p.as_rule() == Rule::property_pattern)
+            {
+                let mut declarations = Vec::new();
+                collect_pattern_var_bindings(&subject, property.clone(), &mut declarations)?;
+                if !declarations.is_empty() {
+                    return Ok(Some(Statement::new(StmtKind::VarDecl {
+                        declarations,
+                        kind: VarDeclKind::Let,
+                    })));
+                }
+                continue;
+            }
             if inner.len() >= 2
                 && inner[0].as_rule() == Rule::type_name
                 && inner[1].as_rule() == Rule::ident_name
@@ -13100,7 +13252,129 @@ fn build_general_pattern_cond(
             Ok(build_switch_tuple_pattern_cond(subject, elements))
         }
         Rule::var_pattern => Ok(Expression::bool(true)),
+        // `{ Kind: "err" or "fail" }` — the `or` arm of a subpattern value.
+        Rule::property_pattern_value => {
+            let mut cond: Option<Expression> = None;
+            for clause in pattern
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::pattern_clause)
+            {
+                let next = build_general_pattern_cond(subject.clone(), clause)?;
+                cond = Some(match cond {
+                    Some(prev) => Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::Or,
+                            left: Box::new(prev),
+                            right: Box::new(next),
+                        },
+                        span.clone(),
+                    ),
+                    None => next,
+                });
+            }
+            Ok(cond.unwrap_or_else(|| Expression::bool(true)))
+        }
+        Rule::negative_numeric_pattern => {
+            let lit = pattern
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::numeric_literal)
+                .ok_or("negative numeric pattern missing literal")?;
+            let magnitude = walk_expression(lit)?;
+            let negated = Expression::with_span(
+                ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(magnitude),
+                },
+                span.clone(),
+            );
+            Ok(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(subject),
+                    right: Box::new(negated),
+                },
+                span,
+            ))
+        }
+        // `is Point { X: 1, Y: >=0 and <=9 }` → `(subj is Point) && (subj.X == 1)
+        // && (subj.Y >= 0 && subj.Y <= 9)`. Each subpattern re-enters this
+        // builder with the MEMBER as the subject, so every pattern form already
+        // supported (literal, null, relational, `and`, nested property) works
+        // inside a property pattern for free. `var x` subpatterns contribute
+        // `true` here and bind in `build_general_pattern_binding`.
+        Rule::property_pattern => {
+            let mut cond: Option<Expression> = None;
+            let push = |cond: &mut Option<Expression>, next: Expression| {
+                *cond = Some(match cond.take() {
+                    Some(prev) => Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::And,
+                            left: Box::new(prev),
+                            right: Box::new(next),
+                        },
+                        span.clone(),
+                    ),
+                    None => next,
+                });
+            };
+            for part in pattern.into_inner() {
+                match part.as_rule() {
+                    Rule::pattern_type => {
+                        let test = build_general_pattern_cond(subject.clone(), part)?;
+                        push(&mut cond, test);
+                    }
+                    Rule::property_subpattern => {
+                        let mut sub = part.into_inner();
+                        let member = sub.next().ok_or("property pattern: missing member name")?;
+                        let clause = sub.next().ok_or("property pattern: missing subpattern")?;
+                        let member_expr = Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(subject.clone()),
+                                field: member.as_str().trim().to_string(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        );
+                        let test = build_general_pattern_cond(member_expr, clause)?;
+                        push(&mut cond, test);
+                    }
+                    // Trailing designation (`is Point { X: 1 } p`) binds in
+                    // `build_general_pattern_binding`, not here.
+                    _ => {}
+                }
+            }
+            // `is { }` matches anything non-null; a bare `{ }` with no type and
+            // no members has nothing to assert beyond that.
+            Ok(cond.unwrap_or_else(|| Expression::bool(true)))
+        }
         Rule::pattern_type => {
+            // `{ Hue: Color.Green }` — a dotted name rooted at a declared enum
+            // is a CONSTANT pattern, not a type test. The grammar cannot tell
+            // it from `is System.String`, so the enum registry decides.
+            let raw = pattern.as_str().trim();
+            if let Some((enum_name, member)) = enum_member_path_parts(raw) {
+                // Built directly rather than via `walk_expression`, which does
+                // not accept a `pattern_type` pair.
+                let constant = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(Expression::with_span(
+                            ExprKind::Ident(enum_name),
+                            span.clone(),
+                        )),
+                        field: member,
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(subject),
+                        right: Box::new(constant),
+                    },
+                    span,
+                ));
+            }
             let type_name = normalize_runtime_type_name(pattern.as_str());
             if let Some(js_typeof) = primitive_to_typeof(&type_name) {
                 let typeof_expr =
@@ -13138,6 +13412,66 @@ fn build_general_pattern_cond(
             ))
         }
     }
+}
+
+/// Collect every `var x` a pattern binds, paired with the expression it binds
+/// to. A property pattern can bind several at once (`{ A: var a, B: var b }`)
+/// and can nest (`{ Data: { A: var a } }`), so this walks the pattern tree,
+/// re-rooting `subject` at each member it descends through.
+fn collect_pattern_var_bindings(
+    subject: &Expression,
+    pattern: Pair<Rule>,
+    out: &mut Vec<VarDeclarator>,
+) -> Result<(), String> {
+    let declarator = |name: String, init: Expression| VarDeclarator {
+        pattern: BindingPattern::Ident(name),
+        type_hint: None,
+        init: Some(init),
+        array_bounds: None,
+        with_events: false,
+    };
+    match pattern.as_rule() {
+        // Pass-through wrappers — descend.
+        Rule::property_pattern_value | Rule::pattern_clause | Rule::pattern_atom => {
+            for child in pattern.into_inner() {
+                collect_pattern_var_bindings(subject, child, out)?;
+            }
+        }
+        Rule::var_pattern => {
+            let name = pattern
+                .into_inner()
+                .last()
+                .ok_or("var pattern missing identifier")?
+                .as_str()
+                .to_string();
+            out.push(declarator(name, subject.clone()));
+        }
+        Rule::property_pattern => {
+            for part in pattern.into_inner() {
+                match part.as_rule() {
+                    Rule::property_subpattern => {
+                        let mut sub = part.into_inner();
+                        let member = sub.next().ok_or("property pattern: missing member name")?;
+                        let clause = sub.next().ok_or("property pattern: missing subpattern")?;
+                        let member_expr = Expression::new(ExprKind::Member {
+                            object: Box::new(subject.clone()),
+                            field: member.as_str().trim().to_string(),
+                            null_safe: false,
+                        });
+                        collect_pattern_var_bindings(&member_expr, clause, out)?;
+                    }
+                    // Trailing designation: `is Point { X: 1 } p` binds the
+                    // SUBJECT, not a member.
+                    Rule::ident_name => {
+                        out.push(declarator(part.as_str().to_string(), subject.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn build_general_pattern_binding(
@@ -13200,6 +13534,30 @@ fn build_general_pattern_binding(
                     array_bounds: None,
                     with_events: false,
                 }],
+                kind: VarDeclKind::Let,
+            })))
+        }
+        // A switch arm's pattern nests under its own rules rather than
+        // `pattern_clause` — descend to whatever binds.
+        Rule::switch_pattern | Rule::switch_pat_and | Rule::switch_pat_primary => {
+            for child in pattern.into_inner() {
+                if let Some(binding) = build_general_pattern_binding(subject.clone(), child)? {
+                    return Ok(Some(binding));
+                }
+            }
+            Ok(None)
+        }
+        // `is Pair { A: var a, B: var b }` binds several names from one
+        // pattern. They go in a single multi-declarator `VarDecl` rather than a
+        // Block, which would scope them away from the body that reads them.
+        Rule::property_pattern => {
+            let mut declarations = Vec::new();
+            collect_pattern_var_bindings(&subject, pattern, &mut declarations)?;
+            if declarations.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(Statement::new(StmtKind::VarDecl {
+                declarations,
                 kind: VarDeclKind::Let,
             })))
         }
@@ -14231,6 +14589,24 @@ fn rewrite_csharp_string_instance_call(
         })
     };
 
+    // A `ReadOnlySpan<char>` over a string IS the substring on this runtime —
+    // indexing it yields the same single-char strings a `char` already is — so
+    // `AsSpan(start, length)` and `Substring(start, length)` mean the same
+    // thing and share one lowering. `AsSpan()` with no bounds is the whole
+    // string, i.e. the receiver itself.
+    //
+    // Gated on a receiver KNOWN to be a string: `AsSpan` over an array is a
+    // range over that array, and resolves through the .NET descriptor instead.
+    // These rewrites key on the method name alone, so an ungated arm here would
+    // hijack the array form too.
+    let is_string_receiver = matches!(&receiver.kind, ExprKind::Lit(Literal::Str(_)));
+    if field.eq_ignore_ascii_case("AsSpan") && is_string_receiver {
+        if args.is_empty() {
+            return Some(receiver);
+        }
+        return rewrite_csharp_string_instance_call(receiver, "Substring", args);
+    }
+
     if field.eq_ignore_ascii_case("ToString") && args.len() == 1 {
         if expr_dotted_name(&args[0].value).is_some_and(|name| {
             name.eq_ignore_ascii_case("System.Globalization.CultureInfo.InvariantCulture")
@@ -14911,27 +15287,13 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     return rewritten;
                 }
             }
-            // bool.Parse(s) → s.toLowerCase() === "true"
-            if (obj_name.eq_ignore_ascii_case("bool") || obj_name == "Boolean")
-                && field.eq_ignore_ascii_case("Parse")
-                && args.len() == 1
-            {
-                let s = args[0].value.clone();
-                let s_lc = Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(s),
-                        field: "toLowerCase".into(),
-                        null_safe: false,
-                    })),
-                    args: vec![],
-                    optional: false,
-                });
-                return Expression::new(ExprKind::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(s_lc),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Str("true".into())))),
-                });
-            }
+            // `bool.Parse(s)` is left for the profile builtin
+            // (`common:dotnet.parse_bool` → `parse_adapter::emit_parse_bool`),
+            // which lowercases via the `ecma:string.toLowerCase` HOST import and
+            // throws a `FormatException` on invalid input — matching .NET. A
+            // walker rewrite to `s.toLowerCase() === "true"` produced a bare
+            // member call that does not resolve on this runtime (strings have no
+            // JS-style member methods here), and also dropped the throw.
             // `Array.Reverse / Exists / Find / FindAll / TrueForAll /
             // ConvertAll / ForEach / IndexOf` static helpers are wired
             // through the `[builtins]` `Array.*` entries in the C# profile,
@@ -15184,15 +15546,79 @@ fn normalize_runtime_type_name(t: &str) -> String {
 }
 
 fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
-    let Some((subject, type_name, binding_name)) = find_if_is_pattern_binding(pair)? else {
-        return Ok(None);
-    };
+    if let Some((subject, type_name, binding_name)) = find_if_is_pattern_binding(pair.clone())? {
+        return Ok(Some(build_type_pattern_binding_stmt(
+            subject,
+            type_name,
+            binding_name,
+        )));
+    }
+    // `is Box { Value: var v }` binds names the `is Type x` shape above cannot
+    // describe — an arbitrary number of them, each rooted at a member.
+    find_if_is_property_pattern_binding(pair)
+}
 
-    Ok(Some(build_type_pattern_binding_stmt(
-        subject,
-        type_name,
-        binding_name,
-    )))
+/// The `is <pattern>` binding path for patterns that bind via
+/// [`collect_pattern_var_bindings`] rather than the fixed
+/// `subject`/`type`/`name` triple. Mirrors `find_if_is_pattern_binding`'s
+/// descent; yields `None` when the pattern binds nothing, so the simple shape
+/// keeps its existing type-hinted binding.
+fn find_if_is_property_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    match pair.as_rule() {
+        Rule::expression
+        | Rule::assignment_expression
+        | Rule::conditional_expression
+        | Rule::null_coalesce_expr
+        | Rule::logical_or
+        | Rule::logical_and
+        | Rule::bitwise_or
+        | Rule::bitwise_xor
+        | Rule::bitwise_and
+        | Rule::equality => {
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if inner.len() == 1 {
+                return find_if_is_property_pattern_binding(inner[0].clone());
+            }
+            for child in inner {
+                if let Some(binding) = find_if_is_property_pattern_binding(child)? {
+                    return Ok(Some(binding));
+                }
+            }
+            Ok(None)
+        }
+        Rule::relational => {
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if inner.len() != 2 || inner[1].as_rule() != Rule::type_test {
+                return Ok(None);
+            }
+            let subject = walk_expression(inner[0].clone())?;
+            let mut tt_inner = inner[1].clone().into_inner();
+            let Some(keyword) = tt_inner.next() else {
+                return Ok(None);
+            };
+            if keyword.as_rule() != Rule::is_kw {
+                return Ok(None);
+            }
+            let Some(clause) = tt_inner.next() else {
+                return Ok(None);
+            };
+            // A negated pattern binds nothing — the body runs when it did NOT
+            // match, so there is no matched value to name.
+            if clause.as_str().trim_start().starts_with("not") {
+                return Ok(None);
+            }
+            let mut declarations = Vec::new();
+            collect_pattern_var_bindings(&subject, clause, &mut declarations)?;
+            if declarations.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(Statement::new(StmtKind::VarDecl {
+                declarations,
+                kind: VarDeclKind::Let,
+            })))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn build_type_pattern_binding_stmt(

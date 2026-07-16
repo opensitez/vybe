@@ -121,7 +121,7 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
 
-    // len = STR_LENGTH(content)
+    // len = wasm:js-string.length(content)
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
@@ -210,7 +210,7 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
 
-    // end = STR_LENGTH(content). Need to dup content first since substring consumes it.
+    // end = wasm:js-string.length(content). Need to dup content first since substring consumes it.
     let content_slot = reserve_slot(chunk);
     let pos_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
@@ -223,7 +223,7 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
-    // reader.__pos = STR_LENGTH(content) — fully consumed.
+    // reader.__pos = wasm:js-string.length(content) — fully consumed.
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
@@ -231,7 +231,7 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op(Op::DROP, line);
 }
 
-/// `reader.AtEndOfStream` — `__pos >= STR_LENGTH(__content)`.
+/// `reader.AtEndOfStream` — `__pos >= wasm:js-string.length(__content)`.
 /// Stack: `[reader]` → `[bool]`.
 pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];

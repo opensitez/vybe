@@ -38,6 +38,8 @@ thread_local! {
     static FUNC_NAME_ARITIES: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // type name → number of fields (for struct.new arity)
     static STRUCT_FIELD_COUNTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // func-type name → number of params (for call_ref/call_indirect arity)
+    static TYPE_FUNC_PARAMS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // Module functions compile to static methods of this class; a `call $f` to a
     // defined function is reached as `ClassName.f(...)`.
     static MODULE_CLASS_NAME: RefCell<String> = RefCell::new(String::new());
@@ -436,6 +438,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     // 3. Pre-scan struct type definitions to know field counts for struct.new arity
     let mut struct_counts: HashMap<String, usize> = HashMap::new();
+    let mut func_param_counts: HashMap<String, usize> = HashMap::new();
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
@@ -443,26 +446,49 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     let mut type_name: Option<String> = None;
                     let mut field_count = 0usize;
                     let mut is_struct = false;
+                    let mut func_params: Option<usize> = None;
                     for sub in inner.into_inner() {
                         match sub.as_rule() {
                             Rule::id => type_name = Some(sub.as_str()[1..].to_string()),
                             Rule::composite_type => {
                                 if let Some(inner2) = sub.into_inner().next() {
-                                    if inner2.as_rule() == Rule::struct_type {
-                                        is_struct = true;
-                                        field_count = inner2
-                                            .into_inner()
-                                            .filter(|p| p.as_rule() == Rule::field_def)
-                                            .count();
+                                    match inner2.as_rule() {
+                                        Rule::struct_type => {
+                                            is_struct = true;
+                                            field_count = inner2
+                                                .into_inner()
+                                                .filter(|p| p.as_rule() == Rule::field_def)
+                                                .count();
+                                        }
+                                        Rule::func_type => {
+                                            // param count = total val types across params
+                                            func_params = Some(
+                                                inner2
+                                                    .into_inner()
+                                                    .filter(|p| p.as_rule() == Rule::param)
+                                                    .map(|p| {
+                                                        p.into_inner()
+                                                            .filter(|v| {
+                                                                v.as_rule() == Rule::any_val_type
+                                                            })
+                                                            .count()
+                                                    })
+                                                    .sum(),
+                                            );
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
                             _ => {}
                         }
                     }
-                    if is_struct {
-                        if let Some(name) = type_name {
-                            struct_counts.insert(name, field_count);
+                    if let Some(name) = &type_name {
+                        if is_struct {
+                            struct_counts.insert(name.clone(), field_count);
+                        }
+                        if let Some(n) = func_params {
+                            func_param_counts.insert(name.clone(), n);
                         }
                     }
                 }
@@ -470,6 +496,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         }
     }
     STRUCT_FIELD_COUNTS.with(|f| *f.borrow_mut() = struct_counts);
+    TYPE_FUNC_PARAMS.with(|f| *f.borrow_mut() = func_param_counts);
 
     // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
     //     the tag's payload arity regardless of source order. Reset first —
@@ -586,7 +613,12 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     // entity exists in the script chunk; `throw`/`catch` in the
                     // function chunks re-import by name and coalesce to it.
                     Rule::tag_field => pre_stmts.push(walk_tag_field(inner)?),
-                    _ => {} // elem, type — structural metadata
+                    // Active element segment: populate the funcref table so
+                    // call_indirect can dispatch through it. Emitted AFTER the
+                    // class (a post-stmt) so the `ref.func` tear-off can resolve
+                    // each function's chunk — but still before `_start` runs.
+                    Rule::elem_field => post_stmts.push(walk_elem_field(inner)?),
+                    _ => {} // type — structural metadata
                 }
             }
             _ => {}
@@ -1475,6 +1507,47 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         // null — so drop the arg and produce a plain null (like `nop`). Applies
         // to bare heap types (`func`/`extern`) and indexed types (`$T`) alike.
         "ref.null" => Ok(Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+        // ref.func $f → a first-class reference to module function `$f`. Module
+        // functions are static methods of the module class, so this is the
+        // static method referenced as a value (the compiler tears it off into a
+        // funcref). ref.func by numeric index is not resolved here (needs the
+        // compiler's chunk table); named refs cover the common case.
+        "ref.func" => {
+            let field = match args.into_iter().next() {
+                Some(e) => match &e.kind {
+                    ExprKind::Ident(n) => n.clone(),
+                    _ => return Ok(e),
+                },
+                None => return Ok(Expression::null()),
+            };
+            let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
+            Ok(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::ident(&class)),
+                    field,
+                    null_safe: false,
+                },
+                span,
+            ))
+        }
+        // call_ref $sig: call a funcref value. args = [$sig, ...operands]; the
+        // funcref is on top of the stack (last operand), the sig's params
+        // precede it. Lower to a Call on the funcref value (compiler → CALL_REF).
+        "call_ref" => {
+            let mut rest = args;
+            if !rest.is_empty() {
+                rest.remove(0); // drop the $sig type immediate
+            }
+            let callee = rest.pop().unwrap_or_else(Expression::null);
+            Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: rest.into_iter().map(Argument::positional).collect(),
+                    optional: false,
+                },
+                span,
+            ))
+        }
 
         // ── GC / WasmGC struct ops ────────────────────────────────────────
         // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ...}
@@ -1775,6 +1848,60 @@ fn walk_table_field(pair: Pair<Rule>) -> Result<Statement, String> {
         StmtKind::TableDecl { min_size, max_size },
         span,
     ))
+}
+
+/// The first integer literal within `pair`'s descendants — used to read a
+/// segment's constant offset (`(i32.const N)`).
+fn find_first_integer(pair: &Pair<Rule>) -> Option<i64> {
+    for c in pair.clone().into_inner() {
+        if c.as_rule() == Rule::integer {
+            if let Ok(v) = c.as_str().parse::<i64>() {
+                return Some(v);
+            }
+        }
+        if let Some(v) = find_first_integer(&c) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// `(elem (i32.const N) $f0 $f1 …)` — an active element segment initialising a
+/// funcref table. Lowered to load-time `table.set(N+i, ref.func $fi)` for each
+/// entry: the `ref.func` tear-off (Member value → REF_FUNC) produces a real
+/// funcref, and `table.set` stores it, so `call_indirect` finds it at runtime.
+/// (Default table 0; explicit `(table $t)` targets are TODO.)
+fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let mut offset: i64 = 0;
+    let mut funcs: Vec<String> = Vec::new();
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::elem_mode => offset = find_first_integer(&child).unwrap_or(0),
+            Rule::index => funcs.push(child.as_str().trim_start_matches('$').to_string()),
+            _ => {}
+        }
+    }
+    let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
+    let mut stmts = Vec::new();
+    for (i, f) in funcs.iter().enumerate() {
+        let funcref = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&class)),
+            field: f.clone(),
+            null_safe: false,
+        });
+        let call = make_call(
+            "table_set",
+            vec![
+                Expression::int(0), // table index (default table 0)
+                Expression::int(offset + i as i64),
+                funcref,
+            ],
+            span,
+        );
+        stmts.push(Statement::new(StmtKind::Expr(call)));
+    }
+    Ok(Statement::with_span(StmtKind::Block(stmts), span))
 }
 
 fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -2278,6 +2405,35 @@ fn peek_plain_label(pair: &Pair<Rule>) -> Option<String> {
         .map(|c| c.as_str()[1..].to_string())
 }
 
+/// The `(type $sig)` type name from a `call_indirect`/`return_call_indirect`
+/// opener — its `block_type` immediate wraps a `(type index)` typeuse. Returns
+/// the type index text (`$`-stripped) so its param count gives the call arity.
+fn peek_typeuse_index(pair: &Pair<Rule>) -> Option<String> {
+    let inner = if pair.as_rule() == Rule::instr {
+        pair.clone().into_inner().next()?
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return None;
+    }
+    for c in inner.into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
+        }
+        if let Some(bt) = c.into_inner().next() {
+            if bt.as_rule() == Rule::block_type {
+                for x in bt.into_inner() {
+                    if x.as_rule() == Rule::index {
+                        return Some(x.as_str().trim_start_matches('$').to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Given the index of an unfolded `block`/`loop`/`if` opener, find the matching
 /// `end` (respecting nesting) and, for `if`, the `else` at the same depth.
 fn find_matching_end(
@@ -2687,6 +2843,28 @@ fn fold_instructions_seeded(
                     i += 1;
                     continue;
                 }
+                // call_indirect (type $sig): call a funcref via a table. Supply
+                // the argc (from the sig's params) + tableidx immediates and
+                // the stack operands (spec order: call args then the table
+                // index on top). Handled here (not the generic path) so the
+                // `(type $sig)` — dropped by the generic arg walk — is read.
+                "call_indirect" => {
+                    let span = to_span(&pairs[i]);
+                    let argc = peek_typeuse_index(&pairs[i])
+                        .and_then(|n| TYPE_FUNC_PARAMS.with(|m| m.borrow().get(&n).copied()))
+                        .unwrap_or(0) as usize;
+                    let tableidx = 0usize; // default table 0 (named tables TODO)
+                    let n = (argc + 1).min(stack.len());
+                    let operands: Vec<Expression> = stack.split_off(stack.len() - n);
+                    let mut call_args = vec![
+                        Expression::int(argc as i64),
+                        Expression::int(tableidx as i64),
+                    ];
+                    call_args.extend(operands);
+                    stack.push(make_call("call_indirect", call_args, span));
+                    i += 1;
+                    continue;
+                }
                 "end" | "else" => {
                     // Stray delimiter (already consumed by find_matching_end for
                     // real openers) — skip defensively.
@@ -3063,6 +3241,17 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         }
 
         "call_indirect" => 2,
+        // call_ref pops the funcref plus the sig's params.
+        "call_ref" => {
+            let params = args
+                .first()
+                .and_then(|e| match &e.kind {
+                    ExprKind::Ident(n) => TYPE_FUNC_PARAMS.with(|m| m.borrow().get(n).copied()),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            1 + params
+        }
 
         // GC struct ops
         // struct.new $T: typeidx is an immediate; field values come from stack.

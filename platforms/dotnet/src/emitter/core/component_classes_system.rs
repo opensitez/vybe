@@ -394,10 +394,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.console_writeline".into()),
                 ))
+                // `Console.WriteLine()` — bare newline. Same common; the
+                // dispatcher branches on argc.
+                .with_method(MethodDef::static_method(
+                    "WriteLine",
+                    0,
+                    MethodBody::Common("dotnet.console_writeline".into()),
+                ))
+                // `Console.Write(v)` writes with NO trailing newline — a
+                // distinct common from WriteLine.
                 .with_method(MethodDef::static_method(
                     "Write",
                     1,
-                    MethodBody::Common("dotnet.console_writeline".into()),
+                    MethodBody::Common("dotnet.console_write".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ReadLine",
@@ -465,11 +474,32 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System",
-            ClassType::new("String").with_method(MethodDef::static_method(
-                "Format",
-                2,
-                MethodBody::Common("dotnet.string_format".into()),
-            )),
+            ClassType::new("String")
+                .with_method(MethodDef::static_method(
+                    "Format",
+                    2,
+                    MethodBody::Common("dotnet.string_format".into()),
+                ))
+                // `MemoryExtensions.AsSpan` over a string. A `ReadOnlySpan<char>`
+                // is the substring itself here — indexing it yields the same
+                // single-char strings a `char` is on this runtime.
+                // `substr(start, length)` takes a LENGTH, matching .NET exactly;
+                // `substring`/`slice` take an END and would need arithmetic.
+                .with_method(MethodDef::new(
+                    "AsSpan",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:object", "valueOf")),
+                ))
+                .with_method(MethodDef::new(
+                    "AsSpan",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "substr")),
+                ))
+                .with_method(MethodDef::new(
+                    "AsSpan",
+                    2,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "substr")),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System",

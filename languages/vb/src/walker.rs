@@ -2788,6 +2788,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                             ..
                         } => {
                             members.push(ClassMember::Constructor {
+                                name: None,
                                 params,
                                 body,
                                 base_args: None,
@@ -2976,6 +2977,7 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str) 
         // Synthesize a default ctor that just calls MyBase.New() and stamps
         // the canonical control name.
         members.push(ClassMember::Constructor {
+            name: None,
             params: Vec::new(),
             body: vec![mybase_new(), stamp_control_name()],
             base_args: None,
@@ -3076,6 +3078,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
         .any(|m| matches!(m, ClassMember::Constructor { .. }));
     if !has_ctor && !has_explicit_new {
         members.push(ClassMember::Constructor {
+            name: None,
             params: Vec::new(),
             body: new_stmts,
             base_args: None, // VB walker injects MyBase.New() into the body; no base_args needed here

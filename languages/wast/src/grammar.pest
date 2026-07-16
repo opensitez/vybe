@@ -135,8 +135,8 @@ instr_name = @{
     // ── Control ──────────────────────────────────────────────────────────
     "block" | "loop" | "if" | "else" | "end"
   | "br_table" | "br_if" | "br"
-  | "return_call_indirect" | "return_call"
-  | "call_indirect" | "call"
+  | "return_call_indirect" | "return_call_ref" | "return_call"
+  | "call_indirect" | "call_ref" | "call"
   | "return" | "unreachable" | "nop"
     // ── Exceptions proposal ───────────────────────────────────────────────
   | "try" | "catch_all" | "catch" | "delegate" | "unwind"

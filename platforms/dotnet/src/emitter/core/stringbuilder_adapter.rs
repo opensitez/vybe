@@ -311,8 +311,8 @@ pub fn emit_sb_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[sb, idx, text]` ; Stack on exit: `[null]`
 ///
 /// Implemented as `before = buf.substring(0, idx)`, `after =
-/// buf.substring(idx, len)`, `buf' = before + text + after`. Pure
-/// bytecode: `Op::STR_SUBSTRING` + `Op::STR_LENGTH` + `Op::DYN_ADD`.
+/// buf.substring(idx, len)`, `buf' = before + text + after` via
+/// `wasm:js-string.substring` / `.length` imports + `emit_dyn_add`.
 pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));

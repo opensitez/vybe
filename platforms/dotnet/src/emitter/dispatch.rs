@@ -629,9 +629,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.console_writeline" => {
-            crate::emitter::core::console_adapter::emit_console_writeline(
-                chunks, current, line,
-            )
+            // `WriteLine()` with no argument is a bare newline; `WriteLine(v)`
+            // stringifies then appends one. The call site passes the real argc.
+            if argc == 0 {
+                crate::emitter::core::console_adapter::emit_console_writeline_empty(
+                    chunks, current, line,
+                )
+            } else {
+                crate::emitter::core::console_adapter::emit_console_writeline(
+                    chunks, current, line,
+                )
+            }
+        }
+        "dotnet.console_write" => {
+            crate::emitter::core::console_adapter::emit_console_write(chunks, current, line)
         }
         "dotnet.console_readline" => {
             crate::emitter::core::console_adapter::emit_console_readline(
@@ -914,6 +925,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.list_add_range" => {
             crate::emitter::core::array_adapter::emit_list_add_range(chunks, current, line)
+        }
+
+        // ── System.Span<T> members with no 1:1 ECMA array method ──────
+        // (the ones that DO line up are plain `HostCall`s on the
+        // descriptor — see `component_classes_span.rs`)
+        "dotnet.span_ctor" => {
+            crate::emitter::core::span_adapter::emit_span_ctor(chunks, current, argc, line)
+        }
+        "dotnet.span_is_empty" => {
+            crate::emitter::core::span_adapter::emit_span_is_empty(chunks, current, line)
+        }
+        "dotnet.span_clear" => {
+            crate::emitter::core::span_adapter::emit_span_clear(chunks, current, line)
+        }
+        "dotnet.span_copy_to" => {
+            crate::emitter::core::span_adapter::emit_span_copy_to(chunks, current, line)
+        }
+        "dotnet.span_try_copy_to" => {
+            crate::emitter::core::span_adapter::emit_span_try_copy_to(chunks, current, line)
+        }
+        "dotnet.span_trim_start" => {
+            crate::emitter::core::span_adapter::emit_span_trim_start(chunks, current, line)
+        }
+        "dotnet.span_trim_end" => {
+            crate::emitter::core::span_adapter::emit_span_trim_end(chunks, current, line)
+        }
+        "dotnet.span_mismatch" => {
+            crate::emitter::core::span_adapter::emit_span_mismatch(chunks, current, line)
         }
 
         // ── .NET parse helpers — `int.Parse`, `double.Parse`, `bool.Parse`

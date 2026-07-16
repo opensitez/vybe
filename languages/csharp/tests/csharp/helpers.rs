@@ -41,34 +41,58 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     }
 
     let mut vm = VM::new();
+    // Raw output fragments in call order. C# console output reaches the harness
+    // on two surfaces, mirroring the proven libc capture:
+    // - `wasi:io/streams.[method]output-stream.blocking-write-and-flush` — the
+    //   byte-faithful `Console.Write`/`WriteLine` path; text is arg[1], and
+    //   `WriteLine`'s newline is part of that text (`Write` has none).
+    // - `wasi:logging/logging.log` — line-oriented; still used by
+    //   `__debug_dump` and any residual log call, newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
+    let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            let joined = parts.join(" ");
-            let mut sink = out.lock().unwrap();
-            if joined.contains('\n') {
-                let mut lines: Vec<&str> = joined.split('\n').collect();
-                if lines.last().map(|s| s.is_empty()).unwrap_or(false) {
-                    lines.pop();
+            let mut joined = parts.join(" ");
+            joined.push('\n');
+            out.lock().unwrap().push(joined);
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(text) = args.get(1) {
+                let s = format!("{text}");
+                if !s.is_empty() {
+                    out.lock().unwrap().push(s);
                 }
-                for line in lines {
-                    sink.push(line.to_string());
-                }
-            } else {
-                sink.push(joined);
             }
             Value::Null
         }),
     );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("C# run failed");
-    let result = output.lock().unwrap().clone();
-    result
+    // Concatenate all fragments, then split into lines so each printed line
+    // becomes one captured entry. Strip only the final empty artifact of a
+    // trailing newline — interior empties are real content (`WriteLine("")`).
+    let joined: String = output.lock().unwrap().concat();
+    if joined.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = joined
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if joined.ends_with('\n') {
+        lines.pop();
+    }
+    lines
 }
 
 pub fn run_csharp_one(src: &str) -> String {

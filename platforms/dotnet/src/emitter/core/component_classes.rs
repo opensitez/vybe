@@ -17,6 +17,8 @@ mod component_classes_io;
 mod component_classes_linq;
 #[path = "component_classes_network.rs"]
 mod component_classes_network;
+#[path = "component_classes_span.rs"]
+mod component_classes_span;
 #[path = "component_classes_system.rs"]
 mod component_classes_system;
 #[path = "component_classes_system_values.rs"]
@@ -33,8 +35,12 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         let mut exports = component_classes_collections::exports();
         component_classes_linq::apply_linq_registrations(&mut exports);
         // The `System.Linq.Enumerable` surface, declared once. Any enumerable
-        // receiver falls back to it via `lookup_instance_method`.
-        exports.push(component_classes_linq::enumerable_export());
+        // receiver falls back to it via `lookup_instance_method` — which also
+        // makes it the only home for array extension methods like `AsSpan`.
+        let mut enumerable = component_classes_linq::enumerable_export();
+        component_classes_span::add_array_extension_methods(&mut enumerable.class);
+        exports.push(enumerable);
+        exports.extend(component_classes_span::exports());
         exports.extend(component_classes_system::exports());
         exports.extend(component_classes_system_values::exports());
         exports.extend(component_classes_system_version::exports());

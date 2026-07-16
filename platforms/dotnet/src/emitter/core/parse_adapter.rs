@@ -76,16 +76,18 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
 /// throws if neither `"true"` nor `"false"` was given. Matches
 /// .NET `Boolean.Parse` semantics per ECMA-335.
 pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
-    let lower_idx = chunks[0].add_import("ecma:string", "toLowerCase");
+    let lower_idx = chunks[current].add_import("ecma:string", "toLowerCase");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(lower_idx, 1, line);
     let lc = alloc_local(chunk);
+    let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, lc, line);
 
-    // If lc === "true" → push true and return.
+    // A plain `()->()` block cannot carry a value out on the stack, so each arm
+    // stages its boolean in `result` and the value is reloaded after the blocks
+    // close — the same staging the console adapter uses.
     let outer = chunk.emit_block(line);
-    // Branch 1: true
+    // Branch 1: "true"
     let not_true = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_string_const("true", line);
@@ -93,10 +95,11 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     core_wasm::bool_const(chunk, line, true);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(not_true);
-    // Branch 2: false
+    // Branch 2: "false"
     let not_false = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_string_const("false", line);
@@ -104,10 +107,11 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     core_wasm::bool_const(chunk, line, false);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_br(1, line);
     chunk.emit_end(line);
     chunk.patch_block(not_false);
-    // Neither — throw FormatException-shape object.
+    // Neither — throw a FormatException-shape object.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("String was not recognized as a valid Boolean.", line);
@@ -115,6 +119,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(outer);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
 }
 
 /// `char.Parse(s)` — require a single-character string and return it.

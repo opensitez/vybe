@@ -32,9 +32,12 @@ csharp_cases! {
         ["65"]
     };
 
-    stackalloc_char_buffer_reads_first_character_code => {
+    // `Console.WriteLine(char)` resolves to the char overload and writes the
+    // character — unlike the byte case above, which has no `WriteLine(byte)`
+    // overload and so promotes to int and prints the number.
+    stackalloc_char_buffer_reads_first_character => {
         r#"System.Span<char> buf=stackalloc char[3]{'a','b','c'}; Console.WriteLine(buf[0]);"#,
-        ["97"]
+        ["a"]
     };
 
     stackalloc_double_buffer_reads_fractional_value => {
@@ -194,7 +197,7 @@ csharp_cases! {
 
     stackalloc_span_from_string_as_span_reads_char => {
         r#"System.ReadOnlySpan<char> chars="abcd".AsSpan(1,2); Console.WriteLine(chars[0]); Console.WriteLine(chars[1]);"#,
-        ["98", "99"]
+        ["b", "c"]
     };
 
     stackalloc_span_overlapping_copy_to_self_is_allowed => {

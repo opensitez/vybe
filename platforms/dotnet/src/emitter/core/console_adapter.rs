@@ -1,44 +1,36 @@
 //! .NET `Console.Write` / `Console.WriteLine` — Rust inline emitters.
 //!
-//! Maps to `wasi:cli.log` like the previous direct host-call pattern,
-//! but inserts a .NET-style stringifier first:
+//! Output goes through proper WASI I/O (`wasi:cli/stdout.get-stdout` +
+//! `wasi:io/streams.[method]output-stream.blocking-write-and-flush`), NOT the
+//! line-oriented `wasi:logging/logging.log`. That distinction is what lets
+//! `Console.Write` emit its text with NO trailing newline while
+//! `Console.WriteLine` appends exactly one `\n` — logging always terminated a
+//! record, so the two were indistinguishable before.
 //!
-//! - `bool` → `"True"` / `"False"` (capitalised per .NET spec, vs.
-//!   JS-style lowercase `true`/`false` that the default Display impl
-//!   emits).
+//! Each value is first run through a .NET-style stringifier:
+//! - `bool` → `"True"` / `"False"` (capitalised per .NET spec, vs. JS-style
+//!   lowercase `true`/`false` from the default Display impl).
 //! - `null` → `""` (matches `Console.WriteLine((string)null)`).
-//! - everything else → `String(v)` via `ecma:string.String`.
+//! - everything else → `String(v)`.
 //!
-//! Without this conversion, `Console.WriteLine(true)` prints `true`
-//! and `is_constant_pattern` etc. fail their .NET-shaped assertions.
+//! Without this conversion, `Console.WriteLine(true)` prints `true` and
+//! `is_constant_pattern` etc. fail their .NET-shaped assertions.
 
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-/// `Console.WriteLine(v)` / `Console.Write(v)` — emit the bool/null
-/// fixup then dispatch to `wasi:cli.log`. Stack: [v] → [null].
+/// Stage the .NET string form of the value in `v_local` into `result_local`.
 ///
-/// Single outer block as the structured-control-flow exit; each arm
-/// stages its converted string in `result_local` and `br exit`. One
-/// log call at the end. Avoids emitting RETURN inside a structured
-/// block (which would leak the block label to the caller's
-/// `label_stack` — the same trap iter_drain hit).
-pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
-    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
-    let chunk = &mut chunks[current];
-    // Direct ECMA String coercion. This still gives primitive/stringifiable
-    // behavior, but user-defined .NET-style ToString overrides need to be
-    // called explicitly by the frontend when desired.
-    let v_local = alloc_local(chunk);
-    let result_local = alloc_local(chunk);
-
-    // Stash v.
-    chunk.emit_op_u16(Op::LOCAL_SET, v_local, line);
+/// Structured control flow with a single outer block as the exit; each arm
+/// stages its converted string and `br exit`. Emitting a RETURN inside a
+/// structured block would leak the block label to the caller's `label_stack`
+/// (the trap iter_drain hit), so every path branches to the shared exit.
+fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_local: u16, line: u32) {
+    use vybe_emitter::instructions::host;
 
     let exit_block = chunk.emit_block(line);
 
-    // Bool branch
+    // Bool branch → "True" / "False".
     let not_bool = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     host::emit(chunk, "ecma:value", "typeof", 1, line);
@@ -70,27 +62,82 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(not_null);
 
-    // Default: direct ECMA String(v) coercion.
-    // User-defined `ToString` overrides on .NET-shape classes are NOT
-    // picked up here yet — that requires routing through
-    // `ecma:value.invokeMethod` which is itself a method-dispatch
-    // problem (the receiver might not be a class instance). For now,
-    // tests that need `Console.WriteLine(p)` to call `p.ToString()`
-    // fail with "[object]" — call `Console.WriteLine(p.ToString())`
-    // explicitly to get the override.
+    // Default: direct ECMA String(v) coercion. User-defined `ToString`
+    // overrides on .NET-shape classes are NOT picked up here yet — that
+    // requires routing through method dispatch; call `Console.WriteLine(
+    // p.ToString())` explicitly to get the override.
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     vybe_emitter::strings::emit_to_string(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
 
     chunk.emit_end(line);
     chunk.patch_block(exit_block);
+}
 
-    // Single log call with the staged string. Push null after so the
-    // call site (which DROPs print results uniformly) sees a value.
-    chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
-    chunk.emit(1, line);
+/// Write the string in `text_local` to an output stream, then leave `null` on
+/// the stack (the call site DROPs print results uniformly).
+///
+/// Mirrors the proven libc stdout path: `get-<stream>` → output-stream handle,
+/// then `blocking-write-and-flush(stream, contents)` — byte-faithful, no
+/// implicit newline. Imports are registered on the CURRENT chunk (via
+/// `add_import` + `emit_call`) so the `CALL_IMPORT` indices resolve against the
+/// same per-chunk table the runtime uses — `chunks[0]` would only be correct at
+/// top level.
+fn emit_stream_write(
+    chunk: &mut Chunk,
+    text_local: u16,
+    stream_module: &str,
+    stream_getter: &str,
+    line: u32,
+) {
+    let get_idx = chunk.add_import(stream_module, stream_getter);
+    let write_idx = chunk.add_import(
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+    );
+    // stream = get-stdout()
+    chunk.emit_call(get_idx, 0, line);
+    // blocking-write-and-flush(stream, contents)
+    chunk.emit_op_u16(Op::LOCAL_GET, text_local, line);
+    chunk.emit_call(write_idx, 2, line);
+    chunk.emit_op(Op::DROP, line); // discard result<_, stream-error>
     chunk.emit_op(Op::NULL, line);
+}
+
+/// `Console.WriteLine(v)` — stringify, append one `\n`, write to stdout.
+/// Stack: [v] → [null].
+pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v_local = alloc_local(&mut chunks[current]);
+    let result_local = alloc_local(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v_local, line);
+    emit_dotnet_stringify(&mut chunks[current], v_local, result_local, line);
+
+    // result += "\n"
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
+    chunk.emit_string_const("\n", line);
+    vybe_emitter::strings::emit_concat(chunk, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+
+    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stdout", "get-stdout", line);
+}
+
+/// `Console.Write(v)` — stringify and write to stdout with NO newline.
+/// Stack: [v] → [null].
+pub fn emit_console_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v_local = alloc_local(&mut chunks[current]);
+    let result_local = alloc_local(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v_local, line);
+    emit_dotnet_stringify(&mut chunks[current], v_local, result_local, line);
+    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stdout", "get-stdout", line);
+}
+
+/// `Console.WriteLine()` — bare newline, no argument. Stack: [] → [null].
+pub fn emit_console_writeline_empty(chunks: &mut [Chunk], current: usize, line: u32) {
+    let nl_local = alloc_local(&mut chunks[current]);
+    chunks[current].emit_string_const("\n", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nl_local, line);
+    emit_stream_write(&mut chunks[current], nl_local, "wasi:cli/stdout", "get-stdout", line);
 }
 
 /// `Console.ReadLine()` — wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read.
@@ -99,21 +146,21 @@ pub fn emit_console_readline(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::io::emit_input(&mut chunks[current], line);
 }
 
-/// `Console.Error.WriteLine(v)` / `Console.Error.Write(v)` — log at error level.
-/// Prepends "error" level arg before calling wasi:logging/logging.log.
-/// Stack: [v] → [null]
+/// `Console.Error.WriteLine(v)` / `Console.Error.Write(v)` — stringify, append
+/// `\n`, write to stderr via WASI I/O. Stack: [v] → [null].
 pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
-    let log_idx = chunks[0].add_import("wasi:logging/logging", "log");
+    let v_local = alloc_local(&mut chunks[current]);
+    let result_local = alloc_local(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v_local, line);
+    emit_dotnet_stringify(&mut chunks[current], v_local, result_local, line);
+
     let chunk = &mut chunks[current];
-    // Stack currently has [v]. We need to call log(level, v) = 2 args.
-    // Push level UNDER v: stash v, push level, restore v.
-    let v_local = alloc_local(chunk);
-    chunk.emit_op_u16(Op::LOCAL_SET, v_local, line);
-    chunk.emit_string_const("error", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
-    chunk.emit(2, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
+    chunk.emit_string_const("\n", line);
+    vybe_emitter::strings::emit_concat(chunk, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+
+    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stderr", "get-stderr", line);
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

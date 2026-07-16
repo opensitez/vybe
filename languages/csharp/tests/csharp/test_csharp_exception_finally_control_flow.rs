@@ -105,3 +105,84 @@ Console.WriteLine(trace);
         &["finally;handled;"]
     );
 }
+
+#[test]
+fn break_out_of_loop_runs_finally_before_exiting() {
+    assert_eq!(
+        run_csharp(
+            r#"
+string trace = "";
+for (int i = 0; i < 3; i++) {
+    try {
+        trace += "body;";
+        break;
+    } finally {
+        trace += "cleanup;";
+    }
+}
+trace += "after";
+Console.WriteLine(trace);
+"#
+        ),
+        &["body;cleanup;after"]
+    );
+}
+
+#[test]
+fn finally_that_throws_during_return_propagates_past_the_try() {
+    // A `return` inside a try-with-finally whose `finally` throws: the throw
+    // must escape the inner try and be caught by the OUTER try — the `finally`
+    // runs OUTSIDE the inner handler, so it is not self-caught (would run twice).
+    assert_eq!(
+        run_csharp(
+            r#"
+void M() {
+    try {
+        try {
+            Console.WriteLine("body");
+            return;
+        } finally {
+            Console.WriteLine("finally");
+            throw new Exception("boom");
+        }
+    } catch (Exception) {
+        Console.WriteLine("caught");
+    }
+}
+M();
+"#
+        ),
+        &["body", "finally", "caught"]
+    );
+}
+
+#[test]
+fn finally_that_throws_during_break_propagates_past_the_try() {
+    // The `break` exits the inner (finally-only) try; its `finally` throws.
+    // Correct semantics: the throw must escape the inner try (whose handler
+    // is no longer active once we're leaving it) and be caught by the OUTER
+    // try — NOT be swallowed/re-dispatched by the inner try's own handler.
+    assert_eq!(
+        run_csharp(
+            r#"
+string trace = "";
+try {
+    for (int i = 0; i < 3; i++) {
+        try {
+            trace += "body;";
+            break;
+        } finally {
+            trace += "finally;";
+            throw new Exception("boom");
+        }
+    }
+    trace += "unreachable;";
+} catch (Exception) {
+    trace += "caught";
+}
+Console.WriteLine(trace);
+"#
+        ),
+        &["body;finally;caught"]
+    );
+}

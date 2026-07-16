@@ -181,13 +181,13 @@ csharp_cases! {
         ["True"]
     };
 
-    is_property_pattern_with_when_on_captured_var => {
-        r#"class Pair { public int A; public int B; } object o=new Pair{A=4,B=9}; if(o is Pair{A:var a,B:var b} when a<b) Console.WriteLine(b-a);"#,
+    is_property_pattern_with_guard_on_captured_var => {
+        r#"class Pair { public int A; public int B; } object o=new Pair{A=4,B=9}; if(o is Pair{A:var a,B:var b} && a<b) Console.WriteLine(b-a);"#,
         ["5"]
     };
 
     switch_expression_property_when_guard_on_fields => {
-        r#"class Pair { public int A; public int B; } string Sign(object o)=>o switch{Pair{A:var x,B:var y} when x==y=>"eq",Pair{A:var x,B:var y}=>"neq",_=>"?"}; Console.WriteLine(Sign(new Pair{A=3,B:3}));"#,
+        r#"class Pair { public int A; public int B; } string Sign(object o)=>o switch{Pair{A:var x,B:var y} when x==y=>"eq",Pair{A:var x,B:var y}=>"neq",_=>"?"}; Console.WriteLine(Sign(new Pair{A=3,B=3}));"#,
         ["eq"]
     };
 

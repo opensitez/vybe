@@ -50,6 +50,7 @@ mod test_csharp_concurrent_collections;
 mod test_csharp_conditional_expressions;
 mod test_csharp_const_and_readonly_fields;
 mod test_csharp_constructor_chains;
+mod test_csharp_console_write;
 mod test_csharp_constructor_patterns;
 mod test_csharp_control_flow;
 mod test_csharp_conversion_methods;

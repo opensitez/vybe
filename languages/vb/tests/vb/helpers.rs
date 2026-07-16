@@ -2,6 +2,63 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
 use vybe_host::gui_state::GuiState;
 
+/// Capture VB console output on BOTH surfaces, mirroring the C#/libc harness:
+/// - `wasi:io/streams.blocking-write-and-flush` — the byte-faithful
+///   `Console.Write`/`WriteLine` path (text is arg[1]; `WriteLine`'s newline is
+///   part of that text, `Write` has none).
+/// - `wasi:logging/logging.log` — line-oriented; still used by any residual log
+///   call, newline implied.
+///
+/// Fragments are accumulated raw; [`finalize_lines`] splits them into lines.
+fn register_output_capture(vm: &mut VM) -> Arc<Mutex<Vec<String>>> {
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+            let mut joined = parts.join(" ");
+            joined.push('\n');
+            out.lock().unwrap().push(joined);
+            Value::Null
+        }),
+    );
+    let out = output.clone();
+    vm.register_host_fn(
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(text) = args.get(1) {
+                let s = format!("{text}");
+                if !s.is_empty() {
+                    out.lock().unwrap().push(s);
+                }
+            }
+            Value::Null
+        }),
+    );
+    output
+}
+
+/// Concatenate captured fragments and split into lines — one line per captured
+/// entry. Strips only the final empty artifact of a trailing newline; interior
+/// empties are real content (`Console.WriteLine("")`).
+fn finalize_lines(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let joined: String = output.lock().unwrap().concat();
+    if joined.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = joined
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if joined.ends_with('\n') {
+        lines.pop();
+    }
+    lines
+}
+
 /// Run VB source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_vb(src: &str) -> Vec<String> {
     { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_vb::register); }
@@ -14,22 +71,11 @@ pub fn run_vb(src: &str) -> Vec<String> {
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    let output = register_output_capture(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("VB run failed");
-    let result = output.lock().unwrap().clone();
-    result
+    finalize_lines(&output)
 }
 
 /// Run VB source, return (VM, output) for post-run inspection of globals etc.
@@ -41,20 +87,14 @@ pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    let output = register_output_capture(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("VB run failed");
+    // Split accumulated fragments into lines in place so callers inspecting the
+    // shared buffer see one entry per printed line, as before.
+    let lines = finalize_lines(&output);
+    *output.lock().unwrap() = lines;
     (vm, output)
 }
 
@@ -68,20 +108,12 @@ pub fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<String>
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let out = output.clone();
     let gui = vybe_host::register_all_with_gui(&mut vm);
-    vm.register_host_fn(
-        "wasi:logging/logging",
-        "log",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-            out.lock().unwrap().push(parts.join(" "));
-            Value::Null
-        }),
-    );
+    let output = register_output_capture(&mut vm);
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("VB run failed");
+    let lines = finalize_lines(&output);
+    *output.lock().unwrap() = lines;
     (vm, gui, output)
 }
 

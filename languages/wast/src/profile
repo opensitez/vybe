@@ -28,6 +28,10 @@ string_indexing  = "zero_based"
 # `+` is JS-shaped: numeric when both sides are numbers, string concat when a
 # string is involved. Needed for WAT float text formatting ($log_f32/$log_f64).
 dynamic_add      = true
+# WASM has first-class function references: `ref.func $f` tears a function off
+# into a funcref (REF_FUNC) instead of invoking it. Enables call_ref /
+# call_indirect / ref.eq on real funcrefs.
+function_references = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS
@@ -272,8 +276,8 @@ i64_store16  = { emit = "opcode:i64_store16", min_args = 2, max_args = 2 }
 i64_store32  = { emit = "opcode:i64_store32", min_args = 2, max_args = 2 }
 
 # ── call_indirect ─────────────────────────────────────────────────────────────
-
-call_indirect = { emit = "host:vybe:wast:call_indirect", min_args = 1, max_args = 255 }
+# Routed to the real Op::CALL_INDIRECT (U8_U8: argc, tableidx) via the generic
+# opcode path; the walker supplies the argc/tableidx immediates.
 
 # ── SIMD ops (v128 prefix 0xFD) ───────────────────────────────────────────────
 

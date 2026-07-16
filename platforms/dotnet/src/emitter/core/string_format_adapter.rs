@@ -3,8 +3,8 @@
 //! `String.Format("Hello {0}, age {1}", name, age)` is .NET-style composite
 //! formatting: the format string contains `{N}` placeholders that index into
 //! the trailing args. Vybe lowers each call at compile time through this
-//! adapter — pure inline bytecode using `STR_LENGTH` / `STR_SUBSTRING` /
-//! `STR_CHAR_CODE_AT` / `STR_CONCAT` primitives. No host fns.
+//! adapter — pure inline bytecode using `wasm:js-string.length` / `wasm:js-string.substring` /
+//! `wasm:js-string.charCodeAt` / `wasm:js-string.concat` primitives. No host fns.
 //!
 //! Supported placeholder grammar (.NET §Composite formatting):
 //!   `{{` / `}}`     literal `{` / `}`
@@ -106,7 +106,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    // len = STR_LENGTH(fmt)
+    // len = wasm:js-string.length(fmt)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
