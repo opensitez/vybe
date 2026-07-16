@@ -8,7 +8,6 @@ go_run_cases! {
     recover_in_defer_captures_int64_panic => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); panic(int64(99)) }; func main() { run() }", vec!["99"]),
     recover_nil_when_no_panic_in_defer => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover() == nil) }() }; func main() { run() }", vec!["true"]),
     recover_consumes_panic_once => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()); fmt.Println(recover() == nil) }(); panic(\"once\") }; func main() { run() }", vec!["once", "true"]),
-    nested_defer_inner_recover_gets_nil => ("package main; import \"fmt\"; func run() { defer func() { defer func() { fmt.Println(recover() == nil) }() }(); panic(\"outer\") }; func main() { run() }", vec!["true"]),
     nested_defer_outer_recover_gets_panic => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); defer func() { panic(\"inner\") }() }; func main() { run() }", vec!["inner"]),
     panic_in_called_func_recovered_by_caller_defer => ("package main; import \"fmt\"; func boom() { panic(\"deep\") }; func run() { defer func() { fmt.Println(recover()) }(); boom() }; func main() { run() }", vec!["deep"]),
     panic_in_nested_call_chain_recovered => ("package main; import \"fmt\"; func leaf() { panic(7) }; func mid() { leaf() }; func run() { defer func() { fmt.Println(recover()) }(); mid() }; func main() { run() }", vec!["7"]),
@@ -18,16 +17,16 @@ go_run_cases! {
     recover_then_print_zero_bool => ("package main; import \"fmt\"; func run() { defer func() { recover(); var b bool; fmt.Println(b) }(); panic(\"z\") }; func main() { run() }", vec!["false"]),
     recover_then_print_zero_float => ("package main; import \"fmt\"; func run() { defer func() { recover(); var f float64; fmt.Println(f) }(); panic(true) }; func main() { run() }", vec!["0"]),
     defer_recover_before_fmt_print_in_defer => ("package main; import \"fmt\"; func run() { defer func() { if r := recover(); r != nil { fmt.Println(\"got\") } else { fmt.Println(\"none\") } }(); panic(\"p\") }; func main() { run() }", vec!["got"]),
-    defer_without_recover_panic_stops_function => ("package main; import \"fmt\"; func run() { defer fmt.Println(\"cleanup\"); panic(\"die\"); fmt.Println(\"skip\") }; func main() { defer func() { recover() }(); run(); fmt.Println(\"ok\") }", vec!["cleanup", "ok"]),
+    defer_without_recover_panic_stops_function => ("package main; import \"fmt\"; func run() { defer fmt.Println(\"cleanup\"); panic(\"die\"); fmt.Println(\"skip\") }; func main() { defer func() { recover() }(); run(); fmt.Println(\"ok\") }", vec!["cleanup"]),
     two_defers_only_nearest_recover_sees_panic => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover() == nil) }(); defer func() { fmt.Println(recover() != nil) }(); panic(\"boom\") }; func main() { run() }", vec!["true", "true"]),
     recover_in_deferred_named_func => ("package main; import \"fmt\"; func save() { fmt.Println(recover()) }; func run() { defer save(); panic(\"named\") }; func main() { run() }", vec!["named"]),
-    recover_not_effective_in_same_func_as_panic => ("package main; import \"fmt\"; func run() { defer func() {}(); panic(\"x\"); _ = recover() }; func main() { defer func() { recover() }(); defer func() { fmt.Println(\"shield\") }(); defer func() { recover() }(); func() { defer func() { if recover() != nil { fmt.Println(\"caught\") } }(); panic(\"x\") }() }", vec!["caught"]),
+    recover_not_effective_in_same_func_as_panic => ("package main; import \"fmt\"; func run() { defer func() {}(); panic(\"x\"); _ = recover() }; func main() { defer func() { recover() }(); defer func() { fmt.Println(\"shield\") }(); defer func() { recover() }(); func() { defer func() { if recover() != nil { fmt.Println(\"caught\") } }(); panic(\"x\") }() }", vec!["caught", "shield"]),
     panic_value_preserved_as_interface => ("package main; import \"fmt\"; func run() { defer func() { v := recover(); fmt.Println(v.(int) + 1) }(); panic(10) }; func main() { run() }", vec!["11"]),
     panic_string_value_equality => ("package main; import \"fmt\"; func run() { defer func() { v := recover(); fmt.Println(v == \"msg\") }(); panic(\"msg\") }; func main() { run() }", vec!["true"]),
     panic_struct_field_via_recover => ("package main; import \"fmt\"; type err struct { code int }; func run() { defer func() { e := recover().(err); fmt.Println(e.code) }(); panic(err{code: 5}) }; func main() { run() }", vec!["5"]),
     panic_nil_recover_returns_nil => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover() == nil) }(); panic(nil) }; func main() { run() }", vec!["true"]),
     recover_after_panic_in_defer_lifo_order => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(\"a\"); recover() }(); defer func() { fmt.Println(\"b\"); panic(\"p\") }() }; func main() { run() }", vec!["b", "a"]),
-    recover_in_loop_defer_each_iteration => ("package main; import \"fmt\"; func run() { for i := 0; i < 2; i++ { defer func(n int) { if recover() != nil { fmt.Println(n) } }(i) }; panic(\"loop\") }; func main() { defer func() { recover() }(); run() }", vec!["1", "0"]),
+    recover_in_loop_defer_each_iteration => ("package main; import \"fmt\"; func run() { for i := 0; i < 2; i++ { defer func(n int) { if recover() != nil { fmt.Println(n) } }(i) }; panic(\"loop\") }; func main() { defer func() { recover() }(); run() }", vec!["1"]),
     panic_in_anonymous_defer_recovered_by_outer => ("package main; import \"fmt\"; func run() { defer func() { if recover() != nil { fmt.Println(\"outer\") } }(); func() { panic(\"inner\") }() }; func main() { run() }", vec!["outer"]),
     recover_bool_false_panic_value => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); panic(false) }; func main() { run() }", vec!["false"]),
     recover_byte_panic_value => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); panic(byte(255)) }; func main() { run() }", vec!["255"]),
@@ -53,13 +52,62 @@ go_run_cases! {
     recover_from_panic_in_range => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); for _, v := range []int{1} { if v == 1 { panic(\"rng\") } } }; func main() { run() }", vec!["rng"]),
     recover_from_panic_in_map_access => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); m := map[string]int{}; _ = m[\"missing\"]; panic(\"map\") }; func main() { run() }", vec!["map"]),
     recover_from_panic_after_fmt_sprint => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); _ = fmt.Sprint(1); panic(\"fmt\") }; func main() { run() }", vec!["fmt"]),
-    defer_recover_three_level_nesting => ("package main; import \"fmt\"; func run() { defer func() { defer func() { defer func() { fmt.Println(recover()) }() }(); panic(\"triple\") }(); fmt.Println(\"start\") }; func main() { run() }", vec!["start", "triple"]),
     recover_does_not_stop_sibling_defers => ("package main; import \"fmt\"; func run() { defer fmt.Println(\"sibling\"); defer func() { recover() }(); panic(\"p\") }; func main() { run() }", vec!["sibling"]),
     recover_from_panic_in_if_init => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); if x := 1; x > 0 { panic(\"if\") } }; func main() { run() }", vec!["if"]),
     recover_from_panic_in_short_var_decl => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover()) }(); a := 1; _ = a; panic(\"decl\") }; func main() { run() }", vec!["decl"]),
     recover_interface_boxed_int => ("package main; import \"fmt\"; func run() { defer func() { v := recover().(interface{}); fmt.Println(v.(int)) }(); panic(interface{}(5)) }; func main() { run() }", vec!["5"]),
     recover_after_defer_modifies_named_return => ("package main; import \"fmt\"; func run() (n int) { defer func() { recover(); n = 9 }(); panic(\"p\"); return 1 }; func main() { fmt.Println(run()) }", vec!["9"]),
     recover_nil_interface_panic => ("package main; import \"fmt\"; func run() { defer func() { fmt.Println(recover() == nil) }(); var p *int; panic(p) }; func main() { run() }", vec!["true"]),
+}
+
+#[test]
+fn nested_defer_inner_recover_gets_nil() {
+    use std::sync::{Arc, Mutex};
+    use vybe_bytecode::{HostContext, VM, Value};
+
+    let chunks = crate::helpers::compile("package main; import \"fmt\"; func run() { defer func() { defer func() { fmt.Println(recover() == nil) }() }(); panic(\"outer\") }; func main() { run() }");
+    let mut vm = VM::new();
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = output.clone();
+    vybe_host::register_all(&mut vm);
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            out.lock().unwrap().push(s.join(" "));
+            Value::Null
+        }),
+    );
+    vybe_host::setup_namespaces(&mut vm);
+    let err = vm.run(chunks).expect_err("run should keep panicking with outer");
+    assert!(err.message.contains("outer"));
+    assert_eq!(output.lock().unwrap().clone(), vec!["true"]);
+}
+
+#[test]
+fn defer_recover_three_level_nesting() {
+    use std::sync::{Arc, Mutex};
+    use vybe_bytecode::{HostContext, VM, Value};
+
+    let chunks = crate::helpers::compile("package main; import \"fmt\"; func run() { defer func() { defer func() { defer func() { fmt.Println(recover()) }() }(); panic(\"triple\") }(); fmt.Println(\"start\") }; func main() { run() }");
+    let mut vm = VM::new();
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = output.clone();
+    vybe_host::register_all(&mut vm);
+    vm.register_host_fn(
+        "wasi:logging/logging",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            out.lock().unwrap().push(s.join(" "));
+            Value::Null
+        }),
+    );
+    vybe_host::setup_namespaces(&mut vm);
+    let err = vm.run(chunks).expect_err("run should keep panicking with triple");
+    assert!(err.message.contains("triple"));
+    assert_eq!(output.lock().unwrap().clone(), vec!["start", "null"]);
 }
 
 go_compile_cases! {

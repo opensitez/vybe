@@ -38,6 +38,7 @@ materialize_bool_results = true
 "fmt.Println"     = { emit = "common:go.fmt_println",    min_args = 0, max_args = 255 }
 "fmt.Print"       = { emit = "common:go.fmt_print",      min_args = 0, max_args = 255 }
 "fmt.Printf"      = { emit = "common:go.fmt_printf",     min_args = 1, max_args = 255 }
+"fmt.Sprint"      = { emit = "common:go.fmt_sprint",     min_args = 0, max_args = 255 }
 "fmt.Sprintf"     = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
 "__go_sprintf"    = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
 
@@ -138,7 +139,7 @@ materialize_bool_results = true
 
 # ── Error handling ───────────────────────────────────────────────────────────
 
-"panic"           = { emit = "host:ecma:error:throw",          min_args = 1, max_args = 1 }
+"panic"           = { emit = "common:go.panic",                min_args = 1, max_args = 1 }
 
 # ── sort package ─────────────────────────────────────────────────────────────
 # Ints/Float64s/Strings sort in place; sort_in_place compares with dynamic `>`

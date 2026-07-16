@@ -202,6 +202,8 @@ fn walk_top(
                 }
             }
             lower_fortran_namelist_io(&mut module_body);
+            let module_const_exports = collect_fortran_module_const_exports(&module_body);
+            body.extend(module_const_exports);
             let members = module_body.into_iter().map(to_class_member).collect();
             body.push(Statement::new(StmtKind::ModuleDecl {
                 name: mname,
@@ -282,6 +284,7 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::do_concurrent_statement => walk_do_concurrent(pair).map(Some),
         Rule::do_while_statement => walk_do_while(pair).map(Some),
         Rule::select_case_statement => walk_select(pair).map(Some),
+        Rule::enum_statement => walk_enum_statement(pair).map(Some),
         Rule::print_statement => walk_print(pair).map(Some),
         Rule::write_statement => walk_write(pair).map(Some),
         Rule::read_statement => walk_read(pair).map(Some),
@@ -685,6 +688,104 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         declarations,
         kind: VarDeclKind::Dim,
     }))
+}
+
+fn walk_enum_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut statements = Vec::new();
+    let mut next_value = 0_i64;
+    let mut known_values: HashMap<String, i64> = HashMap::new();
+
+    for decl in pair.into_inner().filter(|p| p.as_rule() == Rule::enumerator_decl) {
+        for value_pair in decl
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::enumerator_value)
+        {
+            let mut inner = value_pair.into_inner().filter(|p| meaningful(p));
+            let Some(name_pair) = inner.next() else {
+                continue;
+            };
+            let name = name_pair.as_str().to_string();
+            let init = if let Some(expr_pair) = inner.next() {
+                walk_expr(expr_pair)?
+            } else {
+                Expression::new(ExprKind::Lit(Literal::Int(next_value)))
+            };
+            if let Some(value) = fortran_const_int_expr(&init, &known_values) {
+                next_value = value + 1;
+                known_values.insert(name.clone(), value);
+            } else {
+                next_value += 1;
+            }
+            statements.push(Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name),
+                    type_hint: Some("integer".to_string()),
+                    init: Some(init),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Const,
+            }));
+        }
+    }
+
+    Ok(Statement::new(StmtKind::Block(statements)))
+}
+
+fn collect_fortran_module_const_exports(statements: &[Statement]) -> Vec<Statement> {
+    let mut exports = Vec::new();
+    for stmt in statements {
+        match &stmt.kind {
+            StmtKind::Block(items) => exports.extend(
+                items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item.kind,
+                            StmtKind::VarDecl {
+                                kind: VarDeclKind::Const,
+                                ..
+                            }
+                        )
+                    })
+                    .cloned(),
+            ),
+            StmtKind::VarDecl {
+                kind: VarDeclKind::Const,
+                ..
+            } => exports.push(stmt.clone()),
+            _ => {}
+        }
+    }
+    exports
+}
+
+fn fortran_const_int_expr(expr: &Expression, known_values: &HashMap<String, i64>) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
+        ExprKind::Ident(name) => known_values.get(name).copied(),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            fortran_const_int_expr(expr, known_values).map(|value| -value)
+        }
+        ExprKind::Unary { op: UnaryOp::Pos, expr } => fortran_const_int_expr(expr, known_values),
+        ExprKind::Binary { op, left, right } => {
+            let left = fortran_const_int_expr(left, known_values)?;
+            let right = fortran_const_int_expr(right, known_values)?;
+            match op {
+                BinOp::Add => Some(left + right),
+                BinOp::Sub => Some(left - right),
+                BinOp::Mul => Some(left * right),
+                BinOp::Div if right != 0 => Some(left / right),
+                BinOp::Mod if right != 0 => Some(left % right),
+                BinOp::BitAnd => Some(left & right),
+                BinOp::BitOr => Some(left | right),
+                BinOp::BitXor => Some(left ^ right),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn walk_procedure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -1758,11 +1859,39 @@ fn parse_fortran_format_chunks(format_spec: &str) -> Option<Vec<FortranFormatChu
 }
 
 fn stringify_fortran_io_expr(expr: Expression) -> Expression {
+    if is_fortran_logical_expr(&expr) {
+        return Expression::new(ExprKind::Ternary {
+            cond: Box::new(expr),
+            then: Box::new(Expression::string("true")),
+            else_: Box::new(Expression::string("false")),
+        });
+    }
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__str__")),
         args: vec![Argument::positional(expr)],
         optional: false,
     })
+}
+
+fn is_fortran_logical_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(_)) => true,
+        ExprKind::Binary { op, .. } => matches!(
+            op,
+            BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::StrictEq
+                | BinOp::StrictNotEq
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Eqv
+        ),
+        _ => false,
+    }
 }
 
 fn concat_fortran_io_parts(parts: Vec<Expression>) -> Expression {
@@ -2107,13 +2236,22 @@ fn walk_call(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
-    Ok(Statement::new(StmtKind::Expr(Expression::new(
-        ExprKind::Call {
-            callee: Box::new(callee.ok_or("missing call name")?),
-            args,
-            optional: false,
-        },
-    ))))
+    let expr = Expression::new(ExprKind::Call {
+        callee: Box::new(callee.ok_or("missing call name")?),
+        args,
+        optional: false,
+    });
+    let is_random_intrinsic = matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("random_number") || name.eq_ignore_ascii_case("random_seed"))
+    );
+    if !is_random_intrinsic {
+        if let Some(stmt) = lower_intrinsic_statement(&expr) {
+            return Ok(stmt);
+        }
+    }
+    Ok(Statement::new(StmtKind::Expr(expr)))
 }
 
 fn walk_argument_expr(pair: Pair<Rule>) -> Result<(Option<String>, Expression), String> {
@@ -3248,7 +3386,191 @@ fn lower_intrinsic_statement(expr: &Expression) -> Option<Statement> {
         ))));
     }
 
+    if name.eq_ignore_ascii_case("random_number") {
+        return lower_fortran_random_number_statement(args);
+    }
+
+    if name.eq_ignore_ascii_case("random_seed") {
+        return Some(lower_fortran_random_seed_statement(args));
+    }
+
     None
+}
+
+fn lower_fortran_random_number_statement(args: &[Argument]) -> Option<Statement> {
+    let target = args
+        .iter()
+        .find(|arg| {
+            arg.name
+                .as_deref()
+                .is_none_or(|name| name.eq_ignore_ascii_case("harvest"))
+        })?
+        .value
+        .clone();
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![fortran_random_assignment_target(target.clone())],
+        value: fortran_random_value_for_target(target),
+    }))
+}
+
+fn lower_fortran_random_seed_statement(args: &[Argument]) -> Statement {
+    let seed_store = Expression::ident("__vybe_fortran_random_seed");
+    if args.is_empty() {
+        return Statement::new(StmtKind::Assign {
+            targets: vec![seed_store],
+            value: Expression::new(ExprKind::Array(vec![ArrayElement {
+                key: None,
+                value: Expression::int(1),
+                spread: false,
+                by_ref: false,
+            }])),
+        });
+    }
+
+    let mut statements = Vec::new();
+    for arg in args {
+        match arg.name.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Some("size") => statements.push(Statement::new(StmtKind::Assign {
+                targets: vec![arg.value.clone()],
+                value: Expression::int(8),
+            })),
+            Some("put") => statements.push(Statement::new(StmtKind::Assign {
+                targets: vec![seed_store.clone()],
+                value: arg.value.clone(),
+            })),
+            Some("get") => statements.push(Statement::new(StmtKind::Assign {
+                targets: vec![arg.value.clone()],
+                value: seed_store.clone(),
+            })),
+            _ => {}
+        }
+    }
+
+    if statements.is_empty() {
+        Statement::new(StmtKind::Block(vec![]))
+    } else if statements.len() == 1 {
+        statements
+            .pop()
+            .unwrap_or_else(|| Statement::new(StmtKind::Block(vec![])))
+    } else {
+        Statement::new(StmtKind::Block(statements))
+    }
+}
+
+fn fortran_random_assignment_target(target: Expression) -> Expression {
+    match target.kind {
+        ExprKind::Index { object, .. } => *object,
+        _ => target,
+    }
+}
+
+fn fortran_random_target_is_array(
+    target: &Expression,
+    type_env: &HashMap<String, String>,
+) -> bool {
+    match &target.kind {
+        ExprKind::Ident(name) => type_env
+            .get(&name.to_ascii_lowercase())
+            .is_some_and(|hint| hint.trim_end().ends_with("()")),
+        ExprKind::Member { field, .. } => type_env
+            .get(&field.to_ascii_lowercase())
+            .is_some_and(|hint| hint.trim_end().ends_with("()")),
+        ExprKind::Index { .. } => true,
+        _ => false,
+    }
+}
+
+fn fortran_random_array_fill_expr(target: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(target),
+            field: "map".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+            params: vec![
+                Param {
+                    name: "__fortran_random_item".to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                },
+                Param {
+                    name: "__fortran_random_index".to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                },
+            ],
+            body: LambdaBody::Expr(Box::new(Expression::float(0.5))),
+            is_async: false,
+            captures: Vec::new(),
+        }))],
+        optional: false,
+    })
+}
+
+fn fortran_random_value_for_target(target: Expression) -> Expression {
+    if matches!(target.kind, ExprKind::Ident(_) | ExprKind::Index { .. }) {
+        return Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("Array")),
+                    field: "isArray".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(fortran_random_assignment_target(
+                    target.clone(),
+                ))],
+                optional: false,
+            })),
+            then: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(fortran_random_assignment_target(target.clone())),
+                    field: "map".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+                    params: vec![
+                        Param {
+                            name: "__fortran_random_item".to_string(),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        },
+                        Param {
+                            name: "__fortran_random_index".to_string(),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        },
+                    ],
+                    body: LambdaBody::Expr(Box::new(Expression::float(0.5))),
+                    is_async: false,
+                    captures: Vec::new(),
+                }))],
+                optional: false,
+            })),
+            else_: Box::new(Expression::float(0.5)),
+        });
+    }
+    Expression::float(0.5)
 }
 
 fn walk_namelist_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -10200,12 +10522,52 @@ fn lower_fortran_body_intrinsics(params: &[Param], body: &mut Vec<Statement>) {
 
 fn lower_body_intrinsic_statement(
     statement: &Statement,
-    _type_env: &HashMap<String, String>,
+    type_env: &HashMap<String, String>,
 ) -> Option<Statement> {
     if let StmtKind::Expr(expr) = &statement.kind {
+        if let Some(stmt) = lower_fortran_random_statement_with_env(expr, type_env) {
+            return Some(stmt);
+        }
         return lower_intrinsic_statement(expr);
     }
     None
+}
+
+fn lower_fortran_random_statement_with_env(
+    expr: &Expression,
+    type_env: &HashMap<String, String>,
+) -> Option<Statement> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if name.eq_ignore_ascii_case("random_seed") {
+        return Some(lower_fortran_random_seed_statement(args));
+    }
+    if !name.eq_ignore_ascii_case("random_number") {
+        return None;
+    }
+    let target = args
+        .iter()
+        .find(|arg| {
+            arg.name
+                .as_deref()
+                .is_none_or(|name| name.eq_ignore_ascii_case("harvest"))
+        })?
+        .value
+        .clone();
+    let assign_target = fortran_random_assignment_target(target.clone());
+    let value = if fortran_random_target_is_array(&assign_target, type_env) {
+        fortran_random_array_fill_expr(assign_target.clone())
+    } else {
+        Expression::float(0.5)
+    };
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![assign_target],
+        value,
+    }))
 }
 
 fn lower_fortran_body_intrinsics_with_env(
@@ -11537,6 +11899,26 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 ))
             }
         }
+        "llt" if args.len() == 2 => Some(build_fortran_lexical_compare_expr(
+            BinOp::Lt,
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        "lle" if args.len() == 2 => Some(build_fortran_lexical_compare_expr(
+            BinOp::LtEq,
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        "lgt" if args.len() == 2 => Some(build_fortran_lexical_compare_expr(
+            BinOp::Gt,
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
+        "lge" if args.len() == 2 => Some(build_fortran_lexical_compare_expr(
+            BinOp::GtEq,
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
         "cshift" if positional_args.len() >= 2 => Some(build_fortran_cshift_1d_expr(
             positional_args[0].clone(),
             positional_args[1].clone(),
@@ -11652,6 +12034,15 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         "huge" if args.len() == 1 => Some(build_fortran_huge_expr(&args[0].value)),
         "tiny" if args.len() == 1 => Some(Expression::float(f64::MIN_POSITIVE)),
         "epsilon" if args.len() == 1 => Some(Expression::float(f64::EPSILON)),
+        "all" if args.len() == 1 => Some(build_fortran_logical_array_reducer(
+            args[0].value.clone(),
+            "every",
+        )),
+        "any" if args.len() == 1 => Some(build_fortran_logical_array_reducer(
+            args[0].value.clone(),
+            "some",
+        )),
+        "count" if args.len() == 1 => Some(build_fortran_count_expr(args[0].value.clone())),
         "product" if args.len() == 1 && args.iter().all(|arg| arg.name.is_none()) => {
             let acc_name = "__fortran_product_acc";
             let item_name = "__fortran_product_item";
@@ -11720,6 +12111,79 @@ fn build_fortran_bit_mask(shift: Expression) -> Expression {
         op: BinOp::Shl,
         left: Box::new(Expression::int(1)),
         right: Box::new(shift),
+    })
+}
+
+fn build_fortran_logical_array_reducer(array_expr: Expression, method: &str) -> Expression {
+    let item_name = "__fortran_logical_item";
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(array_expr),
+            field: method.to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+            params: vec![Param {
+                name: item_name.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            body: LambdaBody::Expr(Box::new(fortran_expr_is_true(Expression::ident(item_name)))),
+            is_async: false,
+            captures: Vec::new(),
+        }))],
+        optional: false,
+    })
+}
+
+fn build_fortran_count_expr(array_expr: Expression) -> Expression {
+    let item_name = "__fortran_count_item";
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(array_expr),
+                field: "filter".to_string(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(Expression::new(ExprKind::Lambda {
+                params: vec![Param {
+                    name: item_name.to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                }],
+                body: LambdaBody::Expr(Box::new(fortran_expr_is_true(Expression::ident(
+                    item_name,
+                )))),
+                is_async: false,
+                captures: Vec::new(),
+            }))],
+            optional: false,
+        })),
+        field: "length".to_string(),
+        null_safe: false,
+    })
+}
+
+fn build_fortran_lexical_compare_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
+    let compare = Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(compare),
+        then: Box::new(Expression::bool(true)),
+        else_: Box::new(Expression::bool(false)),
     })
 }
 
@@ -11994,17 +12458,35 @@ fn build_fortran_merge_expr(
     let body = Expression::new(ExprKind::Ternary {
         cond: Box::new(fortran_expr_is_true(Expression::ident(item_name))),
         then: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(true_source),
+            object: Box::new(true_source.clone()),
             index: Box::new(Expression::ident(index_name)),
             null_safe: false,
         })),
         else_: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(false_source),
+            object: Box::new(false_source.clone()),
             index: Box::new(Expression::ident(index_name)),
             null_safe: false,
         })),
     });
-    build_fortran_array_map(mask, body, true, item_name, index_name)
+    let array_merge = build_fortran_array_map(mask.clone(), body, true, item_name, index_name);
+    let mask_is_array = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("Array")),
+            field: "isArray".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(mask.clone())],
+        optional: false,
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(mask_is_array),
+        then: Box::new(array_merge),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(fortran_expr_is_true(mask)),
+            then: Box::new(true_source),
+            else_: Box::new(false_source),
+        })),
+    })
 }
 
 fn build_fortran_transpose_expr(matrix: Expression) -> Expression {

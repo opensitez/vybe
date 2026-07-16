@@ -862,7 +862,7 @@ function_call_or_subscript = {
 }
 
 argument_list = { argument ~ ("," ~ argument)* }
-argument = { slice_arg | operator_arg | star_arg | (identifier ~ "=")? ~ expression }
+argument = { slice_arg | operator_arg | star_arg | (identifier ~ "=" ~ !"=")? ~ expression }
 star_arg = { "*" }
 slice_arg = { expression? ~ ":" ~ expression? ~ (":" ~ expression)? }
 // `operator(+)` / `operator(.eq.)` — operator-as-procedure-pointer.

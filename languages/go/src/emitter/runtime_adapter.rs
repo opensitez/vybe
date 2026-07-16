@@ -15,6 +15,8 @@ pub fn emit_helper(
         "go.fmt_println" => emit_fmt_joined(chunks, current, argc, line, " "),
         "go.fmt_print" => emit_fmt_joined(chunks, current, argc, line, ""),
         "go.fmt_printf" => emit_fmt_printf(chunks, current, argc, line),
+        "go.fmt_sprint" => emit_fmt_sprint(chunks, current, argc, line),
+        "go.panic" => vybe_emitter::errors::emit_throw(&mut chunks[current], line),
         // fmt.Sprintf / __go_sprintf — format to a string (no output). Same
         // runtime formatter as Printf but leaves the result on the stack
         // instead of logging it.
@@ -37,6 +39,24 @@ pub fn emit_helper(
         _ => return false,
     }
     true
+}
+
+fn emit_fmt_sprint(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        emit_string(chunks, current, "", line);
+        return;
+    }
+
+    let base = alloc_locals(&mut chunks[current], argc as u16);
+    for offset in (0..argc as u16).rev() {
+        local_set(&mut chunks[current], base + offset, line);
+    }
+
+    emit_formatted_local(chunks, current, base, line);
+    for offset in 1..argc as u16 {
+        emit_formatted_local(chunks, current, base + offset, line);
+        host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
+    }
 }
 
 fn emit_fmt_joined(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, sep: &str) {

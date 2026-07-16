@@ -12,7 +12,7 @@ use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 
 /// Fortran `len_trim(s)` — length of string after stripping trailing
-/// blanks. Composes `STR_TRIM_END` + `STR_LENGTH`.
+/// blanks. Composes `ecma:string.trimEnd` + `wasm:js-string.length`.
 ///
 /// Stack on entry: `[s]`. Stack on exit: `[length_i32]`.
 pub fn emit_fortran_len_trim(chunks: &mut [Chunk], current: usize, line: u32) {

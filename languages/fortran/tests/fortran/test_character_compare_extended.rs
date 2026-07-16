@@ -114,7 +114,7 @@ fortran_cases! {
 
     lex_sort_three_words_count => {
         "program t\ncharacter(len=5) :: w(3) = ['apple','grape','banana']\ninteger :: i, j, c\nc = 0\ndo i = 1, 2\n  do j = i+1, 3\n    if (llt(w(i), w(j))) c = c + 1\n  end do\nend do\nprint *, c\nend program t\n",
-        ["3"]
+        ["2"]
     };
 
     lex_case_pair_upper_less_than_lower => {
@@ -199,7 +199,7 @@ fortran_cases! {
 
     lex_tab_vs_space => {
         "program t\ncharacter(len=1) :: t = char(9)\nprint *, lgt(t, ' ')\nend program t\n",
-        ["true"]
+        ["false"]
     };
 
     lex_compare_in_merge => {
@@ -239,12 +239,12 @@ fortran_cases! {
 
     lex_punctuation_order => {
         "program t\nprint *, llt('.', ',')\nend program t\n",
-        ["true"]
+        ["false"]
     };
 
     lex_hex_letter_case => {
         "program t\nprint *, llt('a', 'A')\nend program t\n",
-        ["true"]
+        ["false"]
     };
 
     lex_year_strings => {
