@@ -571,13 +571,15 @@ rune_literal = @{
 
 // ── Numeric literals ─────────────────────────────────────────────────────────
 
-numeric_literal = @{
-    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ("0o" | "0O") ~ (ASCII_OCT_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
-    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
-    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
-    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+numeric_literal = @{ numeric_literal_core ~ "i"? ~ !(ASCII_ALPHANUMERIC | "_") }
+
+numeric_literal_core = _{
+    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+
+    | ("0o" | "0O") ~ (ASCII_OCT_DIGIT | "_")+
+    | ("0b" | "0B") ~ ("0" | "1" | "_")+
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
 }
 
 // ── String literals ──────────────────────────────────────────────────────────

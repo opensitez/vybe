@@ -118,7 +118,7 @@ go_run_cases! {
     ),
     list_move_middle_element => (
         "package main; import \"fmt\"; import \"container/list\"; func main() { l := list.New(); a := l.PushBack(1); b := l.PushBack(2); c := l.PushBack(3); l.MoveBefore(b, c); var vals []int; for e := l.Front(); e != nil; e = e.Next() { vals = append(vals, e.Value.(int)) }; fmt.Println(vals[0]); fmt.Println(vals[2]) }",
-        vec!["1", "2"]
+        vec!["1", "3"]
     ),
 
     ring_new_len => (

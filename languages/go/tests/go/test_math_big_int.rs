@@ -16,7 +16,7 @@ go_run_cases! {
         vec!["10"]
     ),
     big_int_set_string_invalid_returns_false => (
-        "package main; import \"fmt\"; import \"math/big\"; func main() { z := new(big.Int); ok, _ := z.SetString(\"12z\", 10); fmt.Println(ok) }",
+        "package main; import \"fmt\"; import \"math/big\"; func main() { z := new(big.Int); _, ok := z.SetString(\"12z\", 10); fmt.Println(ok) }",
         vec!["false"]
     ),
     big_int_add_positive => (

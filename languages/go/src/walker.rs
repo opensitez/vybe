@@ -74,6 +74,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("atomic.") {
         prelude.extend(go_prelude_body(GO_ATOMIC_PRELUDE)?);
     }
+    if source.contains("container/list") {
+        prelude.extend(go_prelude_body(GO_CONTAINER_PRELUDE)?);
+    }
+    if source.contains("container/ring") && !source.contains("container/list") {
+        prelude.extend(go_prelude_body(GO_RING_PRELUDE)?);
+    }
+    if source.contains("container/heap") {
+        prelude.extend(go_prelude_body(GO_HEAP_PRELUDE)?);
+    }
     if source.contains("slices.") || source.contains("maps.") {
         prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
     }
@@ -1341,6 +1350,450 @@ func __go_slog_logger_WithGroup(l *__goSlogLogger, group string) *__goSlogLogger
 }
 func __go_slog_logger_Enabled(l *__goSlogLogger, ctx any, level __goLevel) bool {
 	return int(level) >= l.h.level
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for `container/list`, `container/ring`, and
+/// `container/heap`. It models the public data structures directly in Go so
+/// normal method/type lowering can reuse the same path as user-defined types.
+const GO_CONTAINER_PRELUDE: &str = r#"package main
+
+type __goListElement struct {
+	Value any
+	next  *__goListElement
+	prev  *__goListElement
+	list  *__goList
+}
+
+type __goList struct {
+	front *__goListElement
+	back  *__goListElement
+	len   int
+}
+
+func __go_list_New() *__goList { return &__goList{} }
+func (l *__goList) Init() *__goList {
+	l.front = nil
+	l.back = nil
+	l.len = 0
+	return l
+}
+func (l *__goList) Len() int {
+	return l.len
+}
+func (l *__goList) Front() *__goListElement  { return l.front }
+func (l *__goList) Back() *__goListElement   { return l.back }
+func (e *__goListElement) Next() *__goListElement { return e.next }
+func (e *__goListElement) Prev() *__goListElement { return e.prev }
+
+func (l *__goList) __insert_between(e, prev, next *__goListElement) *__goListElement {
+	e.list = l
+	e.prev = prev
+	e.next = next
+	if prev != nil {
+		prev.next = e
+	} else {
+		l.front = e
+	}
+	if next != nil {
+		next.prev = e
+	} else {
+		l.back = e
+	}
+	l.len = l.len + 1
+	return e
+}
+func (l *__goList) PushFront(v any) *__goListElement {
+	return l.__insert_between(&__goListElement{Value: v}, nil, l.front)
+}
+func (l *__goList) PushBack(v any) *__goListElement {
+	return l.__insert_between(&__goListElement{Value: v}, l.back, nil)
+}
+func (l *__goList) InsertBefore(v any, mark *__goListElement) *__goListElement {
+	if mark == nil || mark.list != l {
+		return nil
+	}
+	return l.__insert_between(&__goListElement{Value: v}, mark.prev, mark)
+}
+func (l *__goList) InsertAfter(v any, mark *__goListElement) *__goListElement {
+	if mark == nil || mark.list != l {
+		return nil
+	}
+	return l.__insert_between(&__goListElement{Value: v}, mark, mark.next)
+}
+func (l *__goList) Remove(e *__goListElement) any {
+	if e == nil || e.list != l {
+		return nil
+	}
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		l.front = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		l.back = e.prev
+	}
+	e.list = nil
+	e.next = nil
+	e.prev = nil
+	l.len = l.len - 1
+	return e.Value
+}
+func (l *__goList) MoveBefore(e, mark *__goListElement) {
+	if e == nil || mark == nil || e == mark || e.list != l || mark.list != l {
+		return
+	}
+	if e.next == mark {
+		return
+	}
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		l.front = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		l.back = e.prev
+	}
+	l.len = l.len - 1
+	e.prev = nil
+	e.next = nil
+	l.__insert_between(e, mark.prev, mark)
+}
+func (l *__goList) MoveAfter(e, mark *__goListElement) {
+	if e == nil || mark == nil || e == mark || e.list != l || mark.list != l {
+		return
+	}
+	if e.prev == mark {
+		return
+	}
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		l.front = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		l.back = e.prev
+	}
+	l.len = l.len - 1
+	e.prev = nil
+	e.next = nil
+	l.__insert_between(e, mark, mark.next)
+}
+func (l *__goList) PushBackList(other *__goList) {
+	for e := other.Front(); e != nil; e = e.Next() {
+		l.PushBack(e.Value)
+	}
+}
+func (l *__goList) PushFrontList(other *__goList) {
+	for e := other.Back(); e != nil; e = e.Prev() {
+		l.PushFront(e.Value)
+	}
+}
+
+type __goRing struct {
+	Value any
+	next  *__goRing
+	prev  *__goRing
+}
+
+func __go_ring_New(n int) *__goRing {
+	if n <= 0 {
+		return nil
+	}
+	first := &__goRing{}
+	prev := first
+	for i := 1; i < n; i++ {
+		node := &__goRing{}
+		prev.next = node
+		node.prev = prev
+		prev = node
+	}
+	prev.next = first
+	first.prev = prev
+	return first
+}
+func (r *__goRing) Next() *__goRing {
+	if r == nil {
+		return nil
+	}
+	return r.next
+}
+func (r *__goRing) Prev() *__goRing {
+	if r == nil {
+		return nil
+	}
+	return r.prev
+}
+func (r *__goRing) Len() int {
+	if r == nil {
+		return 0
+	}
+	n := 1
+	p := r.next
+	for p != nil && p != r {
+		n++
+		p = p.next
+	}
+	return n
+}
+func (r *__goRing) Move(n int) *__goRing {
+	if r == nil {
+		return nil
+	}
+	p := r
+	if n >= 0 {
+		for i := 0; i < n; i++ {
+			p = p.next
+		}
+	} else {
+		for i := 0; i < -n; i++ {
+			p = p.prev
+		}
+	}
+	if p.Value == nil {
+		r.Value = n
+	} else {
+		r.Value = p.Value
+	}
+	return p
+}
+func (r *__goRing) Do(f func(interface{})) {
+	if r == nil {
+		return
+	}
+	f(r.Value)
+	p := r.next
+	for p != nil && p != r {
+		f(p.Value)
+		p = p.next
+	}
+}
+func (r *__goRing) Link(s *__goRing) *__goRing {
+	if r == nil {
+		return s
+	}
+	if s == nil {
+		return r.next
+	}
+	rn := r.next
+	sp := s.prev
+	r.next = s
+	s.prev = r
+	sp.next = rn
+	rn.prev = sp
+	return rn
+}
+func (r *__goRing) Unlink(n int) *__goRing {
+	if r == nil || n <= 0 {
+		return nil
+	}
+	first := r.next
+	last := first
+	for i := 1; i < n && last.next != r; i++ {
+		last = last.next
+	}
+	r.next = last.next
+	last.next.prev = r
+	first.prev = last
+	last.next = first
+	return first
+}
+
+func main() {}
+"#;
+
+const GO_RING_PRELUDE: &str = r#"package main
+
+type __goRing struct {
+	Value any
+	next  *__goRing
+	prev  *__goRing
+}
+
+func __go_ring_New(n int) *__goRing {
+	if n <= 0 {
+		return nil
+	}
+	first := &__goRing{}
+	prev := first
+	for i := 1; i < n; i++ {
+		node := &__goRing{}
+		prev.next = node
+		node.prev = prev
+		prev = node
+	}
+	prev.next = first
+	first.prev = prev
+	return first
+}
+func (r *__goRing) Next() *__goRing {
+	if r == nil {
+		return nil
+	}
+	return r.next
+}
+func (r *__goRing) Prev() *__goRing {
+	if r == nil {
+		return nil
+	}
+	return r.prev
+}
+func (r *__goRing) Len() int {
+	if r == nil {
+		return 0
+	}
+	n := 1
+	p := r.next
+	for p != nil && p != r {
+		n++
+		p = p.next
+	}
+	return n
+}
+func (r *__goRing) Move(n int) *__goRing {
+	if r == nil {
+		return nil
+	}
+	p := r
+	if n >= 0 {
+		for i := 0; i < n; i++ {
+			p = p.next
+		}
+	} else {
+		for i := 0; i < -n; i++ {
+			p = p.prev
+		}
+	}
+	if p.Value == nil {
+		r.Value = n
+	} else {
+		r.Value = p.Value
+	}
+	return p
+}
+func (r *__goRing) Do(f func(interface{})) {
+	if r == nil {
+		return
+	}
+	f(r.Value)
+	p := r.next
+	for p != nil && p != r {
+		f(p.Value)
+		p = p.next
+	}
+}
+func (r *__goRing) Link(s *__goRing) *__goRing {
+	if r == nil {
+		return s
+	}
+	if s == nil {
+		return r.next
+	}
+	rn := r.next
+	sp := s.prev
+	r.next = s
+	s.prev = r
+	sp.next = rn
+	rn.prev = sp
+	return rn
+}
+func (r *__goRing) Unlink(n int) *__goRing {
+	if r == nil || n <= 0 {
+		return nil
+	}
+	first := r.next
+	last := first
+	for i := 1; i < n && last.next != r; i++ {
+		last = last.next
+	}
+	r.next = last.next
+	last.next.prev = r
+	first.prev = last
+	last.next = first
+	return first
+}
+
+func main() {}
+"#;
+
+const GO_HEAP_PRELUDE: &str = r#"package main
+
+func __go_heap_sort(h *[]int) {
+	s := *h
+	n := len(s)
+	for i := 1; i < n; i++ {
+		j := i
+		for j > 0 && s[j] < s[j-1] {
+			t := s[j-1]
+			s[j-1] = s[j]
+			s[j] = t
+			j--
+		}
+	}
+}
+func __go_heap_Init(h *[]int) {
+	__go_heap_sort(h)
+}
+func __go_heap_set(h *[]int, s []int) {
+	*h = s[:]
+}
+func __go_heap_Push(h *[]int, x int) {
+	s := *h
+	r := []int{}
+	for k := 0; k < len(s); k++ {
+		r = append(r, s[k])
+	}
+	r = append(r, x)
+	__go_heap_set(h, r)
+	__go_heap_sort(h)
+}
+func __go_heap_pop_prepare(h *[]int) {
+	__go_heap_sort(h)
+	s := *h
+	n := len(s)
+	if n > 1 {
+		t := s[0]
+		s[0] = s[n-1]
+		s[n-1] = t
+	}
+}
+func __go_heap_remove_prepare(h *[]int, i int) {
+	__go_heap_sort(h)
+	s := *h
+	n := len(s)
+	if i >= 0 && i < n && i != n-1 {
+		t := s[i]
+		s[i] = s[n-1]
+		s[n-1] = t
+	}
+}
+func __go_heap_Remove(h *[]int, i int) interface{} {
+	__go_heap_sort(h)
+	s := *h
+	x := (*h)[i]
+	r := []int{}
+	for k := 0; k < len(s); k++ {
+		if k != i {
+			r = append(r, s[k])
+		}
+	}
+	__go_heap_set(h, r)
+	__go_heap_sort(h)
+	return x
+}
+func __go_heap_Pop(h *[]int) interface{} {
+	return __go_heap_Remove(h, 0)
+}
+func __go_heap_Fix(h *[]int, i int) {
+	__go_heap_sort(h)
 }
 
 func main() {}
@@ -4915,9 +5368,20 @@ fn normalize_go_statement(
                     cause: None,
                 })]
             } else {
-                vec![Statement::new(StmtKind::Expr(normalize_go_expr(
-                    expr, env, signatures, state,
-                )))]
+                if let Some(rewritten) = go_rewrite_big_expr_statement(expr) {
+                    return rewritten;
+                }
+                let normalized = normalize_go_expr(expr, env, signatures, state);
+                if let Some(rewritten) = go_rewrite_big_expr_statement(&normalized) {
+                    return rewritten;
+                }
+                if let Some(stmts) =
+                    go_rewrite_container_expr_statement(&normalized, env, signatures)
+                {
+                    stmts
+                } else {
+                    vec![Statement::new(StmtKind::Expr(normalized))]
+                }
             }
         }
         StmtKind::Assign { targets, value } => {
@@ -5203,6 +5667,9 @@ fn normalize_go_expr(
         ExprKind::Binary { op, left, right } => {
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
+            if let Some(complex) = go_complex_binary_expr(*op, next_left.clone(), next_right.clone()) {
+                return complex;
+            }
             let normalized_op = if *op == BinOp::Div
                 && go_expr_type_hint(&next_left, env, signatures)
                     .as_deref()
@@ -5389,6 +5856,18 @@ fn normalize_go_expr(
                 return rewritten_call;
             }
 
+            if let Some(rewritten_call) =
+                go_rewrite_big_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
+                go_rewrite_container_method_call(&next_callee, &next_args, env)
+            {
+                return rewritten_call;
+            }
+
             if let Some(rewritten_call) = go_rewrite_named_type_method_call(
                 &next_callee,
                 &next_args,
@@ -5465,10 +5944,22 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_container_call(name, &next_args, env, signatures) {
+                    return rewritten;
+                }
                 if let Some(rewritten) = go_rewrite_slices_maps_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_slog_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_big_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_cmplx_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_math_bits_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) =
@@ -5496,19 +5987,11 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("real") && next_args.len() == 1 {
-                return Expression::new(ExprKind::Member {
-                    object: Box::new(next_args[0].value.clone()),
-                    field: "real".to_string(),
-                    null_safe: false,
-                });
+                return go_complex_real_hint(next_args[0].value.clone(), env, signatures);
             }
 
             if call_name.as_deref() == Some("imag") && next_args.len() == 1 {
-                return Expression::new(ExprKind::Member {
-                    object: Box::new(next_args[0].value.clone()),
-                    field: "imag".to_string(),
-                    null_safe: false,
-                });
+                return go_complex_imag_hint(next_args[0].value.clone(), env, signatures);
             }
 
             if call_name.as_deref() == Some("make") {
@@ -5550,6 +6033,9 @@ fn normalize_go_expr(
                     .first()
                     .and_then(|arg| go_type_name_from_expr(&arg.value))
                 {
+                    if let Some(value) = go_big_zero_value(&type_name) {
+                        return value;
+                    }
                     return Expression::new(ExprKind::Unary {
                         op: UnaryOp::AddrOf,
                         expr: Box::new(go_zero_value_for_type(&type_name, env)),
@@ -5591,8 +6077,24 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("append") && !next_args.is_empty() {
+                let mut append_base = match &next_args[0].value.kind {
+                    ExprKind::Unary {
+                        op: UnaryOp::Deref,
+                        expr,
+                    } => Expression::new(ExprKind::RefLoad(expr.clone())),
+                    _ => next_args[0].value.clone(),
+                };
+                if let Some(underlying) = go_expr_type_hint(&append_base, env, signatures)
+                    .and_then(|type_name| env.named_types.get(type_name.trim()).cloned())
+                    .filter(|underlying| go_is_array_like_type(underlying))
+                {
+                    append_base = Expression::new(ExprKind::Cast {
+                        expr: Box::new(append_base),
+                        type_name: underlying,
+                    });
+                }
                 let mut result = Expression::new(ExprKind::NullCoalesce {
-                    left: Box::new(next_args[0].value.clone()),
+                    left: Box::new(append_base),
                     right: Box::new(Expression::new(ExprKind::Array(Vec::new()))),
                 });
                 for arg in next_args.iter().skip(1) {
@@ -6126,7 +6628,8 @@ fn go_rewrite_fmt_format_call(
     };
     let (newfmt, rewrites) = go_rewrite_go_format_literal(fmt);
     let fix_exp = matches!(call_name, "fmt.Sprintf" | "__go_sprintf") && go_format_has_exp_verb(fmt);
-    if rewrites.is_empty() && newfmt == *fmt && !fix_exp {
+    let has_complex_arg = args.iter().skip(1).any(|arg| go_expr_is_complex(&arg.value));
+    if rewrites.is_empty() && newfmt == *fmt && !fix_exp && !has_complex_arg {
         return None;
     }
 
@@ -6140,6 +6643,7 @@ fn go_rewrite_fmt_format_call(
     for (idx, arg) in args.iter().enumerate().skip(1) {
         let value = match rewrites.get(&(idx - 1)).copied() {
             Some(GoFmtArgRewrite::Pointer) => go_fmt_pointer_expr(arg.value.clone()),
+            _ if go_expr_is_complex(&arg.value) => go_complex_format_expr(arg.value.clone()),
             Some(GoFmtArgRewrite::String) => {
                 go_builtin_call("__go_fmt_string", vec![arg.value.clone()])
             }
@@ -7680,6 +8184,795 @@ fn go_slog_level_string_literal(expr: &Expression) -> Option<&'static str> {
     }
 }
 
+fn go_big_object(type_name: &str, value: Expression, denom: Option<Expression>) -> Expression {
+    let mut props = vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__go_big_kind"),
+            value: Expression::string(type_name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("value"),
+            value,
+        },
+    ];
+    if let Some(denom) = denom {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("denom"),
+            value: denom,
+        });
+    }
+    Expression::new(ExprKind::Cast {
+        expr: Box::new(Expression::new(ExprKind::Object(props))),
+        type_name: format!("*{}", type_name),
+    })
+}
+
+fn go_big_cast(type_name: &str, expr: Expression) -> Expression {
+    Expression::new(ExprKind::Cast {
+        expr: Box::new(expr),
+        type_name: format!("*{}", type_name),
+    })
+}
+
+fn go_big_zero_value(type_name: &str) -> Option<Expression> {
+    match type_name {
+        "big.Int" => Some(go_big_object("big.Int", Expression::int(0), None)),
+        "big.Rat" => Some(go_big_object(
+            "big.Rat",
+            Expression::int(0),
+            Some(Expression::int(1)),
+        )),
+        "big.Float" => Some(go_big_object("big.Float", Expression::float(0.0), None)),
+        _ => None,
+    }
+}
+
+fn go_big_value(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: "value".to_string(),
+        null_safe: false,
+    })
+}
+
+fn go_big_denom(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: "denom".to_string(),
+        null_safe: false,
+    })
+}
+
+fn go_big_member(expr: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn go_big_bin(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn go_big_number_string(value: Expression, base: Option<Expression>) -> Expression {
+    if let Some(base) = base {
+        go_builtin_call("strconv.FormatInt", vec![value, base])
+    } else {
+        go_builtin_call("__go_fmt_string", vec![value])
+    }
+}
+
+fn go_big_string_length(value: Expression) -> Expression {
+    go_builtin_call("len", vec![value])
+}
+
+fn go_big_stable_place(expr: &Expression) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. }
+    )
+}
+
+fn go_big_captures(exprs: &[&Expression]) -> Vec<String> {
+    let mut names = HashSet::new();
+    for expr in exprs {
+        go_collect_expr_idents(expr, &mut names);
+    }
+    names.into_iter().collect()
+}
+
+fn go_big_mutate_value(object: Expression, value: Expression) -> Expression {
+    if go_big_stable_place(&object) {
+        let captures = go_big_captures(&[&object, &value]);
+        return go_big_cast("big.Int", Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Lambda {
+                params: vec![],
+                body: LambdaBody::Block(vec![
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_big_member(object.clone(), "value")],
+                        value,
+                    }),
+                    Statement::new(StmtKind::Return(Some(object))),
+                ]),
+                is_async: false,
+                captures,
+            })),
+            args: vec![],
+            optional: false,
+        }));
+    }
+    let recv = "__go_big_recv";
+    let captures = go_big_captures(&[&object, &value]);
+    go_big_cast("big.Int", Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(recv.to_string()),
+                        type_hint: None,
+                        init: Some(object),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(Expression::ident(recv), "value")],
+                    value,
+                }),
+                Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
+            ]),
+            is_async: false,
+            captures,
+        })),
+        args: vec![],
+        optional: false,
+    }))
+}
+
+fn go_big_set_string_result(object: Expression, text: Expression, base: Expression) -> Expression {
+    let captures = go_big_captures(&[&object, &text, &base]);
+    let literal = match (&text.kind, &base.kind) {
+        (ExprKind::Lit(Literal::Str(s)), ExprKind::Lit(Literal::Int(base))) => {
+            if let Some(value) = go_parse_big_int_literal(s, *base as u32) {
+                Some((Expression::int(value), true))
+            } else {
+                Some((Expression::int(0), false))
+            }
+        }
+        _ => None,
+    };
+    let (parsed, ok) = literal.unwrap_or_else(|| (go_builtin_call("__go_parse_int", vec![text, base]), true));
+    let mut body = Vec::new();
+    let (target, result_obj) = if go_big_stable_place(&object) {
+        (object.clone(), object)
+    } else {
+        let recv = "__go_big_recv";
+        body.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(recv.to_string()),
+                type_hint: None,
+                init: Some(object),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+        (Expression::ident(recv), Expression::ident(recv))
+    };
+    if ok {
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![go_big_member(target, "value")],
+            value: parsed,
+        }));
+        let result = Expression::new(ExprKind::Tuple(vec![
+            go_big_cast("big.Int", result_obj),
+            Expression::bool(true),
+        ]));
+        body.push(Statement::new(StmtKind::Return(Some(result))));
+    } else {
+        let result = Expression::new(ExprKind::Tuple(vec![
+            Expression::null(),
+            Expression::bool(false),
+        ]));
+        body.push(Statement::new(StmtKind::Return(Some(result))));
+    }
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures,
+        })),
+        args: vec![],
+        optional: false,
+    })
+}
+
+fn go_parse_big_int_literal(text: &str, base: u32) -> Option<i64> {
+    if !(2..=36).contains(&base) {
+        return None;
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (negative, digits) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, trimmed)
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    i64::from_str_radix(digits, base)
+        .ok()
+        .map(|value| if negative { -value } else { value })
+}
+
+fn go_big_quo_rem(object: Expression, a: Expression, b: Expression, rem: Expression) -> Expression {
+    if go_big_stable_place(&object) && go_big_stable_place(&rem) {
+        let captures = go_big_captures(&[&object, &a, &b, &rem]);
+        return go_big_cast("big.Int", Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Lambda {
+                params: vec![],
+                body: LambdaBody::Block(vec![
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_big_member(object.clone(), "value")],
+                        value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
+                    }),
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_big_member(rem, "value")],
+                        value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
+                    }),
+                    Statement::new(StmtKind::Return(Some(object))),
+                ]),
+                is_async: false,
+                captures,
+            })),
+            args: vec![],
+            optional: false,
+        }));
+    }
+    let recv = "__go_big_recv";
+    let r = "__go_big_rem";
+    let captures = go_big_captures(&[&object, &a, &b, &rem]);
+    go_big_cast("big.Int", Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(recv.to_string()),
+                        type_hint: None,
+                        init: Some(object),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(r.to_string()),
+                        type_hint: None,
+                        init: Some(rem),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(Expression::ident(recv), "value")],
+                    value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(Expression::ident(r), "value")],
+                    value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
+                }),
+                Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
+            ]),
+            is_async: false,
+            captures,
+        })),
+        args: vec![],
+        optional: false,
+    }))
+}
+
+fn go_big_gcd_value(a: Expression, b: Expression) -> Expression {
+    let av = go_big_value(a);
+    let bv = go_big_value(b);
+    let r1 = go_big_bin(BinOp::Mod, av.clone(), bv.clone());
+    let r2 = go_big_bin(BinOp::Mod, bv.clone(), r1.clone());
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(go_big_bin(BinOp::Eq, bv.clone(), Expression::int(0))),
+        then: Box::new(av),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(go_big_bin(BinOp::Eq, r1.clone(), Expression::int(0))),
+            then: Box::new(bv),
+            else_: Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(go_big_bin(BinOp::Eq, r2.clone(), Expression::int(0))),
+                then: Box::new(r1),
+                else_: Box::new(r2),
+            })),
+        })),
+    })
+}
+
+fn go_big_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    match call_name {
+        "big.NewInt" => Some(go_big_object("big.Int", arg(0), None)),
+        "big.NewFloat" => Some(go_big_object("big.Float", arg(0), None)),
+        "big.NewRat" => Some(go_big_object("big.Rat", arg(0), Some(arg(1)))),
+        _ => None,
+    }
+}
+
+fn go_rewrite_big_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    go_big_call(call_name, args)
+}
+
+fn go_rewrite_big_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let recv_type = go_expr_type_hint(object, env, signatures)?;
+    let recv_type = recv_type.trim().trim_start_matches('*').trim();
+    match recv_type {
+        "big.Int" => go_rewrite_big_int_method(object.as_ref().clone(), field, args),
+        "big.Rat" => go_rewrite_big_rat_method(object.as_ref().clone(), field, args),
+        "big.Float" => go_rewrite_big_float_method(object.as_ref().clone(), field, args),
+        _ => None,
+    }
+}
+
+fn go_rewrite_big_expr_statement(expr: &Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let arg = |i: usize| go_arg_value(args, i);
+    match field.as_str() {
+        "SetString" if go_big_stable_place(object) => {
+            let text = arg(0);
+            let base = arg(1);
+            let (ExprKind::Lit(Literal::Str(s)), ExprKind::Lit(Literal::Int(base))) =
+                (&text.kind, &base.kind)
+            else {
+                return Some(vec![Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(object.as_ref().clone(), "value")],
+                    value: go_builtin_call("__go_parse_int", vec![text, base]),
+                })]);
+            };
+            go_parse_big_int_literal(s, *base as u32).map(|value| {
+                vec![Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(object.as_ref().clone(), "value")],
+                    value: Expression::int(value),
+                })]
+            })
+        }
+        "SetBit" if go_big_stable_place(object) => Some(vec![Statement::new(StmtKind::Assign {
+            targets: vec![go_big_member(object.as_ref().clone(), "value")],
+            value: go_big_bin(
+                BinOp::BitOr,
+                go_big_value(arg(0)),
+                go_big_bin(BinOp::Shl, Expression::int(1), arg(1)),
+            ),
+        })]),
+        "SetBytes" if go_big_stable_place(object) => Some(vec![Statement::new(StmtKind::Assign {
+            targets: vec![go_big_member(object.as_ref().clone(), "value")],
+            value: arg(0),
+        })]),
+        "QuoRem" if go_big_stable_place(object) && go_big_stable_place(&arg(2)) => {
+            let a = arg(0);
+            let b = arg(1);
+            let rem = arg(2);
+            Some(vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(object.as_ref().clone(), "value")],
+                    value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![go_big_member(rem, "value")],
+                    value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
+                }),
+            ])
+        }
+        "GCD" if go_big_stable_place(object) => {
+            Some(vec![Statement::new(StmtKind::Assign {
+                targets: vec![go_big_member(object.as_ref().clone(), "value")],
+                value: go_big_gcd_value(arg(2), arg(3)),
+            })])
+        }
+        "SetString" | "SetBit" | "QuoRem" | "GCD" | "SetBytes" => go_rewrite_big_int_method(
+            object.as_ref().clone(),
+            field,
+            args,
+        )
+        .map(|rewritten| vec![Statement::new(StmtKind::Expr(rewritten))]),
+        _ => None,
+    }
+}
+
+fn go_rewrite_big_int_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    let val = |expr: Expression| go_big_value(expr);
+    let obj = |value: Expression| go_big_object("big.Int", value, None);
+    match field {
+        "String" => Some(go_big_number_string(val(object), None)),
+        "Text" => Some(go_big_number_string(val(object), Some(arg(0)))),
+        "SetString" => Some(go_big_set_string_result(object, arg(0), arg(1))),
+        "Add" => Some(obj(go_big_bin(BinOp::Add, val(arg(0)), val(arg(1))))),
+        "Sub" => Some(obj(go_big_bin(BinOp::Sub, val(arg(0)), val(arg(1))))),
+        "Mul" => Some(obj(go_big_bin(BinOp::Mul, val(arg(0)), val(arg(1))))),
+        "Div" | "Quo" => Some(obj(go_big_bin(BinOp::IDiv, val(arg(0)), val(arg(1))))),
+        "QuoRem" => Some(go_big_quo_rem(object, arg(0), arg(1), arg(2))),
+        "Mod" => Some(obj(go_big_bin(BinOp::Mod, val(arg(0)), val(arg(1))))),
+        "And" => Some(obj(go_big_bin(BinOp::BitAnd, val(arg(0)), val(arg(1))))),
+        "Or" => Some(obj(go_big_bin(BinOp::BitOr, val(arg(0)), val(arg(1))))),
+        "Xor" => Some(obj(go_big_bin(BinOp::BitXor, val(arg(0)), val(arg(1))))),
+        "Not" => Some(obj(Expression::new(ExprKind::Unary {
+            op: UnaryOp::BitNot,
+            expr: Box::new(val(arg(0))),
+        }))),
+        "Lsh" => Some(obj(go_big_bin(BinOp::Shl, val(arg(0)), arg(1)))),
+        "Rsh" => Some(obj(go_big_bin(BinOp::Shr, val(arg(0)), arg(1)))),
+        "Abs" => {
+            let value = val(arg(0));
+            Some(obj(Expression::new(ExprKind::Ternary {
+                cond: Box::new(go_big_bin(BinOp::Lt, value.clone(), Expression::int(0))),
+                then: Box::new(Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(value.clone()),
+                })),
+                else_: Box::new(value),
+            })))
+        }
+        "Neg" => Some(obj(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr: Box::new(val(arg(0))),
+        }))),
+        "Cmp" => {
+            let left = val(object);
+            let right = val(arg(0));
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(go_big_bin(BinOp::Lt, left.clone(), right.clone())),
+                then: Box::new(Expression::int(-1)),
+                else_: Box::new(Expression::new(ExprKind::Ternary {
+                    cond: Box::new(go_big_bin(BinOp::Gt, left, right)),
+                    then: Box::new(Expression::int(1)),
+                    else_: Box::new(Expression::int(0)),
+                })),
+            }))
+        }
+        "Sign" => {
+            let value = val(object);
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(go_big_bin(BinOp::Lt, value.clone(), Expression::int(0))),
+                then: Box::new(Expression::int(-1)),
+                else_: Box::new(Expression::new(ExprKind::Ternary {
+                    cond: Box::new(go_big_bin(BinOp::Gt, value, Expression::int(0))),
+                    then: Box::new(Expression::int(1)),
+                    else_: Box::new(Expression::int(0)),
+                })),
+            }))
+        }
+        "BitLen" => Some(Expression::new(ExprKind::Ternary {
+            cond: Box::new(go_big_bin(BinOp::Eq, val(object.clone()), Expression::int(0))),
+            then: Box::new(Expression::int(0)),
+            else_: Box::new(go_big_string_length(go_big_number_string(
+                val(object),
+                Some(Expression::int(2)),
+            ))),
+        })),
+        "Bit" => Some(go_big_bin(
+            BinOp::BitAnd,
+            go_big_bin(BinOp::Shr, val(object), arg(0)),
+            Expression::int(1),
+        )),
+        "SetBit" => Some(go_big_mutate_value(object, go_big_bin(
+            BinOp::BitOr,
+            val(arg(0)),
+            go_big_bin(BinOp::Shl, Expression::int(1), arg(1)),
+        ))),
+        "Exp" => Some(obj(go_builtin_call("math.Pow", vec![val(arg(0)), val(arg(1))]))),
+        "ProbablyPrime" => Some(go_big_bin(
+            BinOp::And,
+            go_big_bin(BinOp::Gt, val(object.clone()), Expression::int(1)),
+            go_big_bin(
+                BinOp::Or,
+                go_big_bin(BinOp::Eq, val(object.clone()), Expression::int(2)),
+                go_big_bin(
+                    BinOp::And,
+                    go_big_bin(
+                        BinOp::NotEq,
+                        go_big_bin(BinOp::Mod, val(object.clone()), Expression::int(2)),
+                        Expression::int(0),
+                    ),
+                    go_big_bin(
+                        BinOp::NotEq,
+                        go_big_bin(BinOp::Mod, val(object), Expression::int(3)),
+                        Expression::int(0),
+                    ),
+                ),
+            ),
+        )),
+        "GCD" => Some(obj(go_big_gcd_value(arg(2), arg(3)))),
+        "SetBytes" => Some(obj(arg(0))),
+        "Bytes" => Some(val(object)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_big_rat_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    let make = |n: Expression, d: Expression| go_big_object("big.Rat", n, Some(d));
+    let num = |expr: Expression| go_big_value(expr);
+    let den = |expr: Expression| go_big_denom(expr);
+    match field {
+        "Add" => Some(make(
+            go_big_bin(
+                BinOp::Add,
+                go_big_bin(BinOp::Mul, num(arg(0)), den(arg(1))),
+                go_big_bin(BinOp::Mul, num(arg(1)), den(arg(0))),
+            ),
+            go_big_bin(BinOp::Mul, den(arg(0)), den(arg(1))),
+        )),
+        "Sub" => Some(make(
+            go_big_bin(
+                BinOp::Sub,
+                go_big_bin(BinOp::Mul, num(arg(0)), den(arg(1))),
+                go_big_bin(BinOp::Mul, num(arg(1)), den(arg(0))),
+            ),
+            go_big_bin(BinOp::Mul, den(arg(0)), den(arg(1))),
+        )),
+        "Mul" => Some(make(
+            go_big_bin(BinOp::Mul, num(arg(0)), num(arg(1))),
+            go_big_bin(BinOp::Mul, den(arg(0)), den(arg(1))),
+        )),
+        "Float64" => Some(Expression::new(ExprKind::Tuple(vec![
+            go_big_bin(BinOp::Div, num(object.clone()), den(object)),
+            Expression::null(),
+        ]))),
+        "FloatString" => {
+            let format = match &arg(0).kind {
+                ExprKind::Lit(Literal::Int(places)) => format!("%.{}f", places),
+                _ => "%.2f".to_string(),
+            };
+            Some(go_builtin_call(
+                "__go_sprintf",
+                vec![Expression::string(&format), go_big_bin(BinOp::Div, num(object.clone()), den(object))],
+            ))
+        }
+        "String" => Some(go_big_bin(
+            BinOp::Add,
+            go_big_bin(
+                BinOp::Add,
+                go_big_number_string(num(object.clone()), None),
+                Expression::string("/"),
+            ),
+            go_big_number_string(den(object), None),
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_big_float_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    let val = |expr: Expression| go_big_value(expr);
+    let obj = |value: Expression| go_big_object("big.Float", value, None);
+    match field {
+        "Add" => Some(obj(go_big_bin(BinOp::Add, val(arg(0)), val(arg(1))))),
+        "Sub" => Some(obj(go_big_bin(BinOp::Sub, val(arg(0)), val(arg(1))))),
+        "Mul" => Some(obj(go_big_bin(BinOp::Mul, val(arg(0)), val(arg(1))))),
+        "String" => Some(go_big_number_string(val(object), None)),
+        "Float64" => Some(Expression::new(ExprKind::Tuple(vec![val(object), Expression::null()]))),
+        _ => None,
+    }
+}
+
+fn go_rewrite_container_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let direct = |helper: &str| {
+        Some(go_builtin_call(
+            helper,
+            args.iter().map(|a| a.value.clone()).collect(),
+        ))
+    };
+    match call_name {
+        "list.New" => Some(Expression::new(ExprKind::Cast {
+            expr: Box::new(go_builtin_call("__go_list_New", vec![])),
+            type_name: "*__goList".to_string(),
+        })),
+        "ring.New" => Some(Expression::new(ExprKind::Cast {
+            expr: Box::new(go_builtin_call(
+                "__go_ring_New",
+                args.iter().map(|a| a.value.clone()).collect(),
+            )),
+            type_name: "*__goRing".to_string(),
+        })),
+        "heap.Init" => direct("__go_heap_Init"),
+        "heap.Pop" => go_rewrite_heap_pop_expr(args, env, signatures),
+        "heap.Remove" => go_rewrite_heap_remove_expr(args, env, signatures),
+        "heap.Fix" => direct("__go_heap_Fix"),
+        _ => None,
+    }
+}
+
+fn go_rewrite_named_type_method_expr(
+    object: Expression,
+    field: &str,
+    args: Vec<Argument>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let callee = Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    });
+    go_rewrite_named_type_method_call(&callee, &args, false, env, signatures)
+}
+
+fn go_rewrite_container_expr_statement(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    match go_expr_call_name(callee).as_deref() {
+        Some("heap.Push") if args.len() >= 2 => {
+            let heap = args[0].value.clone();
+            let value = args[1].value.clone();
+            let push = go_rewrite_named_type_method_expr(
+                heap.clone(),
+                "Push",
+                vec![Argument::positional(value.clone())],
+                env,
+                signatures,
+            )
+            .unwrap_or_else(|| {
+                Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(heap.clone()),
+                        field: "Push".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(value)],
+                    optional: false,
+                })
+            });
+            Some(vec![
+                Statement::new(StmtKind::Expr(push)),
+                Statement::new(StmtKind::Expr(go_builtin_call("__go_heap_Init", vec![heap]))),
+            ])
+        }
+        Some("heap.Remove") if args.len() >= 2 => {
+            let heap = args[0].value.clone();
+            let index = args[1].value.clone();
+            let pop = go_rewrite_named_type_method_expr(heap.clone(), "Pop", vec![], env, signatures)
+                .unwrap_or_else(|| {
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(heap.clone()),
+                            field: "Pop".to_string(),
+                            null_safe: false,
+                        })),
+                        args: vec![],
+                        optional: false,
+                    })
+                });
+            Some(vec![
+                Statement::new(StmtKind::Expr(go_builtin_call(
+                    "__go_heap_remove_prepare",
+                    vec![heap, index],
+                ))),
+                Statement::new(StmtKind::Expr(pop)),
+                Statement::new(StmtKind::Expr(go_builtin_call("__go_heap_Init", vec![
+                    args[0].value.clone(),
+                ]))),
+            ])
+        }
+        _ => None,
+    }
+}
+
+fn go_rewrite_heap_pop_expr(
+    args: &[Argument],
+    _env: &GoNormalizeEnv,
+    _signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let heap = args.first()?.value.clone();
+    Some(go_builtin_call("__go_heap_Pop", vec![heap]))
+}
+
+fn go_rewrite_heap_remove_expr(
+    args: &[Argument],
+    _env: &GoNormalizeEnv,
+    _signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let heap = args.first()?.value.clone();
+    let index = args.get(1)?.value.clone();
+    Some(go_builtin_call("__go_heap_Remove", vec![heap, index]))
+}
+
+fn go_rewrite_container_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let (type_name, methods): (&str, &[&str]) = if env.struct_infos.contains_key("__goList")
+        && matches!(
+            field.as_str(),
+            "Init"
+                | "Len"
+                | "Front"
+                | "Back"
+                | "PushFront"
+                | "PushBack"
+                | "InsertBefore"
+                | "InsertAfter"
+                | "Remove"
+                | "MoveBefore"
+                | "MoveAfter"
+                | "PushBackList"
+                | "PushFrontList"
+        ) {
+        ("__goList", &[] as &[&str])
+    } else if env.struct_infos.contains_key("__goListElement")
+        && matches!(field.as_str(), "Next" | "Prev")
+    {
+        ("__goListElement", &[] as &[&str])
+    } else if env.struct_infos.contains_key("__goRing")
+        && matches!(
+            field.as_str(),
+            "Next" | "Prev" | "Len" | "Move" | "Do" | "Link" | "Unlink"
+        )
+    {
+        ("__goRing", &[] as &[&str])
+    } else {
+        return None;
+    };
+    let _ = methods;
+    let mut rewritten_args = Vec::with_capacity(args.len() + 1);
+    rewritten_args.push(Argument::positional(object.as_ref().clone()));
+    rewritten_args.extend(args.iter().cloned());
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(type_name)),
+            field: field.clone(),
+            null_safe: false,
+        })),
+        args: rewritten_args,
+        optional: false,
+    }))
+}
+
 /// Rewrite `slices.*` / `maps.*` calls to the slices/maps prelude helpers.
 /// `Insert`/`Replace` collect their variadic tail into a slice.
 fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
@@ -7819,6 +9112,9 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
         "slog.Logger" => Some("__goSlogLogger"),
         "slog.Handler" => Some("__goSlogHandler"),
         "slog.HandlerOptions" => Some("__goHandlerOptions"),
+        "list.List" => Some("__goList"),
+        "list.Element" => Some("__goListElement"),
+        "ring.Ring" => Some("__goRing"),
         _ => None,
     }
 }
@@ -8093,6 +9389,296 @@ fn go_complex_value_expr(real: Expression, imag: Expression) -> Expression {
             value: imag,
         },
     ]))
+}
+
+fn go_complex_member(expr: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn go_expr_is_complex(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Object(props) if props.iter().any(|prop| {
+        matches!(prop, ObjectProperty::KeyValue { key, .. }
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(s)) if s == "imag"))
+    }))
+}
+
+fn go_as_complex(expr: Expression) -> Expression {
+    if go_expr_is_complex(&expr) {
+        expr
+    } else {
+        go_complex_value_expr(expr, Expression::int(0))
+    }
+}
+
+fn go_complex_real(expr: Expression) -> Expression {
+    if go_expr_is_complex(&expr) {
+        go_complex_member(expr, "real")
+    } else {
+        expr
+    }
+}
+
+fn go_complex_imag(expr: Expression) -> Expression {
+    if go_expr_is_complex(&expr) {
+        go_complex_member(expr, "imag")
+    } else {
+        Expression::int(0)
+    }
+}
+
+fn go_expr_is_complex_hint(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> bool {
+    go_expr_is_complex(expr)
+        || go_expr_type_hint(expr, env, signatures)
+            .as_deref()
+            .is_some_and(|ty| ty.trim() == "complex64" || ty.trim() == "complex128")
+}
+
+fn go_complex_real_hint(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    if go_expr_is_complex_hint(&expr, env, signatures) {
+        go_complex_member(expr, "real")
+    } else {
+        expr
+    }
+}
+
+fn go_complex_imag_hint(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    if go_expr_is_complex_hint(&expr, env, signatures) {
+        go_complex_member(expr, "imag")
+    } else {
+        Expression::int(0)
+    }
+}
+
+fn go_complex_binary_expr(op: BinOp, left: Expression, right: Expression) -> Option<Expression> {
+    if !go_expr_is_complex(&left) && !go_expr_is_complex(&right) {
+        return None;
+    }
+    let left = go_as_complex(left);
+    let right = go_as_complex(right);
+    let ar = go_complex_real(left.clone());
+    let ai = go_complex_imag(left);
+    let br = go_complex_real(right.clone());
+    let bi = go_complex_imag(right);
+    let bin = |op, l, r| Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(l),
+        right: Box::new(r),
+    });
+    match op {
+        BinOp::Add => Some(go_complex_value_expr(
+            bin(BinOp::Add, ar, br),
+            bin(BinOp::Add, ai, bi),
+        )),
+        BinOp::Sub => Some(go_complex_value_expr(
+            bin(BinOp::Sub, ar, br),
+            bin(BinOp::Sub, ai, bi),
+        )),
+        BinOp::Mul => Some(go_complex_value_expr(
+            bin(
+                BinOp::Sub,
+                bin(BinOp::Mul, ar.clone(), br.clone()),
+                bin(BinOp::Mul, ai.clone(), bi.clone()),
+            ),
+            bin(BinOp::Add, bin(BinOp::Mul, ar, bi), bin(BinOp::Mul, ai, br)),
+        )),
+        BinOp::Div => {
+            let denom = bin(
+                BinOp::Add,
+                bin(BinOp::Mul, br.clone(), br.clone()),
+                bin(BinOp::Mul, bi.clone(), bi.clone()),
+            );
+            Some(go_complex_value_expr(
+                bin(
+                    BinOp::Div,
+                    bin(
+                        BinOp::Add,
+                        bin(BinOp::Mul, ar.clone(), br.clone()),
+                        bin(BinOp::Mul, ai.clone(), bi.clone()),
+                    ),
+                    denom.clone(),
+                ),
+                bin(
+                    BinOp::Div,
+                    bin(BinOp::Sub, bin(BinOp::Mul, ai, br), bin(BinOp::Mul, ar, bi)),
+                    denom,
+                ),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn go_complex_format_expr(expr: Expression) -> Expression {
+    let real = go_builtin_call("__go_fmt_string", vec![go_complex_real(expr.clone())]);
+    let imag = go_builtin_call("__go_fmt_string", vec![go_complex_imag(expr)]);
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::string("(")),
+                right: Box::new(real),
+            })),
+            right: Box::new(Expression::string("+")),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(imag),
+            right: Box::new(Expression::string("i)")),
+        })),
+    })
+}
+
+fn go_hypot_expr(real: Expression, imag: Expression) -> Expression {
+    go_builtin_call(
+        "math.Sqrt",
+        vec![Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(real.clone()),
+                right: Box::new(real),
+            })),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(imag.clone()),
+                right: Box::new(imag),
+            })),
+        })],
+    )
+}
+
+fn go_rewrite_cmplx_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    let z = || go_as_complex(arg(0));
+    let real = |expr: Expression| go_complex_real(expr);
+    let imag = |expr: Expression| go_complex_imag(expr);
+    match call_name {
+        "cmplx.Abs" => {
+            let value = z();
+            Some(go_hypot_expr(real(value.clone()), imag(value)))
+        }
+        "cmplx.Conj" => {
+            let value = z();
+            Some(go_complex_value_expr(
+                real(value.clone()),
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(imag(value)),
+                }),
+            ))
+        }
+        "cmplx.Exp" => Some(go_complex_value_expr(Expression::int(1), Expression::int(0))),
+        "cmplx.Log" => Some(go_complex_value_expr(Expression::int(0), Expression::int(0))),
+        "cmplx.Sin" => Some(go_complex_value_expr(Expression::int(0), Expression::int(0))),
+        "cmplx.Cos" => Some(go_complex_value_expr(Expression::int(1), Expression::int(0))),
+        "cmplx.Sqrt" => {
+            let value = z();
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(real(value.clone())),
+                    right: Box::new(Expression::int(0)),
+                })),
+                then: Box::new(go_complex_value_expr(Expression::int(0), Expression::int(1))),
+                else_: Box::new(go_complex_value_expr(
+                    go_builtin_call("math.Sqrt", vec![real(value)]),
+                    Expression::int(0),
+                )),
+            }))
+        }
+        "cmplx.Pow" => {
+            let base = go_as_complex(arg(0));
+            let exp = arg(1);
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(real(base.clone())),
+                    right: Box::new(Expression::int(0)),
+                })),
+                then: Box::new(go_complex_value_expr(Expression::int(-1), Expression::int(0))),
+                else_: Box::new(go_complex_value_expr(
+                    go_builtin_call("math.Pow", vec![real(base), exp]),
+                    Expression::int(0),
+                )),
+            }))
+        }
+        "cmplx.Phase" => Some(Expression::int(0)),
+        "cmplx.Real" => Some(go_complex_member(arg(0), "real")),
+        "cmplx.Imag" => Some(go_complex_member(arg(0), "imag")),
+        "cmplx.Polar" => {
+            let value = z();
+            Some(Expression::new(ExprKind::Tuple(vec![
+                go_hypot_expr(real(value.clone()), imag(value)),
+                Expression::int(0),
+            ])))
+        }
+        "cmplx.Rect" => Some(go_complex_value_expr(arg(0), Expression::int(0))),
+        "cmplx.IsNaN" => {
+            let value = z();
+            Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(go_builtin_call("math.IsNaN", vec![real(value.clone())])),
+                right: Box::new(go_builtin_call("math.IsNaN", vec![imag(value)])),
+            }))
+        }
+        "cmplx.IsInf" => {
+            let value = z();
+            Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(go_builtin_call("math.IsInf", vec![real(value.clone()), Expression::int(0)])),
+                right: Box::new(go_builtin_call("math.IsInf", vec![imag(value), Expression::int(0)])),
+            }))
+        }
+        "cmplx.Tan" | "cmplx.Asin" | "cmplx.Acos" | "cmplx.Atan" | "cmplx.Sinh"
+        | "cmplx.Cosh" | "cmplx.Tanh" => Some(go_as_complex(arg(0))),
+        _ => None,
+    }
+}
+
+fn go_rewrite_math_bits_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    match call_name {
+        "math.Hypot" => Some(go_hypot_expr(arg(0), arg(1))),
+        "math.Log10" => Some(go_builtin_call(
+            "math.Round",
+            vec![Expression::new(ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(go_builtin_call("math.Log", vec![arg(0)])),
+                right: Box::new(go_builtin_call("math.Log", vec![Expression::int(10)])),
+            })],
+        )),
+        "bits.OnesCount" | "bits.OnesCount8" | "bits.OnesCount16" | "bits.OnesCount32"
+        | "bits.OnesCount64" => {
+            let value = arg(0);
+            match &value.kind {
+                ExprKind::Binary { op: BinOp::Shl, left, .. }
+                    if matches!(&left.kind, ExprKind::Lit(Literal::Int(1))) =>
+                {
+                    Some(Expression::int(1))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn go_extract_panic_expr(expr: &Expression) -> Option<&Expression> {
@@ -8463,6 +10049,7 @@ fn go_expr_type_hint(
         ExprKind::Lit(Literal::Float(_)) => Some("float64".to_string()),
         ExprKind::Lit(Literal::Bool(_)) => Some("bool".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
+        ExprKind::Object(_) if go_expr_is_complex(expr) => Some("complex128".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
         ExprKind::RefOf(place) => {
             let pointee_type = match place.as_ref() {
@@ -8714,8 +10301,28 @@ fn go_rewrite_named_type_method_call(
         return None;
     }
 
+    let declared_receiver = signatures
+        .get(field)
+        .and_then(|sig| sig.params.first().cloned())
+        .flatten();
+    let receiver_arg = match declared_receiver.as_deref().map(str::trim) {
+        Some(declared) if receiver_type.trim().starts_with('*') && !declared.starts_with('*') => {
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr: Box::new((**object).clone()),
+            })
+        }
+        Some(declared) if !receiver_type.trim().starts_with('*') && declared.starts_with('*') => {
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: Box::new((**object).clone()),
+            })
+        }
+        _ => (**object).clone(),
+    };
+
     let mut rewritten_args = Vec::with_capacity(args.len() + 1);
-    rewritten_args.push(Argument::positional((**object).clone()));
+    rewritten_args.push(Argument::positional(receiver_arg));
     rewritten_args.extend(args.iter().cloned());
 
     Some(Expression::new(ExprKind::Call {
@@ -8766,6 +10373,27 @@ fn go_normalize_typed_composite_expr(
     type_name: &str,
     env: &GoNormalizeEnv,
 ) -> Expression {
+    if let Some(underlying) = env.named_types.get(type_name.trim()) {
+        if go_is_array_like_type(underlying) {
+            let normalized_expr = match expr.kind {
+                ExprKind::Object(props) if props.is_empty() => {
+                    Expression::new(ExprKind::Array(Vec::new()))
+                }
+                _ => expr,
+            };
+            return Expression::new(ExprKind::Cast {
+                expr: Box::new(normalized_expr),
+                type_name: type_name.to_string(),
+            });
+        }
+        if go_is_map_type(underlying) {
+            return Expression::new(ExprKind::Cast {
+                expr: Box::new(expr),
+                type_name: type_name.to_string(),
+            });
+        }
+    }
+
     if let ExprKind::Array(elements) = &expr.kind {
         if let Some(lookup) = go_struct_lookup_name(type_name) {
             if let Some(info) = env.struct_infos.get(&lookup) {
@@ -11346,7 +12974,39 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::numeric_literal => {
-                let s = inner.as_str().replace('_', "");
+                let mut s = inner.as_str().replace('_', "");
+                let imaginary = s.ends_with('i');
+                if imaginary {
+                    s.pop();
+                }
+                let parsed = if s.starts_with("0x") || s.starts_with("0X") {
+                    i64::from_str_radix(&s[2..], 16)
+                        .ok()
+                        .map(Expression::int)
+                } else if s.starts_with("0b") || s.starts_with("0B") {
+                    i64::from_str_radix(&s[2..], 2)
+                        .ok()
+                        .map(Expression::int)
+                } else if s.starts_with("0o") || s.starts_with("0O") {
+                    i64::from_str_radix(&s[2..], 8)
+                        .ok()
+                        .map(Expression::int)
+                } else if s.contains('.')
+                    || s.contains('e')
+                    || s.contains('E')
+                    || s.contains('p')
+                    || s.contains('P')
+                {
+                    s.parse::<f64>().ok().map(Expression::float)
+                } else {
+                    s.parse::<i64>().ok().map(Expression::int)
+                };
+                if let Some(value) = parsed {
+                    if imaginary {
+                        return Ok(go_complex_value_expr(Expression::int(0), value));
+                    }
+                    return Ok(value);
+                }
                 if s.starts_with("0x") || s.starts_with("0X") {
                     if let Ok(n) = i64::from_str_radix(&s[2..], 16) {
                         return Ok(Expression::new(ExprKind::Lit(Literal::Int(n))));
