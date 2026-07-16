@@ -496,6 +496,7 @@ literal_type = {
     | "[" ~ expression ~ "]" ~ type_annotation
     | "[]" ~ type_annotation
     | struct_type
+    | ident_name ~ selector+ ~ type_arguments?
     | ident_name ~ type_arguments
     | ident_name
 }

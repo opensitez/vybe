@@ -41,6 +41,7 @@ materialize_bool_results = true
 "fmt.Sprint"      = { emit = "common:go.fmt_sprint",     min_args = 0, max_args = 255 }
 "fmt.Sprintf"     = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
 "__go_sprintf"    = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
+"__go_fmt_string" = { emit = "host:ecma:string:String",  min_args = 1, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
@@ -51,6 +52,9 @@ materialize_bool_results = true
 "strconv.FormatUint" = { emit = "host:ecma:number:toString",    min_args = 2, max_args = 2 }
 "__go_parse_int"     = { emit = "host:ecma:number:parseInt",    min_args = 1, max_args = 2 }
 "__go_parse_float"   = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
+"__go_json_stringify" = { emit = "host:ecma:json:stringify",    min_args = 1, max_args = 3 }
+"__go_json_parse"     = { emit = "host:ecma:json:parse",        min_args = 1, max_args = 2 }
+"__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -253,6 +257,18 @@ Values       = { emit = "host:ecma:object:values",  min_args = 0, max_args = 0 }
 "time.Second"      = 1000000000
 "time.Minute"      = 60000000000
 "time.Hour"        = 3600000000000
+"time.January"     = 1
+"time.February"    = 2
+"time.March"       = 3
+"time.April"       = 4
+"time.May"         = 5
+"time.June"        = 6
+"time.July"        = 7
+"time.August"      = 8
+"time.September"   = 9
+"time.October"     = 10
+"time.November"    = 11
+"time.December"    = 12
 "math.E"        = 2.718281828459045
 "math.Ln2"      = 0.6931471805599453
 "math.Ln10"     = 2.302585092994046

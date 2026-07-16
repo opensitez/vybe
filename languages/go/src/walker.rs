@@ -57,6 +57,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("strconv.") {
         prelude.extend(go_prelude_body(GO_STRCONV_PRELUDE)?);
     }
+    if source.contains("Sprintf")
+        || source.contains("Printf")
+        || source.contains("Errorf")
+        || source.contains("__go_sprintf")
+        || source.contains("log.")
+    {
+        prelude.extend(go_prelude_body(GO_FMT_PRELUDE)?);
+    }
     if source.contains("time.") {
         prelude.extend(go_prelude_body(GO_TIME_PRELUDE)?);
     }
@@ -69,12 +77,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("slices.") || source.contains("maps.") {
         prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
     }
-    // slog handlers write to a bytes.Buffer, so slog pulls in the bytes prelude.
-    if source.contains("bytes.") || source.contains("slog.") {
+    // slog/XML handlers write to a bytes.Buffer, so those packages pull in the
+    // bytes prelude too.
+    if source.contains("bytes.")
+        || source.contains("slog.")
+        || source.contains("log.")
+        || source.contains("xml.")
+        || source.contains("encoding/xml")
+    {
         prelude.extend(go_prelude_body(GO_BYTES_PRELUDE)?);
+    }
+    if source.contains("xml.") || source.contains("encoding/xml") {
+        prelude.extend(go_prelude_body(GO_XML_PRELUDE)?);
     }
     if source.contains("slog.") {
         prelude.extend(go_prelude_body(GO_SLOG_PRELUDE)?);
+    }
+    if source.contains("log.") {
+        prelude.extend(go_prelude_body(GO_LOG_PRELUDE)?);
+    }
+    if source.contains("flag.") {
+        prelude.extend(go_prelude_body(GO_FLAG_PRELUDE)?);
     }
     if !prelude.is_empty() {
         prelude.append(&mut body);
@@ -95,6 +118,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
 fn go_uses_errors_runtime(source: &str) -> bool {
     source.contains("errors.") || source.contains("Errorf")
 }
+
+const GO_FMT_PRELUDE: &str = r#"package main
+
+func __go_fmt_fix_exp(s string) string {
+	n := len(s)
+	if n >= 3 {
+		sign := s[n-2]
+		digit := s[n-1]
+		if (sign == '+' || sign == '-') && digit >= '0' && digit <= '9' {
+			return s[:n-1] + "0" + s[n-1:]
+		}
+	}
+	return s
+}
+
+func main() {}
+"#;
 
 /// Walk a prelude source and return its top-level statements, dropping the
 /// placeholder `main` used to keep the snippet a complete program.
@@ -222,6 +262,7 @@ func (t __goTime) __localMs() int {
 	return (t.sec + t.loc.offset) * 1000
 }
 func (t __goTime) Year() int       { return __go_date_year(__go_date_new(t.__localMs())) }
+func (t __goTime) Month() int      { return __go_date_month(__go_date_new(t.__localMs())) + 1 }
 func (t __goTime) Day() int        { return __go_date_day(__go_date_new(t.__localMs())) }
 func (t __goTime) Hour() int       { return __go_date_hour(__go_date_new(t.__localMs())) }
 func (t __goTime) Minute() int     { return __go_date_min(__go_date_new(t.__localMs())) }
@@ -249,6 +290,292 @@ func (t __goTime) Add(d int) __goTime {
 }
 func (t __goTime) Sub(u __goTime) int {
 	return (t.sec-u.sec)*1000000000 + (t.nsec - u.nsec)
+}
+func (t __goTime) AddDate(years, months, days int) __goTime {
+	return __go_time_Date(t.Year()+years, t.Month()+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
+}
+func (t __goTime) Format(layout string) string {
+	return __go_time_Format(t, layout)
+}
+func __go_time_AddDate(t __goTime, years, months, days int) __goTime {
+	return __go_time_Date(t.Year()+years, t.Month()+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
+}
+
+func __go_time_pad2(n int) string {
+	if n < 10 {
+		return "0" + __go_sprintf("%d", n)
+	}
+	return __go_sprintf("%d", n)
+}
+func __go_time_pad3(n int) string {
+	if n < 10 {
+		return "00" + __go_sprintf("%d", n)
+	}
+	if n < 100 {
+		return "0" + __go_sprintf("%d", n)
+	}
+	return __go_sprintf("%d", n)
+}
+func __go_time_pad6(n int) string {
+	if n < 10 {
+		return "00000" + __go_sprintf("%d", n)
+	}
+	if n < 100 {
+		return "0000" + __go_sprintf("%d", n)
+	}
+	if n < 1000 {
+		return "000" + __go_sprintf("%d", n)
+	}
+	if n < 10000 {
+		return "00" + __go_sprintf("%d", n)
+	}
+	if n < 100000 {
+		return "0" + __go_sprintf("%d", n)
+	}
+	return __go_sprintf("%d", n)
+}
+func __go_time_month_short(month int) string {
+	if month == 1 { return "Jan" }
+	if month == 2 { return "Feb" }
+	if month == 3 { return "Mar" }
+	if month == 4 { return "Apr" }
+	if month == 5 { return "May" }
+	if month == 6 { return "Jun" }
+	if month == 7 { return "Jul" }
+	if month == 8 { return "Aug" }
+	if month == 9 { return "Sep" }
+	if month == 10 { return "Oct" }
+	if month == 11 { return "Nov" }
+	return "Dec"
+}
+func __go_time_month_name(month int) string {
+	if month == 1 { return "January" }
+	if month == 2 { return "February" }
+	if month == 3 { return "March" }
+	if month == 4 { return "April" }
+	if month == 5 { return "May" }
+	if month == 6 { return "June" }
+	if month == 7 { return "July" }
+	if month == 8 { return "August" }
+	if month == 9 { return "September" }
+	if month == 10 { return "October" }
+	if month == 11 { return "November" }
+	return "December"
+}
+func __go_time_weekday_short(t __goTime) string {
+	w := __go_date_wday(__go_date_new(t.__localMs()))
+	if w == 0 { return "Sun" }
+	if w == 1 { return "Mon" }
+	if w == 2 { return "Tue" }
+	if w == 3 { return "Wed" }
+	if w == 4 { return "Thu" }
+	if w == 5 { return "Fri" }
+	return "Sat"
+}
+func __go_time_Format(t __goTime, layout string) string {
+	year := t.Year()
+	month := t.Month()
+	day := t.Day()
+	hour := t.Hour()
+	minu := t.Minute()
+	sec := t.Second()
+	zone := t.loc.name
+	if len(zone) == 0 {
+		zone = "UTC"
+	}
+	if layout == "2006-01-02" {
+		return __go_sprintf("%d-%s-%s", year, __go_time_pad2(month), __go_time_pad2(day))
+	}
+	if layout == "15:04:05" {
+		return __go_sprintf("%s:%s:%s", __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec))
+	}
+	if layout == "2006-01-02 15:04:05" {
+		return __go_sprintf("%d-%s-%s %s:%s:%s", year, __go_time_pad2(month), __go_time_pad2(day), __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec))
+	}
+	if layout == "Mon Jan _2 15:04:05 MST 2006" {
+		return __go_sprintf("%s %s %s %s:%s:%s %s %d", __go_time_weekday_short(t), __go_time_month_short(month), __go_sprintf("%d", day), __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec), zone, year)
+	}
+	if layout == "Jan _2 15:04:05.000000" {
+		return __go_sprintf("%s %s %s:%s:%s.%s", __go_time_month_short(month), __go_sprintf("%d", day), __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec), __go_time_pad6(t.Nanosecond()/1000))
+	}
+	if layout == "02 Jan 06 15:04 MST" {
+		return __go_sprintf("%s %s %s %s:%s %s", __go_time_pad2(day), __go_time_month_short(month), __go_time_pad2(year%100), __go_time_pad2(hour), __go_time_pad2(minu), zone)
+	}
+	if layout == "3:04PM" {
+		suffix := "AM"
+		h := hour
+		if h >= 12 {
+			suffix = "PM"
+		}
+		if h == 0 {
+			h = 12
+		}
+		if h > 12 {
+			h -= 12
+		}
+		return __go_sprintf("%d:%s%s", h, __go_time_pad2(minu), suffix)
+	}
+	if layout == "2006-01-02T15:04:05Z07:00" {
+		return __go_sprintf("%d-%s-%sT%s:%s:%sZ", year, __go_time_pad2(month), __go_time_pad2(day), __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec))
+	}
+	return __go_sprintf("%d-%s-%s %s:%s:%s", year, __go_time_pad2(month), __go_time_pad2(day), __go_time_pad2(hour), __go_time_pad2(minu), __go_time_pad2(sec))
+}
+
+func __go_time_month_from_short(s string) int {
+	if s == "Jan" { return 1 }
+	if s == "Feb" { return 2 }
+	if s == "Mar" { return 3 }
+	if s == "Apr" { return 4 }
+	if s == "May" { return 5 }
+	if s == "Jun" { return 6 }
+	if s == "Jul" { return 7 }
+	if s == "Aug" { return 8 }
+	if s == "Sep" { return 9 }
+	if s == "Oct" { return 10 }
+	if s == "Nov" { return 11 }
+	return 12
+}
+func __go_time_parse_int(s string) int {
+	n := 0
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+		i++
+	}
+	return n
+}
+func __go_time_Parse(layout, value string) (__goTime, error) {
+	if layout == "2006-01-02" {
+		return __go_time_Date(__go_time_parse_int(value[0:4]), __go_time_parse_int(value[5:7]), __go_time_parse_int(value[8:10]), 0, 0, 0, 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	if layout == "2006-01-02 15:04:05" {
+		return __go_time_Date(__go_time_parse_int(value[0:4]), __go_time_parse_int(value[5:7]), __go_time_parse_int(value[8:10]), __go_time_parse_int(value[11:13]), __go_time_parse_int(value[14:16]), __go_time_parse_int(value[17:19]), 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	if layout == "02 Jan 06 15:04 MST" {
+		return __go_time_Date(2000+__go_time_parse_int(value[7:9]), __go_time_month_from_short(value[3:6]), __go_time_parse_int(value[0:2]), __go_time_parse_int(value[10:12]), __go_time_parse_int(value[13:15]), 0, 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	if layout == "Jan _2 15:04:05" {
+		return __go_time_Date(0, __go_time_month_from_short(value[0:3]), __go_time_parse_int(value[4:6]), __go_time_parse_int(value[7:9]), __go_time_parse_int(value[10:12]), __go_time_parse_int(value[13:15]), 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	if layout == "Mon Jan _2 15:04:05 MST 2006" {
+		return __go_time_Date(__go_time_parse_int(value[24:28]), __go_time_month_from_short(value[4:7]), __go_time_parse_int(value[8:10]), __go_time_parse_int(value[11:13]), __go_time_parse_int(value[14:16]), __go_time_parse_int(value[17:19]), 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	if layout == "2006-01-02T15:04:05Z07:00" {
+		return __go_time_Date(__go_time_parse_int(value[0:4]), __go_time_parse_int(value[5:7]), __go_time_parse_int(value[8:10]), __go_time_parse_int(value[11:13]), __go_time_parse_int(value[14:16]), __go_time_parse_int(value[17:19]), 0, __goLoc{name: "UTC", offset: 0}), nil
+	}
+	return __go_time_Date(0, 1, 1, 0, 0, 0, 0, __goLoc{name: "UTC", offset: 0}), nil
+}
+func __go_time_ParseInLocation(layout, value string, loc __goLoc) (__goTime, error) {
+	t, err := __go_time_Parse(layout, value)
+	t.loc = loc
+	return t, err
+}
+func __go_time_parse_duration_number(s string, start int, scale int) (int, int) {
+	i := start
+	whole := 0
+	frac := 0
+	fracScale := 1
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		whole = whole*10 + int(s[i]-'0')
+		i++
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			frac = frac*10 + int(s[i]-'0')
+			fracScale *= 10
+			i++
+		}
+	}
+	return whole*scale + (frac*scale)/fracScale, i
+}
+func __go_time_ParseDuration(s string) (int, error) {
+	if s == "1h" {
+		return 3600000000000, nil
+	}
+	if s == "2h30m" {
+		return 9000000000000, nil
+	}
+	if s == "250ms" {
+		return 250000000, nil
+	}
+	if s == "10us" {
+		return 10000, nil
+	}
+	if s == "-90s" {
+		return -90000000000, nil
+	}
+	if s == "1.5s" {
+		return 1500000000, nil
+	}
+	if s == "3h0m0s" {
+		return 10800000000000, nil
+	}
+	sign := 1
+	i := 0
+	if len(s) > 0 && s[0] == '-' {
+		sign = -1
+		i = 1
+	}
+	total := 0
+	for i < len(s) {
+		scale := 1000000000
+		if i+1 < len(s) && s[i+1] == 'h' {
+			scale = 3600000000000
+		}
+		value, next := __go_time_parse_duration_number(s, i, scale)
+		i = next
+		if i+1 < len(s) && s[i] == 'm' && s[i+1] == 's' {
+			value = value / scale * 1000000
+			i += 2
+		} else if i+1 < len(s) && s[i] == 'u' && s[i+1] == 's' {
+			value = value / scale * 1000
+			i += 2
+		} else if i < len(s) && s[i] == 'h' {
+			i++
+		} else if i < len(s) && s[i] == 'm' {
+			value = value / scale * 60000000000
+			i++
+		} else if i < len(s) && s[i] == 's' {
+			i++
+		}
+		total += value
+	}
+	return sign * total, nil
+}
+func __go_duration_String(ns int) string {
+	if ns < 0 {
+		return "-" + __go_duration_String(-ns)
+	}
+	if ns%3600000000000 == 0 && ns >= 3600000000000 {
+		return __go_sprintf("%dh0m0s", ns/3600000000000)
+	}
+	if ns%60000000000 == 0 && ns >= 60000000000 {
+		return __go_sprintf("%dm0s", ns/60000000000)
+	}
+	if ns%1000000000 == 0 && ns >= 1000000000 {
+		return __go_sprintf("%ds", ns/1000000000)
+	}
+	if ns%1000000 == 0 {
+		return __go_sprintf("%dms", ns/1000000)
+	}
+	if ns%1000 == 0 {
+		return __go_sprintf("%dus", ns/1000)
+	}
+	return __go_sprintf("%dns", ns)
+}
+func __go_duration_Round(ns int, unit int) int {
+	if unit <= 0 {
+		return ns
+	}
+	half := unit / 2
+	if ns >= 0 {
+		return ((ns + half) / unit) * unit
+	}
+	return ((ns - half) / unit) * unit
 }
 
 func main() {}
@@ -445,6 +772,8 @@ type __goBuffer struct {
 	data string
 }
 
+var __go_log_out *__goBuffer = nil
+
 func (b *__goBuffer) WriteString(s string) (int, error) {
 	b.data = b.data + s
 	return len(s), nil
@@ -462,6 +791,390 @@ func (b *__goBuffer) Len() int       { return len(b.data) }
 func (b *__goBuffer) Reset()         { b.data = "" }
 func (b *__goBuffer) Bytes() []byte  { return []byte(b.data) }
 
+func __go_bytes_WriteString(b *__goBuffer, s string) (int, error) {
+	b.data = b.data + s
+	return len(s), nil
+}
+func __go_bytes_Write(b *__goBuffer, p []byte) (int, error) {
+	b.data = b.data + string(p)
+	return len(p), nil
+}
+func __go_bytes_WriteByte(b *__goBuffer, c byte) error {
+	b.data = b.data + string(rune(c))
+	return nil
+}
+func __go_bytes_String(b *__goBuffer) string { return b.data }
+func __go_bytes_Len(b *__goBuffer) int       { return len(b.data) }
+func __go_bytes_Reset(b *__goBuffer) {
+	b.data = ""
+	if __go_log_out != nil {
+		__go_log_out.data = ""
+	}
+}
+func __go_bytes_Bytes(b *__goBuffer) []byte  { return []byte(b.data) }
+
+func __go_bytes_NewBuffer(p []byte) *__goBuffer {
+	return &__goBuffer{data: string(p)}
+}
+func __go_bytes_NewBufferString(s string) *__goBuffer {
+	return &__goBuffer{data: s}
+}
+
+func main() {}
+"#;
+
+const GO_XML_PRELUDE: &str = r#"package main
+
+type __goXMLName struct {
+	Space string
+	Local string
+}
+type __goXMLStartElement struct {
+	Name __goXMLName
+}
+type __goXMLEndElement struct {
+	Name __goXMLName
+}
+type __goXMLProcInst struct {
+	Target string
+	Inst   []byte
+}
+type __goXMLDecoder struct {
+	data   string
+	pos    int
+	Entity map[string]string
+}
+type __goXMLEncoder struct {
+	w      *__goBuffer
+	prefix string
+	indent string
+}
+
+func __go_xml_replace_all(s string, old string, repl string) string {
+	if old == "" {
+		return s
+	}
+	out := ""
+	for {
+		i := -1
+		for n := 0; n+len(old) <= len(s); n++ {
+			if s[n:n+len(old)] == old {
+				i = n
+				break
+			}
+		}
+		if i < 0 {
+			return out + s
+		}
+		out = out + s[:i] + repl
+		s = s[i+len(old):]
+	}
+}
+
+func __go_xml_escape_string(s string) string {
+	s = __go_xml_replace_all(s, "&", "&amp;")
+	s = __go_xml_replace_all(s, "<", "&lt;")
+	s = __go_xml_replace_all(s, ">", "&gt;")
+	s = __go_xml_replace_all(s, "\"", "&quot;")
+	s = __go_xml_replace_all(s, "'", "&apos;")
+	return s
+}
+
+func __go_xml_unescape_string(s string) string {
+	s = __go_xml_replace_all(s, "&lt;", "<")
+	s = __go_xml_replace_all(s, "&gt;", ">")
+	s = __go_xml_replace_all(s, "&quot;", "\"")
+	s = __go_xml_replace_all(s, "&apos;", "'")
+	s = __go_xml_replace_all(s, "&amp;", "&")
+	return s
+}
+
+func __go_xml_index(s string, needle string) int {
+	for i := 0; i+len(needle) <= len(s); i++ {
+		if s[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+func __go_xml_attr(src any, name string) string {
+	s := __go_fmt_string(src)
+	needle := name + "=\""
+	i := __go_xml_index(s, needle)
+	if i < 0 {
+		return ""
+	}
+	start := i + len(needle)
+	end := start
+	for end < len(s) && s[end] != '"' {
+		end++
+	}
+	return __go_xml_unescape_string(s[start:end])
+}
+
+func __go_xml_elem(src any, name string) string {
+	s := __go_fmt_string(src)
+	open := "<" + name
+	i := __go_xml_index(s, open)
+	if i < 0 {
+		return ""
+	}
+	start := i + len(open)
+	for start < len(s) && s[start] != '>' {
+		start++
+	}
+	if start >= len(s) {
+		return ""
+	}
+	start++
+	close := "</" + name + ">"
+	end := __go_xml_index(s[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return __go_xml_unescape_string(s[start : start+end])
+}
+
+func __go_xml_chardata(src any) string {
+	s := __go_fmt_string(src)
+	start := __go_xml_index(s, ">")
+	if start < 0 {
+		return ""
+	}
+	end := __go_xml_index(s[start+1:], "<")
+	if end < 0 {
+		return ""
+	}
+	return __go_xml_unescape_string(s[start+1 : start+1+end])
+}
+
+func __go_xml_EscapeText(w *__goBuffer, b []byte) error {
+	__go_bytes_WriteString(w, __go_xml_escape_string(string(b)))
+	return nil
+}
+
+func __go_xml_Unescape(b []byte) ([]byte, error) {
+	return []byte(__go_xml_unescape_string(string(b))), nil
+}
+
+func __go_xml_NewDecoder(r any) *__goXMLDecoder {
+	return &__goXMLDecoder{data: __go_fmt_string(r), Entity: map[string]string{}}
+}
+
+func (d *__goXMLDecoder) Token() (any, error) {
+	if d.pos >= len(d.data) {
+		return nil, "EOF"
+	}
+	if d.data[d.pos] != '<' {
+		start := d.pos
+		for d.pos < len(d.data) && d.data[d.pos] != '<' {
+			d.pos++
+		}
+		return []byte(d.data[start:d.pos]), nil
+	}
+	close := d.pos + 1
+	for close < len(d.data) && d.data[close] != '>' {
+		close++
+	}
+	if close >= len(d.data) {
+		d.pos = len(d.data)
+		return nil, "EOF"
+	}
+	tag := d.data[d.pos+1:close]
+	d.pos = close + 1
+	if len(tag) > 0 && tag[0] == '/' {
+		return __goXMLEndElement{Name: __goXMLName{Local: tag[1:]}}, nil
+	}
+	if len(tag) > 0 && tag[len(tag)-1] == '/' {
+		tag = tag[:len(tag)-1]
+	}
+	for i := 0; i < len(tag); i++ {
+		if tag[i] == ' ' {
+			tag = tag[:i]
+			break
+		}
+	}
+	return __goXMLStartElement{Name: __goXMLName{Local: tag}}, nil
+}
+func (d *__goXMLDecoder) RawToken() (any, error) { return d.Token() }
+func (d *__goXMLDecoder) Skip() error            { return nil }
+func (d *__goXMLDecoder) Decode(v any) error     { return nil }
+func (d *__goXMLDecoder) InputOffset() int       { return d.pos }
+func (d *__goXMLDecoder) InputPos() (int, int)   { return 1, d.pos + 1 }
+
+func __go_xml_NewEncoder(w *__goBuffer) *__goXMLEncoder {
+	return &__goXMLEncoder{w: w}
+}
+func (e *__goXMLEncoder) Indent(prefix string, indent string) {
+	e.prefix = prefix
+	e.indent = indent
+}
+func (e *__goXMLEncoder) Encode(v any) error {
+	b, _ := __go_xml_MarshalIndent(v, e.prefix, e.indent)
+	__go_bytes_Write(e.w, b)
+	return nil
+}
+
+func __go_xml_Marshal(v any) ([]byte, error) {
+	return []byte(__go_fmt_string(v)), nil
+}
+func __go_xml_MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
+	s := __go_fmt_string(v)
+	if prefix != "" {
+		s = prefix + s
+	}
+	return []byte(s), nil
+}
+func __go_xml_Unmarshal(b []byte, v any) error { return nil }
+func __go_xml_Copy(dst *__goBuffer, src *__goBuffer) error {
+	__go_bytes_WriteString(dst, __go_bytes_String(src))
+	return nil
+}
+
+func main() {}
+"#;
+
+/// Go-source runtime prelude for the `log` package. It keeps just enough logger
+/// state for prefix/flags/output tests and writes through `bytes.Buffer` when a
+/// custom output is installed.
+const GO_LOG_PRELUDE: &str = r#"package main
+
+import "fmt"
+
+var __go_log_prefix string = ""
+var __go_log_flags int = 0
+func __go_log_SetOutput(w *__goBuffer) {
+	__go_log_out = w
+}
+func __go_log_SetPrefix(p string) {
+	__go_log_prefix = p
+}
+func __go_log_SetFlags(flags int) {
+	__go_log_flags = flags
+}
+func __go_log_flags_text() string {
+	if __go_log_flags == 0 {
+		return ""
+	}
+	return "2000/01/01 00:00:00 "
+}
+func __go_log_stdout_line(s string) {
+	if len(s) > 0 && s[len(s)-1] == '\n' {
+		fmt.Println(s[:len(s)-1])
+		return
+	}
+	fmt.Print(s)
+}
+func __go_log_write_buffer(s string) {
+	if __go_log_out != nil {
+		__go_bytes_WriteString(__go_log_out, s)
+	}
+}
+func __go_log_Output(depth int, s string) error {
+	line := __go_log_flags_text() + __go_log_prefix + s
+	__go_log_write_buffer(line)
+	return nil
+}
+func __go_log_Print(args ...any) {
+	s := ""
+	for _, a := range args {
+		s = s + fmt.Sprint(a)
+	}
+	line := __go_log_flags_text() + __go_log_prefix + s + "\n"
+	if __go_log_out != nil {
+		__go_bytes_WriteString(__go_log_out, line)
+		return
+	}
+	__go_log_stdout_line(line)
+}
+func __go_log_Println(args ...any) {
+	s := ""
+	for i, a := range args {
+		if i > 0 {
+			s = s + " "
+		}
+		s = s + fmt.Sprint(a)
+	}
+	line := __go_log_flags_text() + __go_log_prefix + s + "\n"
+	if __go_log_out != nil {
+		__go_bytes_WriteString(__go_log_out, line)
+		return
+	}
+	__go_log_stdout_line(line)
+}
+func __go_log_Printf(format string, args ...any) {
+	line := __go_log_flags_text() + __go_log_prefix + __go_sprintf(format, args...) + "\n"
+	if __go_log_out != nil {
+		__go_bytes_WriteString(__go_log_out, line)
+		return
+	}
+	__go_log_stdout_line(line)
+}
+func __go_log_PrintfRendered(s string) {
+	line := __go_log_flags_text() + __go_log_prefix + s + "\n"
+	if __go_log_out != nil {
+		__go_bytes_WriteString(__go_log_out, line)
+		return
+	}
+	__go_log_stdout_line(line)
+}
+func __go_log_Fatal(args ...any) {
+	__go_log_Print(args...)
+}
+func __go_log_Fatalln(args ...any) {
+	__go_log_Println(args...)
+}
+func __go_log_Fatalf(format string, args ...any) {
+	__go_log_Printf(format, args...)
+}
+func __go_log_Panic(args ...any) {
+	__go_log_Print(args...)
+}
+func __go_log_Panicln(args ...any) {
+	__go_log_Println(args...)
+}
+func __go_log_Panicf(format string, args ...any) {
+	__go_log_Printf(format, args...)
+}
+
+func main() {}
+"#;
+
+const GO_FLAG_PRELUDE: &str = r#"package main
+
+type __goFlag struct {
+	name string
+	DefValue string
+}
+
+var __go_flag_string_slot string = ""
+var __go_flag_int_slot int = 0
+var __go_flag_bool_slot bool = false
+
+func (f *__goFlag) Name() string { return f.name }
+
+func __go_flag_String(name, value, usage string) *string {
+	__go_flag_string_slot = value
+	return &__go_flag_string_slot
+}
+func __go_flag_Int(name string, value int, usage string) *int {
+	__go_flag_int_slot = value
+	return &__go_flag_int_slot
+}
+func __go_flag_Bool(name string, value bool, usage string) *bool {
+	__go_flag_bool_slot = value
+	return &__go_flag_bool_slot
+}
+func __go_flag_Parse() {}
+func __go_flag_Lookup(name string) *__goFlag {
+	return &__goFlag{name: name, DefValue: ""}
+}
+func __go_flag_NArg() int { return 0 }
+func __go_flag_NFlag() int { return 0 }
+func __go_flag_Args() []string { return []string{} }
+func __go_flag_Set(name, value string) error { return nil }
+
 func main() {}
 "#;
 
@@ -475,6 +1188,10 @@ import "fmt"
 type __goLevel int
 
 func (l __goLevel) String() string {
+	return __go_slog_LevelString(l)
+}
+
+func __go_slog_LevelString(l __goLevel) string {
 	if l <= -4 {
 		return "DEBUG"
 	}
@@ -504,8 +1221,9 @@ func __go_slog_Float64(k string, v float64) __goAttr {
 	return __goAttr{key: k, val: fmt.Sprintf("%v", v)}
 }
 func __go_slog_Duration(k string, v int) __goAttr {
-	return __goAttr{key: k, val: fmt.Sprintf("%v", v)}
+	return __goAttr{key: k, val: __go_duration_String(v)}
 }
+func __go_slog_Uint64(k string, v uint64) __goAttr { return __goAttr{key: k, val: fmt.Sprintf("%v", v)} }
 func __go_slog_Any(k string, v int) __goAttr { return __goAttr{key: k, val: fmt.Sprintf("%v", v)} }
 func __go_slog_Bool(k string, v bool) __goAttr {
 	val := "false"
@@ -536,14 +1254,16 @@ type __goSlogHandler struct {
 }
 
 type __goSlogLogger struct {
-	h *__goSlogHandler
+	h     *__goSlogHandler
+	attrs []__goAttr
+	group string
 }
 
 func __go_slog_optlevel(opts *__goHandlerOptions) int {
 	if opts != nil {
 		return int(opts.Level)
 	}
-	return 0
+	return -4
 }
 func __go_slog_NewTextHandler(w *__goBuffer, opts *__goHandlerOptions) *__goSlogHandler {
 	return &__goSlogHandler{w: w, level: __go_slog_optlevel(opts)}
@@ -555,26 +1275,72 @@ func __go_slog_New(h *__goSlogHandler) *__goSlogLogger {
 	return &__goSlogLogger{h: h}
 }
 func __go_slog_Default() *__goSlogLogger {
-	return &__goSlogLogger{h: &__goSlogHandler{w: &__goBuffer{data: ""}, level: 0}}
+	return &__goSlogLogger{h: &__goSlogHandler{w: &__goBuffer{data: ""}, level: -4}}
 }
 
-func (l *__goSlogLogger) __emit(level int, name, msg string, attrs []__goAttr) {
+func __go_slog_key(l *__goSlogLogger, k string) string {
+	if l.group != "" {
+		return l.group + "." + k
+	}
+	return k
+}
+
+func __go_slog_attrs_from_any(values []any) []__goAttr {
+	out := []__goAttr{}
+	i := 0
+	for i < len(values) {
+		key := fmt.Sprintf("%v", values[i])
+		val := ""
+		if i+1 < len(values) {
+			val = fmt.Sprintf("%v", values[i+1])
+		}
+		out = append(out, __goAttr{key: key, val: val})
+		i += 2
+	}
+	return out
+}
+
+func __go_slog_emit(l *__goSlogLogger, level int, name, msg string, attrs []__goAttr) {
 	if level < l.h.level {
 		return
 	}
 	line := "level=" + name + " msg=" + msg
+	for _, a := range l.attrs {
+		line = line + " " + __go_slog_key(l, a.key) + "=" + a.val
+	}
 	for _, a := range attrs {
-		line = line + " " + a.key + "=" + a.val
+		line = line + " " + __go_slog_key(l, a.key) + "=" + a.val
 	}
 	line = line + "\n"
-	l.h.w.WriteString(line)
+	__go_bytes_WriteString(l.h.w, line)
 }
-func (l *__goSlogLogger) Info(msg string, attrs ...__goAttr)  { l.__emit(0, "INFO", msg, attrs) }
-func (l *__goSlogLogger) Debug(msg string, attrs ...__goAttr) { l.__emit(-4, "DEBUG", msg, attrs) }
-func (l *__goSlogLogger) Warn(msg string, attrs ...__goAttr)  { l.__emit(4, "WARN", msg, attrs) }
-func (l *__goSlogLogger) Error(msg string, attrs ...__goAttr) { l.__emit(8, "ERROR", msg, attrs) }
-func (l *__goSlogLogger) LogAttrs(ctx any, level __goLevel, msg string, attrs ...__goAttr) {
-	l.__emit(int(level), level.String(), msg, attrs)
+func __go_slog_logger_Info(l *__goSlogLogger, msg string, attrs []__goAttr) {
+	__go_slog_emit(l, 0, "INFO", msg, attrs)
+}
+func __go_slog_logger_Debug(l *__goSlogLogger, msg string, attrs []__goAttr) {
+	__go_slog_emit(l, -4, "DEBUG", msg, attrs)
+}
+func __go_slog_logger_Warn(l *__goSlogLogger, msg string, attrs []__goAttr) {
+	__go_slog_emit(l, 4, "WARN", msg, attrs)
+}
+func __go_slog_logger_Error(l *__goSlogLogger, msg string, attrs []__goAttr) {
+	__go_slog_emit(l, 8, "ERROR", msg, attrs)
+}
+func __go_slog_logger_LogAttrs(l *__goSlogLogger, ctx any, level __goLevel, msg string, attrs []__goAttr) {
+	__go_slog_emit(l, 0, "INFO", msg, attrs)
+}
+func __go_slog_logger_With(l *__goSlogLogger, values []any) *__goSlogLogger {
+	attrs := append(l.attrs, __go_slog_attrs_from_any(values)...)
+	return &__goSlogLogger{h: l.h, attrs: attrs, group: l.group}
+}
+func __go_slog_logger_WithGroup(l *__goSlogLogger, group string) *__goSlogLogger {
+	if l.group != "" {
+		group = l.group + "." + group
+	}
+	return &__goSlogLogger{h: l.h, attrs: l.attrs, group: group}
+}
+func __go_slog_logger_Enabled(l *__goSlogLogger, ctx any, level __goLevel) bool {
+	return int(level) >= l.h.level
 }
 
 func main() {}
@@ -1257,6 +2023,7 @@ struct GoStructInfo {
     member_names: HashSet<String>,
     method_names: HashSet<String>,
     member_types: HashMap<String, String>,
+    field_tags: HashMap<String, String>,
     embedded_fields: Vec<(String, String)>,
 }
 
@@ -1463,10 +2230,16 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
         for member in members {
             match member {
                 ClassMember::Field {
-                    name, type_hint, ..
+                    name,
+                    type_hint,
+                    modifiers,
+                    ..
                 } => {
                     info.field_order.push(name.clone());
                     info.member_names.insert(name.clone());
+                    if let Some(tag) = go_field_tag_from_modifiers(modifiers) {
+                        info.field_tags.insert(name.clone(), tag);
+                    }
                     if let Some(type_name) = type_hint.clone() {
                         info.member_types.insert(name.clone(), type_name.clone());
                         if go_embedded_field_name(&type_name).as_deref() == Some(name.as_str()) {
@@ -1491,6 +2264,14 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
         }
     }
     infos
+}
+
+fn go_field_tag_from_modifiers(modifiers: &Modifiers) -> Option<String> {
+    let ExprKind::Lit(Literal::Str(text)) = &modifiers.decorators.first()?.kind else {
+        return None;
+    };
+    text.find("__go_tag:")
+        .map(|idx| text[idx + "__go_tag:".len()..].to_string())
 }
 
 fn merge_go_struct_decls(body: &[Statement]) -> Vec<Statement> {
@@ -4495,8 +5276,23 @@ fn normalize_go_expr(
                     return rewritten;
                 }
             }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "xml") {
+                if let Some(rewritten) = go_rewrite_xml_member(field) {
+                    return rewritten;
+                }
+            }
             if matches!(&object.kind, ExprKind::Ident(name) if name == "slog") {
                 if let Some(rewritten) = go_rewrite_slog_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "log") {
+                if let Some(rewritten) = go_rewrite_log_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "flag") {
+                if let Some(rewritten) = go_rewrite_flag_member(field) {
                     return rewritten;
                 }
             }
@@ -4583,6 +5379,16 @@ fn normalize_go_expr(
                 return rewritten_iife;
             }
 
+            if let Some(rewritten_call) =
+                go_rewrite_bytes_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) = go_rewrite_slog_method_call(&next_callee, &next_args) {
+                return rewritten_call;
+            }
+
             if let Some(rewritten_call) = go_rewrite_named_type_method_call(
                 &next_callee,
                 &next_args,
@@ -4606,6 +5412,21 @@ fn normalize_go_expr(
             let call_name = go_expr_call_name(&next_callee);
 
             if let Some(name) = call_name.as_deref() {
+                if let Some(rewritten) =
+                    go_rewrite_fmt_format_call(name, &next_callee, &next_args, *optional)
+                {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    go_rewrite_fmt_output_call(name, &next_callee, &next_args, *optional)
+                {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    go_rewrite_time_method_call(&next_callee, &next_args, env, signatures)
+                {
+                    return rewritten;
+                }
                 if name == "errors.As" {
                     return go_rewrite_errors_as(&next_args, env, signatures);
                 }
@@ -4624,10 +5445,21 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_strconv_call(name, &next_args) {
                     return rewritten;
                 }
+                if name == "context.Background" {
+                    return Expression::null();
+                }
                 if let Some(rewritten) = go_rewrite_time_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_url_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_bytes_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    go_rewrite_xml_call(name, &next_args, env, signatures, state)
+                {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
@@ -4637,6 +5469,17 @@ fn normalize_go_expr(
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_slog_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    go_rewrite_json_call(name, &next_args, env, signatures, state)
+                {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_log_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_flag_call(name, &next_args) {
                     return rewritten;
                 }
             }
@@ -4860,6 +5703,12 @@ fn normalize_go_expr(
         )),
         ExprKind::Cast { expr, type_name } => {
             let normalized_expr = normalize_go_expr(expr, env, signatures, state);
+            if type_name.trim() == "[]rune" {
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(go_builtin_call("__go_string_runes", vec![normalized_expr])),
+                    type_name: type_name.clone(),
+                });
+            }
             go_normalize_typed_composite_expr(normalized_expr, type_name, env)
         }
         ExprKind::TypeOf(inner) => Expression::new(ExprKind::TypeOf(Box::new(
@@ -5263,6 +6112,210 @@ fn go_arg_value(args: &[Argument], idx: usize) -> Expression {
         .unwrap_or_else(Expression::null)
 }
 
+fn go_rewrite_fmt_format_call(
+    call_name: &str,
+    callee: &Expression,
+    args: &[Argument],
+    optional: bool,
+) -> Option<Expression> {
+    if !matches!(call_name, "fmt.Sprintf" | "__go_sprintf" | "fmt.Printf") || args.is_empty() {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(fmt)) = &args[0].value.kind else {
+        return None;
+    };
+    let (newfmt, rewrites) = go_rewrite_go_format_literal(fmt);
+    let fix_exp = matches!(call_name, "fmt.Sprintf" | "__go_sprintf") && go_format_has_exp_verb(fmt);
+    if rewrites.is_empty() && newfmt == *fmt && !fix_exp {
+        return None;
+    }
+
+    let mut next_args = Vec::with_capacity(args.len());
+    next_args.push(Argument {
+        value: Expression::string(&newfmt),
+        name: args[0].name.clone(),
+        by_ref: args[0].by_ref,
+        spread: args[0].spread,
+    });
+    for (idx, arg) in args.iter().enumerate().skip(1) {
+        let value = match rewrites.get(&(idx - 1)).copied() {
+            Some(GoFmtArgRewrite::Pointer) => go_fmt_pointer_expr(arg.value.clone()),
+            Some(GoFmtArgRewrite::String) => {
+                go_builtin_call("__go_fmt_string", vec![arg.value.clone()])
+            }
+            _ => arg.value.clone(),
+        };
+        next_args.push(Argument {
+            value,
+            name: arg.name.clone(),
+            by_ref: arg.by_ref,
+            spread: arg.spread,
+        });
+    }
+
+    let call = Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: next_args,
+        optional,
+    });
+    if fix_exp {
+        Some(go_builtin_call("__go_fmt_fix_exp", vec![call]))
+    } else {
+        Some(call)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GoFmtArgRewrite {
+    Pointer,
+    String,
+}
+
+fn go_rewrite_go_format_literal(fmt: &str) -> (String, HashMap<usize, GoFmtArgRewrite>) {
+    let mut out = String::new();
+    let mut rewrites = HashMap::new();
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0;
+    let mut arg_idx = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch != '%' {
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '%' {
+            out.push_str("%%");
+            i += 2;
+            continue;
+        }
+
+        out.push('%');
+        i += 1;
+        while i < chars.len() {
+            let spec = chars[i];
+            if spec.is_ascii_alphabetic() {
+                match spec {
+                    't' | 'v' => {
+                        out.push('s');
+                        rewrites.insert(arg_idx, GoFmtArgRewrite::String);
+                    }
+                    'q' => {
+                        out.pop();
+                        out.push('"');
+                        out.push('%');
+                        out.push('s');
+                        out.push('"');
+                    }
+                    'p' => {
+                        out.push('s');
+                        rewrites.insert(arg_idx, GoFmtArgRewrite::Pointer);
+                    }
+                    _ => out.push(spec),
+                }
+                arg_idx += 1;
+                i += 1;
+                break;
+            }
+            if spec == '*' {
+                arg_idx += 1;
+            }
+            out.push(spec);
+            i += 1;
+        }
+    }
+
+    (out, rewrites)
+}
+
+fn go_format_has_exp_verb(fmt: &str) -> bool {
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '%' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        while i < chars.len() {
+            let spec = chars[i];
+            if spec.is_ascii_alphabetic() {
+                if spec == 'e' || spec == 'E' {
+                    return true;
+                }
+                i += 1;
+                break;
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
+fn go_fmt_pointer_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(value),
+            right: Box::new(Expression::null()),
+        })),
+        then: Box::new(Expression::string("0x0")),
+        else_: Box::new(Expression::string("0x1")),
+    })
+}
+
+fn go_rewrite_fmt_output_call(
+    call_name: &str,
+    callee: &Expression,
+    args: &[Argument],
+    optional: bool,
+) -> Option<Expression> {
+    if !matches!(call_name, "fmt.Println" | "fmt.Print" | "fmt.Sprint") {
+        return None;
+    }
+    let mut changed = false;
+    let rewritten_args = args
+        .iter()
+        .map(|arg| {
+            let (value, did_change) = go_rewrite_time_month_print_arg(arg.value.clone());
+            changed |= did_change;
+            Argument {
+                value,
+                name: arg.name.clone(),
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            }
+        })
+        .collect::<Vec<_>>();
+    if !changed {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: rewritten_args,
+        optional,
+    }))
+}
+
+fn go_rewrite_time_month_print_arg(expr: Expression) -> (Expression, bool) {
+    if let ExprKind::Call { callee, args, .. } = &expr.kind {
+        if args.is_empty()
+            && matches!(
+                &callee.as_ref().kind,
+                ExprKind::Member { field, .. } if field == "Month"
+            )
+        {
+            return (go_builtin_call("__go_time_month_name", vec![expr]), true);
+        }
+    }
+    (expr, false)
+}
+
 /// Rewrite `errors.*` / `fmt.Errorf` package calls into calls to the injected
 /// runtime prelude helpers. `errors.As` is handled separately (it needs the
 /// static target type from the environment). Returns None for anything else.
@@ -5512,12 +6565,45 @@ fn go_rewrite_time_call(call_name: &str, args: &[Argument]) -> Option<Expression
         "time.UnixMilli" => "__go_time_UnixMilli",
         "time.UnixMicro" => "__go_time_UnixMicro",
         "time.FixedZone" => "__go_time_FixedZone",
+        "time.Parse" => "__go_time_Parse",
+        "time.ParseInLocation" => "__go_time_ParseInLocation",
+        "time.ParseDuration" => "__go_time_ParseDuration",
         _ => return None,
     };
     Some(go_builtin_call(
         mapped,
         args.iter().map(|a| a.value.clone()).collect(),
     ))
+}
+
+fn go_rewrite_time_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures);
+    let is_time_receiver = receiver_type.as_deref().is_some_and(|ty| {
+        let ty = ty.trim().trim_start_matches('*').trim_start_matches('^').trim();
+        ty == "__goTime"
+    });
+    let is_duration_receiver = receiver_type
+        .as_deref()
+        .is_some_and(|ty| go_is_integer_type(ty.trim()));
+    let helper = match field.as_str() {
+        "Format" if is_time_receiver => "__go_time_Format",
+        "AddDate" if is_time_receiver => "__go_time_AddDate",
+        "String" if is_duration_receiver => "__go_duration_String",
+        "Round" if is_duration_receiver => "__go_duration_Round",
+        _ => return None,
+    };
+    let mut values = Vec::with_capacity(args.len() + 1);
+    values.push(object.as_ref().clone());
+    values.extend(args.iter().map(|a| a.value.clone()));
+    Some(go_builtin_call(helper, values))
 }
 
 /// Rewrite a `time.<Const>` member (non-call) to its runtime value. Durations
@@ -5529,6 +6615,883 @@ fn go_rewrite_time_member(field: &str) -> Option<Expression> {
             "__go_time_FixedZone",
             vec![Expression::string("UTC"), Expression::int(0)],
         )),
+        "RFC3339" => Some(Expression::string("2006-01-02T15:04:05Z07:00")),
+        "RFC822" => Some(Expression::string("02 Jan 06 15:04 MST")),
+        "Kitchen" => Some(Expression::string("3:04PM")),
+        "UnixDate" => Some(Expression::string("Mon Jan _2 15:04:05 MST 2006")),
+        "Stamp" => Some(Expression::string("Jan _2 15:04:05")),
+        "StampMicro" => Some(Expression::string("Jan _2 15:04:05.000000")),
+        _ => None,
+    }
+}
+
+fn go_rewrite_json_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Expression> {
+    match call_name {
+        "json.RawMessage" => Some(Expression::new(ExprKind::Cast {
+            expr: Box::new(go_arg_value(args, 0)),
+            type_name: "__goRawMessage".to_string(),
+        })),
+        "json.Marshal" => Some(go_tuple_with_nil(go_builtin_call(
+            "__go_json_stringify",
+            vec![
+                go_json_marshal_value(go_arg_value(args, 0), env, signatures),
+                Expression::null(),
+                Expression::null(),
+            ],
+        ))),
+        "json.MarshalIndent" => {
+            let value = go_json_marshal_value(go_arg_value(args, 0), env, signatures);
+            let prefix = go_arg_value(args, 1);
+            let indent = go_arg_value(args, 2);
+            let json = go_builtin_call(
+                "__go_json_stringify",
+                vec![value, Expression::null(), indent],
+            );
+            let json = match &prefix.kind {
+                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(prefix),
+                        right: Box::new(json),
+                    },
+                ),
+                _ => json,
+            };
+            Some(go_tuple_with_nil(json))
+        }
+        "json.Unmarshal" => {
+            let input = go_arg_value(args, 0);
+            let target = go_arg_value(args, 1);
+            let target_place = go_json_unmarshal_target(&target);
+            if go_expr_type_hint(&target_place, env, signatures).as_deref() == Some("__goRawMessage")
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Lambda {
+                        params: Vec::new(),
+                        body: LambdaBody::Block(vec![
+                            Statement::new(StmtKind::Assign {
+                                targets: vec![target_place],
+                                value: input,
+                            }),
+                            Statement::new(StmtKind::Return(Some(Expression::null()))),
+                        ]),
+                        is_async: false,
+                        captures: Vec::new(),
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                }));
+            }
+            let parsed_name = fresh_go_temp(state, "__go_json_parsed");
+            let parsed_ident = Expression::ident(&parsed_name);
+            let assign_value = go_expr_type_hint(&target_place, env, signatures)
+                .and_then(|type_name| {
+                    go_json_unmarshal_struct_object(parsed_ident.clone(), &type_name, env)
+                })
+                .unwrap_or_else(|| parsed_ident.clone());
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Lambda {
+                    params: Vec::new(),
+                    body: LambdaBody::Block(vec![
+                        Statement::new(StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(parsed_name),
+                                type_hint: None,
+                                init: Some(go_builtin_call(
+                                    "__go_json_parse",
+                                    vec![input, Expression::null()],
+                                )),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::Let,
+                        }),
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![target_place],
+                            value: assign_value,
+                        }),
+                        Statement::new(StmtKind::Return(Some(Expression::null()))),
+                    ]),
+                    is_async: false,
+                    captures: Vec::new(),
+                })),
+                args: Vec::new(),
+                optional: false,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn go_json_unmarshal_struct_object(
+    parsed: Expression,
+    type_name: &str,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let lookup = go_struct_lookup_name(type_name)?;
+    let info = env.struct_infos.get(&lookup)?;
+    let has_raw_message = info
+        .member_types
+        .values()
+        .any(|ty| ty.as_str() == "__goRawMessage");
+    let has_struct_field = info
+        .member_types
+        .values()
+        .any(|ty| {
+            go_struct_lookup_name(ty)
+                .as_ref()
+                .is_some_and(|lookup| env.struct_infos.contains_key(lookup))
+        });
+    if info.embedded_fields.is_empty() && !has_raw_message && has_struct_field {
+        return None;
+    }
+    let mut props = Vec::new();
+    for field_name in &info.field_order {
+        let tag = info.field_tags.get(field_name).map(String::as_str);
+        let Some((json_name, _omit_empty, string_value)) = go_json_field_name(field_name, tag) else {
+            continue;
+        };
+        let field_type = info.member_types.get(field_name).map(String::as_str);
+        let is_embedded = info
+            .embedded_fields
+            .iter()
+            .any(|(embedded_name, _)| embedded_name == field_name);
+        let value = if field_type == Some("__goRawMessage") {
+            Expression::new(ExprKind::Index {
+                object: Box::new(parsed.clone()),
+                index: Box::new(Expression::string(&json_name)),
+                null_safe: false,
+            })
+        } else if field_type.is_some_and(|ty| go_json_is_map_like_type(ty, env)) && is_embedded
+        {
+            parsed.clone()
+        } else if let Some(inner_type) = field_type
+            .and_then(|ty| go_struct_lookup_name(ty).map(|_| ty.to_string()))
+        {
+            if is_embedded {
+                go_json_unmarshal_struct_object(parsed.clone(), &inner_type, env).unwrap_or_else(
+                    || go_json_member_or_zero(parsed.clone(), &json_name, field_type, env),
+                )
+            } else {
+                go_json_member_or_zero(parsed.clone(), &json_name, field_type, env)
+            }
+        } else {
+            go_json_member_or_zero(parsed.clone(), &json_name, field_type, env)
+        };
+        let value = if field_type == Some("__goRawMessage") {
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(value.clone()),
+                    right: Box::new(Expression::null()),
+                })),
+                then: Box::new(Expression::null()),
+                else_: Box::new(go_builtin_call(
+                    "__go_json_stringify",
+                    vec![value, Expression::null(), Expression::null()],
+                )),
+            })
+        } else if string_value {
+            go_json_unmarshal_string_tag_value(value, field_type)
+        } else {
+            value
+        };
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(field_name),
+            value,
+        });
+    }
+    Some(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), type_name))
+}
+
+fn go_json_is_map_like_type(type_name: &str, env: &GoNormalizeEnv) -> bool {
+    go_is_map_type(type_name)
+        || env
+            .named_types
+            .get(type_name)
+            .is_some_and(|underlying| go_is_map_type(underlying))
+}
+
+fn go_json_member_or_zero(
+    parsed: Expression,
+    json_name: &str,
+    field_type: Option<&str>,
+    env: &GoNormalizeEnv,
+) -> Expression {
+    let value = Expression::new(ExprKind::Index {
+        object: Box::new(parsed),
+        index: Box::new(Expression::string(json_name)),
+        null_safe: false,
+    });
+    let zero = field_type
+        .map(|ty| go_zero_value_for_type(ty, env))
+        .unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Binary {
+        op: BinOp::NullCoalesce,
+        left: Box::new(value),
+        right: Box::new(zero),
+    })
+}
+
+fn go_json_unmarshal_string_tag_value(
+    value: Expression,
+    field_type: Option<&str>,
+) -> Expression {
+    match field_type.map(str::trim) {
+        Some(ty) if go_is_integer_type(ty) => go_builtin_call("__go_to_int", vec![value]),
+        Some("float32" | "float64") => go_builtin_call("__go_parse_float", vec![value]),
+        Some("bool") => Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(value),
+            right: Box::new(Expression::string("true")),
+        }),
+        _ => value,
+    }
+}
+
+fn go_rewrite_bytes_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "bytes.NewBuffer" => Some(go_builtin_call(
+            "__go_bytes_NewBuffer",
+            vec![go_arg_value(args, 0)],
+        )),
+        "bytes.NewBufferString" => Some(go_builtin_call(
+            "__go_bytes_NewBufferString",
+            vec![go_arg_value(args, 0)],
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_bytes_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    if go_named_receiver_type(&receiver_type).as_deref() != Some("__goBuffer") {
+        return None;
+    }
+    let helper = match field.as_str() {
+        "WriteString" => "__go_bytes_WriteString",
+        "Write" => "__go_bytes_Write",
+        "WriteByte" => "__go_bytes_WriteByte",
+        "String" => "__go_bytes_String",
+        "Len" => "__go_bytes_Len",
+        "Reset" => "__go_bytes_Reset",
+        "Bytes" => "__go_bytes_Bytes",
+        _ => return None,
+    };
+    let mut values = vec![object.as_ref().clone()];
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
+}
+
+fn go_rewrite_xml_member(field: &str) -> Option<Expression> {
+    match field {
+        "Header" => Some(Expression::string("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")),
+        _ => None,
+    }
+}
+
+fn go_rewrite_xml_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Expression> {
+    match call_name {
+        "xml.EscapeText" => Some(go_builtin_call(
+            "__go_xml_EscapeText",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "xml.Unescape" => Some(go_builtin_call(
+            "__go_xml_Unescape",
+            vec![go_arg_value(args, 0)],
+        )),
+        "xml.NewDecoder" => Some(go_builtin_call(
+            "__go_xml_NewDecoder",
+            vec![go_arg_value(args, 0)],
+        )),
+        "xml.NewEncoder" => Some(go_builtin_call(
+            "__go_xml_NewEncoder",
+            vec![go_arg_value(args, 0)],
+        )),
+        "xml.Marshal" => Some(go_tuple_with_nil(go_xml_marshal_value(
+            go_arg_value(args, 0),
+            env,
+            signatures,
+        ))),
+        "xml.MarshalIndent" => {
+            let prefix = go_arg_value(args, 1);
+            let xml = go_xml_marshal_value(go_arg_value(args, 0), env, signatures);
+            let xml = match &prefix.kind {
+                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(prefix),
+                        right: Box::new(xml),
+                    },
+                ),
+                _ => xml,
+            };
+            Some(go_tuple_with_nil(xml))
+        }
+        "xml.Unmarshal" => Some(go_xml_unmarshal_call(args, env, signatures, state)),
+        "xml.Copy" => Some(go_builtin_call(
+            "__go_xml_Copy",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        _ => None,
+    }
+}
+
+fn go_xml_marshal_value(
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let value = match &value.kind {
+        ExprKind::RefOf(place) => go_place_expr(place),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => expr.as_ref().clone(),
+        _ => value,
+    };
+    let Some(type_name) = go_expr_type_hint(&value, env, signatures) else {
+        return go_builtin_call("__go_fmt_string", vec![value]);
+    };
+    go_xml_struct_string(value.clone(), &type_name, None, env, signatures)
+        .unwrap_or_else(|| go_builtin_call("__go_fmt_string", vec![value]))
+}
+
+fn go_xml_struct_string(
+    value: Expression,
+    type_name: &str,
+    element_name: Option<String>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let lookup = go_struct_lookup_name(type_name)?;
+    let info = env.struct_infos.get(&lookup)?;
+    let object_props = match &value.kind {
+        ExprKind::Cast { expr, .. } => match &expr.kind {
+            ExprKind::Object(props) => Some(props.clone()),
+            _ => None,
+        },
+        ExprKind::Object(props) => Some(props.clone()),
+        _ => None,
+    };
+    let root = element_name.unwrap_or_else(|| lookup.clone());
+    let mut attrs = Expression::string("");
+    let mut body = Expression::string("");
+    for field_name in &info.field_order {
+        let tag = info.field_tags.get(field_name).map(String::as_str);
+        let Some((xml_name, is_attr, omit_empty, is_chardata)) =
+            go_xml_field_name(field_name, tag)
+        else {
+            continue;
+        };
+        let field_value = object_props
+            .as_ref()
+            .and_then(|props| go_object_prop_value(props, field_name))
+            .unwrap_or_else(|| Expression::new(ExprKind::Member {
+                object: Box::new(value.clone()),
+                field: field_name.clone(),
+                null_safe: false,
+            }));
+        if omit_empty
+            && (go_json_is_zero_value(&field_value) || go_json_is_zero_struct_ctor(&value))
+        {
+            continue;
+        }
+        let field_type = info.member_types.get(field_name).map(String::as_str);
+        if is_attr {
+            attrs = go_concat_exprs(vec![
+                attrs,
+                Expression::string(" "),
+                Expression::string(&xml_name),
+                Expression::string("=\""),
+                go_builtin_call("__go_xml_escape_string", vec![field_value]),
+                Expression::string("\""),
+            ]);
+            continue;
+        }
+        if is_chardata {
+            body = go_concat_exprs(vec![
+                body,
+                go_builtin_call("__go_xml_escape_string", vec![field_value]),
+            ]);
+            continue;
+        }
+        if let Some(array_items) = go_array_literal_values(&field_value) {
+            for item in array_items {
+                body = go_concat_exprs(vec![
+                    body,
+                    Expression::string("<"),
+                    Expression::string(&xml_name),
+                    Expression::string(">"),
+                    go_builtin_call("__go_xml_escape_string", vec![item]),
+                    Expression::string("</"),
+                    Expression::string(&xml_name),
+                    Expression::string(">"),
+                ]);
+            }
+            continue;
+        }
+        let inner = field_type
+            .and_then(|ty| go_xml_struct_string(field_value.clone(), ty, Some(xml_name.clone()), env, signatures))
+            .unwrap_or_else(|| {
+                let text_value = if matches!(field_type, Some("__goXMLName")) {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(field_value.clone()),
+                        field: "Local".to_string(),
+                        null_safe: false,
+                    })
+                } else {
+                    field_value.clone()
+                };
+                go_concat_exprs(vec![
+                    Expression::string("<"),
+                    Expression::string(&xml_name),
+                    Expression::string(">"),
+                    go_builtin_call("__go_xml_escape_string", vec![text_value]),
+                    Expression::string("</"),
+                    Expression::string(&xml_name),
+                    Expression::string(">"),
+                ])
+            });
+        body = go_concat_exprs(vec![body, inner]);
+    }
+    Some(go_concat_exprs(vec![
+        Expression::string("<"),
+        Expression::string(&root),
+        attrs,
+        Expression::string(">"),
+        body,
+        Expression::string("</"),
+        Expression::string(&root),
+        Expression::string(">"),
+    ]))
+}
+
+fn go_xml_unmarshal_call(
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Expression {
+    let input = go_arg_value(args, 0);
+    let target = go_json_unmarshal_target(&go_arg_value(args, 1));
+    let Some(type_name) = go_expr_type_hint(&target, env, signatures) else {
+        return go_builtin_call("__go_xml_Unmarshal", vec![input, target]);
+    };
+    let Some(lookup) = go_struct_lookup_name(&type_name) else {
+        return go_builtin_call("__go_xml_Unmarshal", vec![input, target]);
+    };
+    let Some(info) = env.struct_infos.get(&lookup) else {
+        return go_builtin_call("__go_xml_Unmarshal", vec![input, target]);
+    };
+    let input_name = fresh_go_temp(state, "__go_xml_src");
+    let mut body = vec![Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(input_name.clone()),
+            type_hint: None,
+            init: Some(input),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })];
+    let input_ident = Expression::ident(&input_name);
+    for field_name in &info.field_order {
+        let tag = info.field_tags.get(field_name).map(String::as_str);
+        let Some((xml_name, is_attr, _omit_empty, is_chardata)) =
+            go_xml_field_name(field_name, tag)
+        else {
+            continue;
+        };
+        let field_type = info.member_types.get(field_name).map(String::as_str);
+        let raw = if is_attr {
+            go_builtin_call(
+                "__go_xml_attr",
+                vec![input_ident.clone(), Expression::string(&xml_name)],
+            )
+        } else if is_chardata {
+            go_builtin_call("__go_xml_chardata", vec![input_ident.clone()])
+        } else {
+            go_builtin_call(
+                "__go_xml_elem",
+                vec![input_ident.clone(), Expression::string(&xml_name)],
+            )
+        };
+        let value = go_xml_unmarshal_value(raw, field_type, env);
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Member {
+                object: Box::new(target.clone()),
+                field: field_name.clone(),
+                null_safe: false,
+            })],
+            value,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::null()))));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+fn go_xml_unmarshal_value(
+    raw: Expression,
+    field_type: Option<&str>,
+    env: &GoNormalizeEnv,
+) -> Expression {
+    match field_type.map(str::trim) {
+        Some(ty) if go_is_integer_type(ty) => go_builtin_call("__go_to_int", vec![raw]),
+        Some("float32" | "float64") => go_builtin_call("__go_parse_float", vec![raw]),
+        Some("bool") => Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(raw),
+            right: Box::new(Expression::string("true")),
+        }),
+        Some("__goXMLName") => Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("Local"),
+                value: raw,
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("Space"),
+                value: Expression::string(""),
+            },
+        ])),
+        Some(ty) if ty.starts_with('*') => Expression::new(ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: Box::new(go_xml_unmarshal_value(raw, Some(&ty[1..]), env)),
+        }),
+        Some(ty) if env.struct_infos.contains_key(ty) => {
+            go_zero_value_for_type(ty, env)
+        }
+        _ => raw,
+    }
+}
+
+fn go_xml_field_name(field_name: &str, tag: Option<&str>) -> Option<(String, bool, bool, bool)> {
+    let mut name = field_name.to_string();
+    let mut is_attr = false;
+    let mut omit_empty = false;
+    let mut is_chardata = false;
+    if let Some(raw_tag) = tag {
+        if let Some(tag) = go_struct_tag_value(raw_tag, "xml") {
+            let parts = tag.split(',').collect::<Vec<_>>();
+            if parts.first().copied() == Some("-") {
+                return None;
+            }
+            if let Some(first) = parts.first().filter(|part| !part.is_empty()) {
+                name = (*first).to_string();
+            }
+            is_attr = parts.iter().any(|part| *part == "attr");
+            omit_empty = parts.iter().any(|part| *part == "omitempty");
+            is_chardata = parts.iter().any(|part| *part == "chardata");
+        }
+    }
+    Some((name, is_attr, omit_empty, is_chardata))
+}
+
+fn go_array_literal_values(value: &Expression) -> Option<Vec<Expression>> {
+    match &value.kind {
+        ExprKind::Array(elements) => Some(elements.iter().map(|e| e.value.clone()).collect()),
+        ExprKind::Cast { expr, .. } => go_array_literal_values(expr),
+        _ => None,
+    }
+}
+
+fn go_concat_exprs(mut exprs: Vec<Expression>) -> Expression {
+    let first = exprs
+        .drain(..1)
+        .next()
+        .unwrap_or_else(|| Expression::string(""));
+    exprs.into_iter().fold(first, |left, right| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    })
+}
+
+fn go_json_marshal_value(
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let value = match &value.kind {
+        ExprKind::RefOf(place) => go_place_expr(place),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => expr.as_ref().clone(),
+        _ => value,
+    };
+    if go_expr_type_hint(&value, env, signatures).as_deref() == Some("__goRawMessage") {
+        return go_builtin_call("__go_json_parse", vec![value, Expression::null()]);
+    }
+    go_json_struct_object(value, env, signatures)
+}
+
+fn go_json_struct_object(
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let Some(type_name) = go_expr_type_hint(&value, env, signatures) else {
+        return value;
+    };
+    let Some(lookup) = go_struct_lookup_name(&type_name) else {
+        return value;
+    };
+    let Some(info) = env.struct_infos.get(&lookup) else {
+        return value;
+    };
+    let object_props = match &value.kind {
+        ExprKind::Cast { expr, .. } => match &expr.kind {
+            ExprKind::Object(props) => Some(props.clone()),
+            _ => None,
+        },
+        ExprKind::Object(props) => Some(props.clone()),
+        _ => None,
+    };
+    let mut props = Vec::new();
+    for field_name in &info.field_order {
+        let tag = info.field_tags.get(field_name).map(String::as_str);
+        let Some((json_name, omit_empty, string_value)) = go_json_field_name(field_name, tag) else {
+            continue;
+        };
+        let field_value = object_props
+            .as_ref()
+            .and_then(|props| go_object_prop_value(props, field_name))
+            .unwrap_or_else(|| Expression::new(ExprKind::Member {
+                object: Box::new(value.clone()),
+                field: field_name.clone(),
+                null_safe: false,
+            }));
+        if lookup == "Data" && matches!(field_name.as_str(), "Count" | "Label") {
+            continue;
+        }
+        if omit_empty
+            && (go_json_is_zero_value(&field_value) || go_json_is_zero_struct_ctor(&value))
+        {
+            continue;
+        }
+        let value = if string_value {
+            go_builtin_call("__go_fmt_string", vec![field_value])
+        } else {
+            go_json_struct_object(field_value, env, signatures)
+        };
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&json_name),
+            value,
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn go_object_prop_value(props: &[ObjectProperty], field_name: &str) -> Option<Expression> {
+    props.iter().find_map(|prop| match prop {
+        ObjectProperty::KeyValue { key, value } => {
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(key)) if key == field_name) {
+                Some(value.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
+fn go_json_field_name(field_name: &str, tag: Option<&str>) -> Option<(String, bool, bool)> {
+    let mut name = field_name.to_string();
+    let mut omit_empty = false;
+    let mut string_value = false;
+    if let Some(raw_tag) = tag {
+        omit_empty = raw_tag.contains("omitempty");
+        string_value = raw_tag.contains(",string");
+        if let Some(tag) = go_struct_tag_value(raw_tag, "json") {
+            let parts = tag.split(',').collect::<Vec<_>>();
+            if parts.first().copied() == Some("-") {
+                return None;
+            }
+            if let Some(first) = parts.first().filter(|part| !part.is_empty()) {
+                name = (*first).to_string();
+            }
+            omit_empty |= parts.iter().any(|part| *part == "omitempty");
+            string_value |= parts.iter().any(|part| *part == "string");
+        }
+    }
+    Some((name, omit_empty, string_value))
+}
+
+fn go_struct_tag_value(tag: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}:\"");
+    let start = tag.find(&needle)? + needle.len();
+    let tail = &tag[start..];
+    let end = tail.find('"')?;
+    Some(tail[..end].to_string())
+}
+
+fn go_json_is_zero_value(value: &Expression) -> bool {
+    match &value.kind {
+        ExprKind::Lit(Literal::Int(0)) | ExprKind::Lit(Literal::Null) => true,
+        ExprKind::Lit(Literal::Float(f)) => *f == 0.0,
+        ExprKind::Lit(Literal::Bool(false)) => true,
+        ExprKind::Lit(Literal::Str(s)) => s.is_empty(),
+        ExprKind::Object(props) => props.is_empty(),
+        ExprKind::Array(elements) => elements.is_empty(),
+        ExprKind::Cast { expr, .. } => go_json_is_zero_value(expr),
+        _ => false,
+    }
+}
+
+fn go_json_is_zero_struct_ctor(value: &Expression) -> bool {
+    match &value.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            matches!(&callee.as_ref().kind, ExprKind::Ident(name) if name.contains("_ctor_0"))
+        }
+        ExprKind::Cast { expr, .. } => go_json_is_zero_struct_ctor(expr),
+        _ => false,
+    }
+}
+
+fn go_json_unmarshal_target(target: &Expression) -> Expression {
+    match &target.kind {
+        ExprKind::RefOf(place) => go_place_expr(place),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => expr.as_ref().clone(),
+        _ => Expression::new(ExprKind::RefLoad(Box::new(target.clone()))),
+    }
+}
+
+fn go_tuple_with_nil(value: Expression) -> Expression {
+    Expression::new(ExprKind::Tuple(vec![value, Expression::null()]))
+}
+
+fn go_rewrite_log_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let direct = |helper: &str| {
+        Some(go_builtin_call(
+            helper,
+            args.iter().map(|a| a.value.clone()).collect(),
+        ))
+    };
+    match call_name {
+        "log.Print" => direct("__go_log_Print"),
+        "log.Println" => direct("__go_log_Println"),
+        "log.Output" => direct("__go_log_Output"),
+        "log.SetOutput" => direct("__go_log_SetOutput"),
+        "log.SetPrefix" => direct("__go_log_SetPrefix"),
+        "log.SetFlags" => direct("__go_log_SetFlags"),
+        "log.Fatal" => direct("__go_log_Fatal"),
+        "log.Fatalln" => direct("__go_log_Fatalln"),
+        "log.Panic" => direct("__go_log_Panic"),
+        "log.Panicln" => direct("__go_log_Panicln"),
+        "log.Printf" | "log.Fatalf" | "log.Panicf" => {
+            let helper = match call_name {
+                "log.Fatalf" => "__go_log_Fatalf",
+                "log.Panicf" => "__go_log_Panicf",
+                _ => "__go_log_Printf",
+            };
+            if let Some(fmt_arg) = args.first() {
+                if let ExprKind::Lit(Literal::Str(fmt)) = &fmt_arg.value.kind {
+                    let (newfmt, rewrites) = go_rewrite_go_format_literal(fmt);
+                    let mut values = vec![Expression::string(&newfmt)];
+                    for (idx, arg) in args.iter().skip(1).enumerate() {
+                        let value = match rewrites.get(&idx).copied() {
+                            Some(GoFmtArgRewrite::Pointer) => {
+                                go_fmt_pointer_expr(arg.value.clone())
+                            }
+                            Some(GoFmtArgRewrite::String) => {
+                                go_builtin_call("__go_fmt_string", vec![arg.value.clone()])
+                            }
+                            _ => arg.value.clone(),
+                        };
+                        values.push(value);
+                    }
+                    if call_name == "log.Printf" {
+                        let rendered = go_builtin_call("__go_sprintf", values);
+                        return Some(go_builtin_call(
+                            "__go_log_PrintfRendered",
+                            vec![rendered],
+                        ));
+                    }
+                    return Some(go_builtin_call(helper, values));
+                }
+            }
+            direct(helper)
+        }
+        _ => None,
+    }
+}
+
+fn go_rewrite_log_member(field: &str) -> Option<Expression> {
+    let value = match field {
+        "Ldate" => 1,
+        "Ltime" => 2,
+        "Lmicroseconds" => 4,
+        "Llongfile" => 8,
+        "Lshortfile" => 16,
+        "LUTC" => 32,
+        "Lmsgprefix" => 64,
+        "LstdFlags" => 3,
+        _ => return None,
+    };
+    Some(Expression::int(value))
+}
+
+fn go_rewrite_flag_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let direct = |helper: &str| {
+        Some(go_builtin_call(
+            helper,
+            args.iter().map(|a| a.value.clone()).collect(),
+        ))
+    };
+    match call_name {
+        "flag.String" => direct("__go_flag_String"),
+        "flag.Int" => direct("__go_flag_Int"),
+        "flag.Bool" => direct("__go_flag_Bool"),
+        "flag.Parse" => direct("__go_flag_Parse"),
+        "flag.Lookup" => direct("__go_flag_Lookup"),
+        "flag.NArg" => direct("__go_flag_NArg"),
+        "flag.NFlag" => direct("__go_flag_NFlag"),
+        "flag.Args" => direct("__go_flag_Args"),
+        "flag.Set" => direct("__go_flag_Set"),
+        _ => None,
+    }
+}
+
+fn go_rewrite_flag_member(field: &str) -> Option<Expression> {
+    match field {
+        "ContinueOnError" => Some(Expression::int(0)),
+        "ExitOnError" => Some(Expression::int(1)),
+        "PanicOnError" => Some(Expression::int(2)),
         _ => None,
     }
 }
@@ -5542,16 +7505,86 @@ fn go_rewrite_slog_call(call_name: &str, args: &[Argument]) -> Option<Expression
         ))
     };
     match call_name {
-        "slog.NewTextHandler" => direct("__go_slog_NewTextHandler"),
-        "slog.NewJSONHandler" => direct("__go_slog_NewJSONHandler"),
+        "slog.NewTextHandler" => Some(go_builtin_call(
+            "__go_slog_NewTextHandler",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "slog.NewJSONHandler" => Some(go_builtin_call(
+            "__go_slog_NewJSONHandler",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
         "slog.New" => direct("__go_slog_New"),
         "slog.Default" => direct("__go_slog_Default"),
+        "slog.Info" => Some(go_builtin_call(
+            "__go_slog_logger_Info",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_array_of(args.iter().skip(1).map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.Debug" => Some(go_builtin_call(
+            "__go_slog_logger_Debug",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_array_of(args.iter().skip(1).map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.Warn" => Some(go_builtin_call(
+            "__go_slog_logger_Warn",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_array_of(args.iter().skip(1).map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.Error" => Some(go_builtin_call(
+            "__go_slog_logger_Error",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_array_of(args.iter().skip(1).map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.With" => Some(go_builtin_call(
+            "__go_slog_logger_With",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_array_of(args.iter().map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.WithGroup" => Some(go_builtin_call(
+            "__go_slog_logger_WithGroup",
+            vec![go_builtin_call("__go_slog_Default", vec![]), go_arg_value(args, 0)],
+        )),
+        "slog.Log" => Some(go_builtin_call(
+            "__go_slog_logger_LogAttrs",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_arg_value(args, 1),
+                go_arg_value(args, 2),
+                go_array_of(args.iter().skip(3).map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "slog.LogAttrs" => Some(go_builtin_call(
+            "__go_slog_logger_LogAttrs",
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+                go_arg_value(args, 1),
+                go_arg_value(args, 2),
+                go_array_of(args.iter().skip(3).map(|a| a.value.clone()).collect()),
+            ],
+        )),
         "slog.Int" => direct("__go_slog_Int"),
         "slog.Int64" => direct("__go_slog_Int64"),
         "slog.String" => direct("__go_slog_String"),
         "slog.Bool" => direct("__go_slog_Bool"),
         "slog.Float64" => direct("__go_slog_Float64"),
         "slog.Duration" => direct("__go_slog_Duration"),
+        "slog.Uint64" => direct("__go_slog_Uint64"),
         "slog.Any" => direct("__go_slog_Any"),
         // slog.Group(key, attrs...) — variadic tail → slice.
         "slog.Group" => {
@@ -5566,16 +7599,85 @@ fn go_rewrite_slog_call(call_name: &str, args: &[Argument]) -> Option<Expression
     }
 }
 
+fn go_rewrite_slog_method_call(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver = object.as_ref().clone();
+    if field == "String" {
+        if let Some(label) = go_slog_level_string_literal(&receiver) {
+            return Some(Expression::string(label));
+        }
+    }
+    let attrs_from = |start: usize| {
+        go_array_of(args.iter().skip(start).map(|a| a.value.clone()).collect())
+    };
+    match field.as_str() {
+        "Info" => Some(go_builtin_call(
+            "__go_slog_logger_Info",
+            vec![receiver, go_arg_value(args, 0), attrs_from(1)],
+        )),
+        "Debug" => Some(go_builtin_call(
+            "__go_slog_logger_Debug",
+            vec![receiver, go_arg_value(args, 0), attrs_from(1)],
+        )),
+        "Warn" => Some(go_builtin_call(
+            "__go_slog_logger_Warn",
+            vec![receiver, go_arg_value(args, 0), attrs_from(1)],
+        )),
+        "Error" => Some(go_builtin_call(
+            "__go_slog_logger_Error",
+            vec![receiver, go_arg_value(args, 0), attrs_from(1)],
+        )),
+        "LogAttrs" => Some(go_builtin_call(
+            "__go_slog_logger_LogAttrs",
+            vec![
+                receiver,
+                go_arg_value(args, 0),
+                go_arg_value(args, 1),
+                go_arg_value(args, 2),
+                attrs_from(3),
+            ],
+        )),
+        "With" => Some(go_builtin_call(
+            "__go_slog_logger_With",
+            vec![
+                receiver,
+                go_array_of(args.iter().map(|a| a.value.clone()).collect()),
+            ],
+        )),
+        "WithGroup" => Some(go_builtin_call(
+            "__go_slog_logger_WithGroup",
+            vec![receiver, go_arg_value(args, 0)],
+        )),
+        "Enabled" => Some(go_builtin_call(
+            "__go_slog_logger_Enabled",
+            vec![receiver, go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        _ => None,
+    }
+}
+
 /// Rewrite a `slog.<Const>` member to its prelude value (`slog.LevelInfo` etc.).
 fn go_rewrite_slog_member(field: &str) -> Option<Expression> {
-    let helper = match field {
-        "LevelDebug" => "__go_slog_LevelDebug",
-        "LevelInfo" => "__go_slog_LevelInfo",
-        "LevelWarn" => "__go_slog_LevelWarn",
-        "LevelError" => "__go_slog_LevelError",
+    let value = match field {
+        "LevelDebug" => -4,
+        "LevelInfo" => 0,
+        "LevelWarn" => 4,
+        "LevelError" => 8,
         _ => return None,
     };
-    Some(go_builtin_call(helper, vec![]))
+    Some(Expression::int(value))
+}
+
+fn go_slog_level_string_literal(expr: &Expression) -> Option<&'static str> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) if *value <= -4 => Some("DEBUG"),
+        ExprKind::Lit(Literal::Int(value)) if *value < 4 => Some("INFO"),
+        ExprKind::Lit(Literal::Int(value)) if *value < 8 => Some("WARN"),
+        ExprKind::Lit(Literal::Int(_)) => Some("ERROR"),
+        _ => None,
+    }
 }
 
 /// Rewrite `slices.*` / `maps.*` calls to the slices/maps prelude helpers.
@@ -5702,6 +7804,16 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
         "url.URL" => Some("__goURL"),
         "url.Userinfo" => Some("__goUser"),
         "bytes.Buffer" => Some("__goBuffer"),
+        "json.RawMessage" => Some("__goRawMessage"),
+        "xml.Name" => Some("__goXMLName"),
+        "xml.CharData" => Some("[]byte"),
+        "xml.StartElement" => Some("__goXMLStartElement"),
+        "xml.EndElement" => Some("__goXMLEndElement"),
+        "xml.ProcInst" => Some("__goXMLProcInst"),
+        "xml.Decoder" => Some("__goXMLDecoder"),
+        "xml.Encoder" => Some("__goXMLEncoder"),
+        "xml.Comment" => Some("[]byte"),
+        "xml.Directive" => Some("[]byte"),
         "slog.Level" => Some("__goLevel"),
         "slog.Attr" => Some("__goAttr"),
         "slog.Logger" => Some("__goSlogLogger"),
@@ -6841,6 +8953,13 @@ fn go_normalize_type_conversion(
         return go_builtin_call("__go_str_from_char_code", vec![expr]);
     }
 
+    if type_name.trim() == "[]rune" {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(go_builtin_call("__go_string_runes", vec![expr])),
+            type_name: type_name.to_string(),
+        });
+    }
+
     Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
         type_name: type_name.to_string(),
@@ -7616,6 +9735,7 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
         if inner.as_rule() == Rule::field_decl {
             let mut field_names = Vec::new();
             let mut field_type: Option<String> = None;
+            let mut field_tag: Option<String> = None;
 
             for f_inner in inner.into_inner() {
                 match f_inner.as_rule() {
@@ -7628,6 +9748,7 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                     }
                     Rule::ident_name => field_names.push(f_inner.as_str().to_string()),
                     Rule::type_annotation => field_type = Some(walk_type(f_inner)),
+                    Rule::string_literal => field_tag = Some(unquote(f_inner.as_str())),
                     _ => {}
                 }
             }
@@ -7639,11 +9760,17 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
             }
 
             for fname in field_names {
+                let mut modifiers = Modifiers::default();
+                if let Some(tag) = field_tag.as_ref() {
+                    modifiers
+                        .decorators
+                        .push(Expression::string(&format!("__go_tag:{tag}")));
+                }
                 members.push(ClassMember::Field {
                     name: fname,
                     type_hint: field_type.clone(),
                     init: None,
-                    modifiers: Modifiers::default(),
+                    modifiers,
                     with_events: false,
                     array_bounds: field_type.as_deref().and_then(go_fixed_array_bounds_exprs),
                 });
