@@ -8,6 +8,11 @@ extensions = ["vb"]
 
 [compiler]
 field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
+# VB `For` gives the loop variable a fresh binding per iteration, so closures
+# capture the per-iteration value (like JS `let`-in-`for`).
+for_loop_per_iteration_binding = true
+# VB auto-invokes a bare reference to a parameterless function (like Ruby).
+bare_name_invokes_parameterless_function = true
 reflection_type_naming = "dotnet"   # .NET BCL: System.* root + primitive naming
 # namespaceplan.md (dotnet phase): qualified System.* chains resolve through
 # the common resolver over the dotnet.* tree; legacy cascade is the fallback
@@ -90,6 +95,12 @@ clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
 cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
 cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
+
+# `Integer.TryParse(s, r)` is normalized in the walker to the out-param desugar
+# `((r = Integer.TryParse(s)) != null) OrElse ((r = 0) = Nothing)`, so the
+# compiler only ever sees the 1-arg core, which parses to int-or-null.
+"integer.tryparse" = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
+"int32.tryparse"   = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
 cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
@@ -516,7 +527,7 @@ substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 
 indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
 lastindexof   = { emit = "host:ecma:array:lastIndexOf",   min_args = 1, max_args = 1 }
 contains      = { emit = "common:str_includes",        min_args = 1, max_args = 1 }
-tostring      = { emit = "common:dotnet.tostring",     min_args = 0, max_args = 0 }
+tostring      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 padleft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
 padright      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
 
@@ -625,6 +636,23 @@ nextdouble     = { emit = "common:dotnet.random_next_double", min_args = 0, max_
 # ────────────────────────────────────────────────────────────────────────────
 # These trigger the compiler's HOF dispatch (emit_for_in loops).
 # Method names are lowercase (VB is case-insensitive).
+
+# Return types of builtin free functions, for inference on chained member access
+# (e.g. `Environ("PATH").Length`). Keyed case-insensitively (VB).
+[builtin_return_types]
+Command = "String"
+Environ = "String"
+Timer   = "Double"
+
+# DateTime field-extractor functions: `Year(d)` → `d.Year` (applied only when the
+# argument is a DateTime). Function name (case-insensitive) → DateTime field.
+[datetime_field_functions]
+Year   = "Year"
+Month  = "Month"
+Day    = "Day"
+Hour   = "Hour"
+Minute = "Minute"
+Second = "Second"
 
 [array_methods]
 findindex     = "__array_findIndex"

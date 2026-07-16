@@ -801,6 +801,21 @@ fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
             build_dotted_expr("System.Math.Sign"),
             arguments.to_vec(),
         )),
+        // VB `Array(a, b, c)` is an array literal of its arguments — normalize
+        // to a common `ExprKind::Array` here so the shared compiler needs no
+        // VB-specific `Array` intercept. `Array.Empty()` / `Array.IndexOf(...)`
+        // are MEMBER calls and never reach this bare-identifier path.
+        "array" => Some(Expression::new(ExprKind::Array(
+            arguments
+                .iter()
+                .map(|arg| ArrayElement {
+                    key: None,
+                    value: arg.value.clone(),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ))),
         // VB `Randomize` / `Randomize(seed)` — no-op; VB `Rnd()` routes to
         // wasi:random/random.random so seeding is the engine's concern.
         "randomize" => Some(Expression::new(ExprKind::Lit(Literal::Null))),
@@ -3953,6 +3968,10 @@ fn parse_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     Ok(statements)
 }
 
+/// Monotonic sequence for VB `For` loop-local temp names (`__vb_for_limit_N`,
+/// `__vb_for_step_N`), keeping nested/sequential loops' hoisted temps distinct.
+static FOR_TEMP_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
@@ -3987,21 +4006,6 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    // Convert VB For to C-style For:
-    // init: Dim variable = start
-    // cond: variable <= end (or >= end if step is negative)
-    // update: variable = variable + step
-    let init = Statement::new(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(variable.clone()),
-            type_hint: variable_type,
-            init: Some(start),
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Dim,
-    });
-
     let step_val = step.unwrap_or_else(|| Expression::int(1));
     // VB ranges count up by default but `Step -N` reverses the
     // direction; the loop condition flips accordingly. Detect a
@@ -4022,17 +4026,73 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     } else {
         BinOp::LtEq
     };
+
+    // VB evaluates the `To` limit and `Step` EXACTLY ONCE at loop entry — unlike
+    // a C-style `for`, whose condition re-runs every iteration. Emitting `end`
+    // directly into the condition re-evaluates it each pass; when it has side
+    // effects that raise the ceiling (`For i = 1 To GetLimit()` where GetLimit
+    // increments), the loop never terminates. So hoist the limit — and a
+    // non-literal step — into loop-local temps evaluated once in the init.
+    // A literal step is inlined (no side effects, and it drives the direction
+    // choice above).
+    let seq = FOR_TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let limit_name = format!("__vb_for_limit_{seq}");
+    let mut declarations = vec![
+        VarDeclarator {
+            pattern: BindingPattern::Ident(variable.clone()),
+            type_hint: variable_type,
+            init: Some(start),
+            array_bounds: None,
+            with_events: false,
+        },
+        VarDeclarator {
+            pattern: BindingPattern::Ident(limit_name.clone()),
+            type_hint: None,
+            init: Some(end),
+            array_bounds: None,
+            with_events: false,
+        },
+    ];
+
+    let step_operand = if matches!(
+        &step_val.kind,
+        ExprKind::Lit(Literal::Int(_))
+            | ExprKind::Lit(Literal::Float(_))
+            | ExprKind::Unary { op: UnaryOp::Neg, .. }
+    ) {
+        step_val
+    } else {
+        let step_name = format!("__vb_for_step_{seq}");
+        declarations.push(VarDeclarator {
+            pattern: BindingPattern::Ident(step_name.clone()),
+            type_hint: None,
+            init: Some(step_val),
+            array_bounds: None,
+            with_events: false,
+        });
+        Expression::ident(&step_name)
+    };
+
+    // Convert VB For to C-style For:
+    // init: Dim variable = start, __vb_for_limit = end [, __vb_for_step = step]
+    // cond: variable <= __vb_for_limit (or >= if step is negative)
+    // update: variable = variable + step
+    let init = Statement::new(StmtKind::VarDecl {
+        declarations,
+        kind: VarDeclKind::Dim,
+    });
+
     let cond = Expression::new(ExprKind::Binary {
         op: cond_op,
         left: Box::new(Expression::ident(&variable)),
-        right: Box::new(end),
+        right: Box::new(Expression::ident(&limit_name)),
     });
     let update = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(&variable)),
         value: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(Expression::ident(&variable)),
-            right: Box::new(step_val),
+            right: Box::new(step_operand),
         })),
     });
 
@@ -5474,6 +5534,67 @@ fn parse_postfix_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(expr)
 }
 
+/// Out-param desugar for `X.TryParse(s, r)` — VB passes the second argument
+/// ByRef by signature, so the out-param convention is normalized here: the
+/// 1-arg core resolves through the common .NET surface (parsed value or null)
+/// with no shared-compiler intercept. Returns `None` for uncovered receivers.
+fn build_dotnet_try_parse_desugar(
+    recv: Option<&str>,
+    callee: &Expression,
+    input: &Expression,
+    out_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    let core = Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: vec![Argument::positional(input.clone())],
+        optional: false,
+    });
+    let assign_core = Expression::new(ExprKind::Assign {
+        target: Box::new(out_target.clone()),
+        value: Box::new(core),
+    });
+    let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
+
+    if recv.eq_ignore_ascii_case("Guid") || recv.eq_ignore_ascii_case("System.Guid") {
+        // `(r = Guid.TryParse(s)) <> Nothing` — Guid's failure out value is
+        // never observed, so a null sentinel suffices.
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(assign_core),
+            right: Box::new(null_lit()),
+        }));
+    }
+    if recv.eq_ignore_ascii_case("Integer")
+        || recv.eq_ignore_ascii_case("Int32")
+        || recv.eq_ignore_ascii_case("System.Int32")
+    {
+        // `((r = Integer.TryParse(s)) <> Nothing) OrElse ((r = 0) = Nothing)` —
+        // success: first operand true, `r` holds the parsed int; failure: `r`
+        // is null, then the fallback sets `r = 0` and yields false, matching
+        // .NET's zero-on-failure out value.
+        let success = Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(assign_core),
+            right: Box::new(null_lit()),
+        });
+        let fallback = Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::Assign {
+                target: Box::new(out_target.clone()),
+                value: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+            })),
+            right: Box::new(null_lit()),
+        });
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(success),
+            right: Box::new(fallback),
+        }));
+    }
+    None
+}
+
 fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expression, String> {
     match chain.as_rule() {
         Rule::member_chain_invoke => {
@@ -5486,6 +5607,21 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             if let ExprKind::Ident(name) = &expr.kind {
                 if let Some(rewritten) = canonicalize_call(name, &arguments) {
                     return Ok(rewritten);
+                }
+            }
+            // `X.TryParse(s, r)` out-param normalization (see
+            // `build_dotnet_try_parse_desugar`). `expr` is the `Member` callee.
+            if let ExprKind::Member { object, field, .. } = &expr.kind {
+                if field.eq_ignore_ascii_case("TryParse") && arguments.len() == 2 {
+                    let recv = dotted_expr_name(object);
+                    if let Some(rewritten) = build_dotnet_try_parse_desugar(
+                        recv.as_deref(),
+                        &expr,
+                        &arguments[0].value,
+                        &arguments[1].value,
+                    ) {
+                        return Ok(rewritten);
+                    }
                 }
             }
             Ok(Expression::new(ExprKind::Call {
@@ -5537,6 +5673,25 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                             build_vb_bankers_round_expr(arguments[0].value.clone())
                         });
                     }
+                }
+            }
+            // `X.TryParse(s, r)` out-param normalization (see
+            // `build_dotnet_try_parse_desugar`) for the combined name+args
+            // grammar form; `expr` is the receiver, `name` the method.
+            if name.eq_ignore_ascii_case("TryParse") && arguments.len() == 2 {
+                let recv = dotted_expr_name(&expr);
+                let callee = Expression::new(ExprKind::Member {
+                    object: Box::new(expr.clone()),
+                    field: name.clone(),
+                    null_safe: false,
+                });
+                if let Some(rewritten) = build_dotnet_try_parse_desugar(
+                    recv.as_deref(),
+                    &callee,
+                    &arguments[0].value,
+                    &arguments[1].value,
+                ) {
+                    return Ok(rewritten);
                 }
             }
             let callee = Expression::new(ExprKind::Member {

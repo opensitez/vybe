@@ -47,6 +47,32 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_FLOOR, line);
 }
 
+/// `int.TryParse(s)` core for the walker's out-param desugar: like
+/// `emit_parse_int` but yields `null` instead of throwing on failure, so
+/// `(r = int.TryParse(s)) != null` is the success bool. The desugar restores
+/// .NET's zero-on-failure out value with a `|| ((r = 0) == null)` fallback.
+/// Stack: `[s]` → `[i32 | null]`.
+pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
+    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
+    chunk.emit(1, line);
+    let result = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+
+    // `r === r` is the canonical NaN test: NaN fails self-equality.
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    chunk.emit_else(line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_end(line);
+}
+
 /// `double.Parse(s)` — `Number(s)` with NaN guard. Stack: `[s]` → `[f64]`.
 pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     let number_idx = chunks[0].add_import("ecma:number", "Number");

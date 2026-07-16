@@ -25,6 +25,9 @@ case_sensitive = true
 # `bool f = 5>3`, `flag switch{true=>…}`, and `n.HasValue` behave/print as
 # `True`/`False` instead of flattening to `1`/`0`.
 materialize_bool_results = true
+# `5 / 2 == 2`: `/` truncates when both operands are integers (C# / Java / C /
+# Go semantics). VB opts out — its `/` is always real division, `\` is integer.
+integer_division_on_slash = true
 string_indexing = "zero_based"
 entry_point = "Main"
 dynamic_add = true
@@ -124,10 +127,11 @@ tuple_literals_tagged = true
 "decimal.Floor"      = { emit = "common:dotnet.system.math.floor", min_args = 1, max_args = 1 }
 "decimal.Ceiling"    = { emit = "common:dotnet.system.math.ceiling", min_args = 1, max_args = 1 }
 "decimal.Abs"        = { emit = "common:dotnet.system.math.abs", min_args = 1, max_args = 1 }
-# TryParse: `int.TryParse(s, out result)` returns bool. Stays on the
-# silent intrinsic since failure shouldn't throw (returns false).
-"Int32.TryParse"     = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
-"int.TryParse"       = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
+# TryParse: `int.TryParse(s, out r)` is normalized in the walker to the
+# out-param desugar `((r = int.TryParse(s)) != null) || ((r = 0) == null)`,
+# so the compiler only ever sees the 1-arg core, which parses to int-or-null.
+"Int32.TryParse"     = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
+"int.TryParse"       = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
@@ -236,7 +240,7 @@ IndexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 
 LastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
 PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
 PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
-ToString      = { emit = "common:dotnet.tostring",     min_args = 0, max_args = 0 }
+ToString      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
 Insert        = { emit = "common:dotnet.str_insert",   min_args = 2, max_args = 2 }
 Remove        = [

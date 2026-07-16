@@ -14928,6 +14928,69 @@ fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -
 // syntax for what other languages express as `arr.join(sep)`. We rewrite it to
 // the canonical instance-method form so the compiler dispatches it through the
 // shared value-method path with the correct `this` arg ordering.
+/// Out-param desugar for `X.TryParse(s, out r)` (see `canonicalize_method_call`).
+/// The 1-arg core resolves through the common .NET surface; the assignment
+/// expression yields the assigned value, so a null comparison gives the success
+/// bool while writing the out target. Returns `None` for receivers not covered
+/// here (they keep the ordinary call form). Kept a free fn so the shape is
+/// obvious and testable.
+fn build_dotnet_try_parse_desugar(
+    recv: Option<&str>,
+    callee: &Expression,
+    input: &Expression,
+    out_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    let core = Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: vec![Argument::positional(input.clone())],
+        optional: false,
+    });
+    let assign_core = Expression::new(ExprKind::Assign {
+        target: Box::new(out_target.clone()),
+        value: Box::new(core),
+    });
+    let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
+
+    if recv.eq_ignore_ascii_case("Guid") {
+        // `(r = Guid.TryParse(s)) != null` — Guid's failure out value
+        // (Guid.Empty) is never observed, so a null sentinel suffices.
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(assign_core),
+            right: Box::new(null_lit()),
+        }));
+    }
+    if recv.eq_ignore_ascii_case("int")
+        || recv.eq_ignore_ascii_case("Int32")
+        || recv.eq_ignore_ascii_case("Integer")
+    {
+        // `((r = int.TryParse(s)) != null) || ((r = 0) == null)` — on success
+        // the first operand is true and `r` holds the parsed int; on failure
+        // `r` is null, then the fallback sets `r = 0` and yields false
+        // (`0 == null` is false), matching .NET's zero-on-failure out value.
+        let success = Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(assign_core),
+            right: Box::new(null_lit()),
+        });
+        let fallback = Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::Assign {
+                target: Box::new(out_target.clone()),
+                value: Box::new(Expression::int(0)),
+            })),
+            right: Box::new(null_lit()),
+        });
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(success),
+            right: Box::new(fallback),
+        }));
+    }
+    None
+}
+
 fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
     // LINQ surface (First / Last / Skip / Take / Average / FirstOrDefault /
     // Distinct / Aggregate / OrderByDescending / Count(pred) / ToList /
@@ -14942,6 +15005,22 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        // `X.TryParse(s, out r)` — the `out`-param calling convention is C#
+        // syntax, so normalize it in the walker: the 1-arg core resolves
+        // through the common .NET surface (returning the parsed value or null)
+        // with no shared-compiler intercept.
+        if field.eq_ignore_ascii_case("TryParse") && args.len() == 2 && args[1].by_ref {
+            let recv = match &object.kind {
+                ExprKind::Ident(n) => Some(n.as_str()),
+                ExprKind::Member { field: f, .. } => Some(f.as_str()),
+                _ => None,
+            };
+            if let Some(rewritten) =
+                build_dotnet_try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
+            {
+                return rewritten;
+            }
+        }
         if let Some(rewritten) =
             rewrite_csharp_string_instance_call((**object).clone(), field, &args)
         {

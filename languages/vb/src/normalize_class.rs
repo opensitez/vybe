@@ -229,6 +229,7 @@ pub fn normalize_class(
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
+        bases: Vec::new(),
         interfaces: interfaces.to_vec(),
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,

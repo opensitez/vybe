@@ -961,6 +961,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.parse_int" => {
             crate::emitter::core::parse_adapter::emit_parse_int(chunks, current, line)
         }
+        "dotnet.try_parse_int" => {
+            crate::emitter::core::parse_adapter::emit_try_parse_int(chunks, current, line)
+        }
         "dotnet.parse_byte" => {
             crate::emitter::core::parse_adapter::emit_parse_int(chunks, current, line)
         }

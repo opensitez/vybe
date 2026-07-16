@@ -42,6 +42,19 @@ Console.WriteLine(ok);
 }
 
 #[test]
+fn guid_to_string_with_format_specifier_renders_hyphenated_value() {
+    assert_eq!(
+        run_csharp(
+            r#"
+var id = System.Guid.Parse("11111111-2222-3333-4444-555555555555");
+Console.WriteLine(id.ToString("D").StartsWith("11111111"));
+"#
+        ),
+        &["True"]
+    );
+}
+
+#[test]
 fn guid_new_guid_produces_unique_values_on_successive_calls() {
     assert_eq!(
         run_csharp(

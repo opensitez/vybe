@@ -71,3 +71,28 @@ pub fn register_namespace_tree() {
         }
     });
 }
+
+#[cfg(test)]
+mod resolve_gap_tests {
+    use vybe_emitter::namespaces::{resolve_path, ResolutionTarget};
+
+    #[test]
+    fn delegate_combine_resolves_via_tree() {
+        super::register_namespace_tree();
+        let r = resolve_path(&["dotnet", "system", "delegate", "combine"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "delegates.combine"),
+            other => panic!("expected CommonEmit(delegates.combine), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn guid_parse_resolves_via_tree() {
+        super::register_namespace_tree();
+        let r = resolve_path(&["dotnet", "system", "guid", "parse"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.guid_parse"),
+            other => panic!("expected CommonEmit(dotnet.guid_parse), got {other:?}"),
+        }
+    }
+}

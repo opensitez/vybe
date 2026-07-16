@@ -16,10 +16,9 @@
 //! emitters wherever possible so semantics stay aligned with the
 //! rest of the standard library.
 
-use vybe_emitter::instructions::core_wasm;
-use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_emitter::collections;
 use vybe_emitter::generators;
@@ -749,39 +748,14 @@ pub fn emit_linq_aggregate(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `arr.OrderByDescending(keyFn)` — same as `OrderBy` then `reverse`.
 /// Stack: [arr, keyFn] → [array].
 pub fn emit_linq_order_by_descending(chunks: &mut [Chunk], current: usize, line: u32) {
-    // `__vybe_sort_by_key(arr, keyFn)` is the same routine `OrderBy`
-    // already uses — call it then reverse the result in place.
-    let global = chunks[current].add_constant(Value::String(Arc::from("__vybe_sort_by_key")));
-    // Stack: [arr, keyFn] → need [globalfn, arr, keyFn].
-    // Pop both into locals so we can stage the call cleanly.
-    let arr_slot = alloc_locals(&mut chunks[current], 2);
-    let fn_slot = arr_slot + 1;
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    // Reverse in place — emit_reverse is the array reverse opcode.
+    collections::emit_sort_by_key_in_place(chunks, current, line);
     collections::emit_reverse(chunks, current, line);
 }
 
 /// `arr.OrderBy(keyFn)` — ascending stable sort by projected key.
-/// Stack: [arr, keyFn] → [sorted array]. Same `__vybe_sort_by_key` routine as
-/// `OrderByDescending`, without the trailing reverse.
+/// Stack: [arr, keyFn] → [sorted array].
 pub fn emit_linq_order_by(chunks: &mut [Chunk], current: usize, line: u32) {
-    let global = chunks[current].add_constant(Value::String(Arc::from("__vybe_sort_by_key")));
-    let arr_slot = alloc_locals(&mut chunks[current], 2);
-    let fn_slot = arr_slot + 1;
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    collections::emit_sort_by_key_in_place(chunks, current, line);
 }
 
 /// `arr.Select(fn)` — invoke `map` on the receiver.
