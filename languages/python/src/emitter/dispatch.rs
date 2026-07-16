@@ -26,6 +26,48 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.next" => {
             crate::emitter::collections_adapter::emit_pynext(chunks, current, argc, line)
         }
+        "python.stat_quantiles" => {
+            crate::emitter::statistics_adapter::emit_quantiles(chunks, current, argc, line)
+        }
+        "python.stat_median_grouped" => {
+            crate::emitter::statistics_adapter::emit_median_grouped(chunks, current, argc, line)
+        }
+        "python.stat_mode" => {
+            crate::emitter::statistics_adapter::emit_mode(chunks, current, argc, line)
+        }
+        "python.stat_multimode" => {
+            crate::emitter::statistics_adapter::emit_multimode(chunks, current, argc, line)
+        }
+        "python.stat_mean" => {
+            crate::emitter::statistics_adapter::emit_mean(chunks, current, argc, line)
+        }
+        "python.stat_median" => {
+            crate::emitter::statistics_adapter::emit_median(chunks, current, argc, line)
+        }
+        "python.stat_median_low" => {
+            crate::emitter::statistics_adapter::emit_median_low(chunks, current, argc, line)
+        }
+        "python.stat_median_high" => {
+            crate::emitter::statistics_adapter::emit_median_high(chunks, current, argc, line)
+        }
+        "python.stat_variance" => {
+            crate::emitter::statistics_adapter::emit_variance(chunks, current, argc, line)
+        }
+        "python.stat_pvariance" => {
+            crate::emitter::statistics_adapter::emit_pvariance(chunks, current, argc, line)
+        }
+        "python.stat_stdev" => {
+            crate::emitter::statistics_adapter::emit_stdev(chunks, current, argc, line)
+        }
+        "python.stat_pstdev" => {
+            crate::emitter::statistics_adapter::emit_pstdev(chunks, current, argc, line)
+        }
+        "python.stat_harmonic_mean" => {
+            crate::emitter::statistics_adapter::emit_harmonic_mean(chunks, current, argc, line)
+        }
+        "python.stat_geometric_mean" => {
+            crate::emitter::statistics_adapter::emit_geometric_mean(chunks, current, argc, line)
+        }
         "python.date_new" => {
             crate::emitter::datetime_adapter::emit_date_new(chunks, current, argc, line)
         }
@@ -100,6 +142,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.timetuple" => {
             crate::emitter::datetime_adapter::emit_timetuple(chunks, current, argc, line)
         }
+        "python.dt_pad" => {
+            crate::emitter::datetime_adapter::emit_dt_pad(chunks, current, argc, line)
+        }
+        "python.dt_replace" => {
+            crate::emitter::datetime_adapter::emit_dt_replace(chunks, current, argc, line)
+        }
         "python.cal_weekday" => {
             crate::emitter::datetime_adapter::emit_cal_weekday(chunks, current, argc, line)
         }
@@ -169,6 +217,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.bytes_decode" => {
             crate::emitter::runtime_adapter::emit_bytes_decode(chunks, current, argc, line)
         }
+        "python.pyneg" => {
+            crate::emitter::runtime_adapter::emit_pyneg(chunks, current, line)
+        }
+        "python.pylt" => crate::emitter::runtime_adapter::emit_pylt(chunks, current, line),
+        "python.pygt" => crate::emitter::runtime_adapter::emit_pygt(chunks, current, line),
+        "python.pyle" => crate::emitter::runtime_adapter::emit_pyle(chunks, current, line),
+        "python.pyge" => crate::emitter::runtime_adapter::emit_pyge(chunks, current, line),
         "python.pyadd" => {
             crate::emitter::runtime_adapter::emit_pyadd(chunks, current, line)
         }

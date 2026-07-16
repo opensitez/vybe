@@ -55,6 +55,11 @@ uses_normalize_class = true
 
 # ── Internal operators (emitter adapters) ────────────────────────────────────
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
+__pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
+__pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
+__pygt__        = { emit = "common:python.pygt",             min_args = 2, max_args = 2 }
+__pyle__        = { emit = "common:python.pyle",             min_args = 2, max_args = 2 }
+__pyge__        = { emit = "common:python.pyge",             min_args = 2, max_args = 2 }
 __pymul__       = { emit = "common:python.pymul",            min_args = 2, max_args = 2 }
 __pysub__       = { emit = "common:python.pysub",            min_args = 2, max_args = 2 }
 __pytruediv__   = { emit = "common:python.pytruediv",        min_args = 2, max_args = 2 }
@@ -209,6 +214,33 @@ __py_date_min             = { emit = "common:python.date_min",   min_args = 0, m
 __py_date_max             = { emit = "common:python.date_max",   min_args = 0, max_args = 0 }
 __py_timezone_utc         = { emit = "common:python.timezone_utc", min_args = 0, max_args = 0 }
 __py_timedelta_resolution = { emit = "common:python.timedelta_resolution", min_args = 0, max_args = 0 }
+# `d.replace(year=…)` — the walker routes here so the name-keyed
+# `value_methods` `replace` stays `str.replace`'s.
+__py_dt_replace           = { emit = "common:python.dt_replace", min_args = 7, max_args = 7 }
+# The padded component a compile-time-expanded `strftime` emits.
+__py_dt_pad               = { emit = "common:python.dt_pad",     min_args = 2, max_args = 2 }
+
+# ── Statistics module ────────────────────────────────────────────────────────
+# Ordinary arithmetic over a list — there is no `Math.mean` in ECMA to route
+# to, so these are emitted in `emitter/statistics_adapter.rs` from
+# `ecma:math.*` rather than invented as host fns. Results are f64, so Python's
+# own display rules apply unchanged (`mean([42])` → 42, not 42.0).
+
+"statistics.mean"           = { emit = "common:python.stat_mean",        min_args = 1, max_args = 1 }
+"statistics.fmean"          = { emit = "common:python.stat_mean",        min_args = 1, max_args = 2 }
+"statistics.median"         = { emit = "common:python.stat_median",      min_args = 1, max_args = 1 }
+"statistics.mode"           = { emit = "common:python.stat_mode",        min_args = 1, max_args = 1 }
+"statistics.quantiles"      = { emit = "common:python.stat_quantiles",   min_args = 1, max_args = 3 }
+"statistics.median_grouped" = { emit = "common:python.stat_median_grouped", min_args = 1, max_args = 2 }
+"statistics.multimode"      = { emit = "common:python.stat_multimode",   min_args = 1, max_args = 1 }
+"statistics.median_low"     = { emit = "common:python.stat_median_low",  min_args = 1, max_args = 1 }
+"statistics.median_high"    = { emit = "common:python.stat_median_high", min_args = 1, max_args = 1 }
+"statistics.variance"       = { emit = "common:python.stat_variance",    min_args = 1, max_args = 2 }
+"statistics.pvariance"      = { emit = "common:python.stat_pvariance",   min_args = 1, max_args = 2 }
+"statistics.stdev"          = { emit = "common:python.stat_stdev",       min_args = 1, max_args = 2 }
+"statistics.pstdev"         = { emit = "common:python.stat_pstdev",      min_args = 1, max_args = 2 }
+"statistics.harmonic_mean"  = { emit = "common:python.stat_harmonic_mean",  min_args = 1, max_args = 2 }
+"statistics.geometric_mean" = { emit = "common:python.stat_geometric_mean", min_args = 1, max_args = 1 }
 
 # ── Random module ────────────────────────────────────────────────────────────
 

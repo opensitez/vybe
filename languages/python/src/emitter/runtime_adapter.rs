@@ -137,14 +137,130 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunk.emit_call(concat, 2, line);
     chunk.emit_else(line);
-    emit_object_binop_or(
+    emit_datetime_binop_or(
         chunk,
         a_slot,
         b_slot,
+        DtOp::Add,
         "__add__",
         vybe_emitter::ops::emit_dyn_add,
         line,
     );
+    chunk.emit_end(line);
+}
+
+/// `date`/`datetime`/`timedelta` arithmetic, else the normal dunder/dyn
+/// path. The datetime values are plain objects, so they would otherwise
+/// reach `emit_dyn_add`, which coerces through `wasm:js-number.toF64` and
+/// throws on an object. Their arithmetic is defined in
+/// `datetime_adapter::emit_dt_binop`; this only chooses when to use it.
+fn emit_datetime_binop_or(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    op: DtOp,
+    dunder: &str,
+    fallback: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    crate::emitter::datetime_adapter::emit_is_datetime(chunk, a_slot, line);
+    chunk.emit_if_value(line);
+    crate::emitter::datetime_adapter::emit_dt_binop(chunk, a_slot, b_slot, op, line);
+    chunk.emit_else(line);
+    emit_object_binop_or(chunk, a_slot, b_slot, dunder, fallback, line);
+    chunk.emit_end(line);
+}
+
+use crate::emitter::datetime_adapter::DtOp;
+
+/// `-a` — a duration negates, an object may define `__neg__`, anything else
+/// negates numerically. Stack: `[a]` → `[result]`.
+pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    crate::emitter::datetime_adapter::emit_is_datetime(chunk, a_slot, line);
+    chunk.emit_if_value(line);
+    crate::emitter::datetime_adapter::emit_dt_neg(chunk, a_slot, line);
+    chunk.emit_else(line);
+    emit_unary_dunder_or(chunk, a_slot, "__neg__", vybe_emitter::ops::emit_dyn_neg, line);
+    chunk.emit_end(line);
+}
+
+/// `<`, `>`, `<=`, `>=`. Datetime values order by the instant or duration
+/// they denote; an object may define the matching dunder; everything else
+/// gets exactly the comparison the shared emitter already performed.
+pub fn emit_pylt(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_relational(chunks, current, "__lt__", vybe_emitter::ops::emit_dyn_lt, line);
+}
+pub fn emit_pygt(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_relational(chunks, current, "__gt__", vybe_emitter::ops::emit_dyn_gt, line);
+}
+pub fn emit_pyle(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_relational(chunks, current, "__le__", vybe_emitter::ops::emit_dyn_le, line);
+}
+pub fn emit_pyge(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_relational(chunks, current, "__ge__", vybe_emitter::ops::emit_dyn_ge, line);
+}
+
+fn emit_relational(
+    chunks: &mut [Chunk],
+    current: usize,
+    dunder: &str,
+    cmp: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    crate::emitter::datetime_adapter::emit_is_datetime(chunk, a_slot, line);
+    chunk.emit_if_value(line);
+    crate::emitter::datetime_adapter::emit_dt_cmp(chunk, a_slot, b_slot, cmp, line);
+    chunk.emit_else(line);
+    emit_object_binop_or(chunk, a_slot, b_slot, dunder, cmp, line);
+    chunk.emit_end(line);
+    // The comparison ops yield an i32; Python's `bool` is a real value.
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+}
+
+/// A user `__neg__` when the operand is an object carrying one, else
+/// `fallback`. Mirrors `emit_object_binop_or` for the one-operand case.
+fn emit_unary_dunder_or(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    dunder: &str,
+    fallback: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(dunder)));
+    let method = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    fallback(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    fallback(chunk, line);
     chunk.emit_end(line);
 }
 
@@ -571,8 +687,8 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(str_repeat, 2, line);
     chunk.emit_else(line);
 
-    // user `__mul__` on an object, else numeric multiply
-    emit_object_binop_or(chunk, a_slot, b_slot, "__mul__", emit_f64_mul, line);
+    // `timedelta * n`, else user `__mul__` on an object, else numeric multiply
+    emit_datetime_binop_or(chunk, a_slot, b_slot, DtOp::Mul, "__mul__", emit_f64_mul, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -648,7 +764,13 @@ fn emit_arith_dunder(chunk: &mut Chunk, dunder: &str, fallback: fn(&mut Chunk, u
     let a_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-    emit_object_binop_or(chunk, a_slot, b_slot, dunder, fallback, line);
+    // `-` is the only one of these datetime defines (`a - b`); the rest
+    // fall straight through to the dunder/numeric path for every operand.
+    if dunder == "__sub__" {
+        emit_datetime_binop_or(chunk, a_slot, b_slot, DtOp::Sub, dunder, fallback, line);
+    } else {
+        emit_object_binop_or(chunk, a_slot, b_slot, dunder, fallback, line);
+    }
 }
 
 /// Python `.count(x)` — for arrays, count element occurrences.

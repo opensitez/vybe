@@ -142,6 +142,7 @@ fn preprocess_indentation(source: &str) -> String {
 
 pub fn parse(source: &str) -> Result<Module, String> {
     PY_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
+    PY_FROM_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
     PY_SYS_MODULES_BOUND.with(|b| b.set(false));
     PY_DEFINED_CLASSES.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
@@ -1025,6 +1026,8 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                     // via `NormalClass.explicit_self_param` (set by
                     // normalize_class).
                     members.push(ClassMember::Constructor {
+                        // Python has one constructor, `__init__` — unnamed.
+                        name: None,
                         params: params.clone(),
                         body: body.clone(),
                         base_args: None,
@@ -2109,6 +2112,8 @@ fn walk_import_from(pair: Pair<Rule>) -> Result<Import, String> {
         }
     }
 
+    note_from_imported_module(&module);
+
     if is_wildcard {
         Ok(Import {
             kind: ImportKind::Wildcard {
@@ -2419,6 +2424,18 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
                             right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
                         });
+                    } else if let Some(helper) = py_relational_helper(op) {
+                        // `<`/`>`/`<=`/`>=` route through a helper so an
+                        // object operand can be ordered (`date > date`, a user
+                        // `__lt__`). The shared path coerces both sides via
+                        // `wasm:js-number.toF64`, which throws on an object.
+                        // Numbers and strings still reach that same comparison
+                        // through the helper's fallback.
+                        left = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(helper)),
+                            args: vec![Argument::positional(left), Argument::positional(right)],
+                            optional: false,
+                        });
                     } else {
                         left = Expression::new(ExprKind::Binary {
                             op,
@@ -2459,6 +2476,22 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // unary_op ~ unary
             let op_str = inner[0].as_str().trim();
             let operand = walk_expression(inner.pop().ok_or("Empty unary")?)?;
+            // `-x` routes through `__pyneg__` so an object operand can define
+            // it (`-timedelta(days=1)`). The shared unary path coerces through
+            // `wasm:js-number.toF64`, which throws on an object. A numeric
+            // literal keeps the plain node, so `-1` stays a constant.
+            if op_str == "-"
+                && !matches!(
+                    operand.kind,
+                    ExprKind::Lit(Literal::Int(_) | Literal::Float(_))
+                )
+            {
+                return Ok(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__pyneg__")),
+                    args: vec![Argument::positional(operand)],
+                    optional: false,
+                });
+            }
             let op = match op_str {
                 "-" => UnaryOp::Neg,
                 "+" => UnaryOp::Pos,
@@ -2666,6 +2699,20 @@ thread_local! {
     static PY_SYS_MODULES_BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PY_IMPORTED_MODULES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Modules named by `from X import y`. Kept apart from
+    /// `PY_IMPORTED_MODULES` because `from` binds the *names*, not `X`
+    /// itself — recording `X` there would make `desugar_member_reads`
+    /// treat it as a live namespace it never bound.
+    static PY_FROM_IMPORTED_MODULES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn note_from_imported_module(name: &str) {
+    PY_FROM_IMPORTED_MODULES.with(|m| m.borrow_mut().insert(name.to_string()));
+}
+
+fn is_from_imported_module(name: &str) -> bool {
+    PY_FROM_IMPORTED_MODULES.with(|m| m.borrow().contains(name))
 }
 
 fn note_imported_module(name: &str) {
@@ -2718,6 +2765,7 @@ fn py_known_module(root: &str) -> bool {
                 | "time"
                 | "datetime"
                 | "calendar"
+                | "zoneinfo"
                 | "collections"
                 | "itertools"
                 | "functools"
@@ -2909,6 +2957,7 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "MutableMapping",
         ],
         "json" => &["dumps", "loads", "dump", "load"],
+        "zoneinfo" => &["ZoneInfo", "available_timezones", "ZoneInfoNotFoundError"],
         "glob" => &["glob", "iglob", "escape", "has_magic"],
         "fnmatch" => &["fnmatch", "fnmatchcase", "filter", "translate"],
         _ => return None,
@@ -3181,6 +3230,196 @@ fn is_defined_class(name: &str) -> bool {
 /// Build a call expression, normalising `ClassName(args)` (a call whose callee
 /// is a declared class) to `ExprKind::New` so construction has one canonical
 /// shape across languages. Any other callee stays a plain `Call`.
+/// The builtin a relational operator lowers to, mirroring how `+`/`-`
+/// route through `__pyadd__`/`__pysub__` for the same reason: only a
+/// Python-level helper can dispatch on an object operand.
+fn py_relational_helper(op: BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Lt => "__pylt__",
+        BinOp::Gt => "__pygt__",
+        BinOp::LtEq => "__pyle__",
+        BinOp::GtEq => "__pyge__",
+        _ => return None,
+    })
+}
+
+/// `strftime` directives this expands, as `(property, pad width)`.
+fn strftime_directive(spec: char) -> Option<(&'static str, i64)> {
+    Some(match spec {
+        'Y' => ("year", 4),
+        'm' => ("month", 2),
+        'd' => ("day", 2),
+        'H' => ("hour", 2),
+        'M' => ("minute", 2),
+        'S' => ("second", 2),
+        _ => return None,
+    })
+}
+
+/// `dt.strftime('%Y-%m-%d')` → `pad(dt['year'],4) + '-' + pad(dt['month'],2) …`
+///
+/// The components are already properties and the format is a literal, so
+/// the whole format expands at compile time — no runtime format scanner,
+/// and no host fn for it. Returns `None` for a non-literal format or a
+/// directive outside the set above, so the call is left alone rather than
+/// formatted wrongly.
+fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "strftime" || args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(fmt)) = &args[0].value.kind else {
+        return None;
+    };
+
+    let read = |prop: &str, width: i64| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__py_dt_pad")),
+            args: vec![
+                Argument::positional(Expression::new(ExprKind::Index {
+                    object: Box::new((**object).clone()),
+                    index: Box::new(Expression::string(prop)),
+                    null_safe: false,
+                })),
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(width)))),
+            ],
+            optional: false,
+        })
+    };
+
+    let mut parts: Vec<Expression> = Vec::new();
+    let mut lit = String::new();
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            lit.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => lit.push('%'),
+            Some(spec) => {
+                let (prop, width) = strftime_directive(spec)?;
+                if !lit.is_empty() {
+                    parts.push(Expression::string(&lit));
+                    lit.clear();
+                }
+                parts.push(read(prop, width));
+            }
+            None => lit.push('%'),
+        }
+    }
+    if !lit.is_empty() {
+        parts.push(Expression::string(&lit));
+    }
+
+    let mut iter = parts.into_iter();
+    let first = iter.next().unwrap_or_else(|| Expression::string(""));
+    Some(
+        iter.fold(first, |acc, part| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(acc),
+                right: Box::new(part),
+            })
+        })
+        .kind,
+    )
+}
+
+/// The components a datetime `replace` accepts, in the order the emitter
+/// reads them. `microsecond`/`tzinfo`/`fold` are accepted as keywords but
+/// have no effect on the ms-resolution, UTC-only value.
+const DT_REPLACE_PARAMS: &[&str] = &[
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "microsecond",
+    "tzinfo",
+    "fold",
+];
+
+/// `d.replace(year=2021)` → `__py_dt_replace(d, year, …, second)`.
+///
+/// `value_methods` are keyed by method name alone, so `replace` already
+/// belongs to `str.replace`. The two are told apart by shape rather than by
+/// receiver type: a datetime `replace` names its components
+/// (`replace(year=…)`), while `str.replace(old, new)` is positional. A call
+/// with no keywords is therefore left alone for the string path.
+fn datetime_replace_call(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "replace" || args.is_empty() {
+        return None;
+    }
+    if !args
+        .iter()
+        .all(|a| matches!(a.name.as_deref(), Some(n) if DT_REPLACE_PARAMS.contains(&n)))
+    {
+        return None;
+    }
+    let mut call_args = vec![Argument::positional((**object).clone())];
+    for prop in &DT_REPLACE_PARAMS[..6] {
+        let value = args
+            .iter()
+            .find(|a| a.name.as_deref() == Some(*prop))
+            .map(|a| a.value.clone())
+            .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+        call_args.push(Argument::positional(value));
+    }
+    Some(ExprKind::Call {
+        callee: Box::new(Expression::ident("__py_dt_replace")),
+        args: call_args,
+        optional: false,
+    })
+}
+
+/// `zoneinfo` — `ZoneInfo(key)` is a value carrying its key, and
+/// `available_timezones()` is the set of zones this runtime can actually
+/// resolve. `ecma:date` is UTC-only (`getTimezoneOffset` is always 0) and
+/// no tzdata is mounted, so UTC is genuinely the whole set — this reports
+/// what the runtime does, it does not stub out a larger list.
+///
+/// Both are plain data, so the walker builds them directly.
+fn zoneinfo_call(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if !is_from_imported_module("zoneinfo") && !is_imported_module("zoneinfo") {
+        return None;
+    }
+    match name.as_str() {
+        "ZoneInfo" if args.len() == 1 => Some(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("__type"),
+                value: Expression::string("ZoneInfo"),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("key"),
+                value: args[0].value.clone(),
+            },
+        ])),
+        "available_timezones" if args.is_empty() => Some(ExprKind::Call {
+            callee: Box::new(Expression::ident("set")),
+            args: vec![Argument::positional(Expression::new(ExprKind::Array(vec![
+                ArrayElement {
+                    value: Expression::string("UTC"),
+                    spread: false,
+                    key: None,
+                    by_ref: false,
+                },
+            ])))],
+            optional: false,
+        }),
+        _ => None,
+    }
+}
+
 /// CPython signatures for the `datetime` constructors that are normally
 /// called with keywords (`timedelta(days=2)`). Keyword handling belongs to
 /// the frontend, so the emitter only ever sees positional arguments in this
@@ -3255,6 +3494,15 @@ fn normalize_datetime_kwargs(params: &[&str], args: Vec<Argument>) -> Vec<Argume
 }
 
 fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
+    if let Some(kind) = zoneinfo_call(&callee, &args) {
+        return kind;
+    }
+    if let Some(kind) = datetime_replace_call(&callee, &args) {
+        return kind;
+    }
+    if let Some(kind) = strftime_expand(&callee, &args) {
+        return kind;
+    }
     if let Some(params) = datetime_kwarg_signature(&callee) {
         let args = normalize_datetime_kwargs(params, args);
         return ExprKind::Call {
@@ -3344,6 +3592,21 @@ fn calendar_name_table(path: &str) -> Option<&'static [&'static str]> {
             "Sunday",
         ],
         "calendar.day_abbr" => &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        _ => return None,
+    })
+}
+
+/// The adapter's `__type` tag for a `datetime` type *reference* — the
+/// second argument of `isinstance(x, datetime.date)`. Mirrors the tags
+/// `emitter::datetime_adapter` stamps.
+fn datetime_type_tag(e: &Expression) -> Option<&'static str> {
+    let path = module_namespace_path(e)?;
+    Some(match path.as_str() {
+        "datetime.date" => "date",
+        "datetime.time" => "time",
+        "datetime.datetime" => "datetime",
+        "datetime.timedelta" => "timedelta",
+        "datetime.timezone" => "timezone",
         _ => return None,
     })
 }
@@ -4062,6 +4325,22 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     continue;
                                 }
                                 "isinstance" if args.len() == 2 => {
+                                    // `isinstance(x, datetime.date)` — the
+                                    // adapter's `__type` tag IS the type
+                                    // identity for these values, so the check
+                                    // reads it directly.
+                                    if let Some(tag) = datetime_type_tag(&args[1].value) {
+                                        expr = Expression::new(ExprKind::Binary {
+                                            op: BinOp::StrictEq,
+                                            left: Box::new(Expression::new(ExprKind::Index {
+                                                object: Box::new(args[0].value.clone()),
+                                                index: Box::new(Expression::string("__type")),
+                                                null_safe: false,
+                                            })),
+                                            right: Box::new(Expression::string(tag)),
+                                        });
+                                        continue;
+                                    }
                                     if let ExprKind::Ident(type_name) = &args[1].value.kind {
                                         if type_name == "int" {
                                             // isinstance(x, int) → typeof x === "number" || typeof x === "boolean"
@@ -4615,6 +4894,8 @@ fn expr_is_python_float(e: &Expression) -> bool {
             ExprKind::Member { object, field, .. } => {
                 (matches!(&object.kind, ExprKind::Ident(o) if o == "math")
                     && FLOAT_MATH_FNS.contains(&field.as_str()))
+                    || (matches!(&object.kind, ExprKind::Ident(o) if o == "statistics")
+                        && FLOAT_STATISTICS_FNS.contains(&field.as_str()))
                     || FLOAT_DT_METHODS.contains(&field.as_str())
             }
             _ => false,
@@ -4627,6 +4908,11 @@ fn expr_is_python_float(e: &Expression) -> bool {
 /// display with a trailing `.0` (`timedelta(hours=1).total_seconds()` is
 /// `3600.0`). Named methods, not a blanket rule about the receiver.
 const FLOAT_DT_METHODS: &[&str] = &["total_seconds", "timestamp"];
+
+/// `statistics` functions CPython documents as *always* returning a float, so
+/// they display with a trailing `.0`. Deliberately not `mean`/`variance`: those
+/// return an int for integer data that divides evenly (`mean([42])` is `42`).
+const FLOAT_STATISTICS_FNS: &[&str] = &["fmean"];
 
 /// Wrap `value` in `__py_float_repr__(value)` so it displays Python-float-style.
 fn wrap_float_repr(value: Expression) -> Expression {

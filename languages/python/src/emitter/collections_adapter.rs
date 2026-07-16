@@ -241,6 +241,20 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(arr_includes, 2, line);
     chunk.emit_else(line);
 
+    // set → membership. `ecma:set.has` is guarded by `is_set` and answers
+    // false for anything else, so it composes with the object tests below
+    // rather than needing its own type predicate: a real set answers here,
+    // a dict/object falls through to the key/`__contains__` tests, and a
+    // set that simply lacks the item answers false either way.
+    let set_has = chunk.add_import("ecma:set", "has");
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_call(set_has, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+
     // object → user `__contains__(self, item)` if present, else own-key test
     let contains_key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
         "__contains__",
@@ -262,6 +276,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
     chunk.emit_call(has_own, 2, line);
     chunk.emit_end(line);
+    chunk.emit_end(line); // set
     chunk.emit_end(line);
     chunk.emit_end(line);
 }

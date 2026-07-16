@@ -350,6 +350,7 @@ mod tests {
     #[test]
     fn constructor_without_super_call_is_none_basecall() {
         let member = ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![],
             base_args: None,

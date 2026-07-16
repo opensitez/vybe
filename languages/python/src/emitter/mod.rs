@@ -9,3 +9,4 @@ pub mod datetime_adapter;
 pub mod dispatch;
 pub mod float_adapter;
 pub mod runtime_adapter;
+pub mod statistics_adapter;

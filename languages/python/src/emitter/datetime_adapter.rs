@@ -63,16 +63,32 @@ fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, k, line);
 }
 
+/// Where a materialized value's `__type` comes from. Arithmetic is
+/// type-preserving (`date + timedelta` is a `date`, not a `datetime`), so
+/// it carries the left operand's tag through from a local rather than
+/// hardcoding one.
+enum Tag<'a> {
+    Const(&'a str),
+    Local(u16),
+}
+
 /// Wrap a ms timestamp in a fully-materialized value.
 /// Stack: `[ms]` → `[obj]`.
 pub fn emit_materialize(chunk: &mut Chunk, type_tag: &str, line: u32) {
+    emit_materialize_tag(chunk, Tag::Const(type_tag), line);
+}
+
+fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     let ms = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, ms, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
 
     chunk.emit_dup(line);
-    chunk.emit_string_const(type_tag, line);
+    match tag {
+        Tag::Const(s) => chunk.emit_string_const(s, line),
+        Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line),
+    }
     struct_set(chunk, TYPE_KEY, line);
 
     chunk.emit_dup(line);
@@ -637,6 +653,199 @@ pub fn emit_cal_monthrange(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // Python's monthrange returns a real tuple, so it carries the tag every
     // other tuple does.
     vybe_emitter::tuples::emit_tag(chunks, current, line);
+}
+
+/// The arithmetic this adapter implements for its own values.
+pub enum DtOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// `slot` holds an object carrying `key`. The `typeof` guard matters:
+/// `STRUCT_GET` traps on a primitive, and these run on every `+`.
+/// Stack: `[]` → `[i32]`.
+fn emit_has_key(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    struct_get(chunk, key, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_else(line);
+    core_wasm::i32_const(chunk, line, 0);
+    chunk.emit_end(line);
+}
+
+/// True when `slot` holds any value this adapter produced — a duration
+/// (`__us`) or a point in time (`__time`). Presence of the property IS the
+/// test; no name matching. Stack: `[]` → `[i32]`.
+pub fn emit_is_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
+    emit_has_key(chunk, slot, US_KEY, line);
+    emit_has_key(chunk, slot, TIME_KEY, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn dt_op_code(op: &DtOp) -> Op {
+    match op {
+        DtOp::Add => Op::F64_ADD,
+        DtOp::Sub => Op::F64_SUB,
+        DtOp::Mul => Op::F64_MUL,
+    }
+}
+
+/// `+`/`-`/`*` over this adapter's values, for the combinations Python
+/// defines:
+///
+/// * `timedelta ∘ timedelta` → timedelta
+/// * `timedelta * number`    → timedelta
+/// * `point ± timedelta`     → the *left operand's* type (`date + timedelta`
+///   is a `date`, never a `datetime`)
+/// * `point − point`         → timedelta
+///
+/// Reads `a`/`b`; pushes the result. Only called once `emit_is_datetime(a)`
+/// holds, so the left operand always carries one of the two keys.
+pub fn emit_dt_binop(chunk: &mut Chunk, a: u16, b: u16, op: DtOp, line: u32) {
+    emit_has_key(chunk, a, US_KEY, line);
+    chunk.emit_if_value(line);
+    {
+        // a is a duration.
+        chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+        struct_get(chunk, US_KEY, line);
+        emit_has_key(chunk, b, US_KEY, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+        struct_get(chunk, US_KEY, line);
+        chunk.emit_else(line);
+        // `timedelta * 2` — a bare number scales the duration.
+        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+        chunk.emit_end(line);
+        chunk.emit_op(dt_op_code(&op), line);
+        emit_wrap_timedelta(chunk, line);
+    }
+    chunk.emit_else(line);
+    {
+        // a is a point in time.
+        emit_has_key(chunk, b, US_KEY, line);
+        chunk.emit_if_value(line);
+        {
+            // point ± timedelta → same type as `a`.
+            let tag = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+            struct_get(chunk, TYPE_KEY, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, tag, line);
+
+            chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+            struct_get(chunk, TIME_KEY, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+            struct_get(chunk, US_KEY, line);
+            core_wasm::f64_const(chunk, line, MS_PER_SECOND);
+            chunk.emit_op(Op::F64_DIV, line);
+            chunk.emit_op(dt_op_code(&op), line);
+            emit_materialize_tag(chunk, Tag::Local(tag), line);
+        }
+        chunk.emit_else(line);
+        {
+            // point − point → duration.
+            chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+            struct_get(chunk, TIME_KEY, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+            struct_get(chunk, TIME_KEY, line);
+            chunk.emit_op(dt_op_code(&op), line);
+            core_wasm::f64_const(chunk, line, MS_PER_SECOND);
+            chunk.emit_op(Op::F64_MUL, line);
+            emit_wrap_timedelta(chunk, line);
+        }
+        chunk.emit_end(line);
+    }
+    chunk.emit_end(line);
+}
+
+/// Unary `-` on a duration. Stack: `[td]` → `[td]`.
+pub fn emit_dt_neg(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    struct_get(chunk, US_KEY, line);
+    core_wasm::f64_const(chunk, line, -1.0);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_wrap_timedelta(chunk, line);
+}
+
+/// Relational compare of two of this adapter's values, by the instant or
+/// duration they denote. Stack: `[]` → `[i32]`.
+pub fn emit_dt_cmp(chunk: &mut Chunk, a: u16, b: u16, cmp: fn(&mut Chunk, u32), line: u32) {
+    let key = |chunk: &mut Chunk, slot: u16| {
+        emit_has_key(chunk, slot, US_KEY, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        struct_get(chunk, US_KEY, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        struct_get(chunk, TIME_KEY, line);
+        chunk.emit_end(line);
+    };
+    key(chunk, a);
+    key(chunk, b);
+    cmp(chunk, line);
+}
+
+/// The six components `replace` can override, in the order the walker
+/// hands them over.
+const REPLACE_PROPS: [&str; 6] = ["year", "month", "day", "hour", "minute", "second"];
+
+/// `value.replace(year=…, …)` — a copy with some components overridden.
+/// The walker passes every component positionally, `null` where the call
+/// omitted it, so a missing one is filled from the receiver here.
+/// Type-preserving: a `date`'s replace is a `date`.
+/// Stack: `[recv, y, m, d, h, mi, s]` → `[value]`.
+pub fn emit_dt_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let base = chunk.alloc_scratch(6);
+    let recv = chunk.alloc_scratch(1);
+    let tag = chunk.alloc_scratch(1);
+
+    for i in (0..6u16).rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+    struct_get(chunk, TYPE_KEY, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tag, line);
+
+    for (i, prop) in REPLACE_PROPS.iter().enumerate() {
+        chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
+        struct_get(chunk, prop, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+        chunk.emit_end(line);
+    }
+
+    let slots = [base, base + 1, base + 2, base + 3, base + 4, base + 5];
+    emit_utc_from_locals(chunk, &slots, line);
+    emit_materialize_tag(chunk, Tag::Local(tag), line);
+}
+
+/// `__py_dt_pad(value, width)` — the zero-padded component `strftime`
+/// expands to. Stack: `[value, width]` → `[string]`.
+pub fn emit_dt_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let w = chunk.alloc_scratch(1);
+    let s = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, w, line);
+    let to_str = chunk.add_import("ecma:number", "toString");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, s, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, s, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, w, line);
+    chunk.emit_string_const("0", line);
+    let pad = chunk.add_import("ecma:string", "padStart");
+    chunk.emit_call(pad, 3, line);
 }
 
 /// Zero-pad a numeric component to `width`. Stack: `[num]` → `[string]`.
