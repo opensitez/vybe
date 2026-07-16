@@ -19,11 +19,20 @@
 // ── Whitespace & Comments ────────────────────────────────────────────────────
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ line_comment | block_comment }
+COMMENT    = _{ line_comment | block_comment | annotation }
 
 line_comment  = _{ ";;" ~ (!"\n" ~ ANY)* }
 // Nested block comments per the spec
 block_comment = _{ "(;" ~ (block_comment | (!";" ~ ANY) | (";" ~ !")"))* ~ ";)" }
+
+// Custom annotations `(@id …)` (e.g. `(@metadata.code.branch_hint "\01")`).
+// They carry only metadata (branch hints, name/code annotations) with no
+// execution semantics, so they are skipped wherever they appear, like comments.
+// `(@` never begins real code, so this is unambiguous. Strings are matched so a
+// `)` inside a string literal does not close the group early.
+annotation  = _{ "(@" ~ annot_item* ~ ")" }
+annot_group = _{ "(" ~ annot_item* ~ ")" }
+annot_item  = _{ annot_group | string | (!("(" | ")") ~ ANY) }
 
 // ── Atoms ────────────────────────────────────────────────────────────────────
 
@@ -109,10 +118,15 @@ instr = { folded_instr | plain_instr }
 // Folded S-expression form.
 // (if …) and (try …) have special sub-block structure.
 // (block …) and (loop …) have optional label + block_type.
+// The trailing `instr_name` alternative matches any identifier, so `(then …)`,
+// `(else …)`, `(catch …)` and `(catch_all …)` also match a generic `instr`.
+// PEG `instr*` is greedy and never backs off, so it would swallow those
+// sub-blocks and make the dedicated rule fail. Guard `instr*` with a negative
+// lookahead so it stops at the sub-block that must follow.
 folded_instr = {
-    "(" ~ "if"  ~ id? ~ block_type* ~ instr* ~ then_block ~ else_block? ~ ")"
-  | "(" ~ "try" ~ id? ~ block_type* ~ instr* ~ catch_block+ ~ catch_all_block? ~ ")"
-  | "(" ~ "try" ~ id? ~ block_type* ~ instr* ~ catch_all_block ~ ")"
+    "(" ~ "if"  ~ id? ~ block_type* ~ (!then_block ~ !else_block ~ instr)* ~ then_block ~ else_block? ~ ")"
+  | "(" ~ "try" ~ id? ~ block_type* ~ (!catch_block ~ !catch_all_block ~ instr)* ~ catch_block+ ~ catch_all_block? ~ ")"
+  | "(" ~ "try" ~ id? ~ block_type* ~ (!catch_all_block ~ instr)* ~ catch_all_block ~ ")"
   | "(" ~ "block" ~ id? ~ block_type* ~ instr* ~ ")"
   | "(" ~ "loop"  ~ id? ~ block_type* ~ instr* ~ ")"
   | "(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"
@@ -362,9 +376,14 @@ tag_type  = { "(" ~ "func" ~ param* ~ ")" | param* }
 // ── Element segment ───────────────────────────────────────────────────────────
 
 elem_field = {
-    "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_type? ~ ("(" ~ "item" ~ instr* ~ ")")* ~ ")"
+    "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_type? ~ elem_item* ~ ")"
   | "(" ~ "elem" ~ id? ~ elem_mode? ~ "func"? ~ index* ~ ")"
 }
+
+// An element expression: an explicit `(item <expr>)` or a bare folded const
+// expression (`(ref.func $f)`, `(ref.null func)`, `(global.get $g)`). Both
+// forms carry the initializer for one table slot.
+elem_item = { ("(" ~ "item" ~ instr* ~ ")") | folded_instr }
 
 // Active offset (`(offset …)` or the abbreviated single folded instr like
 // `(i32.const 0)`), an explicit `(table …)(offset …)`, or `declare`. Mirrors

@@ -830,6 +830,51 @@ impl Compiler {
         false
     }
 
+    /// Whether `class_key` is a descendant of `ancestor_key`.
+    fn class_descends_from(&self, class_key: &str, ancestor_key: &str) -> bool {
+        let mut current = self
+            .pending_classes
+            .get(class_key)
+            .and_then(|pending| pending.parent.as_ref())
+            .map(|p| self.canon(p));
+        let mut guard = 0;
+        while let Some(key) = current {
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            if key == ancestor_key {
+                return true;
+            }
+            let Some(pending) = self.pending_classes.get(&key) else {
+                break;
+            };
+            current = pending.parent.as_ref().map(|p| self.canon(p));
+        }
+        false
+    }
+
+    /// Whether any descendant of `class_key` declares `method_key`
+    /// NON-virtually — hiding the ancestor's method (C# `new`, VB `Shadows`)
+    /// instead of overriding it.
+    ///
+    /// A hiding method shares the ancestor's runtime slot, so a call through a
+    /// declared-ancestor reference cannot be left to dynamic dispatch: the slot
+    /// holds the hiding body, but the language says the DECLARED type's body
+    /// must run (`Base b = new Derived(); b.Speak()` → Base's). Such a call
+    /// keeps its direct bind. The method analogue of
+    /// [`Self::field_hides_ancestor`] — same static-type rule, same reason.
+    pub(super) fn method_hidden_by_descendant(&self, class_key: &str, method_key: &str) -> bool {
+        self.pending_classes.iter().any(|(name, pending)| {
+            name != class_key
+                && pending
+                    .instance_method_overloads
+                    .get(method_key)
+                    .is_some_and(|overloads| overloads.iter().any(|ov| !ov.is_virtual))
+                && self.class_descends_from(name, class_key)
+        })
+    }
+
     /// The storage-slot name a class uses for `field`, when it differs from
     /// the plain field name. Data-driven via `PendingClass.field_storage_names`
     /// — a class with no remapped fields returns `None` (so this is a no-op

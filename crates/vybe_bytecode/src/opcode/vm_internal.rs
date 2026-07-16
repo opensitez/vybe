@@ -13,8 +13,10 @@ impl Op {
     // Immediate values
     // Type checks
     // 0xFF 0x15–0x1E: retired (DYN_* opcodes removed; replaced by wasm:js-* emitter sequences)
-    // Exception handling
-    pub const TRY_END: Op = Op::new(0xFF, 0x20);
+    // Exception handling: the custom TRY_END (0xFF 0x20) is retired. A try_table
+    // is a structural block closed by spec `end` (Op::END), whose `is_try` label
+    // pop removes the exception-handler group. ID 0x20 is left vacant (not reused)
+    // so any legacy bytecode carrying it fails decode loudly.
     // Timers & spread
     // VM control
     pub const HALT: Op = Op::new(0xFF, 0x23);

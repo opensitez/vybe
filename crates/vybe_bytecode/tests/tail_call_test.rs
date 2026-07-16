@@ -129,6 +129,11 @@ fn return_call_indirect_via_function_table() {
         let tidx_key = main.add_constant(Value::String(Arc::from("__table_idx")));
         let arg = main.add_constant(Value::I32(14));
 
+        // Spec `return_call_indirect`: `[args… i32]` — the table index is on
+        // TOP of the stack, above the args. Push the argument first, then the
+        // table index.
+        main.emit_op_u16(opcode::Op::CONST, arg, 0);
+
         // REF_FUNC 1 (triple_fn) with 0 upvalues → pushes func object, registers in func_table
         main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
         main.emit(0u8, 0); // upvalue_count = 0
@@ -136,10 +141,7 @@ fn return_call_indirect_via_function_table() {
         // STRUCT_GET __table_idx → pops func object, pushes table index (F64)
         main.emit_op_u16(opcode::Op::STRUCT_GET, tidx_key, 0);
 
-        // Push argument
-        main.emit_op_u16(opcode::Op::CONST, arg, 0);
-
-        // Stack: [table_idx_f64, arg_14]
+        // Stack: [arg_14, table_idx_f64] — table index on top (spec).
         main.emit_op_u8(opcode::Op::RETURN_CALL_INDIRECT, 1, 0);
     }
 

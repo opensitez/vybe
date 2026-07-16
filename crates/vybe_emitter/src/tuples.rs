@@ -52,6 +52,18 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op(Op::DROP, line); // [arr]
 }
 
+/// Build a tuple from the top `n` stack values: pack them into a growable
+/// `ecma:array` array, then stamp the tuple tag. This is THE way to construct
+/// a tuple from computed values — the same sequence the `ExprKind::Tuple`
+/// literal path uses. (`ARRAY_NEW_FIXED` must NOT be used: a fixed array
+/// carries no tag and reprs as a plain list.)
+/// Stack: `[v0, …, v_{n-1}] -> [tuple]`.
+pub fn emit_tuple(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
+    let base = chunks[current].alloc_scratch(n.max(1));
+    crate::collections::emit_pack_n(chunks, current, n, base, line);
+    emit_tag(chunks, current, line);
+}
+
 /// Push an i32 truthiness flag for "is the value on TOS a tagged tuple".
 /// Stack: `[value] -> [i32]`. A plain list (no tag) reads null → falsy.
 pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {

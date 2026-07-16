@@ -242,7 +242,7 @@ impl Compiler {
                         }
                     }
                 }
-                if (self.profile.name == "csharp" || self.profile.name == "vb")
+                if self.profile.namespaces.use_dotnet
                     && targets.len() == 1
                 {
                     if let ExprKind::Binary { op, left, right } = &value.kind {
@@ -362,7 +362,7 @@ impl Compiler {
             }
 
             StmtKind::CompoundAssign { target, op, value } => {
-                if (self.profile.name == "csharp" || self.profile.name == "vb")
+                if self.profile.namespaces.use_dotnet
                     && matches!(op, CompoundOp::Add | CompoundOp::Sub)
                     && self.is_csharp_delegate_handler_expr(value)
                 {
@@ -3355,6 +3355,118 @@ impl Compiler {
                 }
             }
 
+            // ── WASM exception handling (canonical `try_table`) ─────────
+            StmtKind::WasmTagDecl { name, arity } => {
+                // A tag is a load-time entity resolved by name; importing it
+                // here (and at every `throw`/`catch` site) coalesces to one
+                // entity. Nothing is emitted into the instruction stream.
+                self.chunks[self.current]
+                    .import_exception_tag(format!("wast:tag:{name}"), *arity);
+            }
+            StmtKind::WasmThrow { tag, args } => {
+                let line = self.line;
+                for a in args {
+                    self.compile_expr(a)?;
+                }
+                let tag_idx = self.chunks[self.current]
+                    .import_exception_tag(format!("wast:tag:{tag}"), args.len() as u8);
+                let chunk = &mut self.chunks[self.current];
+                chunk.emit_op(Op::THROW, line);
+                chunk.emit((tag_idx >> 8) as u8, line);
+                chunk.emit((tag_idx & 0xff) as u8, line);
+            }
+            StmtKind::WasmRethrow { exnref_local } => {
+                // Legacy `rethrow N` → `throw_ref` of the exnref captured by
+                // the target catch handler (bound to `exnref_local`).
+                self.emit_var_get(exnref_local);
+                self.emit(Op::THROW_REF);
+            }
+            StmtKind::WasmTryTable { body, catches } => {
+                let line = self.line;
+                // Resolve each clause's kind + tag index up front.
+                let mut clause_kinds: Vec<u8> = Vec::with_capacity(catches.len());
+                let mut clause_tags: Vec<u16> = Vec::with_capacity(catches.len());
+                for c in catches {
+                    let (kind, tag_idx) = match (&c.tag, c.capture_ref) {
+                        (Some(name), false) => (
+                            common::errors::CATCH_KIND_CATCH,
+                            self.chunks[self.current].import_exception_tag(
+                                format!("wast:tag:{name}"),
+                                c.payload_binds.len() as u8,
+                            ),
+                        ),
+                        (Some(name), true) => (
+                            common::errors::CATCH_KIND_CATCH_REF,
+                            self.chunks[self.current].import_exception_tag(
+                                format!("wast:tag:{name}"),
+                                c.payload_binds.len() as u8,
+                            ),
+                        ),
+                        (None, false) => (common::errors::CATCH_KIND_CATCH_ALL, 0u16),
+                        (None, true) => (common::errors::CATCH_KIND_CATCH_ALL_REF, 0u16),
+                    };
+                    clause_kinds.push(kind);
+                    clause_tags.push(tag_idx);
+                }
+
+                // Join block: normal completion and every handler branch here.
+                let after = self.chunk().emit_block(line);
+                self.label_depth += 1;
+
+                // try_table with one clause per catch (offsets patched later),
+                // via the shared single-source-of-truth primitive.
+                let clauses: Vec<common::errors::TryTableClause> = (0..catches.len())
+                    .map(|i| common::errors::TryTableClause {
+                        kind: clause_kinds[i],
+                        tag: clause_tags[i],
+                    })
+                    .collect();
+                let offset_positions =
+                    common::errors::emit_try_table(&mut self.chunks[self.current], &clauses, line);
+
+                // Body sits one label level deeper (try_table is a block).
+                self.label_depth += 1;
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                self.label_depth -= 1;
+
+                // Normal completion: skip every handler → join block's `end`.
+                self.chunk().emit_br(0, line);
+
+                // Handlers in clause order. Each patches its clause offset to
+                // its start, binds the delivered exnref/payload, runs, then
+                // branches to the join (the last falls through to the `end`).
+                for (i, c) in catches.iter().enumerate() {
+                    common::errors::patch_catch(
+                        &mut self.chunks[self.current],
+                        offset_positions[i],
+                    );
+                    if c.capture_ref {
+                        if let Some(exnref) = &c.exnref_bind {
+                            let slot = self.define_local(exnref);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                        }
+                    }
+                    for bind in c.payload_binds.iter().rev() {
+                        let slot = self.define_local(bind);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                    }
+                    for s in &c.body {
+                        self.compile_stmt(s)?;
+                    }
+                    if i + 1 < catches.len() {
+                        self.chunk().emit_br(0, line);
+                    }
+                }
+
+                // Close the join block.
+                self.chunk().emit_end(line);
+                self.chunk().patch_block(after);
+                self.label_depth -= 1;
+            }
+
             // ── Empty ───────────────────────────────────────────────────
             StmtKind::Empty => {}
         }
@@ -3483,6 +3595,40 @@ impl Compiler {
         self.compile_enum_decl_as_class(name, Some("Enum"), interfaces, synthetic_members, span)
     }
 
+    /// Member names a class pattern's POSITIONAL sub-patterns test, resolved at
+    /// compile time — `None` means "read `__match_args__` at runtime instead".
+    ///
+    /// PEP 634 keys positional sub-patterns off the class's `__match_args__`.
+    /// A class that declares none has nothing to read, so its CONSTRUCTOR's
+    /// parameter order is the mapping — the same default a dataclass-generated
+    /// `__match_args__` would carry, and the only ordering available for a
+    /// plain class. Without it `case P(x, y)` silently binds `undefined`.
+    /// A class that DOES declare `__match_args__` is left to the runtime
+    /// lookup: only its value, not the fact of it, decides the mapping.
+    fn class_pattern_positional_names(&self, cls: &Expression) -> Option<Vec<String>> {
+        let ExprKind::Ident(class_name) = &cls.kind else {
+            return None;
+        };
+        let pending = self.pending_classes.get(&self.canon(class_name))?;
+        if pending
+            .static_fields
+            .iter()
+            .any(|field| field == "__match_args__")
+        {
+            return None;
+        }
+        let ctor_key = self.canon(&self.profile.constructor_name);
+        let names = pending
+            .instance_method_overloads
+            .get(&ctor_key)
+            .and_then(|overloads| overloads.first())
+            .map(|overload| overload.signature.param_names.clone())
+            .or_else(|| Some(pending.fields.clone()))?;
+        // Empty means "nothing resolved" — fall back to the runtime lookup
+        // rather than emit a name-less read.
+        (!names.is_empty()).then_some(names)
+    }
+
     pub(super) fn emit_match_pattern_match_slot(
         &mut self,
         pattern: &Pattern,
@@ -3585,11 +3731,115 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
                 }
             }
+            // `case Point(x=1, y=2)` / `case Point(1, 2)` (PEP 634) and the C#
+            // property-pattern shape `o is Point { X: 1 }` — same three tests:
+            // the subject's type, then each sub-pattern against a member.
+            Pattern::Class {
+                cls,
+                patterns,
+                kw_patterns,
+            } => {
+                // Type test. `emit_instanceof` matches a class NAME against the
+                // `__type` / `__types` stamps `emit_new_typed_object` writes, so
+                // a named class goes in as its canonical name rather than as the
+                // constructor value.
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                match &cls.kind {
+                    ExprKind::Ident(class_name) => {
+                        let canon = self.canon(class_name);
+                        self.emit_const(Value::String(Arc::from(canon.as_str())));
+                    }
+                    _ => self.compile_expr(cls)?,
+                }
+                common::classes::emit_instanceof(&mut self.chunks, self.current, self.line);
+                {
+                    let line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                };
+                self.emit(Op::I32_EQZ);
+                let line = self.line;
+                self.chunk().emit_if(line);
+                self.emit_const(Value::Bool(false));
+                self.emit_u16(Op::LOCAL_SET, matched_slot);
+                self.chunk().emit_end(line);
+
+                // Positional sub-patterns name their member through the class's
+                // `__match_args__` (PEP 634 §3.3): the i-th pattern tests the
+                // attribute `__match_args__[i]`. Languages whose patterns are
+                // always keyed (C# property patterns) carry none, so this is a
+                // no-op for them — the empty vec is the gate.
+                if !patterns.is_empty() {
+                    let declared_names = self.class_pattern_positional_names(cls);
+                    let margs_slot = self.define_local("__match_args");
+                    if declared_names.is_none() {
+                        self.compile_expr(cls)?;
+                        self.emit_const(Value::String(Arc::from("__match_args__")));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, margs_slot);
+                    }
+                    for (index, sub_pattern) in patterns.iter().enumerate() {
+                        let attr_slot = self.define_local("__match_pos_attr");
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        match declared_names.as_ref().and_then(|names| names.get(index)) {
+                            Some(field) => {
+                                self.emit_const(Value::String(Arc::from(field.as_str())));
+                            }
+                            None => {
+                                self.emit_u16(Op::LOCAL_GET, margs_slot);
+                                self.emit_const(Value::F64(index as f64));
+                                common::collections::emit_get(
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
+                                );
+                            }
+                        }
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, attr_slot);
+
+                        let sub_match_slot =
+                            self.emit_match_pattern_match_slot(sub_pattern, attr_slot)?;
+                        self.emit_u16(Op::LOCAL_GET, sub_match_slot);
+                        {
+                            let line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        };
+                        self.emit(Op::I32_EQZ);
+                        let line = self.line;
+                        self.chunk().emit_if(line);
+                        self.emit_const(Value::Bool(false));
+                        self.emit_u16(Op::LOCAL_SET, matched_slot);
+                        self.chunk().emit_end(line);
+                    }
+                }
+
+                // Keyed sub-patterns: `Point(x=1)` / `Point { X: 1 }`.
+                for (member_name, sub_pattern) in kw_patterns {
+                    let attr_slot = self.define_local("__match_class_attr");
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit_const(Value::String(Arc::from(member_name.as_str())));
+                    common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                    self.emit_u16(Op::LOCAL_SET, attr_slot);
+
+                    let sub_match_slot =
+                        self.emit_match_pattern_match_slot(sub_pattern, attr_slot)?;
+                    self.emit_u16(Op::LOCAL_GET, sub_match_slot);
+                    {
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    };
+                    self.emit(Op::I32_EQZ);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    self.emit_const(Value::Bool(false));
+                    self.emit_u16(Op::LOCAL_SET, matched_slot);
+                    self.chunk().emit_end(line);
+                }
+            }
             Pattern::Wildcard
             | Pattern::Star(_)
             | Pattern::As { pattern: None, .. }
-            | Pattern::Mapping(_)
-            | Pattern::Class { .. } => {}
+            | Pattern::Mapping(_) => {}
         }
         Ok(matched_slot)
     }
@@ -3659,12 +3909,59 @@ impl Compiler {
                     self.emit_match_pattern_bindings(first, value_slot)?;
                 }
             }
+            // Mirrors the tests in `emit_match_pattern_match_slot`: a captured
+            // name inside a class pattern (`case Point(x=n)`) binds from the
+            // member the test read, so the member lookups repeat here.
+            Pattern::Class {
+                cls,
+                patterns,
+                kw_patterns,
+            } => {
+                if !patterns.is_empty() {
+                    let declared_names = self.class_pattern_positional_names(cls);
+                    let margs_slot = self.define_local("__match_args_bind");
+                    if declared_names.is_none() {
+                        self.compile_expr(cls)?;
+                        self.emit_const(Value::String(Arc::from("__match_args__")));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, margs_slot);
+                    }
+                    for (index, sub_pattern) in patterns.iter().enumerate() {
+                        let attr_slot = self.define_local("__match_pos_attr_bind");
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        match declared_names.as_ref().and_then(|names| names.get(index)) {
+                            Some(field) => {
+                                self.emit_const(Value::String(Arc::from(field.as_str())));
+                            }
+                            None => {
+                                self.emit_u16(Op::LOCAL_GET, margs_slot);
+                                self.emit_const(Value::F64(index as f64));
+                                common::collections::emit_get(
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
+                                );
+                            }
+                        }
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, attr_slot);
+                        self.emit_match_pattern_bindings(sub_pattern, attr_slot)?;
+                    }
+                }
+                for (member_name, sub_pattern) in kw_patterns {
+                    let attr_slot = self.define_local("__match_class_attr_bind");
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit_const(Value::String(Arc::from(member_name.as_str())));
+                    common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                    self.emit_u16(Op::LOCAL_SET, attr_slot);
+                    self.emit_match_pattern_bindings(sub_pattern, attr_slot)?;
+                }
+            }
             Pattern::Value(_)
             | Pattern::Singleton(_)
             | Pattern::Wildcard
             | Pattern::Star(_)
-            | Pattern::Mapping(_)
-            | Pattern::Class { .. } => {}
+            | Pattern::Mapping(_) => {}
         }
         Ok(())
     }
@@ -4387,7 +4684,7 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                if self.profile.namespaces.use_dotnet {
                     self.compile_expr(object)?;
                     if !Self::is_pointer_runtime_field(field) {
                         self.emit_autoderef_pointer_cell();
@@ -4610,6 +4907,32 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
             ExprKind::Index { object, index, .. } => {
+                // A class declaring `operator []=` / `__setitem__` makes
+                // `x[i] = v` a call to it. Resolved from the receiver's
+                // declared type, so array/dict/string stores are untouched.
+                // Stack on entry: `[value]`.
+                if !matches!(index.kind, ExprKind::Range { .. } | ExprKind::Slice { .. })
+                    && self.expr_has_user_index_setter(object)
+                {
+                    let line = self.line;
+                    let value_slot = self.define_local("__idx_set_value");
+                    let obj_slot = self.define_local("__idx_set_recv");
+                    let key_slot = self.define_local("__idx_set_key");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    let setter = self.str_const("__setitem__");
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, setter);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.chunk().emit_op_u8(Op::CALL_REF, 3, line);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                }
                 if self.profile.name == "fortran" {
                     if let ExprKind::Slice { lower, upper, step } = &index.kind {
                         if step.is_none() {
@@ -5026,7 +5349,7 @@ impl Compiler {
                     common::collections::emit_push(&mut self.chunks, self.current, line);
                     // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
-                } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                } else if self.profile.namespaces.use_dotnet {
                     if self.profile.namespaces.use_dotnet
                         && self
                             .infer_expr_type_hint(object)

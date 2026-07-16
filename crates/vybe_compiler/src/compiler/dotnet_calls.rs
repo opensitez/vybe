@@ -1374,7 +1374,7 @@ impl Compiler {
         callee: &Expression,
         args: &[Argument],
     ) -> Result<bool, String> {
-        if !matches!(self.profile.name.as_str(), "csharp" | "vb")
+        if !self.profile.namespaces.use_dotnet
             || !self.profile.namespaces.use_dotnet
         {
             return Ok(false);

@@ -1041,20 +1041,19 @@ pub fn emit_zip(chunks: &mut [Chunk], current: usize, n: u8, mode: ZipLen, line:
     crate::ops::emit_dyn_lt(&mut chunks[current], line);
     crate::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
-    // tuple = [arrays[0][i], arrays[1][i], …]
-    emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple_s, line);
+    // Each row is a real tuple, not a plain list: `zip`/`enumerate` pair
+    // heterogeneous values, and tuple-typed languages (Python/Dart/C#) must
+    // repr it as `(a, b)`. `tuples::emit_tuple` is the one canonical builder;
+    // array-typed languages (PHP) simply ignore the inert `__tuple` tag.
+    let _ = tuple_s;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
     for k in 0..n {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, tuple_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + k, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
         emit_get(chunks, current, line);
-        emit_push(chunks, current, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
+    crate::tuples::emit_tuple(chunks, current, n as u16, line);
     // result.push(tuple)
-    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple_s, line);
     emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     // i += 1

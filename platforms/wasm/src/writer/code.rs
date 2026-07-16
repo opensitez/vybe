@@ -1820,9 +1820,8 @@ fn emit_vm_internal_op(
             *ip += 1 + 5 * clause_count; // clause_count + N·[kind,tag(2),offset(2)]
             body.push(0x01);
         }
-        _ if op == Op::TRY_END => {
-            body.push(0x01);
-        } // nop for now
+        // TRY_END retired: a try_table now closes with structural `end`
+        // (Op::END), which the writer already lowers to the spec `0x0B` byte.
         // Spread — TODO: inline impl
         // Set timer — TODO: needs host import (not stdlib)
         // Upvalue get/set — closures use WASM function references

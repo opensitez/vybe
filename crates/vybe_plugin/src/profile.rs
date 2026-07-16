@@ -95,6 +95,13 @@ pub struct LanguageProfile {
     /// JS: `+` operator uses dynamic add (string concat if either operand is string).
     pub dynamic_add: bool,
 
+    /// The language has first-class function references (WASM `ref.func` /
+    /// funcref). When set, referencing a function/static-method as a VALUE
+    /// (not calling it) tears it off into a `REF_FUNC` funcref instead of
+    /// invoking it or reading a bound-method property. Only WASM-level
+    /// frontends (wast) that model real funcrefs enable this.
+    pub function_references: bool,
+
     /// Arithmetic operands may be of a type not known until runtime
     /// (dynamically-typed languages: JS, PHP, Python, Ruby). When set,
     /// `-`/`*`/`/`/`%` whose operand types aren't statically resolved emit
@@ -295,6 +302,19 @@ pub struct LanguageProfile {
     /// same-named subclass field OVERRIDES the parent's one slot.
     pub field_hiding: bool,
 
+    /// Instance methods dispatch on the RUNTIME type by default, without any
+    /// `virtual`/`Overridable` keyword (java/python/js/php/ruby/dart). When
+    /// false (C#/VB/Pascal/C++), only a method the source explicitly marked
+    /// `is_virtual`/`is_override`/`is_abstract` dispatches dynamically; every
+    /// other method binds to the reference's DECLARED type — the same
+    /// static-type rule [`field_hiding`] applies to fields, and what makes C#
+    /// `new`-hiding work.
+    ///
+    /// Languages that opt in still exclude `is_static` and
+    /// `is_not_overridable` members (VB `NotOverridable`, java `final`), which
+    /// can never be overridden and so keep their direct bind.
+    pub methods_virtual_by_default: bool,
+
     /// Properties and methods occupy SEPARATE member namespaces (PHP:
     /// `$o->foo` the property and `$o->foo()` the method coexist). A property
     /// whose name collides with a method is stored under a mangled slot so
@@ -324,6 +344,13 @@ pub struct LanguageProfile {
     /// needs this so `fmt.Println(5 == 5)` prints `true` while
     /// `fmt.Println(1)` still prints `1`.
     pub materialize_bool_results: bool,
+
+    /// The `/` operator performs integer (truncating) division when BOTH
+    /// operands are integers (C#, Java, C, Go). Languages where `/` is always
+    /// real division (VB uses `\` for integer division; Python `/` is float)
+    /// leave this false. Gates the integral-division lowering in
+    /// `compile_binary`.
+    pub integer_division_on_slash: bool,
 
     /// PHP: when a class constructor global is undefined at construction
     /// time, invoke the registered `spl_autoload_register` callback with
@@ -844,6 +871,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("dynamic_add")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let function_references = compiler
+        .get("function_references")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let commonjs_require = compiler
         .get("commonjs_require")
         .and_then(|v| v.as_bool())
@@ -882,6 +913,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let field_hiding = compiler
         .get("field_hiding")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let methods_virtual_by_default = compiler
+        .get("methods_virtual_by_default")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let separate_property_method_namespace = compiler
@@ -1044,6 +1079,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let materialize_bool_results = compiler
         .get("materialize_bool_results")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let integer_division_on_slash = compiler
+        .get("integer_division_on_slash")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let supports_autoload = compiler
@@ -1431,6 +1470,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         entry_point,
         hoist_var,
         dynamic_add,
+        function_references,
         commonjs_require,
         multi_value_tuple_returns,
         byref_boxing,
@@ -1441,6 +1481,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         switch_fallthrough,
         throwable_is_root,
         field_hiding,
+        methods_virtual_by_default,
+        integer_division_on_slash,
         separate_property_method_namespace,
         reflection_type_naming,
         supports_private_fields,

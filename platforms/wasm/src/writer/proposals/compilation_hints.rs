@@ -186,11 +186,20 @@ pub fn encode_inlining_payload(chunks: &[Chunk], rt_imports_len: usize) -> Optio
 /// Hints are emitted in increasing offset order (guaranteed by the linear
 /// forward scan). No byte offset appears more than once.
 fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
+    // Track block nesting by KIND, not flat counters: `end` closes whichever
+    // block-opener it pairs with (block/loop/if/try_table), so a plain block
+    // inside a loop must not decrement the loop depth. A stack keeps the two
+    // categories (loop back-edge vs cold handler) correct under any nesting.
+    #[derive(PartialEq, Clone, Copy)]
+    enum Blk {
+        Loop,
+        Handler,
+        Other,
+    }
     let code = &chunk.code;
     let mut hints = Vec::new();
     let mut ip = 0usize;
-    let mut in_loop: i32 = 0;
-    let mut in_handler: i32 = 0;
+    let mut blocks: Vec<Blk> = Vec::new();
     while ip + 3 < code.len() {
         let op_start = ip;
         let g = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
@@ -205,24 +214,23 @@ fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
         ip += 4;
 
         if op == Op::LOOP {
-            in_loop += 1;
+            blocks.push(Blk::Loop);
+        } else if op == Op::TRY_TABLE {
+            blocks.push(Blk::Handler);
+        } else if op == Op::BLOCK || op == Op::IF {
+            blocks.push(Blk::Other);
+        } else if op == Op::END {
+            blocks.pop();
         }
-        if op == Op::TRY_TABLE {
-            in_handler += 1;
-        }
-        if op == Op::END && in_loop > 0 {
-            in_loop -= 1;
-        }
-        if op == Op::TRY_END && in_handler > 0 {
-            in_handler -= 1;
-        }
+        let in_loop = blocks.iter().any(|b| *b == Blk::Loop);
+        let in_handler = blocks.iter().any(|b| *b == Blk::Handler);
 
         let is_cond_branch = op == Op::BR_IF;
 
         if is_cond_branch {
-            let hint_byte = if in_loop > 0 {
+            let hint_byte = if in_loop {
                 0x01 // likely — back-edge almost always taken
-            } else if in_handler > 0 {
+            } else if in_handler {
                 0x00 // unlikely — exception handler is a cold path
             } else {
                 ip += op.operand_format().size_in(code, ip);

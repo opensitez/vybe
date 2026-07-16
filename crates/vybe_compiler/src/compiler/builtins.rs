@@ -1015,8 +1015,11 @@ impl Compiler {
                 BuiltinEmit::Common(name) => {
                     // Compile args, then dispatch to compiler_common emitter.
                     // Console.WriteLine/Write should preserve enum names instead
-                    // of logging raw ordinals.
-                    if name.eq_ignore_ascii_case("dotnet.console_writeline") && args.len() == 1 {
+                    // of writing raw ordinals, and apply .NET numeric formatting.
+                    if (name.eq_ignore_ascii_case("dotnet.console_writeline")
+                        || name.eq_ignore_ascii_case("dotnet.console_write"))
+                        && args.len() == 1
+                    {
                         self.emit_dotnet_console_arg(args[0])?;
                     } else {
                         for a in args {
@@ -1777,6 +1780,16 @@ impl Compiler {
                         let lane = expr_const_u8(args.first().copied());
                         self.chunk().emit_op(op, l);
                         self.chunk().emit(lane, l);
+                    }
+                    // Two byte immediates then stack operands (call_indirect:
+                    // argc, tableidx). The fold puts both immediates first.
+                    OperandFormat::U8_U8 => {
+                        for a in &args[2..] {
+                            self.compile_expr(a)?;
+                        }
+                        self.chunk().emit_op(op, l);
+                        self.chunk().emit(expr_const_u8(args.first().copied()), l);
+                        self.chunk().emit(expr_const_u8(args.get(1).copied()), l);
                     }
                     // i8x16.shuffle: 16 lane-index immediates, then two vectors.
                     OperandFormat::Shuffle => {

@@ -1,10 +1,14 @@
 use crate::wat_exec;
 
 wat_exec! {
+    // `return_call` is a tail call: the caller's result type must match the
+    // callee's (WASM rejects a `[]`-result caller tail-calling an `i32`-result
+    // func), so `_start` declares `(result i32)`. Its result is the output,
+    // the way `wasmtime --invoke` prints an exported function's return value.
     test_return_call_direct => { r#"
 (func $f1 (result i32)
   i32.const 42)
-(func (export "_start")
+(func (export "_start") (result i32)
   return_call $f1
 )
 "#, "42" },
@@ -14,7 +18,7 @@ wat_exec! {
   local.get 0
   local.get 1
   i32.add)
-(func (export "_start")
+(func (export "_start") (result i32)
   i32.const 10
   i32.const 20
   return_call $add
@@ -37,7 +41,7 @@ wat_exec! {
     i32.mul
     return_call $fact
   end)
-(func (export "_start")
+(func (export "_start") (result i32)
   i32.const 5
   i32.const 1
   return_call $fact
@@ -49,7 +53,7 @@ wat_exec! {
 (table 1 funcref)
 (func $f1 (result i32) i32.const 42)
 (elem (i32.const 0) $f1)
-(func (export "_start")
+(func (export "_start") (result i32)
   i32.const 0
   return_call_indirect (type $sig)
 )
@@ -63,7 +67,7 @@ wat_exec! {
   local.get 1
   i32.add)
 (elem (i32.const 0) $add)
-(func (export "_start")
+(func (export "_start") (result i32)
   i32.const 10
   i32.const 20
   i32.const 0

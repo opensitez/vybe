@@ -145,6 +145,13 @@ struct PendingMethodOverload {
     chunk_idx: usize,
     return_type: Option<String>,
     signature: CallSignature,
+    /// Whether this method dispatches on the receiver's RUNTIME type. Resolved
+    /// once at registration from the normalized `is_virtual`/`is_override`/
+    /// `is_abstract` marks plus `profile.methods_virtual_by_default`, so the
+    /// call path never has to re-derive per-language virtuality rules.
+    /// `chunk_idx` names the DECLARED type's body, which is the wrong target
+    /// for a virtual call — see `resolve_instance_method_overload_chunk`.
+    is_virtual: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +346,15 @@ pub struct Compiler {
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
     defined_class_methods: HashSet<String>,
+    /// Classes declaring an index operator (`operator []` / `__getitem__`).
+    /// Indexing one of these is a method call, not a key lookup — resolved
+    /// from the receiver's static type so arrays, dicts and strings keep the
+    /// plain index path with no runtime probe.
+    pub(crate) classes_with_indexer: HashSet<String>,
+    /// Classes declaring an index *setter* (`operator []=` / `__setitem__`).
+    /// Kept apart from `classes_with_indexer` — a class may define either
+    /// half on its own.
+    pub(crate) classes_with_index_setter: HashSet<String>,
     global_type_hints: HashMap<String, String>,
     /// Map from member name → containing namespace name.
     /// Used for bare-name resolution within modules/namespaces/enums.
@@ -934,6 +950,34 @@ fn collect_binding_pattern_names(pat: &crate::ast::BindingPattern, out: &mut Has
     }
 }
 
+/// Free identifiers of a class body — the names it closes over from the
+/// enclosing frame. Each member is scoped independently: a method's own params
+/// and locals are not captures. Methods are `FunctionDecl` statements, so they
+/// reuse the nested-function arm verbatim.
+fn collect_closure_captured_in_class_members(members: &[ClassMember], out: &mut HashSet<String>) {
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => collect_closure_captured_in_stmt(stmt, out),
+            ClassMember::Constructor { params, body, .. } => {
+                let mut all_idents = HashSet::new();
+                collect_all_idents_in_stmts(body, &mut all_idents);
+                let mut local_names: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
+                collect_declared_names(body, &mut local_names);
+                for name in all_idents {
+                    if !local_names.contains(&name) {
+                        out.insert(name);
+                    }
+                }
+            }
+            ClassMember::Field { init: Some(init), .. } => {
+                collect_closure_captured_in_expr(init, out)
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
     match &stmt.kind {
         StmtKind::FunctionDecl { params, body, .. } => {
@@ -946,6 +990,14 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
                     out.insert(name);
                 }
             }
+        }
+        // A class body closes over the enclosing frame exactly like a nested
+        // function does: its methods can read an enclosing local, so those
+        // names must be boxed into the shared env here. Without this the
+        // capture is resolved but never boxed, and the method reads through an
+        // unboxed value (`function mk(msg){ return class { greet(){ return msg; } }; }`).
+        StmtKind::ClassDecl { members, .. } => {
+            collect_closure_captured_in_class_members(members, out);
         }
         StmtKind::Expr(e) => collect_closure_captured_in_expr(e, out),
         StmtKind::Return(opt) => {
@@ -1298,6 +1350,11 @@ fn expr_has_closure_with_this(expr: &Expression) -> bool {
 
 pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
+        // `const K = class { m(){ return msg; } }` closes over the enclosing
+        // frame just as the declaration form does — same members, same rule.
+        ExprKind::ClassExpr { members, .. } => {
+            collect_closure_captured_in_class_members(members, out);
+        }
         ExprKind::Lambda { params, body, .. } => {
             let mut all_idents = HashSet::new();
             match body {
@@ -2048,6 +2105,8 @@ impl Compiler {
             defined_classes: HashSet::new(),
             abstract_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
+            classes_with_indexer: HashSet::new(),
+            classes_with_index_setter: HashSet::new(),
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
             enum_value_names: HashMap::new(),

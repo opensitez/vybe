@@ -467,6 +467,52 @@ pub enum StmtKind {
         /// Initializer bytes, with WAT string escapes already decoded.
         bytes: Vec<u8>,
     },
+
+    // ── WASM exception handling (canonical `try_table`) ──────────────────────
+    // The WASM text format declares exception *tags* and matches catch clauses
+    // by TAG IDENTITY (not by exception class like the higher-level `Try`
+    // node). These nodes model that directly; the wast frontend folds both the
+    // canonical `try_table` form and the legacy `try/catch/delegate/rethrow`
+    // sugar into them, and the compiler lowers them to the VM's `try_table` /
+    // `throw` / `throw_ref` opcodes.
+    /// `(tag $id? (param t*))` — a WASM exception-tag declaration. Declares a
+    /// distinct tag entity, keyed by `name` so `throw $e`/`catch $e` resolve to
+    /// the SAME entity. Lowered via `import_exception_tag`.
+    WasmTagDecl {
+        /// Tag name (the `$id`), used to key the imported tag entity.
+        name: String,
+        /// Payload arity (number of `param` values the tag carries).
+        arity: u8,
+    },
+
+    /// `throw $tag` — raise the WASM exception `$tag` with `args` as its
+    /// payload (already popped off the stack machine in push order). Lowers to
+    /// each arg followed by `THROW <tagidx>`.
+    WasmThrow {
+        /// Tag name to raise (resolves to the same entity as `WasmTagDecl`).
+        tag: String,
+        /// Payload values, bottom-to-top.
+        args: Vec<Expression>,
+    },
+
+    /// A WASM exception-handling block — canonical `try_table`, or the legacy
+    /// `try/catch/catch_all/delegate` sugar the wast walker folds into it.
+    /// Unlike the class-based [`StmtKind::Try`], catch clauses match by TAG
+    /// IDENTITY and payloads are raw stack values. The compiler lowers this to
+    /// a `TRY_TABLE` (one clause per catch, each a forward offset to its inline
+    /// handler), the body, a structural `end`, then the handlers.
+    WasmTryTable {
+        body: Vec<Statement>,
+        catches: Vec<WasmCatch>,
+    },
+
+    /// `rethrow N` (legacy) — re-raise the exception caught by the `N`th
+    /// enclosing catch, whose `exnref` the handler captured (`capture_ref`).
+    /// Lowers to `THROW_REF` of that captured reference.
+    WasmRethrow {
+        /// The `exnref` local name captured by the target catch handler.
+        exnref_local: String,
+    },
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -487,6 +533,11 @@ pub enum ClassMember {
     Method(Box<Statement>),
 
     Constructor {
+        /// A *named* constructor's name (Dart `Point.origin()`, Pascal
+        /// `constructor Create`). `None` is the ordinary unnamed constructor,
+        /// which every other language uses — those dispatch by signature, not
+        /// by name.
+        name: Option<String>,
         params: Vec<Param>,
         body: Vec<Statement>,
         base_args: Option<Vec<Expression>>,
@@ -994,6 +1045,28 @@ pub struct CatchClause {
     pub stack_var: Option<String>,
     pub body: Vec<Statement>,
     pub when_clause: Option<Expression>,
+}
+
+// ── WASM catch clause (tag-identity, for `StmtKind::WasmTryTable`) ────────────
+
+/// One catch clause of a [`StmtKind::WasmTryTable`]. Matching is by TAG
+/// IDENTITY: `tag == None` is `catch_all`. The delivered payload values are
+/// bound, in push order, to fresh locals named in `payload_binds`, which the
+/// handler `body` reads. `capture_ref` marks the `catch_ref`/`catch_all_ref`
+/// forms that also bind the exception's `exnref` (for `rethrow`/`delegate`,
+/// lowered to `throw_ref`) into `exnref_bind`.
+#[derive(Debug, Clone)]
+pub struct WasmCatch {
+    /// Tag name to match; `None` for `catch_all`.
+    pub tag: Option<String>,
+    /// Payload-value locals, bottom-to-top, that the handler body reads.
+    pub payload_binds: Vec<String>,
+    /// Whether the VM also delivers an `exnref` (`catch_ref`/`catch_all_ref`).
+    pub capture_ref: bool,
+    /// Local the captured `exnref` is bound to when `capture_ref` is set.
+    pub exnref_bind: Option<String>,
+    /// Handler statements, run with the payload bound.
+    pub body: Vec<Statement>,
 }
 
 // ── Match (PHP expression-level) ─────────────────────────────────────────────

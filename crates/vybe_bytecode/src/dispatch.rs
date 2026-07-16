@@ -2841,20 +2841,9 @@ impl VM {
                 // r#await: removed (duplicate of promise_suspend, use JSPI proposal name)
 
                 // -- Exceptions (WASM exception-handling proposal, final) --
-                _ if op == Op::TRY_END => {
-                    // Normal exit from the try block — remove the WHOLE
-                    // clause group of the innermost try_table.
-                    if let Some(top) = self.exception_handlers.last() {
-                        let group = top.group;
-                        while self
-                            .exception_handlers
-                            .last()
-                            .is_some_and(|h| h.group == group)
-                        {
-                            self.exception_handlers.pop();
-                        }
-                    }
-                }
+                // Normal exit from a try block is handled by the structural
+                // `end` (Op::END, `is_try` label) — see the END dispatch. The
+                // custom TRY_END opcode has been retired.
                 _ if op == Op::THROW => {
                     // Spec `throw <tagidx>`: the tag index immediate selects
                     // the tag entity; the payload (per the tag's signature
@@ -2981,9 +2970,10 @@ impl VM {
                 }
                 _ if op == Op::RETURN_CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
-                    let args_start = self.stack.len() - argc;
-                    let table_idx_pos = args_start - 1;
-                    let table_idx = self.stack[table_idx_pos].as_i32() as usize;
+                    // Spec: the i32 table index is on TOP of the stack, above
+                    // the `argc` args. Pop it, then splice the resolved funcref
+                    // in below the args (`[funcref, args…]`) for the tail call.
+                    let table_idx = self.pop().as_i32() as usize;
                     if table_idx >= self.func_table.len() {
                         return Err(VMError::new(format!(
                             "trap: return_call_indirect: table index {} out of bounds",
@@ -2991,9 +2981,9 @@ impl VM {
                         )));
                     }
                     let func = self.func_table[table_idx].clone();
-                    self.stack[table_idx_pos] = func;
+                    let callee_idx = self.stack.len() - argc;
+                    self.stack.insert(callee_idx, func);
                     let old_base = self.frame().base;
-                    let callee_idx = table_idx_pos;
                     for i in 0..=argc {
                         self.stack[old_base + i] = self.stack[callee_idx + i].clone();
                     }
@@ -3406,27 +3396,27 @@ impl VM {
                 _ if op == Op::CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
                     let tableidx = self.read_byte() as usize;
-                    let table_idx_pos = self.stack.len() - 1 - argc;
-                    let raw_idx = self.stack[table_idx_pos].as_f64();
-                    let table = self
-                        .table_ref(tableidx)
-                        .ok_or_else(|| VMError::new("trap: call_indirect unknown table"))?;
-                    if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
-                        return Err(VMError::new(format!(
-                            "trap: call_indirect: invalid table index {}",
-                            raw_idx
-                        )));
-                    }
-                    let elem_idx = raw_idx as usize;
-                    if elem_idx < table.len() {
-                        self.stack[table_idx_pos] = table[elem_idx].clone();
-                        self.call_value(argc)?;
-                    } else {
-                        return Err(VMError::new(format!(
-                            "call_indirect: table index {} out of bounds",
-                            elem_idx
-                        )));
-                    }
+                    // Spec `call_indirect`: `[t* i32] → [t'*]` — the i32 table
+                    // index is on TOP of the stack, above the `argc` call
+                    // arguments. Pop it, resolve the funcref, then splice the
+                    // funcref in below the args so `call_value` sees
+                    // `[funcref, args…]`.
+                    let raw_idx = self.pop().as_f64();
+                    let funcref = {
+                        let table = self
+                            .table_ref(tableidx)
+                            .ok_or_else(|| VMError::new("trap: call_indirect unknown table"))?;
+                        if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
+                            return Err(VMError::new(format!(
+                                "trap: call_indirect: invalid table index {}",
+                                raw_idx
+                            )));
+                        }
+                        table[raw_idx as usize].clone()
+                    };
+                    let insert_pos = self.stack.len() - argc;
+                    self.stack.insert(insert_pos, funcref);
+                    self.call_value(argc)?;
                 }
 
                 // -- Component Model --

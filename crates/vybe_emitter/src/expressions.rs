@@ -213,9 +213,16 @@ pub fn emit_null_safe_end(chunk: &mut Chunk, block: usize, _line: u32) {
 // Same pattern as rich_compare but for binary arithmetic operators.
 // Tries user-defined dunder method, falls back to primitive opcode.
 
-/// Emit rich arithmetic: tries user-defined __add__/etc, falls back to primitive opcode.
+/// Emit rich arithmetic: tries the user-defined `__add__`/`__mul__`/…,
+/// falls back to the primitive opcode.
 /// Caller must store left in `left_slot` and right in `right_slot`.
 /// Stack before: []  Stack after: [result_value]
+///
+/// Deliberately NOT `emit_rich_compare_locals`. That helper's second stage
+/// tries `compare`/`CompareTo`/`<=>` and applies `fallback_fn` against `0`,
+/// which is right for an ordering (`CompareTo(a, b) < 0`) and nonsense for
+/// arithmetic (`CompareTo(a, b) + 0`). An operator method is the only thing
+/// that can define `a + b`, so there is no second stage here.
 pub fn emit_rich_arithmetic(
     chunk: &mut Chunk,
     left_slot: u16,
@@ -224,7 +231,92 @@ pub fn emit_rich_arithmetic(
     fallback_fn: fn(&mut Chunk, u32),
     line: u32,
 ) {
-    emit_rich_compare_locals(chunk, left_slot, right_slot, dunder, fallback_fn, line);
+    let method_slot = alloc_local(chunk);
+
+    // A primitive traps on STRUCT_GET, so gate the lookup on the operand
+    // actually being an object.
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+}
+
+/// Emit a rich unary operator: tries the user-defined `__neg__`/`__bitnot__`
+/// on an object operand, else the primitive fallback.
+/// Stack before: []  Stack after: [result_value]
+pub fn emit_rich_unary(
+    chunk: &mut Chunk,
+    operand_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let method_slot = alloc_local(chunk);
+
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+}
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    let slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+    slot
 }
 
 // ── Rich toString (user-defined __str__ / toString) ─────────────────────

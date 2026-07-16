@@ -44,17 +44,18 @@ function_references = true
 [builtins]
 
 # ── Standard WASI output imports ─────────────────────────────────────────────
-# WAT modules that import (import "wasi:cli" "log" (func $log ...)) generate
-# call-to-Ident("log") in the AST. These profile entries resolve them to the
-# real wasi:cli host functions without any custom dispatch.
+# WAT modules that import a log function (e.g. `(import "wasi:logging/logging"
+# "log" (func $log ...))`) generate call-to-Ident("log") in the AST. These
+# entries resolve them to the real `wasi:logging/logging` "log" host sink (the
+# WASI logging proposal, which the runtime registers) — no custom dispatch.
 
-log   = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
-logf  = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
+log   = { emit = "host:wasi:logging/logging:log",   min_args = 1, max_args = 255 }
+logf  = { emit = "host:wasi:logging/logging:log",   min_args = 1, max_args = 255 }
 # Type-suffixed log imports (log_i64 / log_f32 / log_f64) are the same WASI "log"
 # import bound to a typed local id; they all resolve to the one host sink.
-log_i64 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
-log_f32 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
-log_f64 = { emit = "host:wasi:cli:log", min_args = 1, max_args = 255 }
+log_i64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
+log_f32 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
+log_f64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
 
 # ── vybe:gui imports ──────────────────────────────────────────────────────────
 # WAT modules import these by local name; the profile resolves them to the

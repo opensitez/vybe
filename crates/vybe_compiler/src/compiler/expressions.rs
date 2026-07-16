@@ -1308,6 +1308,11 @@ impl Compiler {
                                 {
                                     let idx = self.import("ecma:bigint", "neg");
                                     self.emit_host_call(idx, 1);
+                                } else if self.uses_rich_operators() {
+                                    // A user `operator -()` / `__neg__` defines
+                                    // negation for its own type; numeric
+                                    // negation would coerce it instead.
+                                    self.emit_rich_unary("__neg__", common::math::emit_neg);
                                 } else {
                                     common::math::emit_neg(self.chunk(), l);
                                 }
@@ -1363,6 +1368,11 @@ impl Compiler {
                                 {
                                     let idx = self.import("ecma:bigint", "not");
                                     self.emit_host_call(idx, 1);
+                                } else if self.uses_rich_operators() {
+                                    self.emit_rich_unary(
+                                        "__bitnot__",
+                                        common::expressions::emit_i32_not,
+                                    );
                                 } else {
                                     common::expressions::emit_i32_not(self.chunk(), l);
                                 }
@@ -1507,6 +1517,36 @@ impl Compiler {
                 if self.private_member_access_forbidden(field) {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
+                }
+                // First-class function reference (WASM `ref.func $f`): with
+                // `function_references`, a static method named as a VALUE (not
+                // called) tears off into a `REF_FUNC` funcref rather than being
+                // invoked or read as a bound-method property. Gated on the
+                // profile property so no other language's member semantics
+                // change. `object` must be a known class (not a local holding
+                // an object) and `field` must resolve to a single function
+                // chunk.
+                if self.profile.function_references && !*null_safe {
+                    if let ExprKind::Ident(obj_name) = &object.kind {
+                        let class = self.canon(obj_name);
+                        // The class may not be in `defined_classes` yet when a
+                        // pre-`_start` init (e.g. an `elem` segment) references
+                        // it — `pending_classes` (populated in the pre-pass) is
+                        // the authoritative "is a known class" signal here.
+                        if (self.defined_classes.contains(&class)
+                            || self.pending_classes.contains_key(&class))
+                            && self.scope().resolve(obj_name).is_none()
+                        {
+                            if let Some(chunk_idx) =
+                                self.resolve_unique_static_method_chunk_for_class(&class, field)
+                            {
+                                let line = self.line;
+                                self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+                                self.chunk().emit(0, line); // uv_count = 0
+                                return Ok(());
+                            }
+                        }
+                    }
                 }
                 // §19.3 global-object semantics: `globalThis.X` reads resolve
                 // the global X — the twin of the write special-case (Assign:
@@ -2051,7 +2091,7 @@ impl Compiler {
                     .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
 
                 let receiver_array_rank =
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb") && field == "Rank" {
+                    if self.profile.namespaces.use_dotnet && field == "Rank" {
                         let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
                             let normalized = Self::normalize_type_hint(type_hint);
                             let start = normalized.find('[')?;
@@ -2064,7 +2104,7 @@ impl Compiler {
                         None
                     };
 
-                if matches!(self.profile.name.as_str(), "csharp" | "vb") && receiver_is_nullable {
+                if self.profile.namespaces.use_dotnet && receiver_is_nullable {
                     match field.as_str() {
                         "HasValue" => {
                             self.compile_expr(object)?;
@@ -2089,7 +2129,7 @@ impl Compiler {
                 }
 
                 let receiver_is_collection_like =
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    if self.profile.namespaces.use_dotnet
                         && matches!(field.as_str(), "Length" | "Count")
                     {
                         let unknown_receiver_default = field == "Length";
@@ -2169,7 +2209,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let is_csharp_len_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
+                let is_csharp_len_accessor = self.profile.namespaces.use_dotnet
                     && matches!(field.as_str(), "Length" | "Count")
                     && receiver_is_collection_like
                     && !matches!(
@@ -2178,7 +2218,7 @@ impl Compiler {
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
                 let is_csharp_runtime_count_accessor =
-                    matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    self.profile.namespaces.use_dotnet
                         && self.profile.namespaces.use_dotnet
                         && field == "Count"
                         && !is_csharp_len_accessor
@@ -2189,7 +2229,7 @@ impl Compiler {
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                         );
 
-                if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                if self.profile.namespaces.use_dotnet
                     && self.profile.namespaces.use_dotnet
                     && field == "Count"
                     && receiver_type_hint
@@ -2240,7 +2280,7 @@ impl Compiler {
                 }
 
                 let dotnet_instance_property =
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    if self.profile.namespaces.use_dotnet
                         && self.profile.namespaces.use_dotnet
                         && !*null_safe
                     {
@@ -2263,7 +2303,7 @@ impl Compiler {
                 }
 
                 let dotnet_instance_zero_arg_method =
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    if self.profile.namespaces.use_dotnet
                         && self.profile.namespaces.use_dotnet
                         && !*null_safe
                         && !is_csharp_len_accessor
@@ -2296,7 +2336,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, canonical_idx);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
 
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    if self.profile.namespaces.use_dotnet
                         && self.profile.namespaces.use_dotnet
                         && field.as_str() != field_name
                     {
@@ -2372,7 +2412,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let static_field_owner = if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                let static_field_owner = if self.profile.namespaces.use_dotnet {
                     receiver_type_hint.as_deref().and_then(|type_hint| {
                         let trimmed_type_hint = type_hint.trim().trim_end_matches("()").trim();
                         let metadata_type_hint = self
@@ -2430,7 +2470,7 @@ impl Compiler {
                 }
 
                 if *null_safe
-                    && matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && self.profile.namespaces.use_dotnet
                     && !is_csharp_len_accessor
                 {
                     let obj_slot = self.define_local("__dotnet_nullsafe_obj");
@@ -2468,7 +2508,7 @@ impl Compiler {
                     let field_name = self
                         .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
-                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    if self.profile.namespaces.use_dotnet
                         && self.profile.namespaces.use_dotnet
                         && field.as_str() != field_name
                     {
@@ -2505,6 +2545,30 @@ impl Compiler {
                 index,
                 null_safe,
             } => {
+                // A class declaring `operator []` / `__getitem__` makes `x[i]`
+                // a method call on that type. The receiver's declared type
+                // settles it at compile time, so this emits a direct call and
+                // every other receiver — array, dict, string — keeps the plain
+                // index path below with no added runtime check.
+                if !*null_safe
+                    && !matches!(index.kind, ExprKind::Range { .. } | ExprKind::Slice { .. })
+                    && self.expr_has_user_indexer(object)
+                {
+                    let line = self.line;
+                    let obj_slot = self.define_local("__idx_recv");
+                    let key_slot = self.define_local("__idx_key");
+                    self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    let getter = self.str_const("__getitem__");
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, getter);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                    self.chunk().emit_op_u8(Op::CALL_REF, 2, line);
+                    return Ok(());
+                }
                 // A Range used as the index is a slice operation
                 // (C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`).
                 // Route through compiler_common's polymorphic slice helper so
@@ -2927,7 +2991,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.chunk().emit_end(lookup_line);
                     self.chunk().emit_end(line);
-                } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                } else if self.profile.namespaces.use_dotnet {
                     if self.profile.namespaces.use_dotnet
                         && self
                             .infer_expr_type_hint(object)

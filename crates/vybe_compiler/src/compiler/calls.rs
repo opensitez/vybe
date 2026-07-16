@@ -742,14 +742,47 @@ impl Compiler {
         None
     }
 
+    /// The chunk to bind a member call to DIRECTLY, or `None` to fall through
+    /// to the dynamic member lookup.
+    ///
+    /// The overload is selected from the receiver's declared type, which is
+    /// correct — overload selection is a compile-time decision from the static
+    /// argument types in every language that has overloads. Picking *which
+    /// body runs* is not: for a virtual method the declared type's chunk is
+    /// the wrong target whenever the runtime type overrides it
+    /// (`Base b = new Derived(); b.Speak()`). Declining the direct bind there
+    /// falls through to the dynamic path, which already resolves overrides
+    /// correctly for untyped receivers and casts.
+    ///
+    /// Two guards keep the decline safe, both because the dynamic path
+    /// resolves by member NAME alone:
+    ///
+    /// - Only single-overload names may decline. An overloaded name has one
+    ///   runtime slot, so declining would silently pick the last-registered
+    ///   signature and turn a dispatch bug into an overload bug. An overloaded
+    ///   virtual keeps its declared-type bind: no better, but no worse.
+    /// - A method some descendant HIDES (C# `new`, VB `Shadows`) may not
+    ///   decline: the shared slot holds the hiding body, but the declared type's
+    ///   body is the one that must run.
     fn resolve_instance_method_overload_chunk(
         &self,
         object: &Expression,
         method_name: &str,
         arg_exprs: &[&Expression],
     ) -> Option<usize> {
-        self.resolve_instance_method_overload(object, method_name, arg_exprs, false)
-            .map(|overload| overload.chunk_idx)
+        let receiver_type = resolve_receiver_type_hint(self, object)?;
+        let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
+        let pending = self.pending_classes.get(&class_name)?;
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
+        let overloads = pending.instance_method_overloads.get(&method_key)?;
+        let overload = self.match_method_overload(overloads, arg_exprs, false)?;
+        if overload.is_virtual
+            && overloads.len() == 1
+            && !self.method_hidden_by_descendant(&class_name, &method_key)
+        {
+            return None;
+        }
+        Some(overload.chunk_idx)
     }
 
     fn resolve_instance_method_overload(
@@ -871,7 +904,7 @@ impl Compiler {
         self.match_method_overload(overloads, arg_exprs, false)
     }
 
-    fn resolve_unique_static_method_chunk_for_class(
+    pub(crate) fn resolve_unique_static_method_chunk_for_class(
         &self,
         class_name: &str,
         method_name: &str,
@@ -2363,6 +2396,24 @@ impl Compiler {
         };
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        // First-class funcref value call (WASM `call_ref` / `call_indirect`):
+        // when a local variable holds a funcref, calling it is a plain
+        // `CALL_REF` — push the funcref, then the args, no receiver and no
+        // method dispatch. Gated on `function_references` so no other
+        // language's bare-identifier call semantics change.
+        if self.profile.function_references {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if self.scope().resolve(name).is_some() {
+                    self.emit_var_get(name);
+                    for a in args {
+                        self.compile_expr(&a.value)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    return Ok(());
+                }
+            }
+        }
+
         if self.try_compile_js_iterator_from_generator_take_to_array(callee, args)? {
             return Ok(());
         }
@@ -3204,7 +3255,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, method_idx);
                 }
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                     if self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
                         .is_some_and(|overload| overload.signature.has_rest)
@@ -3645,7 +3696,7 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                         if self
                             .resolve_static_method_overload_for_type(
                                 &class_canon,
@@ -3775,7 +3826,8 @@ impl Compiler {
                                     return Ok(());
                                 }
 
-                                if emit.eq_ignore_ascii_case("dotnet.console_writeline")
+                                if (emit.eq_ignore_ascii_case("dotnet.console_writeline")
+                                    || emit.eq_ignore_ascii_case("dotnet.console_write"))
                                     && arg_exprs.len() == 1
                                 {
                                     self.emit_dotnet_console_arg(arg_exprs[0])?;
@@ -4459,7 +4511,7 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                         if self
                             .resolve_static_method_overload_for_type(&canon, field, &arg_exprs)
                             .is_some_and(|overload| overload.signature.has_rest)
@@ -6411,7 +6463,24 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(class_fn_slot, Some(obj_tmp), &arg_slots);
+                        // Prototype-dispatch profiles (ECMA-262 §15.7) declare no
+                        // explicit receiver param — `this` arrives via the binding.
+                        // Passing the receiver positionally would land it in
+                        // argument 0 and shift every real argument
+                        // (`c.f(7)` → f receives the object, not 7).
+                        if self.class_prototype_dispatch() {
+                            self.emit_call_ref_with_bound_js_this_arg_slots(
+                                class_fn_slot,
+                                obj_tmp,
+                                &arg_slots,
+                            );
+                        } else {
+                            self.emit_call_ref_with_arg_slots(
+                                class_fn_slot,
+                                Some(obj_tmp),
+                                &arg_slots,
+                            );
+                        }
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                 } else {
@@ -6784,7 +6853,7 @@ impl Compiler {
                             return Ok(());
                         }
                     }
-                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                         let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                         if self
                             .resolve_static_method_overload_for_type(
@@ -7281,7 +7350,7 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                     let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                     if self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
@@ -7910,7 +7979,7 @@ impl Compiler {
                             }
                         }
 
-                        if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                        if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
                             if self
                                 .resolve_static_method_overload_for_type(
                                     &class_name,
@@ -8089,7 +8158,14 @@ impl Compiler {
                 && !self.current_member_is_static
             {
                 let is_local = self.has_accessible_local_binding(name);
-                if !is_local && !is_known_func {
+                // A bare `Foo(...)` naming a declared class constructs it —
+                // implicit-self applies to a class's own members, and a class
+                // is not one of them. Without this, `Vec2(x + other.x)` inside
+                // `Vec2 operator +(...)` compiles to `this.Vec2(...)`, whose
+                // STRUCT_GET yields undefined at runtime. Static members
+                // already escape via `current_member_is_static`.
+                let is_known_class = self.defined_classes.contains(&self.canon(name));
+                if !is_local && !is_known_func && !is_known_class {
                     if self.emit_self_ref() {
                         // Me.name(args) → load Me, dup, struct_get(name).
                         // Real methods receive `this`/Self as arg0, but callable

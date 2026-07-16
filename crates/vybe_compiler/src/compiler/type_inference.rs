@@ -216,6 +216,30 @@ impl Compiler {
         }
     }
 
+    /// The receiver's declared type is a class that defines an index
+    /// operator — so `x[i]` is a call to it rather than a key lookup.
+    /// The receiver's declared type defines `operator []=` — so `x[i] = v` is
+    /// a call to it rather than a key store.
+    pub(super) fn expr_has_user_index_setter(&self, expr: &Expression) -> bool {
+        if self.classes_with_index_setter.is_empty() {
+            return false;
+        }
+        self.infer_expr_type_hint(expr)
+            .map(|hint| self.canon(hint.trim()))
+            .is_some_and(|hint| self.classes_with_index_setter.contains(&hint))
+    }
+
+    pub(super) fn expr_has_user_indexer(&self, expr: &Expression) -> bool {
+        if self.classes_with_indexer.is_empty() {
+            return false;
+        }
+        // `canon` on both sides — the set is keyed by the class's canonical
+        // name, so the hint has to be canonicalised the same way.
+        self.infer_expr_type_hint(expr)
+            .map(|hint| self.canon(hint.trim()))
+            .is_some_and(|hint| self.classes_with_indexer.contains(&hint))
+    }
+
     pub(super) fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -309,6 +333,15 @@ impl Compiler {
                             "Boolean" => return Some("bool".into()),
                             _ => {}
                         }
+                    }
+                }
+                // `Foo(...)` naming a declared class constructs one, so the
+                // call's type is that class. Languages that spell construction
+                // without `new` (Dart, Python) arrive here rather than at
+                // `ExprKind::New`, and would otherwise have no type at all.
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if self.defined_classes.contains(&self.canon(name)) {
+                        return Some(name.clone());
                     }
                 }
                 if self.profile.parens_for_index

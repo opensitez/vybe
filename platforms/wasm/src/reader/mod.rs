@@ -1481,6 +1481,9 @@ fn decode_standard_wasm(
             &tag_arities,
         );
         chunk.result_arity = result_arity;
+        // Imported functions have no receiver, so their WASM param count is
+        // the arity (used by call_indirect's runtime type check).
+        chunk.param_count = arity;
         chunk.memory_min_pages = memory_min_pages.clone();
         chunk.memory_max_pages = memory_max_pages.clone();
         chunk.memory_is_64 = memory_is_64.clone();

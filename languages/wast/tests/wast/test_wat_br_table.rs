@@ -35,39 +35,49 @@ wat_exec! {
 )
 "#, "20" },
 
+    // Selector == table length picks the default (last) label. All br_table
+    // targets must share result arity, so every block yields i32 (a mismatched
+    // module is invalid WASM — wasmtime rejects it). Default -> outer block
+    // carries 42 straight out, skipping the +1/+2 fall-through paths.
     test_br_table_default => { r#"
 (func (export "_start")
   block (result i32)
-    block
-      block
+    block (result i32)
+      block (result i32)
+        i32.const 42
         i32.const 2
         br_table 0 1 2
       end
-      i32.const 10
+      i32.const 1
+      i32.add
       br 1
     end
-    i32.const 20
+    i32.const 2
+    i32.add
   end
   call $log
 )
-"#, "20" }, // The default is depth 2 which breaks out of the outermost block. Wait, the default is 2, so it breaks depth 2. Wait, the outermost block has no instructions after the inner blocks, it just returns. Wait, if it breaks depth 2, it exits the outermost block. So it returns... wait. If it breaks out of the outermost block, it must return a value. Let's pass a value!
+"#, "42" },
 
     test_br_table_default_out_of_bounds => { r#"
 (func (export "_start")
   block (result i32)
-    block
-      block
+    block (result i32)
+      block (result i32)
+        i32.const 42
         i32.const 99
         br_table 0 1 2
       end
-      i32.const 10
+      i32.const 1
+      i32.add
       br 1
     end
-    i32.const 20
+    i32.const 2
+    i32.add
   end
   call $log
 )
-"#, "20" }, // same as default
+"#, "42" }, // out-of-range selector also takes the default label
 
     test_br_table_with_args_first => { r#"
 (func (export "_start")

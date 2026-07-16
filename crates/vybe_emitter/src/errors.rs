@@ -123,22 +123,46 @@ pub fn exception_tag(chunk: &mut Chunk) -> u16 {
     chunk.import_exception_tag(EXCEPTION_TAG_NAME, 1)
 }
 
+/// One catch clause of a `try_table`. `kind` is one of the `CATCH_KIND_*`
+/// constants; `tag` selects the tag entity for `catch`/`catch_ref` and is
+/// ignored for the `catch_all` kinds.
+#[derive(Clone, Copy)]
+pub struct TryTableClause {
+    pub kind: u8,
+    pub tag: u16,
+}
+
+/// Emit a `try_table` header with N catch clauses — the single source of
+/// truth for the VM's internal try_table byte layout, shared by every
+/// producer (the OO `emit_try_start` wrapper, the wast `WasmTryTable`
+/// lowering, and the `.wasm` reader that imports foreign modules).
+///
+/// Internal fixed-width layout: `[try_table, u8 clause_count, per clause:
+/// u8 kind, u16 tag, u16 offset]`. Clauses are matched by TAG IDENTITY in the
+/// order given. Returns each clause's offset-placeholder position; patch it
+/// with [`patch_catch`] once that clause's handler code has been emitted. The
+/// caller emits the protected body next, then [`emit_try_end`].
+/// Stack: unchanged.
+pub fn emit_try_table(chunk: &mut Chunk, clauses: &[TryTableClause], line: u32) -> Vec<usize> {
+    let pairs: Vec<(u8, u16)> = clauses.iter().map(|c| (c.kind, c.tag)).collect();
+    chunk.emit_try_table_clauses(&pairs, line)
+}
+
 /// Emit the start of a try block. Returns the offset_pos to patch later.
 /// Spec `try_table` with one `catch $vybe:exception` clause — the handler
-/// receives the exception object (the tag's payload). Internal fixed-width
-/// layout: [try_table, u8 clause_count=1, u8 kind, u16 tag, u16 offset].
+/// receives the exception object (the tag's payload). Thin wrapper over the
+/// shared [`emit_try_table`] primitive.
 /// Stack: unchanged
 pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
     let tag = exception_tag(chunk);
-    chunk.emit_op(Op::TRY_TABLE, line);
-    chunk.emit(1u8, line); // clause_count = 1
-    chunk.emit(CATCH_KIND_CATCH, line); // catch (payload delivered)
-    chunk.emit((tag >> 8) as u8, line);
-    chunk.emit((tag & 0xff) as u8, line);
-    let offset_pos = chunk.current_offset();
-    chunk.emit(0u8, line); // catch offset hi (placeholder)
-    chunk.emit(0u8, line); // catch offset lo (placeholder)
-    offset_pos
+    emit_try_table(
+        chunk,
+        &[TryTableClause {
+            kind: CATCH_KIND_CATCH,
+            tag,
+        }],
+        line,
+    )[0]
 }
 
 /// Emit the structural `end` that closes the `try_table` block opened by

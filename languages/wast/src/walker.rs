@@ -36,10 +36,19 @@ use std::collections::HashMap;
 thread_local! {
     static FUNC_INDEX_ARITIES: RefCell<Vec<usize>> = RefCell::new(Vec::new());
     static FUNC_NAME_ARITIES: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // How many results each function yields, by index and by name. A `call` to a
+    // 0-result function is a void statement, not a value pushed on the stack; if
+    // it were pushed it would be deferred to the block's stack flush and run out
+    // of order (WASM linear code runs calls in place).
+    static FUNC_INDEX_RESULTS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static FUNC_NAME_RESULTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // type name → number of fields (for struct.new arity)
     static STRUCT_FIELD_COUNTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // func-type name → number of params (for call_ref/call_indirect arity)
     static TYPE_FUNC_PARAMS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // func-type name → number of results (the other half of the type shape the
+    // `call_indirect` runtime check compares against the callee).
+    static TYPE_FUNC_RESULTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // Module functions compile to static methods of this class; a `call $f` to a
     // defined function is reached as `ClassName.f(...)`.
     static MODULE_CLASS_NAME: RefCell<String> = RefCell::new(String::new());
@@ -368,6 +377,8 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     let mut index_arities = Vec::new();
     let mut name_arities = HashMap::new();
+    let mut index_results = Vec::new();
+    let mut name_results = HashMap::new();
 
     // 1. Pre-scan imports. Params live inside `typeuse` (and, for imports, inside
     //    `import_desc`), so the signature scan must descend, not read direct children.
@@ -375,10 +386,12 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::import_field {
-                    let (name, params_count) = scan_func_signature(inner);
+                    let (name, params_count, results_count) = scan_func_signature(inner);
                     index_arities.push(params_count);
+                    index_results.push(results_count);
                     if let Some(n) = name {
-                        name_arities.insert(n, params_count);
+                        name_arities.insert(n.clone(), params_count);
+                        name_results.insert(n, results_count);
                     }
                 }
             }
@@ -392,11 +405,14 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::func_field {
-                    let (name, params_count) = scan_func_signature(inner.clone());
+                    let (name, params_count, results_count) =
+                        scan_func_signature(inner.clone());
                     index_arities.push(params_count);
+                    index_results.push(results_count);
                     if let Some(n) = &name {
                         defined_names.insert(n.clone());
                         name_arities.insert(n.clone(), params_count);
+                        name_results.insert(n.clone(), results_count);
                     }
                     // Inline exports: `(func $id (export "e") …)`. The method name
                     // is the id, or (for an unnamed func) its first export name.
@@ -408,6 +424,11 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         .collect();
                     let method = name.clone().or_else(|| exports.first().cloned());
                     if let Some(m) = method {
+                        // An unnamed exported func is reached by its export name
+                        // (e.g. `_start`); key its signature there too so the
+                        // entry auto-invoke can tell whether it yields a value.
+                        name_results.entry(m.clone()).or_insert(results_count);
+                        name_arities.entry(m.clone()).or_insert(params_count);
                         for e in exports {
                             export_map.insert(e, m.clone());
                         }
@@ -433,12 +454,15 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     FUNC_INDEX_ARITIES.with(|f| *f.borrow_mut() = index_arities);
     FUNC_NAME_ARITIES.with(|f| *f.borrow_mut() = name_arities);
+    FUNC_INDEX_RESULTS.with(|f| *f.borrow_mut() = index_results);
+    FUNC_NAME_RESULTS.with(|f| *f.borrow_mut() = name_results);
     DEFINED_FUNC_NAMES.with(|f| *f.borrow_mut() = defined_names);
     EXPORT_FUNC_MAP.with(|f| *f.borrow_mut() = export_map);
 
     // 3. Pre-scan struct type definitions to know field counts for struct.new arity
     let mut struct_counts: HashMap<String, usize> = HashMap::new();
     let mut func_param_counts: HashMap<String, usize> = HashMap::new();
+    let mut func_result_counts: HashMap<String, usize> = HashMap::new();
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
@@ -447,6 +471,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     let mut field_count = 0usize;
                     let mut is_struct = false;
                     let mut func_params: Option<usize> = None;
+                    let mut func_results: Option<usize> = None;
                     for sub in inner.into_inner() {
                         match sub.as_rule() {
                             Rule::id => type_name = Some(sub.as_str()[1..].to_string()),
@@ -461,20 +486,26 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                                                 .count();
                                         }
                                         Rule::func_type => {
-                                            // param count = total val types across params
-                                            func_params = Some(
-                                                inner2
+                                            // param / result count = total val types
+                                            // across all `(param …)` / `(result …)`.
+                                            let mut ps = 0usize;
+                                            let mut rs = 0usize;
+                                            for p in inner2.into_inner() {
+                                                let n = p
+                                                    .clone()
                                                     .into_inner()
-                                                    .filter(|p| p.as_rule() == Rule::param)
-                                                    .map(|p| {
-                                                        p.into_inner()
-                                                            .filter(|v| {
-                                                                v.as_rule() == Rule::any_val_type
-                                                            })
-                                                            .count()
+                                                    .filter(|v| {
+                                                        v.as_rule() == Rule::any_val_type
                                                     })
-                                                    .sum(),
-                                            );
+                                                    .count();
+                                                match p.as_rule() {
+                                                    Rule::param => ps += n,
+                                                    Rule::result => rs += n,
+                                                    _ => {}
+                                                }
+                                            }
+                                            func_params = Some(ps);
+                                            func_results = Some(rs);
                                         }
                                         _ => {}
                                     }
@@ -487,6 +518,9 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         if is_struct {
                             struct_counts.insert(name.clone(), field_count);
                         }
+                        if let Some(r) = func_results {
+                            func_result_counts.insert(name.clone(), r);
+                        }
                         if let Some(n) = func_params {
                             func_param_counts.insert(name.clone(), n);
                         }
@@ -497,6 +531,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     }
     STRUCT_FIELD_COUNTS.with(|f| *f.borrow_mut() = struct_counts);
     TYPE_FUNC_PARAMS.with(|f| *f.borrow_mut() = func_param_counts);
+    TYPE_FUNC_RESULTS.with(|f| *f.borrow_mut() = func_result_counts);
 
     // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
     //     the tag's payload arity regardless of source order. Reset first —
@@ -649,18 +684,31 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if let Some(entry) = start_export_name {
             // Functions are static methods of the module class, so the entry is
             // reached as `ModuleClass._start()`.
+            // Does the entry yield a value? If so, surface it as output the way
+            // `wasmtime --invoke` prints an exported function's result.
+            let entry_yields =
+                FUNC_NAME_RESULTS.with(|f| f.borrow().get(&entry).copied()).unwrap_or(0) > 0;
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: entry,
                 null_safe: false,
             });
-            result.push(Statement::new(StmtKind::Expr(Expression::new(
-                ExprKind::Call {
-                    callee: Box::new(callee),
-                    args: Vec::new(),
+            let call = Expression::new(ExprKind::Call {
+                callee: Box::new(callee),
+                args: Vec::new(),
+                optional: false,
+            });
+            let stmt = if entry_yields {
+                // `log(entry())` — the entry's declared result is its output.
+                Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("log")),
+                    args: vec![Argument::positional(call)],
                     optional: false,
-                },
-            ))));
+                })
+            } else {
+                call
+            };
+            result.push(Statement::new(StmtKind::Expr(stmt)));
         }
     }
     Ok(result)
@@ -672,6 +720,7 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut func_name = String::new();
     let mut params: Vec<Param> = Vec::new();
+    let mut result_count: usize = 0;
     let mut body: Vec<Statement> = Vec::new();
     let mut export_names: Vec<String> = Vec::new();
     let mut labels = LabelStack::new();
@@ -690,7 +739,49 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::import_inline => {}
             Rule::typeuse => {
-                params = walk_typeuse_params(child)?;
+                params = walk_typeuse_params(child.clone())?;
+                // Inline `(result …)` count.
+                result_count = child
+                    .clone()
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::result)
+                    .map(|r| {
+                        r.into_inner()
+                            .filter(|v| matches!(v.as_rule(), Rule::any_val_type | Rule::val_type))
+                            .count()
+                    })
+                    .sum();
+                // A signature given by reference — `(func $f (type $sig) …)` —
+                // has no inline params/results; expand the referenced type's
+                // shape so `param_count`/`result_arity` (the call_indirect type
+                // check) are correct. Placeholder param types suffice: the VM is
+                // untyped and the check is over the param/result COUNTS.
+                if params.is_empty() && result_count == 0 {
+                    if let Some(sig) = child
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::index)
+                        .map(|i| i.as_str().trim_start_matches('$').to_string())
+                    {
+                        let pc = TYPE_FUNC_PARAMS
+                            .with(|m| m.borrow().get(&sig).copied())
+                            .unwrap_or(0);
+                        result_count = TYPE_FUNC_RESULTS
+                            .with(|m| m.borrow().get(&sig).copied())
+                            .unwrap_or(0);
+                        params = (0..pc)
+                            .map(|i| Param {
+                                name: format!("p{}", i),
+                                type_hint: Some("i32".to_string()),
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: false,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
+                            })
+                            .collect();
+                    }
+                }
             }
             Rule::local => {
                 body.extend(walk_local(child)?);
@@ -716,11 +807,20 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut modifiers = Modifiers::default();
     modifiers.is_static = true;
 
+    // Encode the result count in `return_type` (one placeholder type per
+    // result) so the compiler can set `chunk.result_arity` — half of the
+    // function's type shape for the `call_indirect` runtime check. `None` = a
+    // no-result (void) function, distinct from the default 1-value ABI.
+    let return_type = if result_count == 0 {
+        None
+    } else {
+        Some(vec!["i32"; result_count].join(","))
+    };
     Ok(Statement::with_span(
         StmtKind::FunctionDecl {
             name: func_name,
             params,
-            return_type: None,
+            return_type,
             body,
             modifiers,
             handles: Vec::new(),
@@ -736,9 +836,10 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
 /// parameter count. Parameters are wrapped in `typeuse`, and imported funcs are
 /// further wrapped in `import_desc`, so a flat scan of direct children misses
 /// them — the call-site arity would then be 0 and stack operands never consumed.
-fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize) {
+fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize, usize) {
     let mut name: Option<String> = None;
     let mut count = 0usize;
+    let mut results = 0usize;
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => {
@@ -761,17 +862,25 @@ fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize) {
                 }
                 count += if has_id { 1 } else { types };
             }
+            Rule::result => {
+                // `(result t1 t2 …)` yields one value per type.
+                results += child
+                    .into_inner()
+                    .filter(|v| matches!(v.as_rule(), Rule::any_val_type | Rule::val_type))
+                    .count();
+            }
             Rule::typeuse | Rule::import_desc => {
-                let (n, c) = scan_func_signature(child);
+                let (n, c, r) = scan_func_signature(child);
                 if name.is_none() {
                     name = n;
                 }
                 count += c;
+                results += r;
             }
             _ => {}
         }
     }
-    (name, count)
+    (name, count, results)
 }
 
 fn walk_typeuse_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -1079,6 +1188,7 @@ fn walk_folded_instr_as_expr(
     span: Span,
     labels: &mut LabelStack,
 ) -> Result<Expression, String> {
+    let pair_text = pair.as_str().to_string();
     let mut all_children: Vec<Pair<Rule>> = pair.into_inner().collect();
     if all_children.is_empty() {
         return Ok(Expression::null());
@@ -1086,9 +1196,25 @@ fn walk_folded_instr_as_expr(
     let name = if all_children[0].as_rule() == Rule::instr_name {
         all_children.remove(0).as_str().to_string()
     } else {
-        String::new()
+        // Folded block/loop/if/try lead with a bare keyword literal (not an
+        // instr_name token), so it never appears as a child — recover it from
+        // the source text. Without this the head is "", and the instruction
+        // falls through to an empty-callee call.
+        folded_head_keyword(&pair_text).unwrap_or_default()
     };
     walk_folded_core(name, all_children, span, labels)
+}
+
+/// The leading keyword of a folded block/loop/if/try S-expression (`(block …)`
+/// → `"block"`), recovered from source text because the grammar consumes these
+/// keywords as literals rather than `instr_name` tokens.
+fn folded_head_keyword(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix('(')?.trim_start();
+    ["block", "loop", "if", "try"].iter().find_map(|kw| {
+        rest.strip_prefix(kw)
+            .filter(|after| after.is_empty() || after.starts_with(|c: char| !c.is_alphanumeric()))
+            .map(|_| kw.to_string())
+    })
 }
 
 /// Core folded instruction → expression (shared by both statement and expression contexts).
@@ -1866,6 +1992,23 @@ fn find_first_integer(pair: &Pair<Rule>) -> Option<i64> {
     None
 }
 
+/// First `$id` or numeric funcidx found anywhere under `pair`, without its `$`.
+/// Used to pull the funcidx out of an element initializer (`(ref.func $f)`).
+fn first_ident_or_index(pair: &Pair<Rule>) -> Option<String> {
+    for c in pair.clone().into_inner() {
+        if matches!(c.as_rule(), Rule::id | Rule::index | Rule::integer) {
+            let s = c.as_str().trim_start_matches('$');
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+        if let Some(v) = first_ident_or_index(&c) {
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// `(elem (i32.const N) $f0 $f1 …)` — an active element segment initialising a
 /// funcref table. Lowered to load-time `table.set(N+i, ref.func $fi)` for each
 /// entry: the `ref.func` tear-off (Member value → REF_FUNC) produces a real
@@ -1875,12 +2018,35 @@ fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut offset: i64 = 0;
     let mut funcs: Vec<String> = Vec::new();
+    // Only ACTIVE segments (those with an offset / `(table …)(offset …)` mode)
+    // populate a table at load time. A `declare` segment merely permits
+    // `ref.func` (and usually declares no table); a passive segment is copied
+    // later by an explicit `table.init`. Neither should emit `table.set`.
+    let mut is_active = false;
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::elem_mode => offset = find_first_integer(&child).unwrap_or(0),
+            Rule::elem_mode => {
+                if child.as_str().trim().starts_with("declare") {
+                    // declarative — no table population
+                } else {
+                    offset = find_first_integer(&child).unwrap_or(0);
+                    is_active = true;
+                }
+            }
             Rule::index => funcs.push(child.as_str().trim_start_matches('$').to_string()),
+            // `(item (ref.func $f))` or a bare `(ref.func $f)` element: the
+            // initializer is a `ref.func` whose funcidx is the first id/index
+            // inside. (Other const-expr elements have no funcref to bind.)
+            Rule::elem_item => {
+                if let Some(f) = first_ident_or_index(&child) {
+                    funcs.push(f);
+                }
+            }
             _ => {}
         }
+    }
+    if !is_active {
+        return Ok(Statement::with_span(StmtKind::Block(Vec::new()), span));
     }
     let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
     let mut stmts = Vec::new();
@@ -2848,7 +3014,7 @@ fn fold_instructions_seeded(
                 // the stack operands (spec order: call args then the table
                 // index on top). Handled here (not the generic path) so the
                 // `(type $sig)` — dropped by the generic arg walk — is read.
-                "call_indirect" => {
+                "call_indirect" | "return_call_indirect" => {
                     let span = to_span(&pairs[i]);
                     let argc = peek_typeuse_index(&pairs[i])
                         .and_then(|n| TYPE_FUNC_PARAMS.with(|m| m.borrow().get(&n).copied()))
@@ -2861,7 +3027,15 @@ fn fold_instructions_seeded(
                         Expression::int(tableidx as i64),
                     ];
                     call_args.extend(operands);
-                    stack.push(make_call("call_indirect", call_args, span));
+                    let call = make_call("call_indirect", call_args, span);
+                    // `return_call_indirect` is the tail-call form: return the
+                    // indirect call's result instead of leaving it on the stack.
+                    if kw == "return_call_indirect" {
+                        statements
+                            .push(Statement::with_span(StmtKind::Return(Some(call)), span));
+                    } else {
+                        stack.push(call);
+                    }
                     i += 1;
                     continue;
                 }
@@ -2933,6 +3107,16 @@ fn fold_instructions_seeded(
                         let val = stack.pop();
                         statements.push(Statement::with_span(StmtKind::Return(val), span));
                     }
+                    // Tail calls: `return_call $f` / `return_call_ref` are
+                    // `return f(args)`. Reuse the `call`/`call_ref` lowering
+                    // (which qualifies module functions as static methods) and
+                    // wrap the resulting call in a `return`.
+                    "return_call" | "return_call_ref" => {
+                        let inner = if name == "return_call" { "call" } else { "call_ref" };
+                        let call = map_instr_to_ast(inner.to_string(), args, span)?;
+                        statements
+                            .push(Statement::with_span(StmtKind::Return(Some(call)), span));
+                    }
                     "br" => {
                         let target = br_target_of(args.first());
                         if let Some(entry) = labels.resolve(&target) {
@@ -3003,14 +3187,34 @@ fn fold_instructions_seeded(
                         let targets: Vec<BrTarget> =
                             args.iter().map(|a| br_target_of(Some(a))).collect();
                         let index = stack.pop().unwrap_or(Expression::int(0));
-                        let br_for = |t: &BrTarget| match labels.resolve(t) {
-                            Some(entry) => br_stmt_for(&entry, span),
-                            None => make_br_stmt_opt(None, labels, span),
+                        // Exactly one target is taken, consuming the block result on
+                        // top of the (post-selector) stack. Carry it into the chosen
+                        // target's result temp before branching, mirroring `br`.
+                        let carried = stack.last().cloned();
+                        let br_for = |t: &BrTarget| -> Vec<Statement> {
+                            match labels.resolve(t) {
+                                Some(entry) => {
+                                    let mut out = Vec::new();
+                                    if let (Some(tmp), Some(val)) =
+                                        (&entry.result_temp, &carried)
+                                    {
+                                        out.push(Statement::new(StmtKind::Expr(
+                                            Expression::new(ExprKind::Assign {
+                                                target: Box::new(Expression::ident(tmp)),
+                                                value: Box::new(val.clone()),
+                                            }),
+                                        )));
+                                    }
+                                    out.push(br_stmt_for(&entry, span));
+                                    out
+                                }
+                                None => vec![make_br_stmt_opt(None, labels, span)],
+                            }
                         };
                         if targets.is_empty() {
                             // Degenerate: nothing to branch to.
                         } else if targets.len() == 1 {
-                            statements.push(br_for(&targets[0]));
+                            statements.extend(br_for(&targets[0]));
                         } else {
                             let idx_tmp = fresh_result_temp();
                             statements.push(Statement::new(StmtKind::VarDecl {
@@ -3024,7 +3228,7 @@ fn fold_instructions_seeded(
                                 kind: VarDeclKind::Let,
                             }));
                             // Default (last) branch, then wrap each earlier case.
-                            let mut chain = vec![br_for(&targets[targets.len() - 1])];
+                            let mut chain = br_for(&targets[targets.len() - 1]);
                             for k in (0..targets.len() - 1).rev() {
                                 let cond = Expression::new(ExprKind::Binary {
                                     op: BinOp::StrictEq,
@@ -3034,7 +3238,7 @@ fn fold_instructions_seeded(
                                 chain = vec![Statement::with_span(
                                     StmtKind::If {
                                         cond,
-                                        then_body: vec![br_for(&targets[k])],
+                                        then_body: br_for(&targets[k]),
                                         else_body: Some(chain),
                                         elifs: Vec::new(),
                                     },
@@ -3045,9 +3249,16 @@ fn fold_instructions_seeded(
                         }
                     }
                     _ => {
-                        // Value-producing or standard instruction.
+                        // A `call` yields as many values as the callee has results;
+                        // a 0-result (void) call is a statement that must run in
+                        // place, not a deferred stack value. Everything else that
+                        // reaches here pushes a single value.
+                        let pushes = if name == "call" {
+                            call_result_count(&args)
+                        } else {
+                            get_instruction_push_count(&name)
+                        };
                         let expr = map_instr_to_ast(name.clone(), args, span)?;
-                        let pushes = get_instruction_push_count(&name);
                         if pushes > 0 {
                             stack.push(expr);
                         } else {
@@ -3224,7 +3435,8 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "br_if" => 1,
 
         // Call
-        "call" => {
+        // `return_call` is a tail call — same operand shape as `call`.
+        "call" | "return_call" => {
             if let Some(first) = args.first() {
                 match &first.kind {
                     ExprKind::Ident(n) => {
@@ -3240,9 +3452,9 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
             }
         }
 
-        "call_indirect" => 2,
+        "call_indirect" | "return_call_indirect" => 2,
         // call_ref pops the funcref plus the sig's params.
-        "call_ref" => {
+        "call_ref" | "return_call_ref" => {
             let params = args
                 .first()
                 .and_then(|e| match &e.kind {
@@ -3347,11 +3559,39 @@ fn simd_stack_arity(name: &str) -> usize {
     2
 }
 
+/// Result count of the function targeted by a `call`, from its first arg (the
+/// callee id or index). Unknown callees default to 1 (assume value-producing) so
+/// only functions we positively know to be void become statements.
+fn call_result_count(args: &[Expression]) -> usize {
+    match args.first().map(|e| &e.kind) {
+        Some(ExprKind::Ident(n)) => {
+            FUNC_NAME_RESULTS.with(|f| f.borrow().get(n).copied()).unwrap_or(1)
+        }
+        Some(ExprKind::Lit(Literal::Int(idx))) => {
+            FUNC_INDEX_RESULTS.with(|f| f.borrow().get(*idx as usize).copied()).unwrap_or(1)
+        }
+        _ => 1,
+    }
+}
+
 fn get_instruction_push_count(name: &str) -> usize {
     match name {
         "local.set" | "global.set" | "drop" | "br_if" | "br" | "unreachable" | "nop"
         | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8" | "i32.store16"
-        | "i64.store8" | "i64.store16" | "i64.store32" | "struct.set" => 0,
+        | "i64.store8" | "i64.store16" | "i64.store32" | "struct.set"
+        // Bulk-memory / table / segment ops yield NO value. Without this they
+        // default to pushing 1 and get deferred to the block's stack flush,
+        // running out of order (e.g. a `memory.fill` after the load that reads
+        // it). `memory.grow`/`memory.size`/`table.grow`/`table.size`/`table.get`
+        // DO produce a value and stay at the default 1.
+        | "memory.fill" | "memory.copy" | "memory.init" | "data.drop"
+        | "table.set" | "table.fill" | "table.copy" | "table.init" | "elem.drop"
+        // GC array stores/copies write into an array and yield no value.
+        | "array.set" | "array.copy" | "array.fill"
+        | "array.init_data" | "array.init_elem"
+        // SIMD stores also write memory and return nothing.
+        | "v128.store" | "v128.store8_lane" | "v128.store16_lane"
+        | "v128.store32_lane" | "v128.store64_lane" => 0,
         _ => 1,
     }
 }

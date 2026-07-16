@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
-use crate::compiler::scope::UpvalueDesc;
 use crate::compiler::ArrayBindingMetadata;
 
 impl Compiler {
@@ -1318,6 +1317,16 @@ impl Compiler {
         let parent_canonical = class.parent.as_ref().map(|p| self.canon(p));
         let parent: &Option<String> = &parent_canonical;
 
+        // The ENCLOSING frame's shared env, captured before any method compile
+        // clears it. A class declared inside a function closes over that frame,
+        // and a captured local there does not live in a slot — it lives in the
+        // env array, which every closure receives as upvalue[0]
+        // (`bindings.rs::capture_local_slot`). So a method reading such a local
+        // emits `env[idx]`, and its binding must therefore capture the ENV, not
+        // the individual name. Empty for a top-level class, which is the gate:
+        // no env, nothing to forward.
+        let enclosing_shared_env_names = self.shared_env_names.clone();
+
         // Phase 2b.2 complete: passes 1-4 all read NormalClass fields
         // directly. No more ClassMember reconstruction inside
         // compile_class.
@@ -1600,6 +1609,15 @@ impl Compiler {
             // lookups are a Phase 2b.3 concern.
             self.defined_class_methods
                 .insert(self.canon(&m.source_name));
+            // An index operator makes `x[i]` on this type a method call. Record
+            // it against the class so the index site can resolve it from the
+            // receiver's static type instead of probing every index at runtime.
+            if common::classes::cross_language_aliases(&m.source_name)
+                .contains(&"__getitem__")
+            {
+                let cname = self.canon(&class.name);
+                self.classes_with_indexer.insert(cname);
+            }
             if let Some(private_name) =
                 self.js_private_member_storage_name_for_class(&class.name, &m.source_name)
             {
@@ -1715,22 +1733,25 @@ impl Compiler {
                 cc.rest_fixed_arities
                     .insert(user_params.len().saturating_sub(1) as u8);
             }
-            let arity = if is_static_init {
-                (user_params.len() + generator_control_arity) as u8
+            // Whether this method carries an implicit leading receiver slot,
+            // so its `arity` is `params + 1`. Mirrors the arity branches below.
+            let has_receiver = if is_static_init {
+                false
             } else if is_static {
-                if cc.profile.name == "php" {
-                    (user_params.len() + 1 + generator_control_arity) as u8
-                } else {
-                    (user_params.len() + generator_control_arity) as u8
-                }
+                cc.profile.name == "php"
             } else if ambient_this {
-                (user_params.len() + generator_control_arity) as u8
+                false
             } else {
-                (user_params.len() + 1 + generator_control_arity) as u8
+                true
             };
+            let arity = (user_params.len()
+                + usize::from(has_receiver)
+                + generator_control_arity) as u8;
 
             let ci = cc.chunks.len();
             let mut chunk = common::functions::create_function_chunk(mname, arity);
+            chunk.is_method = has_receiver;
+            chunk.param_count = user_params.len() as u8;
             chunk.is_async = m.is_async;
             chunk.is_generator = m.is_generator;
             // Source-level kind for prototype stamping at the attach sites —
@@ -1810,8 +1831,17 @@ impl Compiler {
             let saved_rs = cc.current_result_slot.take();
             let saved_ref_out = cc.current_ref_out_params.take();
             let saved_member_static = cc.current_member_is_static;
+            // Same handling `compile_function_decl` gives a nested function: the
+            // enclosing shared-env SLOT is only meaningful in the enclosing
+            // frame, so clear it, and pre-seed `closure_env_names` with that
+            // frame's layout so `env[idx]` reads here line up with the array
+            // actually being passed.
             let saved_shared_env_slot = cc.shared_env_slot.take();
             let saved_shared_env_names = std::mem::take(&mut cc.shared_env_names);
+            let saved_closure_env_names = std::mem::take(&mut cc.closure_env_names);
+            if !enclosing_shared_env_names.is_empty() {
+                cc.closure_env_names = enclosing_shared_env_names.clone();
+            }
             cc.current_result_slot = None;
             cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
             cc.current_member_is_static = is_static;
@@ -1987,11 +2017,12 @@ impl Compiler {
             cc.current_closure_captured_locals = saved_closure_captured;
             cc.shared_env_slot = saved_shared_env_slot;
             cc.shared_env_names = saved_shared_env_names;
+            cc.closure_env_names = saved_closure_env_names;
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
             let method_scope_idx = cc.scopes.len() - 1;
-            let capture_names: Vec<String> = cc.scopes[method_scope_idx]
+            let mut capture_names: Vec<String> = cc.scopes[method_scope_idx]
                 .upvalues
                 .iter()
                 .enumerate()
@@ -1999,6 +2030,22 @@ impl Compiler {
                     cc.captured_name_for_upvalue(method_scope_idx, index as u8)
                 })
                 .collect();
+            // `emit_var_get` registers an upvalue per NAME but emits the read as
+            // `env[idx]` (bindings.rs), so these names describe what the body
+            // reads, not what it receives: the body receives ONE upvalue, the
+            // env array. Binding the names individually would hand the method a
+            // raw value where it expects the array. Capture the env instead —
+            // the same rule `compile_function_decl` applies when the parent has
+            // a shared env ("pass it directly as the upvalue"). Only when every
+            // capture lives in that env; anything else still binds by name.
+            if !enclosing_shared_env_names.is_empty()
+                && !capture_names.is_empty()
+                && capture_names
+                    .iter()
+                    .all(|name| enclosing_shared_env_names.contains(name))
+            {
+                capture_names = vec!["__shared_env".to_string()];
+            }
             cc.scopes.pop();
             cc.static_local_bindings.pop();
             cc.current = saved;
@@ -2009,6 +2056,18 @@ impl Compiler {
                 } else {
                     &mut pending.instance_method_overloads
                 };
+                // Virtuality is decided HERE, once, so the call path stays
+                // language-agnostic. Keyword languages (C#/VB/Pascal) mark the
+                // method; virtual-by-default languages (java/python/js/...)
+                // carry no keyword and opt in via the profile instead. A
+                // `static` or `is_not_overridable` member can never be
+                // overridden, so it keeps its direct bind either way.
+                let is_virtual = m.is_virtual
+                    || m.is_override
+                    || m.is_abstract
+                    || (cc.profile.methods_virtual_by_default
+                        && !is_static
+                        && !m.raw_modifiers.is_not_overridable);
                 overloads
                     .entry(bound_name.clone())
                     .or_default()
@@ -2022,6 +2081,7 @@ impl Compiler {
                                 .map(|param| (*param).clone())
                                 .collect::<Vec<_>>(),
                         ),
+                        is_virtual,
                     });
             }
             method_chunks.push((bound_name, ci, is_ctor, is_static));
@@ -2234,25 +2294,25 @@ impl Compiler {
                 .insert(format!("{}$arity{}", ctor_global_prefix, explicit_arity));
         }
 
-        let emit_helper_ref =
-            |cc: &mut Compiler, helper_idx: usize, helper_upvalues: &[UpvalueDesc], line: u32| {
-                common::functions::emit_ref_func(
-                    &mut cc.chunks[cc.current],
-                    helper_idx,
-                    helper_upvalues.len() as u8,
-                    line,
-                );
-                for uv in helper_upvalues {
-                    common::functions::emit_closure_upvalue(
-                        &mut cc.chunks[cc.current],
-                        uv.is_local,
-                        uv.index,
-                        line,
-                    );
-                }
-            };
+        // Captures are re-resolved BY NAME in whichever frame the ref is being
+        // emitted from — this helper is referenced from two different frames
+        // (the constructor's arity dispatcher, and the class's defining scope).
+        // An `UpvalueDesc`'s `(is_local, index)` are coordinates into ONE
+        // parent frame, so replaying them verbatim in the other frame reads a
+        // different slot entirely: a class declared inside a function had its
+        // ctor helper capture the enclosing local by slot, then the dispatcher
+        // replayed that slot against its own params and got `undefined`.
+        // Re-resolving also threads the capture through the dispatcher's own
+        // upvalue list, so the class closure is built carrying it.
+        let emit_helper_ref = |cc: &mut Compiler,
+                               helper_idx: usize,
+                               helper_captures: &[String]|
+         -> Result<(), String> {
+            cc.emit_ref_func_with_captures(helper_idx, helper_captures)
+        };
 
-        let mut ctor_helpers: Vec<(usize, usize, usize, Vec<UpvalueDesc>)> = Vec::new();
+        let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> =
+            Vec::new();
         for (ctor_index, ctor_variant) in ctor_variants.iter().enumerate() {
             let helper_name = format!("__{}_ctor_{}", name, ctor_index);
             let ctor_base_args_from_nc: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
@@ -2317,6 +2377,17 @@ impl Compiler {
             let saved_cur = self.current;
             let saved_class2 = self.current_class.take();
             let saved_implicit2 = self.current_class_implicit_self;
+            // As for methods: the enclosing shared-env slot names a local in the
+            // ENCLOSING frame, so it must not leak into this chunk — reading it
+            // here would index this frame's slot instead. Cleared, with
+            // `closure_env_names` pre-seeded to the enclosing layout so the
+            // `env[idx]` reads match the array this ctor is handed.
+            let saved_ctor_shared_env_slot = self.shared_env_slot.take();
+            let saved_ctor_shared_env_names = std::mem::take(&mut self.shared_env_names);
+            let saved_ctor_closure_env_names = std::mem::take(&mut self.closure_env_names);
+            if !enclosing_shared_env_names.is_empty() {
+                self.closure_env_names = enclosing_shared_env_names.clone();
+            }
             self.current = helper_idx;
             self.current_class = Some(name.to_string());
             self.current_class_implicit_self = class.implicit_self_fields;
@@ -2949,24 +3020,45 @@ impl Compiler {
                 let ns = self.scope().next_slot;
                 self.chunks[helper_idx].finalize_local_count(ns);
             }
-            let helper_upvalues = self.scope().upvalues.clone();
+            // Names, not slot coordinates — see `emit_helper_ref`. Resolved
+            // while the helper's scope is still on the stack, since
+            // `captured_name_for_upvalue` walks it to name each upvalue.
+            let helper_scope_idx = self.scopes.len() - 1;
+            let mut helper_captures: Vec<String> = (0..self.scopes[helper_scope_idx].upvalues.len())
+                .filter_map(|index| self.captured_name_for_upvalue(helper_scope_idx, index as u8))
+                .collect();
+            // Same rule the methods use: a ctor body reading an enclosing
+            // captured local emits `env[idx]`, so it must receive the env array
+            // rather than the individual values.
+            if !enclosing_shared_env_names.is_empty()
+                && !helper_captures.is_empty()
+                && helper_captures
+                    .iter()
+                    .all(|name| enclosing_shared_env_names.contains(name))
+            {
+                helper_captures = vec!["__shared_env".to_string()];
+            }
             self.scopes.pop();
             self.current = saved_cur;
             self.current_class = saved_class2;
             self.current_class_implicit_self = saved_implicit2;
             self.js_derived_ctor_ctx = saved_derived_ctx;
+            self.shared_env_slot = saved_ctor_shared_env_slot;
+            self.shared_env_names = saved_ctor_shared_env_names;
+            self.closure_env_names = saved_ctor_closure_env_names;
             ctor_helpers.push((
                 user_arity as usize,
                 ctor_min_arity,
                 helper_idx,
-                helper_upvalues,
+                helper_captures,
+                ctor_variant.and_then(|c| c.named_name.clone()),
             ));
         }
 
         let ctor_idx = self.chunks.len();
         let ctor_arity = ctor_helpers
             .iter()
-            .map(|(arity, _, _, _)| *arity)
+            .map(|(arity, _, _, _, _)| *arity)
             .max()
             .unwrap_or(0) as u8;
         self.chunks
@@ -2988,10 +3080,10 @@ impl Compiler {
         let helper_for_count = |count: usize| {
             ctor_helpers
                 .iter()
-                .filter(|(arity, min_arity, _, _)| {
+                .filter(|(arity, min_arity, _, _, _)| {
                     count <= *arity && (js_ctor_relaxes_min_arity || count >= *min_arity)
                 })
-                .min_by_key(|(arity, _, _, _)| *arity)
+                .min_by_key(|(arity, _, _, _, _)| *arity)
         };
         for count in (1..=ctor_arity as usize).rev() {
             self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
@@ -3007,8 +3099,8 @@ impl Compiler {
             // Result is already I32(0/1) — no dyn_to_bool needed
             self.emit(Op::I32_EQZ);
             self.chunks[self.current].emit_if(line);
-            if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(count) {
-                emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+            if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(count) {
+                emit_helper_ref(self, *helper_idx, helper_captures)?;
                 for arg_index in 0..count {
                     self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                 }
@@ -3017,8 +3109,8 @@ impl Compiler {
             }
             self.chunks[self.current].emit_end(line);
         }
-        if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(0) {
-            emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+        if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(0) {
+            emit_helper_ref(self, *helper_idx, helper_captures)?;
             self.emit_u8(Op::CALL_REF, 0);
         } else {
             self.emit(Op::NULL);
@@ -3058,11 +3150,24 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_SET, name_key);
             self.emit(Op::DROP);
         }
-        for (arity, _, helper_idx, helper_upvalues) in &ctor_helpers {
-            emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+        for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
+            emit_helper_ref(self, *helper_idx, helper_captures)?;
             let helper_global = format!("{}$arity{}", ctor_global_prefix, arity);
             let helper_idx_const = self.str_const(&helper_global);
             self.emit_u16(Op::GLOBAL_SET, helper_idx_const);
+            // A named constructor (`Point.origin()`) is reached through the
+            // class rather than by arity — several of them commonly share an
+            // arity with each other and with the unnamed ctor. The helper
+            // already allocates and returns the instance, so stamping it on
+            // the class object makes `Point.origin(...)` an ordinary call,
+            // the same shape a factory constructor already compiles to.
+            if let Some(named) = named {
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                emit_helper_ref(self, *helper_idx, helper_captures)?;
+                let key = self.str_const(named);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
+            }
         }
 
         if self.class_prototype_dispatch() {

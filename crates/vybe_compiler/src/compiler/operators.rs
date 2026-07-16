@@ -314,6 +314,40 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
+    /// Try a user operator method on the left operand, else `fallback`.
+    /// Stack: `[lhs, rhs]` → `[result]`.
+    ///
+    /// Operator overloading is a method call the operands opt into, so the
+    /// dispatch lives here next to every other operator lowering rather
+    /// than in any one language's adapter — a class that defines
+    /// `operator +` (Dart), `__add__` (Python) or `op_Addition` (C#)
+    /// normalises to the same bound method name, so this reaches all of
+    /// them, including across languages.
+    fn emit_rich_binop(&mut self, dunder: &str, fallback: fn(&mut Chunk, u32)) {
+        let line = self.line;
+        let rhs_slot = self.define_local("__rich_op_rhs");
+        let lhs_slot = self.define_local("__rich_op_lhs");
+        self.emit_u16(Op::LOCAL_SET, rhs_slot);
+        self.emit_u16(Op::LOCAL_SET, lhs_slot);
+        common::expressions::emit_rich_arithmetic(
+            self.chunk(),
+            lhs_slot,
+            rhs_slot,
+            dunder,
+            fallback,
+            line,
+        );
+    }
+
+    /// Try a user unary-operator method on the operand, else `fallback`.
+    /// Stack: `[operand]` → `[result]`.
+    pub(super) fn emit_rich_unary(&mut self, dunder: &str, fallback: fn(&mut Chunk, u32)) {
+        let line = self.line;
+        let slot = self.define_local("__rich_op_operand");
+        self.emit_u16(Op::LOCAL_SET, slot);
+        common::expressions::emit_rich_unary(self.chunk(), slot, dunder, fallback, line);
+    }
+
     pub(super) fn compile_binop(&mut self, op: &BinOp) {
         match op {
             BinOp::Add => {
@@ -334,6 +368,14 @@ impl Compiler {
                     if self.profile.ecma_operator_coercion {
                         let idx = self.import("ecma:value", "add");
                         self.emit_host_call(idx, 2);
+                        return;
+                    }
+                    // A user `operator +` / `__add__` defines `+` for its own
+                    // type; `emit_dyn_add` would coerce the operand instead
+                    // and never consult it. Falls through to the same
+                    // dynamic add for every non-object operand.
+                    if self.uses_rich_operators() {
+                        self.emit_rich_binop("__add__", crate::emitter::ops::emit_dyn_add);
                         return;
                     }
                     {

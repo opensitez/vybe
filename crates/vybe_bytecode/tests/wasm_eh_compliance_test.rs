@@ -35,7 +35,8 @@
 //!            u16 offset  (forward, relative to the end of this clause)
 //! THROW:     op | u16 tag_idx   (pops payload per the tag's arity)
 //! THROW_REF: op                 (pops exnref, rethrows it)
-//! TRY_END:   internal block-end marker (writer lowers to spec `end`)
+//! END:       spec block-end (0x0B); closing a try_table's `end` removes its
+//!            handler group via the `is_try` label (replaces retired TRY_END)
 //! ```
 
 use std::sync::{Arc, Mutex};
@@ -373,15 +374,16 @@ fn uncaught_exception_escapes_as_runtime_error() {
     run(c).expect_err("uncaught exception must surface as an error");
 }
 
-/// TRY_END (the internal block-end of try_table) deactivates the
-/// handler: a throw AFTER the try block must not be caught by it.
+/// The structural `end` that closes a `try_table` block deactivates the
+/// handler: a throw AFTER the try block must not be caught by it. (This is
+/// the spec block-end mechanism that replaced the retired custom TRY_END.)
 #[test]
 fn try_end_deactivates_handlers() {
     let mut c = Chunk::new("<script>");
     let t = c.declare_exception_tag("E", 1);
     let patches = emit_try_table(&mut c, &[(KIND_CATCH, t)]);
     // empty try body
-    c.emit_op(Op::TRY_END, 0);
+    c.emit_op(Op::END, 0);
     push_str(&mut c, "late");
     emit_throw(&mut c, t); // outside the try — must NOT be caught
     ret(&mut c);

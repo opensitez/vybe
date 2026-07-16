@@ -127,6 +127,31 @@ impl Compiler {
                     if let StmtKind::StructDecl { members, .. } = &stmt.kind {
                         self.predeclare_struct_surface(&member, members);
                     }
+                    // An index operator has to be known before ANY use site
+                    // compiles, not when the class body does — a caller can be
+                    // compiled first, and `x[i]` resolves the indexer from the
+                    // receiver's static type.
+                    if let StmtKind::ClassDecl { members, .. } = &stmt.kind {
+                        if class_declares_op(members, "__getitem__") {
+                            self.classes_with_indexer.insert(member.clone());
+                        }
+                        if class_declares_op(members, "__setitem__") {
+                            self.classes_with_index_setter.insert(member.clone());
+                        }
+                        // A class's own method shadows a same-named builtin
+                        // value method (`obj.add(x)` is the class's `add`, not
+                        // a list's). The call site can compile before the class
+                        // body, so the names have to be known here — by the
+                        // time `compile_normal_class` registers them, an
+                        // earlier caller has already been hijacked.
+                        for m in members {
+                            if let ClassMember::Method(stmt) = m {
+                                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                                    self.defined_class_methods.insert(self.canon(name));
+                                }
+                            }
+                        }
+                    }
                     if let Some(prefix) = namespace {
                         let qualified = format!("{prefix}.{member}");
                         self.defined_globals.insert(qualified.clone());
@@ -604,4 +629,19 @@ impl Compiler {
             _ => format!("{}{}", target, suffix),
         }
     }
+}
+
+/// A class declares `op` when one of its methods carries any spelling of it —
+/// Dart's `operator []`, Python's `__getitem__`, and so on. Keyed off the
+/// shared cross-language alias table, so it stays language-agnostic.
+fn class_declares_op(members: &[ClassMember], op: &'static str) -> bool {
+    members.iter().any(|m| {
+        let ClassMember::Method(stmt) = m else {
+            return false;
+        };
+        let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
+            return false;
+        };
+        common::classes::cross_language_aliases(name).contains(&op)
+    })
 }

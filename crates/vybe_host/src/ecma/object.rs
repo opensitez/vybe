@@ -2070,6 +2070,16 @@ fn register_descriptors(vm: &mut VM) {
                         o.properties.insert(format!("__set_{}", key), s);
                     }
                     if let Some(v) = val_or_none {
+                        // §10.1.6.3: converting an accessor property to a data
+                        // property clears [[Get]]/[[Set]]. Required, not
+                        // cosmetic — a property read checks `__get_<key>`
+                        // BEFORE the data slot, so a stale accessor left here
+                        // would keep shadowing the value being written. Class
+                        // getters bind `__get_<name>` onto the instance, so
+                        // `defineProperty(this, "value", { value: … })` in a
+                        // subclass constructor hits exactly this case.
+                        o.properties.remove(&format!("__get_{}", key));
+                        o.properties.remove(&format!("__set_{}", key));
                         o.properties.insert(key.clone(), v);
                         // Non-writable data descriptor → install a
                         // no-op setter so subsequent writes via

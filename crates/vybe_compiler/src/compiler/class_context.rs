@@ -183,6 +183,18 @@ impl Compiler {
             && !self.is_php_profile()
     }
 
+    /// Operator overloading on the arithmetic/unary operators: a user
+    /// `__add__`/`__neg__`/… on the operand wins over the primitive op.
+    ///
+    /// The same profiles that get rich comparison — a language either
+    /// dispatches operators to methods or it coerces operands, and the
+    /// two are the same question. Languages whose `+` is ECMA-coerced
+    /// reach their operator methods through `ecma:value.add`'s
+    /// ToPrimitive/`valueOf` chain instead.
+    pub(crate) fn uses_rich_operators(&self) -> bool {
+        self.uses_rich_comparison()
+    }
+
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
         // PHP used to have a custom truthiness check here that referenced the
         // removed __keys/vybe$assoc_keys_csv side-band, causing stack corruption.

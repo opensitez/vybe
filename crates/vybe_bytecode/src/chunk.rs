@@ -227,6 +227,15 @@ pub struct Chunk {
     /// WASM emitter then declares the function type with that many
     /// externref results.
     pub result_arity: u8,
+    /// True when this chunk is a compiled method — its `arity` includes an
+    /// implicit leading receiver slot (`self`/`this`). Imported WASM functions
+    /// (no receiver) leave this false.
+    pub is_method: bool,
+    /// The function's declared WASM parameter count (user params only, no
+    /// receiver). Paired with `result_arity`, this is the function's type
+    /// "shape" — the `call_indirect` runtime type check compares it against
+    /// the call site's expected `[params]→[results]`.
+    pub param_count: u8,
     /// JSPI: this function is `async` in its source language. The
     /// compiler sets this flag when compiling an `async function` /
     /// `async def` / `Async Function`. The WASM emitter writes a
@@ -289,6 +298,8 @@ impl Chunk {
             active_elem_segments: Vec::new(),
             stack_switch_handlers: BTreeMap::new(),
             result_arity: 1,
+            is_method: false,
+            param_count: 0,
             is_async: false,
             is_generator: false,
             capture_count: 0,
@@ -394,6 +405,31 @@ impl Chunk {
         for b in bytes {
             self.emit(b, line);
         }
+    }
+
+    /// Emit a `try_table` header with N catch clauses — the SINGLE SOURCE OF
+    /// TRUTH for the VM's internal try_table byte layout. Every producer routes
+    /// here: the shared `errors::emit_try_table`, the wast `WasmTryTable`
+    /// lowering, and the `.wasm` reader importing foreign modules; the VM
+    /// (`TRY_TABLE` dispatch) and the codec writer decode this exact layout.
+    /// Layout: `[try_table, u8 clause_count, per clause: u8 kind, u16 tag(be),
+    /// u16 offset(be)]`; clauses match by TAG IDENTITY in order. Each `(kind,
+    /// tag)` uses the `CATCH_KIND_*` values (tag ignored for catch_all kinds).
+    /// Returns each clause's offset-placeholder byte position — patch it with
+    /// the forward distance to its handler once that handler is emitted.
+    pub fn emit_try_table_clauses(&mut self, clauses: &[(u8, u16)], line: u32) -> Vec<usize> {
+        self.emit_op(Op::TRY_TABLE, line);
+        self.emit(clauses.len() as u8, line);
+        let mut offset_positions = Vec::with_capacity(clauses.len());
+        for &(kind, tag) in clauses {
+            self.emit(kind, line);
+            self.emit((tag >> 8) as u8, line);
+            self.emit((tag & 0xff) as u8, line);
+            offset_positions.push(self.current_offset());
+            self.emit(0, line); // catch offset hi (placeholder)
+            self.emit(0, line); // catch offset lo (placeholder)
+        }
+        offset_positions
     }
 
     pub fn emit_op_u16(&mut self, op: Op, operand: u16, line: u32) {
