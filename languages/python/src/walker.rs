@@ -482,6 +482,37 @@ fn lambda_param(name: &str) -> Param {
     }
 }
 
+fn py_builtin_callable_lambda(name: &str) -> Option<Expression> {
+    let param = "__py_key_value";
+    Some(match name {
+        "len" => Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param(param)],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident("len".into()))),
+                args: vec![Argument::positional(Expression::new(ExprKind::Ident(
+                    param.into(),
+                )))],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        }),
+        _ => return None,
+    })
+}
+
+fn normalize_heapq_key_callable(mut args: Vec<Argument>) -> Vec<Argument> {
+    for arg in &mut args {
+        if arg.name.as_deref() == Some("key")
+            && let ExprKind::Ident(name) = &arg.value.kind
+            && let Some(lambda) = py_builtin_callable_lambda(name)
+        {
+            arg.value = lambda;
+        }
+    }
+    args
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Statements
 // ════════════════════════════════════════════════════════════════════════════
@@ -4195,7 +4226,13 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let first_child = &children[0];
                 match first_child.as_rule() {
                     Rule::call_args => {
-                        let args = walk_call_args(children.into_iter().next().unwrap())?;
+                        let mut args = walk_call_args(children.into_iter().next().unwrap())?;
+                        if let ExprKind::Member { object, field, .. } = &expr.kind
+                            && matches!(&object.kind, ExprKind::Ident(n) if n == "heapq")
+                            && matches!(field.as_str(), "nsmallest" | "nlargest")
+                        {
+                            args = normalize_heapq_key_callable(args);
+                        }
                         // Python-specific: `delim.join(array)` → swap receiver/arg
                         // so the common compiler sees `array.join(delim)` convention.
                         if let ExprKind::Member {

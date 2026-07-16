@@ -364,6 +364,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.repr" => {
             crate::emitter::runtime_adapter::emit_repr(chunks, current, argc, line)
         }
+        "python.issubclass" => {
+            crate::emitter::runtime_adapter::emit_issubclass(chunks, current, line)
+        }
+        "python.type" => {
+            crate::emitter::runtime_adapter::emit_py_type(chunks, current, line)
+        }
         "python.print" => {
             crate::emitter::runtime_adapter::emit_print(chunks, current, argc, line)
         }

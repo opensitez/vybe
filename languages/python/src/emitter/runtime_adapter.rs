@@ -43,6 +43,15 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(cast_bool, 1, line);
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if NOT a class instance
     chunk.emit_op(Op::I32_AND, line);
+    // ...AND NOT a class object (has `__mro__`). Class objects carry a
+    // self-referential `__mro__`, so JSON.stringify would recurse/throw;
+    // `type(D()) is D` must be identity, never structural.
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_string_const("__mro__", line);
+    chunk.emit_call(has_own, 2, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if NOT a class object
+    chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line); // array OR plain-object
     chunk.emit_if_value(line);
     // structural: JSON.stringify(a) == JSON.stringify(b)
@@ -695,6 +704,65 @@ fn emit_py_mod(chunk: &mut Chunk, line: u32) {
 /// Numeric `**` fallback (Python-profile `BinOp::Pow`).
 fn emit_py_pow(chunk: &mut Chunk, line: u32) {
     vybe_emitter::math::emit_pow(chunk, line);
+}
+
+/// `issubclass(sub, base)` — true when `base` is in `sub.__mro__` (the ancestor
+/// class objects stamped by the shared class machinery). A class is a subclass
+/// of itself, so `sub` is its own MRO head. Stack: `[sub, base]` → `[bool]`.
+pub fn emit_issubclass(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base_slot = chunks[current].alloc_scratch(1);
+    let sub_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
+    // mro = sub.__mro__
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
+    let get = chunks[current].add_import("ecma:object", "get");
+    chunks[current].emit_string_const("__mro__", line);
+    chunks[current].emit_call(get, 2, line);
+    // base in mro  (collections::emit_contains: [array, value] → bool)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base_slot, line);
+    vybe_emitter::collections::emit_contains(chunks, current, line);
+}
+
+/// Python `type(x)`. A user instance carries a `__class__` link to its class
+/// object (stamped at construction, gated on `class_introspection_metadata`),
+/// so `type(obj) is Cls` and `type(obj).__name__` resolve to the real class.
+/// Non-instances fall back to `ecma:value.typeof` (unchanged builtin behavior).
+pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let v = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, v, line);
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let has_own = chunk.add_import("ecma:object", "hasOwn");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let get = chunk.add_import("ecma:object", "get");
+
+    // if v != null (guard so hasOwn never runs on null → TypeError)
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    {
+        // if hasOwn(v, "__class__") → v.__class__ else typeof(v)
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_string_const("__class__", line);
+        chunk.emit_call(has_own, 2, line);
+        chunk.emit_call(cast_bool, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_string_const("__class__", line);
+        chunk.emit_call(get, 2, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(typeof_fn, 1, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_else(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(typeof_fn, 1, line);
+    }
+    chunk.emit_end(line);
 }
 
 /// `a - b` with `__sub__` dispatch on object operands.
