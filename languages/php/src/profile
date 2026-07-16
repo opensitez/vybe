@@ -464,7 +464,8 @@ key_exists          = { emit = "common:php.array_key_exists",   min_args = 2, ma
 # work without PHP-specific host fns or polyfills:
 #
 # `__vybe_sort_in_place` — Python `list.sort()`, JS `Array.sort` (no cb).
-# `__vybe_sort_with_comparator` — Python `list.sort(key=)`, JS sort(cb), PHP usort.
+# Comparator sort routes through `vybe_emitter::collections` so PHP usort
+# shares the same common array-sort path as the other adapters.
 # `__vybe_sorted` — pure-functional sort returning a new array.
 #
 # The walker rewrites `sort($a)` → `$a = __vybe_sort_in_place($a)` etc.

@@ -5779,6 +5779,7 @@ fn synthesize_inherited_constructor(parent: &str, span: &Span) -> Option<ClassMe
         .map(|name| Expression::with_span(ExprKind::Ident(name.clone()), span.clone()))
         .collect::<Vec<_>>();
     Some(ClassMember::Constructor {
+        name: None,
         params,
         body: Vec::new(),
         base_args: Some(base_args),
@@ -7306,6 +7307,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         })
     };
     class_members.push(ClassMember::Constructor {
+        name: None,
         params: vec![mk_param("__enum_name"), mk_param("__enum_value")],
         body: vec![
             assign_this("name", Expression::ident("__enum_name")),
@@ -7830,6 +7832,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 }
                 let _ = (return_type, has_body);
                 return Ok(Some(ClassMember::Constructor {
+                    name: None,
                     params,
                     body,
                     base_args: None,

@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::heap;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
@@ -336,19 +337,7 @@ fn build_numeric_comparator(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_heap_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) -> usize {
     let mut c = Chunk::new("__spl_insert");
     c.arity = 2;
-    let push_i = c.add_import("ecma:array".to_string(), "push".to_string());
-    let sort_i = c.add_import("ecma:array".to_string(), "sort".to_string());
-    // this.push(v)
-    c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::LOCAL_GET, 1, line);
-    c.emit_call(push_i, 2, line);
-    c.emit_op(Op::DROP, line);
-    // this.sort(numcmp)
-    c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::REF_FUNC, cmp_idx as u16, line);
-    c.emit(0, line);
-    c.emit_call(sort_i, 2, line);
-    c.emit_op(Op::DROP, line);
+    heap::emit_push_sorted_with_comparator_func(&mut c, 0, 1, cmp_idx, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -379,24 +368,15 @@ fn build_pq_comparator(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_pq_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) -> usize {
     let mut c = Chunk::new("__spl_pq_insert");
     c.arity = 3; // this, value, priority
-    let push_i = c.add_import("ecma:array".to_string(), "push".to_string());
-    let sort_i = c.add_import("ecma:array".to_string(), "sort".to_string());
-    // this.push([priority, value])
-    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let pair_slot = 3;
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // priority → pair[0]
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // value    → pair[1]
     c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
-    c.emit_call(push_i, 2, line);
-    c.emit_op(Op::DROP, line);
-    // this.sort(pqcmp)
-    c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::REF_FUNC, cmp_idx as u16, line);
-    c.emit(0, line);
-    c.emit_call(sort_i, 2, line);
-    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
+    heap::emit_push_sorted_with_comparator_func(&mut c, 0, pair_slot, cmp_idx, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
-    c.local_count = c.local_count.max(3);
+    c.local_count = c.local_count.max(4);
     chunks.push(c);
     chunks.len() - 1
 }

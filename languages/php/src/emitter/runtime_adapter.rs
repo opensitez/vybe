@@ -83,10 +83,13 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         }
         _ => {}
     }
+    if name == "php.sort_with_comparator" {
+        collections::emit_sort_with_comparator(chunks, current, line);
+        return true;
+    }
     let global = match name {
         "php.isnumeric" => "__vybe_isnumeric",
         "php.sort_in_place" => "__vybe_sort_in_place",
-        "php.sort_with_comparator" => "__vybe_sort_with_comparator",
         _ => return false,
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
