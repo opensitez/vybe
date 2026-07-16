@@ -111,14 +111,13 @@ impl Compiler {
     pub(super) fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {
         match &callee.kind {
             ExprKind::Ident(name) => {
-                if self.profile.name == "vb" {
-                    if name.eq_ignore_ascii_case("command") || name.eq_ignore_ascii_case("environ")
-                    {
-                        return Some("String".into());
-                    }
-                    if name.eq_ignore_ascii_case("timer") {
-                        return Some("Double".into());
-                    }
+                // Builtin free-function return types come from profile data
+                // (`[builtin_return_types]`), keyed by lowercased name — e.g.
+                // VB `Command`/`Environ` → String, `Timer` → Double.
+                if let Some(return_type) =
+                    self.profile.builtin_return_types.get(&name.to_lowercase())
+                {
+                    return Some(return_type.clone());
                 }
                 if let Some(type_hint) = self.lookup_var_type_hint(name) {
                     if Self::is_callable_type_hint(type_hint) {

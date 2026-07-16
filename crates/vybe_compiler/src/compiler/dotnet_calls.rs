@@ -1777,7 +1777,7 @@ impl Compiler {
             return Ok(());
         }
 
-        if self.profile.name != "csharp" {
+        if !self.profile.namespaces.use_dotnet {
             self.compile_expr(expr)?;
             return Ok(());
         }

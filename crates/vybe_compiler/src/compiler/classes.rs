@@ -1752,6 +1752,21 @@ impl Compiler {
             let mut chunk = common::functions::create_function_chunk(mname, arity);
             chunk.is_method = has_receiver;
             chunk.param_count = user_params.len() as u8;
+            // A WASM function's type shape (params → results) is what the
+            // `call_indirect` runtime check compares. WASM functions have no
+            // implicit receiver, so ALL declared params count — `user_params`
+            // drops the phantom `self` that `explicit_self_param` assumes. The
+            // result count is encoded as comma-joined placeholders in
+            // `return_type` (None = a 0-result/void function, distinct from the
+            // default 1-value ABI). Gated on the profile capability, not a name.
+            if cc.profile.function_references {
+                chunk.param_count = m.params.len() as u8;
+                chunk.result_arity = m
+                    .return_type
+                    .as_ref()
+                    .map(|rt| rt.split(',').count() as u8)
+                    .unwrap_or(0);
+            }
             chunk.is_async = m.is_async;
             chunk.is_generator = m.is_generator;
             // Source-level kind for prototype stamping at the attach sites —

@@ -645,7 +645,7 @@ impl Compiler {
                     }
                 }
 
-                if self.profile.name == "vb"
+                if self.profile.bare_name_invokes_parameterless_function
                     && !is_local
                     && self.defined_functions.contains(name.as_str())
                 {
@@ -987,7 +987,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.profile.name == "csharp"
+                if self.profile.integer_division_on_slash
                     && *op == BinOp::Div
                     && expr_is_csharp_integral(self, left)
                     && expr_is_csharp_integral(self, right)
@@ -4835,7 +4835,7 @@ impl Compiler {
                 // function instead of treating the cast as a no-op.
                 if let ExprKind::Cast { type_name, .. } = &expr.kind {
                     let canon_type = self.canon(type_name);
-                    if self.profile.name == "csharp" {
+                    if self.profile.namespaces.use_dotnet {
                         if let Some(names) = self.enum_value_names.get(&canon_type) {
                             if let ExprKind::Lit(Literal::Int(n)) = &inner.kind {
                                 if let Some(member_name) = names.get(n) {
@@ -4846,7 +4846,7 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.name == "csharp" && canon_type == "char" {
+                    if self.profile.namespaces.use_dotnet && canon_type == "char" {
                         self.compile_expr(inner)?;
                         let num = self.import("ecma:number", "Number");
                         self.emit_host_call(num, 1);
@@ -4855,7 +4855,7 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    if self.profile.name == "csharp" {
+                    if self.profile.namespaces.use_dotnet {
                         match canon_type.as_str() {
                             "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort"
                             | "sbyte" => {
@@ -4933,7 +4933,10 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.name == "vb" {
+                    // `TryCast:Target` is a walker-produced cast encoding
+                    // (only VB emits it today); gate on the encoding itself, not
+                    // the language name.
+                    if type_name.contains(':') {
                         if let Some((cast_kind, target_type)) = type_name.split_once(':') {
                             if cast_kind.eq_ignore_ascii_case("TryCast") {
                                 let resolved_target = self.resolve_source_type_alias(target_type);
@@ -6172,7 +6175,7 @@ impl Compiler {
         left: &Expression,
         right: &Expression,
     ) -> Result<bool, String> {
-        if self.profile.name != "csharp" {
+        if !self.profile.namespaces.use_dotnet {
             return Ok(false);
         }
 

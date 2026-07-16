@@ -410,17 +410,6 @@ impl Compiler {
             return Ok(true);
         }
 
-        if self.profile.name == "vb" && name.eq_ignore_ascii_case("Array") {
-            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-            for arg in args {
-                inst!(self, core_wasm::dup);
-                self.compile_expr(arg)?;
-                common::collections::emit_push(&mut self.chunks, self.current, line);
-                self.emit(Op::DROP);
-            }
-            return Ok(true);
-        }
-
         // ── Phase D1 pilot: Array(count, init) → ecma:array.newWithLength + fill ──
         //
         // COBOL's OCCURS walker emits `Call { callee: Array,
@@ -1790,6 +1779,18 @@ impl Compiler {
                         self.chunk().emit_op(op, l);
                         self.chunk().emit(expr_const_u8(args.first().copied()), l);
                         self.chunk().emit(expr_const_u8(args.get(1).copied()), l);
+                    }
+                    // Three byte immediates then stack operands (call_indirect:
+                    // argc, tableidx, expected result count). The fold puts all
+                    // three immediates first.
+                    OperandFormat::U8_U8_U8 => {
+                        for a in &args[3..] {
+                            self.compile_expr(a)?;
+                        }
+                        self.chunk().emit_op(op, l);
+                        self.chunk().emit(expr_const_u8(args.first().copied()), l);
+                        self.chunk().emit(expr_const_u8(args.get(1).copied()), l);
+                        self.chunk().emit(expr_const_u8(args.get(2).copied()), l);
                     }
                     // i8x16.shuffle: 16 lane-index immediates, then two vectors.
                     OperandFormat::Shuffle => {

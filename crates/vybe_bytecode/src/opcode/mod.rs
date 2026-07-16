@@ -172,6 +172,8 @@ pub enum OperandFormat {
     U8,
     /// 2 independent bytes.
     U8_U8,
+    /// 3 independent bytes (call_indirect: argc + tableidx + result count).
+    U8_U8_U8,
     /// 2 bytes big-endian (const index, local/global index, field name).
     U16,
     /// 2 bytes signed (branch offset).
@@ -219,7 +221,7 @@ impl OperandFormat {
             Self::None => 0,
             Self::U8 => 1,
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
-            Self::U16_U8 => 3,
+            Self::U8_U8_U8 | Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
             Self::RawF32 => 4,
             Self::RawF64 => 8,

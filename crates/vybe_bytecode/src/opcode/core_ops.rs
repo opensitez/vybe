@@ -260,9 +260,9 @@ opcode_category! {
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
     [0x10] call => U16_U8, "call";
-    [0x11] call_indirect => U8_U8, "call_indirect";
+    [0x11] call_indirect => U8_U8_U8, "call_indirect";
     [0x12] return_call => U8, "return_call";
-    [0x13] return_call_indirect => U8, "return_call_indirect";
+    [0x13] return_call_indirect => U8_U8_U8, "return_call_indirect";
     [0x14] call_ref => U8, "call_ref";
     [0x15] return_call_ref => U8, "return_call_ref";
     [0x1A] drop => None, "drop";

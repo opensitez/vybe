@@ -44,6 +44,12 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let b = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
             (format!("{} {} {}", name, a, b), operand_start + 2)
         }
+        OperandFormat::U8_U8_U8 => {
+            let a = chunk.code.get(operand_start).copied().unwrap_or(0);
+            let b = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
+            let c = chunk.code.get(operand_start + 2).copied().unwrap_or(0);
+            (format!("{} {} {} {}", name, a, b, c), operand_start + 3)
+        }
         OperandFormat::U16 => {
             let idx = chunk.read_u16(operand_start);
             let extra = if op == Op::CONST && (idx as usize) < chunk.constants.len() {

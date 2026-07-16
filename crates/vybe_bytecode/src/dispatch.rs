@@ -2969,20 +2969,46 @@ impl VM {
                     self.call_value(argc)?;
                 }
                 _ if op == Op::RETURN_CALL_INDIRECT => {
+                    // Tail-call form of `call_indirect`: same immediate shape
+                    // (argc, tableidx, expected results), same `wasm_tables`
+                    // lookup and runtime type-shape check — but reuses the
+                    // current frame (spec tail call) so unbounded indirect tail
+                    // recursion runs in O(1) stack.
                     let argc = self.read_byte() as usize;
-                    // Spec: the i32 table index is on TOP of the stack, above
-                    // the `argc` args. Pop it, then splice the resolved funcref
-                    // in below the args (`[funcref, args…]`) for the tail call.
-                    let table_idx = self.pop().as_i32() as usize;
-                    if table_idx >= self.func_table.len() {
-                        return Err(VMError::new(format!(
-                            "trap: return_call_indirect: table index {} out of bounds",
-                            table_idx
-                        )));
+                    let tableidx = self.read_byte() as usize;
+                    let expected_results = self.read_byte() as usize;
+                    // Spec layout: the i32 table index is on TOP, above the args.
+                    let raw_idx = self.pop().as_f64();
+                    let funcref = {
+                        let table = self.table_ref(tableidx).ok_or_else(|| {
+                            VMError::new("trap: return_call_indirect unknown table")
+                        })?;
+                        if raw_idx < 0.0 || raw_idx.is_nan() || raw_idx >= table.len() as f64 {
+                            return Err(VMError::new(format!(
+                                "trap: return_call_indirect: invalid table index {}",
+                                raw_idx
+                            )));
+                        }
+                        table[raw_idx as usize].clone()
+                    };
+                    if let Value::Object(o) = &funcref {
+                        let ob = o.lock().unwrap();
+                        if let crate::value::ObjectKind::Function(f) = &ob.kind {
+                            let ch = &self.chunks[f.chunk_index];
+                            if ch.param_count as usize != argc
+                                || ch.result_arity as usize != expected_results
+                            {
+                                return Err(VMError::new(format!(
+                                    "trap: return_call_indirect: signature mismatch \
+                                     (callee {}→{}, expected {}→{})",
+                                    ch.param_count, ch.result_arity, argc, expected_results
+                                )));
+                            }
+                        }
                     }
-                    let func = self.func_table[table_idx].clone();
+                    // Splice the funcref in below the args, then reuse the frame.
                     let callee_idx = self.stack.len() - argc;
-                    self.stack.insert(callee_idx, func);
+                    self.stack.insert(callee_idx, funcref);
                     let old_base = self.frame().base;
                     for i in 0..=argc {
                         self.stack[old_base + i] = self.stack[callee_idx + i].clone();
@@ -3396,6 +3422,7 @@ impl VM {
                 _ if op == Op::CALL_INDIRECT => {
                     let argc = self.read_byte() as usize;
                     let tableidx = self.read_byte() as usize;
+                    let expected_results = self.read_byte() as usize;
                     // Spec `call_indirect`: `[t* i32] → [t'*]` — the i32 table
                     // index is on TOP of the stack, above the `argc` call
                     // arguments. Pop it, resolve the funcref, then splice the
@@ -3414,6 +3441,25 @@ impl VM {
                         }
                         table[raw_idx as usize].clone()
                     };
+                    // Spec runtime type check: the funcref's declared type shape
+                    // (params → results) must match the call's static `(type
+                    // $sig)`. The VM is untyped, so equality is over the
+                    // param/result COUNTS carried on the callee's chunk.
+                    if let Value::Object(o) = &funcref {
+                        let ob = o.lock().unwrap();
+                        if let crate::value::ObjectKind::Function(f) = &ob.kind {
+                            let ch = &self.chunks[f.chunk_index];
+                            if ch.param_count as usize != argc
+                                || ch.result_arity as usize != expected_results
+                            {
+                                return Err(VMError::new(format!(
+                                    "trap: call_indirect: signature mismatch \
+                                     (callee {}→{}, expected {}→{})",
+                                    ch.param_count, ch.result_arity, argc, expected_results
+                                )));
+                            }
+                        }
+                    }
                     let insert_pos = self.stack.len() - argc;
                     self.stack.insert(insert_pos, funcref);
                     self.call_value(argc)?;

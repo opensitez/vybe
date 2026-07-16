@@ -679,7 +679,6 @@ impl Compiler {
     pub(super) fn should_infer_winforms_form(&self, name: &str, parents: &[String]) -> bool {
         if !parents.is_empty()
             || !self.profile.namespaces.use_dotnet
-            || !matches!(self.profile.name.as_str(), "vb" | "csharp")
             || !self.module_imports_namespace("System.Windows.Forms")
         {
             return false;

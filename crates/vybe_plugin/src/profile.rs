@@ -352,6 +352,17 @@ pub struct LanguageProfile {
     /// `compile_binary`.
     pub integer_division_on_slash: bool,
 
+    /// A `for` loop gives its loop variable a FRESH binding each iteration, so
+    /// closures created in the body capture the per-iteration value (VB `For`,
+    /// JS `let`-in-`for`). Languages where the loop variable is shared across
+    /// iterations (C# / C `for`) leave this false.
+    pub for_loop_per_iteration_binding: bool,
+
+    /// A bare reference to a defined parameterless function INVOKES it (VB,
+    /// Ruby) rather than yielding a function value. Languages where a bare name
+    /// is a function reference leave this false.
+    pub bare_name_invokes_parameterless_function: bool,
+
     /// PHP: when a class constructor global is undefined at construction
     /// time, invoke the registered `spl_autoload_register` callback with
     /// the class name and retry. When false, a plain `GLOBAL_GET` is used.
@@ -449,6 +460,12 @@ pub struct LanguageProfile {
     /// Array higher-order methods routed to compiled JS builtins.
     /// "map" → "__array_map", "filter" → "__array_filter", etc.
     pub array_methods: HashMap<String, String>,
+
+    /// Return types of builtin free functions, for type inference on their
+    /// result (e.g. VB `Command`/`Environ` → "String", `Timer` → "Double"),
+    /// keyed by lowercased name. Data-driven so no language-name check is
+    /// needed in `infer_function_return_type`.
+    pub builtin_return_types: HashMap<String, String>,
 
     /// Synthetic ESM imports the language treats as pre-declared (i.e.
     /// ambient) at module scope. The Linker walks these BEFORE user
@@ -1085,6 +1102,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("integer_division_on_slash")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let for_loop_per_iteration_binding = compiler
+        .get("for_loop_per_iteration_binding")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bare_name_invokes_parameterless_function = compiler
+        .get("bare_name_invokes_parameterless_function")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let supports_autoload = compiler
         .get("supports_autoload")
         .and_then(|v| v.as_bool())
@@ -1221,6 +1246,11 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     let mut builtins = parse_builtin_table(&root, "builtins");
     let mut value_methods = parse_value_methods_table(&root);
     let intrinsics = parse_string_table(&root, "intrinsics");
+    let builtin_return_types: HashMap<String, String> =
+        parse_string_table(&root, "builtin_return_types")
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
     let mut array_methods = parse_string_table(&root, "array_methods");
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
@@ -1483,6 +1513,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         field_hiding,
         methods_virtual_by_default,
         integer_division_on_slash,
+        for_loop_per_iteration_binding,
+        bare_name_invokes_parameterless_function,
         separate_property_method_namespace,
         reflection_type_naming,
         supports_private_fields,
@@ -1533,6 +1565,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         value_methods,
         namespace_constants,
         array_methods,
+        builtin_return_types,
         esm_defaults,
         bare_module_aliases,
     })

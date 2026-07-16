@@ -2403,6 +2403,18 @@ impl Compiler {
         // language's bare-identifier call semantics change.
         if self.profile.function_references {
             if let ExprKind::Ident(name) = &callee.kind {
+                // WASM tail call: `__wasm_return_call(funcref, args…)` lowers to
+                // the frame-reusing `RETURN_CALL` (spec tail-call proposal) so
+                // unbounded tail recursion runs in O(1) stack. Layout matches
+                // `call_value`: push the funcref, then the args.
+                if name == "__wasm_return_call" && !args.is_empty() {
+                    self.compile_expr(&args[0].value)?; // funcref callee
+                    for a in &args[1..] {
+                        self.compile_expr(&a.value)?;
+                    }
+                    self.emit_u8(Op::RETURN_CALL, (args.len() - 1) as u8);
+                    return Ok(());
+                }
                 if self.scope().resolve(name).is_some() {
                     self.emit_var_get(name);
                     for a in args {
@@ -3850,7 +3862,7 @@ impl Compiler {
                                     },
                                 ),
                             ) => {
-                                if self.profile.name == "csharp"
+                                if self.profile.namespaces.use_dotnet
                                     && module.eq_ignore_ascii_case("ecma:number")
                                     && func.eq_ignore_ascii_case("parseInt")
                                     && arg_exprs.len() == 1

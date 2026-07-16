@@ -533,7 +533,7 @@ impl Compiler {
                 if let Some(init_stmt) = init {
                     self.compile_stmt(init_stmt)?;
                 }
-                let loop_capture_name = if self.profile.name == "vb" {
+                let loop_capture_name = if self.profile.for_loop_per_iteration_binding {
                     init.as_ref().and_then(|stmt| match &stmt.kind {
                         StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
                             match &declarations[0].pattern {
