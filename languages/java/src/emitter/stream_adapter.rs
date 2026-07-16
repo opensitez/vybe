@@ -245,7 +245,7 @@ pub fn emit_flat_map(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_sorted(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 2 {
-        host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+        collections::emit_sort_with_comparator(chunks, current, line);
     } else {
         collections::emit_sort(chunks, current, line);
     }

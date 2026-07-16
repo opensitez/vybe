@@ -48,7 +48,7 @@ pub fn emit_sort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op(Op::NULL, line);
     } else if argc == 2 {
-        host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+        collections::emit_sort_with_comparator(chunks, current, line);
     } else {
         collections::emit_sort(chunks, current, line);
     }

@@ -5291,6 +5291,7 @@ fn thread_fns() -> Vec<Statement> {
         interfaces: Vec::new(),
         members: vec![
             ClassMember::Constructor {
+                name: None,
                 params: vec![param("target"), param("name")],
                 body: vec![stmt(StmtKind::Expr(call(
                     "__j_thread_init",

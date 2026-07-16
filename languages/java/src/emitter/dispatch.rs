@@ -1633,7 +1633,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── Collections utilities ─────────────────────────────────────────
         "java.collections_sort" => {
             if argc == 2 {
-                host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+                collections::emit_sort_with_comparator(chunks, current, line);
             } else {
                 collections::emit_sort(chunks, current, line);
             }

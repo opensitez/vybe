@@ -7,6 +7,7 @@ use vybe_bytecode::opcode::Op;
 use vybe_emitter::{
     collections,
     functions::create_function_chunk,
+    heap,
     instructions::{core_wasm, host},
 };
 
@@ -141,7 +142,7 @@ fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: 
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], comparator, line);
-    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+    collections::emit_sort_with_comparator(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
@@ -2764,13 +2765,28 @@ pub fn emit_sorted_add(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_priority_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let list = chunks[current].alloc_scratch(1);
+    let comparator = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], list, line);
+    emit_comparator(chunks, current, list, line);
+    set(&mut chunks[current], comparator, line);
+    get(&mut chunks[current], comparator, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("function", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], value, line);
-    collections::emit_push(chunks, current, line);
+    get(&mut chunks[current], comparator, line);
+    heap::emit_push_with_comparator(chunks, current, 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    emit_sort_if_ordered(chunks, current, list, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    heap::emit_push(chunks, current, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_bool_const(true, line);
 }
 
@@ -3181,7 +3197,7 @@ pub fn emit_sorted_map_key(chunks: &mut [Chunk], current: usize, last: bool, lin
     chunks[current].emit_else(line);
     get(&mut chunks[current], keys, line);
     emit_comparator(chunks, current, map, line);
-    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+    collections::emit_sort_with_comparator(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], keys, line);
@@ -3223,7 +3239,7 @@ pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_else(line);
     get(&mut chunks[current], keys, line);
     emit_comparator(chunks, current, map, line);
-    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+    collections::emit_sort_with_comparator(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], map, line);
@@ -3708,7 +3724,7 @@ pub fn emit_sort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], comparator, line);
-    host::emit(&mut chunks[current], "ecma:array", "sort", 2, line);
+    collections::emit_sort_with_comparator(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
