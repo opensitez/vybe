@@ -285,6 +285,7 @@ impl Compiler {
             .entry(name.to_string())
             .or_insert(PendingClass {
                 parent: None,
+                bases: Vec::new(),
                 enclosing_class: self.current_class.clone(),
                 fields,
                 field_storage_names: HashMap::new(),
@@ -385,6 +386,7 @@ impl Compiler {
             module_name.to_string(),
             PendingClass {
                 parent: None,
+                bases: Vec::new(),
                 enclosing_class: self.current_class.clone(),
                 fields: Vec::new(),
                 field_storage_names: HashMap::new(),

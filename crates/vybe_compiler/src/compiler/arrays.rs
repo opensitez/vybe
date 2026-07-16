@@ -326,7 +326,7 @@ impl Compiler {
         Ok(binding)
     }
 
-    pub(super) fn emit_vb_fixed_array_initializer(
+    pub(super) fn emit_multidim_inclusive_array_initializer(
         &mut self,
         bounds: &[Expression],
     ) -> Result<(), String> {
@@ -376,7 +376,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, array_slot);
         self.emit_u16(Op::LOCAL_GET, index_slot);
-        self.emit_vb_fixed_array_initializer(&bounds[1..])?;
+        self.emit_multidim_inclusive_array_initializer(&bounds[1..])?;
         common::collections::emit_set(&mut self.chunks, self.current, line);
         self.emit(Op::DROP);
 
@@ -588,8 +588,15 @@ impl Compiler {
         } else if let Some(ref bounds) = decl.array_bounds {
             if self.profile.name == "fortran" {
                 self.emit_fortran_fixed_array_initializer(bounds)?;
-            } else if self.profile.name == "vb" && bounds.len() > 1 {
-                self.emit_vb_fixed_array_initializer(bounds)?;
+            } else if bounds.len() > 1 {
+                // Multi-dimensional inclusive-bound declaration (`Dim a(2,3)`).
+                // The whole `array_bounds` path is inclusive (single-dim below
+                // adds +1 for every language), so any language producing
+                // multi-dim bounds here wants the same nested inclusive array —
+                // no language-name gate needed. C# arrays carry their size in
+                // the `new[...]` expression, not `array_bounds`, so they never
+                // reach this path.
+                self.emit_multidim_inclusive_array_initializer(bounds)?;
             } else if let Some(size_expr) = bounds.first() {
                 let line = self.line;
                 self.compile_expr(size_expr)?;

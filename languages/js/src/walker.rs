@@ -1898,6 +1898,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             .any(|m| matches!(m, ClassMember::Constructor { .. }))
     {
         members.push(ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![Statement::new(StmtKind::Throw {
                 expr: Some(Expression::new(ExprKind::New {
@@ -2106,6 +2107,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             }
             if name == "constructor" {
                 Ok(ClassMember::Constructor {
+                    name: None,
                     params,
                     body,
                     base_args: None,

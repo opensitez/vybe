@@ -104,6 +104,10 @@ struct LoopCtx {
 // ════════════════════════════════════════════════════════════════════════════
 struct PendingClass {
     parent: Option<String>,
+    /// ALL declared direct bases (raw names), for C3 linearization under
+    /// `class_multiple_inheritance`. `parent` remains `bases.first()`;
+    /// single-inheritance classes have 0 or 1 entry here.
+    bases: Vec<String>,
     enclosing_class: Option<String>,
     fields: Vec<String>,
     field_storage_names: HashMap<String, String>,

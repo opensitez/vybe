@@ -2442,31 +2442,33 @@ impl Compiler {
                     None
                 };
 
-                if self.profile.name == "vb" {
+                // Late-bound member read: try the instance field, fall back to
+                // the type's static field. Triggered purely by having resolved a
+                // static-field owner (data), not by language name — a member
+                // whose static owner is known but instance value may be absent.
+                if let Some(type_name) = static_field_owner {
                     let field_name = self.canon(field);
                     let idx = self.str_const(&field_name);
-                    if let Some(type_name) = static_field_owner {
-                        let obj_slot = self.define_local("__vb_member_obj");
-                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    let obj_slot = self.define_local("__member_static_fallback_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
 
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.emit_u16(Op::STRUCT_GET, idx);
-                        let value_slot = self.define_local("__vb_member_value");
-                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, idx);
+                    let value_slot = self.define_local("__member_static_fallback_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
 
-                        self.emit_u16(Op::LOCAL_GET, value_slot);
-                        fn_call!(self, "wasm:js-undefined", "test", 1);
-                        let line = self.line;
-                        self.chunk().emit_if_value(line);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    let line = self.line;
+                    self.chunk().emit_if_value(line);
 
-                        let class_idx = self.str_const(&self.canon(&type_name));
-                        self.emit_u16(Op::GLOBAL_GET, class_idx);
-                        self.emit_u16(Op::STRUCT_GET, idx);
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, value_slot);
-                        self.chunk().emit_end(line);
-                        return Ok(());
-                    }
+                    let class_idx = self.str_const(&self.canon(&type_name));
+                    self.emit_u16(Op::GLOBAL_GET, class_idx);
+                    self.emit_u16(Op::STRUCT_GET, idx);
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.chunk().emit_end(line);
+                    return Ok(());
                 }
 
                 if *null_safe
@@ -4650,8 +4652,11 @@ impl Compiler {
                     }
                 }
 
-                // VB "integer"/"int" check: IsNumber AND value is integral
-                if self.profile.name == "vb" && matches!(canon_type.as_str(), "integer" | "int") {
+                // `TypeOf x Is Integer` — an Integer value type is a number that
+                // is integral. Only the reflection/`TypeOf..Is` path reaches here
+                // with these type names (C#'s `is int` desugars via pattern
+                // matching), so the type-name check alone is the correct gate.
+                if matches!(canon_type.as_str(), "integer" | "int") {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     fn_call!(self, "wasm:js-number", "test", 1);
                     let line = self.line;

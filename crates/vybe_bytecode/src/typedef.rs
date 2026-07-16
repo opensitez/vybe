@@ -44,6 +44,11 @@ pub struct FieldDef {
 pub struct TypeDef {
     /// Type name (e.g. "List", "Button", "Animal", "FileHandle")
     pub name: String,
+    /// WASM GC composite shape (struct / array / func). Copied from the
+    /// `TypeEntry` at load. `Array` makes `array.get`/`set`/`copy` on an
+    /// instance apply spec trapping semantics; `Struct` (the default) is the
+    /// class/struct shape used by every non-GC-array type.
+    pub kind: crate::chunk::CompositeKind,
     /// Parent type index (for inheritance). None = no parent (inherits from Object/0).
     pub parent: Option<usize>,
 
@@ -104,6 +109,7 @@ impl TypeDef {
     pub fn new(name: &str) -> Self {
         TypeDef {
             name: name.into(),
+            kind: crate::chunk::CompositeKind::Struct,
             parent: None,
             field_defs: Vec::new(),
             field_map: HashMap::new(),
@@ -162,6 +168,12 @@ impl TypeDef {
     /// Number of indexed fields (for Object.fields pre-allocation).
     pub fn field_count(&self) -> usize {
         self.field_defs.len()
+    }
+
+    /// Whether this defined type is a WASM GC `(array …)` composite. Instances
+    /// carrying this type's id apply spec trapping `array.get`/`set`/`copy`.
+    pub fn is_array(&self) -> bool {
+        matches!(self.kind, crate::chunk::CompositeKind::Array)
     }
 
     pub fn method(mut self, name: &str, m: Method) -> Self {
@@ -537,6 +549,9 @@ impl TypeRegistry {
         for entry in types {
             if self.get_id(&entry.name).is_none() {
                 let mut td = TypeDef::new(&entry.name);
+                // Carry the WASM GC composite shape so instances stamped with
+                // this type id trap on `array.*` when it is an `(array …)`.
+                td.kind = entry.kind;
                 if entry.is_interface {
                     td.is_interface = true;
                 }

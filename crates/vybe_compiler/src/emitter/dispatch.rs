@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{channels, collections, dict, object, ops, strings, threading};
+use crate::emitter::{channels, collections, dict, heap, object, ops, strings, threading};
 use vybe_emitter::threading as thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
@@ -149,6 +149,16 @@ pub fn emit_common(
         "collections.sum" => collections::emit_sum(chunks, current, line),
         "collections.min" => collections::emit_pymin(chunks, current, line),
         "collections.max" => collections::emit_pymax(chunks, current, line),
+
+        // ── Shared heap / priority-queue primitives ──
+        "heap.heapify" => heap::emit_heapify(chunks, current, argc, line),
+        "heap.push" => heap::emit_push(chunks, current, argc, line),
+        "heap.pop" => heap::emit_pop(chunks, current, argc, line),
+        "heap.replace" => heap::emit_replace(chunks, current, argc, line),
+        "heap.push_pop" => heap::emit_push_pop(chunks, current, argc, line),
+        "heap.nsmallest" => heap::emit_nsmallest(chunks, current, argc, line),
+        "heap.nlargest" => heap::emit_nlargest(chunks, current, argc, line),
+        "heap.merge" => heap::emit_merge(chunks, current, argc, line),
 
         // ── Channel ops ──
         "channels.send" => channels::emit_send(chunks, current, line),

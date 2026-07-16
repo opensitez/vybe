@@ -254,6 +254,12 @@ impl Compiler {
                 line,
             )?;
         }
+        // Multiple inheritance (opt-in): attach every MRO ancestor's methods in
+        // reverse-C3 order (lowest priority first) BEFORE binding self's own
+        // methods below, so self stays highest and the diamond's shared base is
+        // overridden by the nearer base. No-op for single-inheritance classes
+        // and for languages that don't set `class_multiple_inheritance`.
+        self.emit_mi_ancestor_methods(name, this_slot, line);
         for (mname, mci, _, _) in instance_methods {
             if mname.starts_with("__get_") {
                 let prop = mname.strip_prefix("__get_").unwrap_or(mname);
@@ -288,6 +294,93 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// C3 linearization of a class's MRO — canonical names, self first, the
+    /// implicit `object` tail omitted. Recurses through `PendingClass.bases`;
+    /// a name not in the registry (external/builtin) is treated as a leaf.
+    /// Only meaningful under `class_multiple_inheritance`; callers gate on it.
+    pub(super) fn c3_linearize(&self, name: &str) -> Vec<String> {
+        let canon = self.canon(name);
+        let bases: Vec<String> = match self.pending_classes.get(&canon) {
+            Some(pc) => pc.bases.iter().map(|b| self.canon(b)).collect(),
+            None => return vec![canon],
+        };
+        if bases.is_empty() {
+            return vec![canon];
+        }
+        let mut seqs: Vec<Vec<String>> = bases.iter().map(|b| self.c3_linearize(b)).collect();
+        seqs.push(bases);
+        let mut result = vec![canon];
+        result.extend(c3_merge(seqs));
+        result
+    }
+
+    /// Attach every MRO-ancestor's instance methods onto a new instance, in
+    /// reverse-C3 order (lowest priority first) so a nearer base overrides a
+    /// more-distant one and the diamond's shared base is bound once. Called
+    /// just before self's own methods are bound (which therefore win). No-op
+    /// unless the profile opts into MI and the class has >1 declared base.
+    ///
+    /// Ancestor methods are re-bound from their chunk index with zero upvalues;
+    /// a base method that closes over an enclosing scope is a known gap (rare —
+    /// module-level classes capture nothing).
+    fn emit_mi_ancestor_methods(&mut self, name: &str, this_slot: u16, line: u32) {
+        if !self.profile.class_multiple_inheritance {
+            return;
+        }
+        let canon = self.canon(name);
+        let is_multi = self
+            .pending_classes
+            .get(&canon)
+            .is_some_and(|pc| pc.bases.len() > 1);
+        if !is_multi {
+            return;
+        }
+        let mut ancestors = self.c3_linearize(name); // [self, B, C, A, …]
+        ancestors.remove(0); // drop self — bound separately as highest priority
+        ancestors.reverse(); // lowest priority first
+
+        // Collect (method_name, chunk_idx, rest_fixed) up front to avoid holding
+        // a `pending_classes` borrow across the emit calls. Sort per class for
+        // deterministic bytecode (HashMap order is not stable).
+        let mut binds: Vec<(String, usize, Option<u8>)> = Vec::new();
+        for cls in &ancestors {
+            let Some(pc) = self.pending_classes.get(cls) else {
+                continue;
+            };
+            let mut per_class: Vec<(String, usize, Option<u8>)> = pc
+                .instance_method_overloads
+                .iter()
+                .filter_map(|(mname, overloads)| {
+                    overloads.first().map(|ov| {
+                        let rest_fixed = ov.signature.has_rest.then(|| {
+                            ov.signature.param_names.len().saturating_sub(1) as u8
+                        });
+                        (mname.clone(), ov.chunk_idx, rest_fixed)
+                    })
+                })
+                .collect();
+            per_class.sort_by(|a, b| a.0.cmp(&b.0));
+            binds.extend(per_class);
+        }
+
+        for (mname, chunk_idx, rest_fixed) in binds {
+            if let Some(prop) = mname.strip_prefix("__get_") {
+                common::classes::emit_bind_getter(self.chunk(), this_slot, prop, chunk_idx, line);
+            } else if let Some(prop) = mname.strip_prefix("__set_") {
+                common::classes::emit_bind_setter(self.chunk(), this_slot, prop, chunk_idx, line);
+            } else {
+                common::classes::emit_bind_bound_method(
+                    self.chunk(),
+                    this_slot,
+                    &mname,
+                    chunk_idx,
+                    rest_fixed,
+                    line,
+                );
+            }
+        }
     }
 
     pub(super) fn captured_name_for_upvalue(
@@ -1507,6 +1600,7 @@ impl Compiler {
             name.to_string(),
             PendingClass {
                 parent: parent.clone(),
+                bases: class.bases.clone(),
                 enclosing_class: self.current_class.clone(),
                 fields: fields.clone(),
                 field_storage_names,
@@ -2725,6 +2819,11 @@ impl Compiler {
                             self.emit_store_super_ref(this_slot, &pname);
                         }
 
+                        // Multiple inheritance (opt-in): attach every MRO
+                        // ancestor's methods in reverse-C3 order before self's
+                        // own, so a nearer base overrides a farther one. No-op
+                        // for single-inheritance classes / non-MI languages.
+                        self.emit_mi_ancestor_methods(name, this_slot, line);
                         for (mname, mci, _, _) in &instance_methods {
                             if mname.starts_with("__get_") {
                                 let prop = mname.strip_prefix("__get_").unwrap_or(mname);
@@ -2983,6 +3082,20 @@ impl Compiler {
                     common::classes::emit_retype_object(self.chunk(), this_slot, &canon_name, line);
                 }
 
+                if self.profile.class_introspection_metadata {
+                    // Link each instance to its class object via `__class__`
+                    // so `type(obj)` returns the class (and `type(obj) is Cls`
+                    // / `type(obj).__name__` work). Re-stamped derived-last,
+                    // like the PHP `constructor` block above, so `type(child)`
+                    // is the child class even after a parent ctor ran.
+                    let class_global = self.str_const(name);
+                    let class_key = self.str_const("__class__");
+                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                    self.emit_u16(Op::GLOBAL_GET, class_global);
+                    self.emit_u16(Op::STRUCT_SET, class_key);
+                    self.emit(Op::DROP);
+                }
+
                 common::classes::emit_instanceof_chain(
                     &mut self.chunks,
                     self.current,
@@ -2990,6 +3103,32 @@ impl Compiler {
                     name,
                     line,
                 );
+                if self.profile.class_multiple_inheritance && class.bases.len() > 1 {
+                    // The primary parent-ctor chain already stamped its own
+                    // lineage into `__types`; add the EXTRA MRO ancestors (the
+                    // non-primary bases and their exclusive ancestors) so
+                    // `isinstance()` recognises every base in the diamond.
+                    let mut primary = std::collections::HashSet::new();
+                    let mut cur = Some(self.canon(name));
+                    while let Some(c) = cur {
+                        cur = self
+                            .pending_classes
+                            .get(&c)
+                            .and_then(|pc| pc.parent.as_ref().map(|p| self.canon(p)));
+                        primary.insert(c);
+                    }
+                    for cls in self.c3_linearize(name).into_iter().skip(1) {
+                        if !primary.contains(&cls) {
+                            common::classes::emit_instanceof_chain(
+                                &mut self.chunks,
+                                self.current,
+                                this_slot,
+                                &cls,
+                                line,
+                            );
+                        }
+                    }
+                }
                 let mut interface_names = class.interfaces.clone();
                 interface_names.extend(self.reflection_interfaces(name));
                 let mut seen_interfaces = std::collections::HashSet::new();
@@ -3529,6 +3668,41 @@ impl Compiler {
             );
         }
 
+        // Class-introspection metadata on the class object: `__name__` (own
+        // name) and `__mro__` (self → bases → `object`). Universal — every
+        // class gets it, keyed on class construction, no language check.
+        if self.profile.class_introspection_metadata {
+            common::classes::emit_stamp_class_name(self.chunk(), ctor_local, name, line);
+            // Under multiple inheritance, `__mro__` follows the full C3
+            // linearization and `__bases__` lists every declared base; single
+            // inheritance keeps the one-parent chain unchanged.
+            let mi = self.profile.class_multiple_inheritance && class.bases.len() > 1;
+            let (mro_globals, bases_globals): (Vec<String>, Vec<String>) = if mi {
+                let mut mro = self.c3_linearize(name); // [self, …ancestors…]
+                mro.remove(0); // helper re-adds self + the `object` tail
+                let bases = class.bases.iter().map(|b| self.canon(b)).collect();
+                (mro, bases)
+            } else {
+                let bg: Vec<String> =
+                    parent.as_ref().map(|p| vec![p.clone()]).unwrap_or_default();
+                (bg.clone(), bg)
+            };
+            common::classes::emit_stamp_class_mro(
+                &mut self.chunks,
+                self.current,
+                ctor_local,
+                &mro_globals,
+                line,
+            );
+            common::classes::emit_stamp_class_bases(
+                &mut self.chunks,
+                self.current,
+                ctor_local,
+                &bases_globals,
+                line,
+            );
+        }
+
         // Prototype-dispatch profiles resolve instance members through the
         // prototype chain — statics live on the constructor object only
         // (§15.7: `instance.staticMethod` is undefined), so keep them out
@@ -3558,6 +3732,36 @@ impl Compiler {
         );
 
         Ok(())
+    }
+}
+
+/// C3 merge — the linearization step shared by every MI language. Takes the
+/// parent linearizations plus the direct-base list and interleaves them so a
+/// class always precedes its parents and relative order is preserved. On an
+/// inconsistent hierarchy (no valid head) it falls back to taking the first
+/// remaining head, so compilation never panics.
+fn c3_merge(mut seqs: Vec<Vec<String>>) -> Vec<String> {
+    let mut result = Vec::new();
+    loop {
+        seqs.retain(|s| !s.is_empty());
+        if seqs.is_empty() {
+            return result;
+        }
+        // A valid head appears at the front of some sequence and in the tail of
+        // none. Take the first such; otherwise fall back to the first head.
+        let head = seqs
+            .iter()
+            .map(|s| s[0].clone())
+            .find(|cand| !seqs.iter().any(|s| s[1..].contains(cand)))
+            .unwrap_or_else(|| seqs[0][0].clone());
+        if !result.contains(&head) {
+            result.push(head.clone());
+        }
+        for seq in &mut seqs {
+            if seq.first() == Some(&head) {
+                seq.remove(0);
+            }
+        }
     }
 }
 

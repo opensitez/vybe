@@ -345,6 +345,17 @@ pub struct LanguageProfile {
     /// `fmt.Println(1)` still prints `1`.
     pub materialize_bool_results: bool,
 
+    /// Stamp Python-style introspection metadata (`__name__`, `__mro__`) on each
+    /// class object, so `Cls.__name__`, `Cls.__mro__`, and `type(obj).__name__`
+    /// resolve. Off by default; languages with this reflection surface opt in.
+    pub class_introspection_metadata: bool,
+
+    /// Honour ALL declared bases (`NormalClass.bases`), computing a C3
+    /// linearization and attaching every base's methods (multiple
+    /// inheritance). Off by default: single-inheritance languages ignore
+    /// `bases[1..]`, so their bytecode is unchanged. Python opts in.
+    pub class_multiple_inheritance: bool,
+
     /// The `/` operator performs integer (truncating) division when BOTH
     /// operands are integers (C#, Java, C, Go). Languages where `/` is always
     /// real division (VB uses `\` for integer division; Python `/` is float)
@@ -466,6 +477,13 @@ pub struct LanguageProfile {
     /// keyed by lowercased name. Data-driven so no language-name check is
     /// needed in `infer_function_return_type`.
     pub builtin_return_types: HashMap<String, String>,
+
+    /// Free functions that extract a field from a `DateTime` argument
+    /// (VB `Year(d)` → `d.Year`, `Month(d)` → `d.Month`, …), keyed by lowercased
+    /// function name → the DateTime field. Applied only when the argument is a
+    /// DateTime (compile-time type check stays in the compiler); the profile
+    /// supplies WHICH names, so no language-name check is needed.
+    pub datetime_field_functions: HashMap<String, String>,
 
     /// Synthetic ESM imports the language treats as pre-declared (i.e.
     /// ambient) at module scope. The Linker walks these BEFORE user
@@ -1098,6 +1116,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("materialize_bool_results")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let class_introspection_metadata = compiler
+        .get("class_introspection_metadata")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let class_multiple_inheritance = compiler
+        .get("class_multiple_inheritance")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let integer_division_on_slash = compiler
         .get("integer_division_on_slash")
         .and_then(|v| v.as_bool())
@@ -1248,6 +1274,11 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     let intrinsics = parse_string_table(&root, "intrinsics");
     let builtin_return_types: HashMap<String, String> =
         parse_string_table(&root, "builtin_return_types")
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+    let datetime_field_functions: HashMap<String, String> =
+        parse_string_table(&root, "datetime_field_functions")
             .into_iter()
             .map(|(k, v)| (k.to_lowercase(), v))
             .collect();
@@ -1555,6 +1586,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         uses_common_resolver,
         missing_arg_is_undefined,
         materialize_bool_results,
+        class_introspection_metadata,
+        class_multiple_inheritance,
         supports_autoload,
         buffered_iterator_methods,
         uses_normalize_class,
@@ -1566,6 +1599,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         namespace_constants,
         array_methods,
         builtin_return_types,
+        datetime_field_functions,
         esm_defaults,
         bare_module_aliases,
     })

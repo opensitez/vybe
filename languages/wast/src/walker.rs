@@ -44,11 +44,25 @@ thread_local! {
     static FUNC_NAME_RESULTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // type name → number of fields (for struct.new arity)
     static STRUCT_FIELD_COUNTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // GC struct types in declaration order: (name, parent name, field count).
+    // Registered into the type table so `ref.test`/`ref.cast`/`br_on_cast`
+    // resolve identity + subtyping (the parent link IS the subtype edge).
+    static STRUCT_TYPES: RefCell<Vec<(String, Option<String>, usize)>> = RefCell::new(Vec::new());
+    // struct type name → field storage types in order (`i8`/`i16`/`i32`/`i64`/
+    // `f32`/`f64`/ref…). Drives `struct.new_default` field defaults and
+    // `struct.get_s`/`get_u` packed sign/zero-extension.
+    static STRUCT_FIELD_TYPES: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     // func-type name → number of params (for call_ref/call_indirect arity)
     static TYPE_FUNC_PARAMS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     // func-type name → number of results (the other half of the type shape the
     // `call_indirect` runtime check compares against the callee).
     static TYPE_FUNC_RESULTS: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // table name (`$t1`) → table index, in module declaration order. Lets `elem`
+    // segments populate, and `call_indirect $t` dispatch through, a NAMED table.
+    static TABLE_NAME_INDEX: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // array type name → element storage type (`i8`/`i16` packed, or `i32`/…).
+    // `array.get_s`/`get_u` on a packed array sign-extend/zero-extend by width.
+    static ARRAY_ELEM_TYPE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     // Module functions compile to static methods of this class; a `call $f` to a
     // defined function is reached as `ClassName.f(...)`.
     static MODULE_CLASS_NAME: RefCell<String> = RefCell::new(String::new());
@@ -463,27 +477,88 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut struct_counts: HashMap<String, usize> = HashMap::new();
     let mut func_param_counts: HashMap<String, usize> = HashMap::new();
     let mut func_result_counts: HashMap<String, usize> = HashMap::new();
+    let mut array_elem_types: HashMap<String, String> = HashMap::new();
+    // Every declared type's name, in order, so a numeric parent index resolves
+    // to a name. GC structs collected here (name, raw parent ref, field count).
+    let mut type_order: Vec<String> = Vec::new();
+    let mut struct_types_raw: Vec<(String, Option<String>, usize)> = Vec::new();
+    let mut struct_field_types_map: HashMap<String, Vec<String>> = HashMap::new();
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::type_field {
                     let mut type_name: Option<String> = None;
                     let mut field_count = 0usize;
+                    let mut field_types: Vec<String> = Vec::new();
                     let mut is_struct = false;
                     let mut func_params: Option<usize> = None;
                     let mut func_results: Option<usize> = None;
+                    let mut array_elem: Option<String> = None;
+                    // Parent type reference (`$Base` or a numeric index) from a
+                    // `struct_subtype`/`array_subtype` trailing index or a
+                    // `(sub $Base …)` leading index. Resolved to a name below.
+                    let mut parent_ref: Option<String> = None;
                     for sub in inner.into_inner() {
                         match sub.as_rule() {
                             Rule::id => type_name = Some(sub.as_str()[1..].to_string()),
+                            // `(sub final? $super* composite)` — the standard GC
+                            // subtype wrapper: capture the first supertype, then
+                            // fall through to its inner composite type.
+                            Rule::sub_type => {
+                                let mut composite = None;
+                                for c in sub.into_inner() {
+                                    match c.as_rule() {
+                                        Rule::index => {
+                                            if parent_ref.is_none() {
+                                                parent_ref = Some(
+                                                    c.as_str().trim_start_matches('$').to_string(),
+                                                );
+                                            }
+                                        }
+                                        Rule::composite_type => composite = Some(c),
+                                        _ => {}
+                                    }
+                                }
+                                if let Some(inner2) = composite.and_then(|c| c.into_inner().next()) {
+                                    if inner2.as_rule() == Rule::array_type {
+                                        array_elem = array_elem_type(&inner2);
+                                    }
+                                    if matches!(
+                                        inner2.as_rule(),
+                                        Rule::struct_type | Rule::struct_subtype
+                                    ) {
+                                        is_struct = true;
+                                        field_types = struct_field_types(&inner2);
+                                        field_count = field_types.len();
+                                    }
+                                }
+                            }
                             Rule::composite_type => {
                                 if let Some(inner2) = sub.into_inner().next() {
+                                    if inner2.as_rule() == Rule::array_type {
+                                        array_elem = array_elem_type(&inner2);
+                                    }
                                     match inner2.as_rule() {
                                         Rule::struct_type => {
                                             is_struct = true;
-                                            field_count = inner2
+                                            field_types = struct_field_types(&inner2);
+                                            field_count = field_types.len();
+                                        }
+                                        // `(struct_subtype field* $Base)` — legacy
+                                        // GC-MVP form: fields then the supertype.
+                                        Rule::struct_subtype => {
+                                            is_struct = true;
+                                            field_types = struct_field_types(&inner2);
+                                            field_count = field_types.len();
+                                            if let Some(idx) = inner2
                                                 .into_inner()
-                                                .filter(|p| p.as_rule() == Rule::field_def)
-                                                .count();
+                                                .filter(|p| p.as_rule() == Rule::index)
+                                                .next_back()
+                                            {
+                                                parent_ref = Some(
+                                                    idx.as_str().trim_start_matches('$').to_string(),
+                                                );
+                                            }
                                         }
                                         Rule::func_type => {
                                             // param / result count = total val types
@@ -514,24 +589,69 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                             _ => {}
                         }
                     }
-                    if let Some(name) = &type_name {
-                        if is_struct {
-                            struct_counts.insert(name.clone(), field_count);
-                        }
-                        if let Some(r) = func_results {
-                            func_result_counts.insert(name.clone(), r);
-                        }
-                        if let Some(n) = func_params {
-                            func_param_counts.insert(name.clone(), n);
-                        }
+                    // A type declared without an id is referenced only by index;
+                    // give it a stable synthetic name so index→name still works.
+                    let name = type_name
+                        .clone()
+                        .unwrap_or_else(|| format!("__wast_type_{}", type_order.len()));
+                    type_order.push(name.clone());
+                    if is_struct {
+                        struct_counts.insert(name.clone(), field_count);
+                        struct_types_raw.push((name.clone(), parent_ref.clone(), field_count));
+                        struct_field_types_map.insert(name.clone(), field_types.clone());
+                    }
+                    if let Some(r) = func_results {
+                        func_result_counts.insert(name.clone(), r);
+                    }
+                    if let Some(n) = func_params {
+                        func_param_counts.insert(name.clone(), n);
+                    }
+                    if let Some(e) = array_elem {
+                        array_elem_types.insert(name.clone(), e);
                     }
                 }
             }
         }
     }
+    // Resolve each struct's parent reference (a `$name` kept verbatim, or a
+    // numeric index mapped through declaration order) to a concrete type name.
+    let struct_types: Vec<(String, Option<String>, usize)> = struct_types_raw
+        .into_iter()
+        .map(|(name, parent_ref, fields)| {
+            let parent = parent_ref.and_then(|p| {
+                if let Ok(i) = p.parse::<usize>() {
+                    type_order.get(i).cloned()
+                } else {
+                    Some(p)
+                }
+            });
+            (name, parent, fields)
+        })
+        .collect();
+    STRUCT_TYPES.with(|f| *f.borrow_mut() = struct_types);
+    STRUCT_FIELD_TYPES.with(|f| *f.borrow_mut() = struct_field_types_map);
     STRUCT_FIELD_COUNTS.with(|f| *f.borrow_mut() = struct_counts);
     TYPE_FUNC_PARAMS.with(|f| *f.borrow_mut() = func_param_counts);
     TYPE_FUNC_RESULTS.with(|f| *f.borrow_mut() = func_result_counts);
+    ARRAY_ELEM_TYPE.with(|f| *f.borrow_mut() = array_elem_types);
+
+    // 3a. Pre-scan tables so named tables (`$t1`) resolve to their declaration
+    //     index for `elem` population and `call_indirect $t` dispatch.
+    let mut table_names: HashMap<String, usize> = HashMap::new();
+    let mut table_idx = 0usize;
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::table_field {
+                    if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
+                        table_names.insert(id.as_str()[1..].to_string(), table_idx);
+                    }
+                    table_idx += 1;
+                }
+            }
+        }
+    }
+    TABLE_NAME_INDEX.with(|f| *f.borrow_mut() = table_names);
 
     // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
     //     the tag's payload arity regardless of source order. Reset first —
@@ -674,7 +794,27 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         span,
     );
 
-    let mut result = pre_stmts;
+    // Register GC struct types (name, parent, field count) so the compiler
+    // installs them in the type table with subtype edges — a compile-time
+    // directive (`__wast_register_struct_type`) that emits no runtime code.
+    // Emitted first so the identity is known before any `struct.new`/`ref.*`.
+    let mut result: Vec<Statement> = STRUCT_TYPES.with(|f| {
+        f.borrow()
+            .iter()
+            .map(|(name, parent, fields)| {
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__wast_register_struct_type")),
+                    args: vec![
+                        Argument::positional(Expression::string(name)),
+                        Argument::positional(Expression::string(parent.as_deref().unwrap_or(""))),
+                        Argument::positional(Expression::int(*fields as i64)),
+                    ],
+                    optional: false,
+                })))
+            })
+            .collect()
+    });
+    result.extend(pre_stmts);
     result.push(class);
     result.extend(post_stmts);
 
@@ -1416,9 +1556,41 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         // Typeless array access: the WAT typeidx (`$t`) immediates are the first
         // arg(s) but the VM's array.get/set/fill/copy don't read them — drop and
         // keep only the stack operands. array.copy carries two typeidxs.
+        // `array.get`/`array.set`/`array.fill`: the WAT typeidx is dropped; the
+        // compiler's `emit_named_opcode` traps on null/out-of-bounds for a spec
+        // (`function_references`) profile — see `array_get`/`array_set` there.
         "array.get" | "array.set" | "array.fill" => {
             let rest: Vec<Expression> = args.into_iter().skip(1).collect();
             Ok(make_call(&name.replace('.', "_"), rest, span))
+        }
+        // Packed-array reads: `array.get_s`/`array.get_u $T` read a packed `i8`/
+        // `i16` element and sign-/zero-extend it to i32. The VM stores the array
+        // untyped, so the width comes from the `$T` element type — plain
+        // `array_get` then an extend (signed) or a mask (unsigned).
+        "array.get_s" | "array.get_u" => {
+            let signed = name == "array.get_s";
+            let elem = args.first().and_then(|a| match &a.kind {
+                ExprKind::Ident(n) => ARRAY_ELEM_TYPE.with(|m| m.borrow().get(n).cloned()),
+                _ => None,
+            });
+            let rest: Vec<Expression> = args.into_iter().skip(1).collect();
+            let get = make_call("array_get", rest, span);
+            Ok(match (elem.as_deref(), signed) {
+                (Some("i8"), true) => make_call("i32.extend8_s", vec![get], span),
+                (Some("i16"), true) => make_call("i32.extend16_s", vec![get], span),
+                (Some("i8"), false) => Expression::new(ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    left: Box::new(get),
+                    right: Box::new(Expression::int(0xFF)),
+                }),
+                (Some("i16"), false) => Expression::new(ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    left: Box::new(get),
+                    right: Box::new(Expression::int(0xFFFF)),
+                }),
+                // Non-packed (i32/i64/ref/…): the stored value is already exact.
+                _ => get,
+            })
         }
         "array.copy" => {
             let rest: Vec<Expression> = args.into_iter().skip(2).collect();
@@ -1676,15 +1848,18 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         }
 
         // ── GC / WasmGC struct ops ────────────────────────────────────────
-        // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ...}
-        // args: [typeidx, field_val_0, field_val_1, ...]
+        // struct.new $T v0 v1 ...  → {"0": v0, "1": v1, ..., "__type": "T"}
+        // args: [typeidx, field_val_0, field_val_1, ...]. The `__type` stamp
+        // carries the GC type name so the VM's `ref.test`/`ref.cast`/`br_on_cast`
+        // resolve identity + subtyping through the registered type hierarchy.
         "struct.new" => {
+            let type_name = args.first().map(wasm_type_ref_name).unwrap_or_default();
             let vals: Vec<Expression> = if args.len() > 1 {
                 args[1..].to_vec()
             } else {
                 vec![]
             };
-            let props: Vec<ObjectProperty> = vals
+            let mut props: Vec<ObjectProperty> = vals
                 .into_iter()
                 .enumerate()
                 .map(|(i, v)| ObjectProperty::KeyValue {
@@ -1692,10 +1867,46 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                     value: v,
                 })
                 .collect();
+            props.push(struct_type_stamp(&type_name));
             Ok(Expression::with_span(ExprKind::Object(props), span))
         }
-        // struct.new_default $T → {}
-        "struct.new_default" => Ok(Expression::with_span(ExprKind::Object(vec![]), span)),
+        // struct.new_default $T → each field set to its storage type's default
+        // (0 for ints, 0.0 for floats, null for refs) + the `__type` stamp.
+        "struct.new_default" => {
+            let type_name = args.first().map(wasm_type_ref_name).unwrap_or_default();
+            let field_types = STRUCT_FIELD_TYPES
+                .with(|m| m.borrow().get(&type_name).cloned())
+                .unwrap_or_default();
+            let mut props: Vec<ObjectProperty> = field_types
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| ObjectProperty::KeyValue {
+                    key: Expression::string(&i.to_string()),
+                    value: default_value_for_storage_type(ty),
+                })
+                .collect();
+            props.push(struct_type_stamp(&type_name));
+            Ok(Expression::with_span(ExprKind::Object(props), span))
+        }
+        // array.new_default $T → a length-N array filled with the element type's
+        // default. For numeric elements that's 0/0.0, so lower to `array.new $T
+        // <default> <length>` (which fills the value); ref elements keep the VM's
+        // null-fill via `array_new_default`. args: [typeidx, length].
+        "array.new_default" => {
+            let elem = args.first().and_then(|a| match &a.kind {
+                ExprKind::Ident(n) => ARRAY_ELEM_TYPE.with(|m| m.borrow().get(n).cloned()),
+                _ => None,
+            });
+            match elem.as_deref() {
+                Some("i8" | "i16" | "i32" | "i64" | "f32" | "f64") => {
+                    let typeidx = args.first().cloned().unwrap_or(Expression::int(0));
+                    let length = args.into_iter().nth(1).unwrap_or(Expression::int(0));
+                    let default = default_value_for_storage_type(elem.as_deref().unwrap_or(""));
+                    Ok(make_call("array_new", vec![typeidx, default, length], span))
+                }
+                _ => Ok(make_call("array_new_default", args, span)),
+            }
+        }
         // array.new_fixed $T N v0 v1 … → [v0, v1, …]. args: [typeidx, N, v0…].
         // The typeidx + count immediates are dropped (VM arrays are typeless);
         // the N popped stack values become an array literal.
@@ -1715,9 +1926,11 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             };
             Ok(Expression::with_span(ExprKind::Array(vals), span))
         }
-        // struct.get $T N ref  → ref["N"]
+        // struct.get $T N ref  → ref["N"] (null-trapped). The `_s`/`_u` variants
+        // sign/zero-extend a packed i8/i16 field, mirroring array.get_s/get_u.
         // args: [typeidx, fieldidx, ref_expr]
         "struct.get" | "struct.get_s" | "struct.get_u" => {
+            let type_name = args.first().map(wasm_type_ref_name).unwrap_or_default();
             let field_idx = args
                 .get(1)
                 .and_then(|a| {
@@ -1729,14 +1942,39 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 })
                 .unwrap_or(0);
             let obj = args.into_iter().nth(2).unwrap_or(Expression::null());
-            Ok(Expression::with_span(
+            let member = Expression::with_span(
                 ExprKind::Member {
-                    object: Box::new(obj),
+                    object: Box::new(wast_nonnull(obj, span)),
                     field: field_idx.to_string(),
                     null_safe: false,
                 },
                 span,
-            ))
+            );
+            if name == "struct.get" {
+                return Ok(member);
+            }
+            let signed = name == "struct.get_s";
+            let field_ty = STRUCT_FIELD_TYPES.with(|m| {
+                m.borrow()
+                    .get(&type_name)
+                    .and_then(|v| v.get(field_idx as usize).cloned())
+            });
+            Ok(match (field_ty.as_deref(), signed) {
+                (Some("i8"), true) => make_call("i32.extend8_s", vec![member], span),
+                (Some("i16"), true) => make_call("i32.extend16_s", vec![member], span),
+                (Some("i8"), false) => Expression::new(ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    left: Box::new(member),
+                    right: Box::new(Expression::int(0xFF)),
+                }),
+                (Some("i16"), false) => Expression::new(ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    left: Box::new(member),
+                    right: Box::new(Expression::int(0xFFFF)),
+                }),
+                // Non-packed (i32/i64/ref/…): the stored value is already exact.
+                _ => member,
+            })
         }
         // struct.set $T N ref val → ref["N"] = val  (produces null, used as stmt)
         // args: [typeidx, fieldidx, ref_expr, val_expr]
@@ -1757,7 +1995,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Assign {
                     target: Box::new(Expression::with_span(
                         ExprKind::Member {
-                            object: Box::new(obj),
+                            object: Box::new(wast_nonnull(obj, span)),
                             field: field_idx.to_string(),
                             null_safe: false,
                         },
@@ -1994,6 +2232,42 @@ fn find_first_integer(pair: &Pair<Rule>) -> Option<i64> {
 
 /// First `$id` or numeric funcidx found anywhere under `pair`, without its `$`.
 /// Used to pull the funcidx out of an element initializer (`(ref.func $f)`).
+/// Textual form of a WASM type-reference operand — a symbolic id (`$Sub`
+/// arrives as `Ident("Sub")`) or a numeric type index. Used to name the GC
+/// struct type a `struct.new`/`ref.test`/`ref.cast` refers to.
+fn wasm_type_ref_name(expr: &Expression) -> String {
+    match &expr.kind {
+        ExprKind::Ident(n) => n.clone(),
+        ExprKind::Lit(Literal::Int(i)) => i.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Wrap a ref expression so accessing it traps on null (WASM GC `struct.get`/
+/// `struct.set` spec): `__wast_nonnull(ref)` passes the ref through unless it is
+/// null, in which case the compiler emits a trap. Keeps the field access lowered
+/// as ordinary member read/write.
+fn wast_nonnull(obj: Expression, span: Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__wast_nonnull")),
+            args: vec![Argument::positional(obj)],
+            optional: false,
+        },
+        span,
+    )
+}
+
+/// The `__type` object property carrying a GC struct's type name. The VM's
+/// `test_type` reads it (when the raw `type_id` isn't set) and resolves it to a
+/// registry id, so `ref.test`/`ref.cast` honour the declared type hierarchy.
+fn struct_type_stamp(type_name: &str) -> ObjectProperty {
+    ObjectProperty::KeyValue {
+        key: Expression::string("__type"),
+        value: Expression::string(type_name),
+    }
+}
+
 fn first_ident_or_index(pair: &Pair<Rule>) -> Option<String> {
     for c in pair.clone().into_inner() {
         if matches!(c.as_rule(), Rule::id | Rule::index | Rule::integer) {
@@ -2017,6 +2291,7 @@ fn first_ident_or_index(pair: &Pair<Rule>) -> Option<String> {
 fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut offset: i64 = 0;
+    let mut table_index: i64 = 0;
     let mut funcs: Vec<String> = Vec::new();
     // Only ACTIVE segments (those with an offset / `(table …)(offset …)` mode)
     // populate a table at load time. A `declare` segment merely permits
@@ -2030,6 +2305,16 @@ fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
                     // declarative — no table population
                 } else {
                     offset = find_first_integer(&child).unwrap_or(0);
+                    // `(table $t)(offset …)` targets a NAMED table; resolve it
+                    // to its declaration index (default table 0 otherwise).
+                    if let Some(tname) = child
+                        .clone()
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::index)
+                        .map(|i| i.as_str().trim_start_matches('$').to_string())
+                    {
+                        table_index = resolve_table_index(&tname);
+                    }
                     is_active = true;
                 }
             }
@@ -2059,7 +2344,7 @@ fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
         let call = make_call(
             "table_set",
             vec![
-                Expression::int(0), // table index (default table 0)
+                Expression::int(table_index),
                 Expression::int(offset + i as i64),
                 funcref,
             ],
@@ -2068,6 +2353,66 @@ fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
         stmts.push(Statement::new(StmtKind::Expr(call)));
     }
     Ok(Statement::with_span(StmtKind::Block(stmts), span))
+}
+
+/// The element storage type of an `array_type` (`(array i8)` → `"i8"`), found
+/// as the first `packed_type`/`val_type` under it (descends through `field_def`/
+/// `storage_type`/`mut`).
+fn array_elem_type(pair: &Pair<Rule>) -> Option<String> {
+    for c in pair.clone().into_inner() {
+        if matches!(c.as_rule(), Rule::packed_type | Rule::val_type) {
+            return Some(c.as_str().to_string());
+        }
+        if let Some(t) = array_elem_type(&c) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+/// The storage type of one `field_def` (`(field i8)` → `"i8"`, `(field (mut
+/// f64))` → `"f64"`, ref fields → the ref type text). Reuses the same
+/// packed/val-type search as `array_elem_type`.
+fn field_storage_type(field_def: &Pair<Rule>) -> String {
+    array_elem_type(field_def).unwrap_or_else(|| {
+        // Non-numeric storage (a ref type) — record its text so defaults treat
+        // it as a ref (null) rather than a number.
+        for c in field_def.clone().into_inner() {
+            if matches!(c.as_rule(), Rule::storage_type | Rule::ref_val_type) {
+                return c.as_str().to_string();
+            }
+        }
+        String::new()
+    })
+}
+
+/// The WASM default value for a field storage type: `0` for ints (incl. packed
+/// i8/i16), `0.0` for floats, `null` for ref types (`struct.new_default`).
+fn default_value_for_storage_type(ty: &str) -> Expression {
+    match ty {
+        "i8" | "i16" | "i32" | "i64" => Expression::int(0),
+        "f32" | "f64" => Expression::float(0.0),
+        _ => Expression::null(),
+    }
+}
+
+/// The ordered field storage types of a `struct_type`/`struct_subtype` body.
+fn struct_field_types(composite_inner: &Pair<Rule>) -> Vec<String> {
+    composite_inner
+        .clone()
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::field_def)
+        .map(|f| field_storage_type(&f))
+        .collect()
+}
+
+/// Resolve a table reference (`$t1` name or a numeric index) to its table index.
+fn resolve_table_index(name: &str) -> i64 {
+    TABLE_NAME_INDEX
+        .with(|m| m.borrow().get(name).copied())
+        .map(|i| i as i64)
+        .or_else(|| name.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -2600,6 +2945,31 @@ fn peek_typeuse_index(pair: &Pair<Rule>) -> Option<String> {
     None
 }
 
+/// The optional table reference of `call_indirect $t (type $sig)` — the first
+/// bare `id`/`index` arg (the `(type …)` sig is a `block_type`, so it's skipped).
+/// Returns None for the default-table form `call_indirect (type $sig)`.
+fn peek_call_indirect_table(pair: &Pair<Rule>) -> Option<String> {
+    let inner = if pair.as_rule() == Rule::instr {
+        pair.clone().into_inner().next()?
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return None;
+    }
+    for c in inner.into_inner() {
+        if c.as_rule() != Rule::instr_arg {
+            continue;
+        }
+        if let Some(a) = c.into_inner().next() {
+            if matches!(a.as_rule(), Rule::index | Rule::id) {
+                return Some(a.as_str().trim_start_matches('$').to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Given the index of an unfolded `block`/`loop`/`if` opener, find the matching
 /// `end` (respecting nesting) and, for `if`, the `else` at the same depth.
 fn find_matching_end(
@@ -3016,25 +3386,40 @@ fn fold_instructions_seeded(
                 // `(type $sig)` — dropped by the generic arg walk — is read.
                 "call_indirect" | "return_call_indirect" => {
                     let span = to_span(&pairs[i]);
-                    let argc = peek_typeuse_index(&pairs[i])
-                        .and_then(|n| TYPE_FUNC_PARAMS.with(|m| m.borrow().get(&n).copied()))
+                    let sig = peek_typeuse_index(&pairs[i]);
+                    let argc = sig
+                        .as_ref()
+                        .and_then(|n| TYPE_FUNC_PARAMS.with(|m| m.borrow().get(n).copied()))
                         .unwrap_or(0) as usize;
-                    let tableidx = 0usize; // default table 0 (named tables TODO)
+                    // Expected result count — the other half of the type shape
+                    // the VM checks the funcref against (traps on mismatch).
+                    let expected_results = sig
+                        .as_ref()
+                        .and_then(|n| TYPE_FUNC_RESULTS.with(|m| m.borrow().get(n).copied()))
+                        .unwrap_or(0) as usize;
+                    // Optional table reference `call_indirect $t (type $sig)`
+                    // dispatches through a NAMED table (default table 0).
+                    let tableidx = peek_call_indirect_table(&pairs[i])
+                        .map(|t| resolve_table_index(&t) as usize)
+                        .unwrap_or(0);
                     let n = (argc + 1).min(stack.len());
                     let operands: Vec<Expression> = stack.split_off(stack.len() - n);
                     let mut call_args = vec![
                         Expression::int(argc as i64),
                         Expression::int(tableidx as i64),
+                        Expression::int(expected_results as i64),
                     ];
                     call_args.extend(operands);
-                    let call = make_call("call_indirect", call_args, span);
-                    // `return_call_indirect` is the tail-call form: return the
-                    // indirect call's result instead of leaving it on the stack.
+                    // `return_call_indirect` is the tail-call form: it emits the
+                    // frame-reusing `RETURN_CALL_INDIRECT` opcode (same immediate
+                    // + type check as `call_indirect`) and diverges, rather than
+                    // a `call` + `return` (which would grow the stack).
                     if kw == "return_call_indirect" {
+                        let call = make_call("return_call_indirect", call_args, span);
                         statements
-                            .push(Statement::with_span(StmtKind::Return(Some(call)), span));
+                            .push(Statement::with_span(StmtKind::Expr(call), span));
                     } else {
-                        stack.push(call);
+                        stack.push(make_call("call_indirect", call_args, span));
                     }
                     i += 1;
                     continue;
@@ -3107,15 +3492,29 @@ fn fold_instructions_seeded(
                         let val = stack.pop();
                         statements.push(Statement::with_span(StmtKind::Return(val), span));
                     }
-                    // Tail calls: `return_call $f` / `return_call_ref` are
-                    // `return f(args)`. Reuse the `call`/`call_ref` lowering
-                    // (which qualifies module functions as static methods) and
-                    // wrap the resulting call in a `return`.
+                    // Tail calls: `return_call $f` / `return_call_ref` must
+                    // REUSE the frame (WASM tail-call proposal) so unbounded
+                    // tail recursion runs in O(1) stack. Reuse the `call`/
+                    // `call_ref` lowering to qualify the callee, then emit a
+                    // `__wasm_return_call(callee, args…)` which the compiler
+                    // lowers to the frame-reusing `Op::RETURN_CALL` (a plain
+                    // `return f(args)` would grow the stack and overflow).
                     "return_call" | "return_call_ref" => {
                         let inner = if name == "return_call" { "call" } else { "call_ref" };
                         let call = map_instr_to_ast(inner.to_string(), args, span)?;
-                        statements
-                            .push(Statement::with_span(StmtKind::Return(Some(call)), span));
+                        if let ExprKind::Call { callee, args: call_args, .. } = call.kind {
+                            let mut tail_args = vec![*callee];
+                            tail_args.extend(call_args.into_iter().map(|a| a.value));
+                            statements.push(Statement::with_span(
+                                StmtKind::Expr(make_call("__wasm_return_call", tail_args, span)),
+                                span,
+                            ));
+                        } else {
+                            statements.push(Statement::with_span(
+                                StmtKind::Return(Some(call)),
+                                span,
+                            ));
+                        }
                     }
                     "br" => {
                         let target = br_target_of(args.first());
@@ -3247,6 +3646,69 @@ fn fold_instructions_seeded(
                             }
                             statements.extend(chain);
                         }
+                    }
+                    // `br_on_cast L $from $to` branches to L (carrying the ref as
+                    // the block result) when the ref IS `$to`; `br_on_cast_fail`
+                    // when it is NOT. The ref stays on the stack for the
+                    // fall-through path (like `br_if`'s peeked block result).
+                    "br_on_cast" | "br_on_cast_fail" => {
+                        let is_fail = name == "br_on_cast_fail";
+                        let target = br_target_of(args.first());
+                        let to_ht = args.get(2).cloned().unwrap_or(Expression::null());
+                        // Consume the ref into a temp: on branch it becomes the
+                        // block result; on fall-through it is pushed back so the
+                        // continuation (e.g. `drop`) consumes it. Binding once
+                        // avoids re-evaluating and keeps the stack balanced on
+                        // both paths.
+                        let ref_val = stack.pop().unwrap_or_else(Expression::null);
+                        let tmp = fresh_result_temp();
+                        statements.push(Statement::new(StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(tmp.clone()),
+                                type_hint: None,
+                                init: Some(ref_val),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::Let,
+                        }));
+                        let test =
+                            make_call("ref_test", vec![to_ht, Expression::ident(&tmp)], span);
+                        let cond = if is_fail {
+                            Expression::new(ExprKind::Binary {
+                                op: BinOp::StrictEq,
+                                left: Box::new(test),
+                                right: Box::new(Expression::int(0)),
+                            })
+                        } else {
+                            test
+                        };
+                        let mut then_body: Vec<Statement> = Vec::new();
+                        match labels.resolve(&target) {
+                            Some(entry) => {
+                                if let Some(rt) = &entry.result_temp {
+                                    then_body.push(Statement::new(StmtKind::Expr(
+                                        Expression::new(ExprKind::Assign {
+                                            target: Box::new(Expression::ident(rt)),
+                                            value: Box::new(Expression::ident(&tmp)),
+                                        }),
+                                    )));
+                                }
+                                then_body.push(br_stmt_for(&entry, span));
+                            }
+                            None => then_body.push(make_br_stmt_opt(None, labels, span)),
+                        }
+                        statements.push(Statement::with_span(
+                            StmtKind::If {
+                                cond,
+                                then_body,
+                                else_body: None,
+                                elifs: Vec::new(),
+                            },
+                            span,
+                        ));
+                        // Fall-through: the ref stays available for continuation.
+                        stack.push(Expression::ident(&tmp));
                     }
                     _ => {
                         // A `call` yields as many values as the callee has results;
@@ -3394,6 +3856,9 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "ref.as_non_null" | "any.convert_extern" | "extern.convert_any" => 1,
         "ref.is_null" => 1,           // [ref] → [i32]
         "ref.eq" => 2,
+        // [ref] → [i32] (test) / [ref] → [ref] (cast). The heap-type operand is
+        // an immediate, not a stack value; one ref is popped.
+        "ref.test" | "ref.test_null" | "ref.cast" | "ref.cast_null" => 1,
 
         // ── Stringref proposal (stack-operand counts; $mem is an immediate) ──
         "string.new_utf8" | "string.new_wtf8" | "string.new_lossy_utf8" => 2, // ptr, len

@@ -51,6 +51,10 @@ pub fn emit_class_from_ast(
         normalize_from_ast_legacy(span.clone(), cname, parents, interfaces, members, modifiers)
     };
     nc.is_value_type = is_value_type;
+    // Fill ALL direct bases centrally from the AST parents so no per-language
+    // normalizer has to. `parent` stays `parents.first()`; `bases[1..]` is only
+    // read behind the `class_multiple_inheritance` opt-in.
+    nc.bases = parents.to_vec();
     emit_class(compiler, nc)
 }
 
@@ -124,6 +128,7 @@ fn normalize_from_ast_legacy(
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
+        bases: Vec::new(),
         interfaces: interfaces.to_vec(),
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,

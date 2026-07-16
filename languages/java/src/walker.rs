@@ -790,6 +790,7 @@ fn inject_java_exception_stamps(
     }
     if !has_ctor {
         members.push(ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![
                 assign_stmt(
@@ -958,6 +959,7 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
     }
 
     Ok(ClassMember::Constructor {
+        name: None,
         params,
         body,
         base_args,
@@ -1264,6 +1266,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     if !has_ctor {
         body_members.push(ClassMember::Constructor {
+            name: None,
             params: vec![simple_param("__name"), simple_param("__ordinal")],
             body: vec![stamp("__name", "__name"), stamp("__ordinal", "__ordinal")],
             base_args: None,
@@ -1494,6 +1497,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .collect();
 
     let mut members = vec![ClassMember::Constructor {
+        name: None,
         params: component_params.clone(),
         body: ctor_body,
         base_args: None,
@@ -7414,6 +7418,7 @@ fn inject_java_thread_stamps(members: &mut Vec<ClassMember>) {
         members.insert(
             0,
             ClassMember::Constructor {
+                name: None,
                 params: Vec::new(),
                 body: vec![java_thread_init_stmt(None)],
                 base_args: None,
@@ -7901,6 +7906,7 @@ fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[
     }
     if !saw_ctor {
         members.push(ClassMember::Constructor {
+            name: None,
             params: captures.iter().map(|n| capture_param(n)).collect(),
             body: captures.iter().map(|n| store(n)).collect(),
             base_args: None,
@@ -8399,6 +8405,7 @@ fn adapt_java_inner_class(
 
     if !saw_constructor {
         members.push(ClassMember::Constructor {
+            name: None,
             params: vec![java_outer_param(owner_name)],
             body: vec![java_outer_assign_stmt()],
             base_args: None,
@@ -12245,6 +12252,7 @@ fn inject_java_anonymous_captures(
     members.insert(
         0,
         ClassMember::Constructor {
+            name: None,
             params,
             body,
             base_args: (parent.is_some() && original_arg_count > 0).then_some(base_args),

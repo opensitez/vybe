@@ -21,10 +21,18 @@ pub struct NormalClass {
     pub span: Span,
     pub name: String,
 
-    /// Single superclass name. Multiple-inheritance / mixins / traits
-    /// are flattened at walker time — see `interfaces` for instanceof
-    /// identity and the method list for flattened dispatch.
+    /// Primary superclass name (`bases.first()`). Single-inheritance
+    /// languages use only this; it drives the constructor chain and the
+    /// static `super`/`__base_<name>` snapshot. Mixins / traits that a
+    /// language chooses to flatten still land in the method list + `interfaces`.
     pub parent: Option<String>,
+
+    /// ALL declared direct bases, in source order (`parent == bases.first()`).
+    /// Filled centrally in `emit_class_from_ast` from the AST `parents`, so
+    /// per-language normalizers don't populate it. Only consumed when the
+    /// profile opts into `class_multiple_inheritance` (Python C3 MI); every
+    /// other language ignores `bases[1..]`, keeping bytecode byte-identical.
+    pub bases: Vec<String>,
 
     /// Implemented / mixed-in / included interfaces + mixins. Used only
     /// for `instanceof` / `isinstance` / `is` / `kind_of?` identity

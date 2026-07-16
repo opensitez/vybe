@@ -57,6 +57,14 @@ materialize_bool_results = true
 "__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
 "__go_btoa"           = { emit = "host:ecma:string:btoa",       min_args = 1, max_args = 1 }
 "__go_atob"           = { emit = "host:ecma:string:atob",       min_args = 1, max_args = 1 }
+"__go_text_encoder_new" = { emit = "host:web:encoding:encoderNew", min_args = 0, max_args = 0 }
+"__go_text_encode"      = { emit = "host:web:encoding:encode",     min_args = 2, max_args = 2 }
+"__go_text_decoder_new" = { emit = "host:web:encoding:decoderNew", min_args = 0, max_args = 0 }
+"__go_text_decode"      = { emit = "host:web:encoding:decode",     min_args = 2, max_args = 2 }
+"__go_str_from_code_point" = { emit = "host:wasm:js-string:fromCodePoint", min_args = 1, max_args = 1 }
+"__go_str_code_point_at"   = { emit = "host:wasm:js-string:codePointAt",   min_args = 2, max_args = 2 }
+"__go_array_from"          = { emit = "host:ecma:array:from",              min_args = 1, max_args = 1 }
+"__go_is_string"           = { emit = "host:wasm:js-string:test",          min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 

@@ -18,6 +18,44 @@ use crate::vm::{
     ActiveContinuation, BlockTargets, ExceptionHandler, ImportTarget, LabelEntry, ResumeMode, VM,
 };
 use std::collections::HashMap;
+
+impl VM {
+    /// Whether `o` is a WASM GC array (spec trap-on-out-of-bounds) rather than a
+    /// dynamic-language array (lenient subscript).
+    ///
+    /// The distinction is the object's rtt: `array.new $t` stamps the instance
+    /// with the registry id of an `(array …)` defined type, so we read that
+    /// type's composite kind back — exactly the mechanism `ref.test`/`ref.cast`
+    /// use. Dynamic arrays carry `type_id == 0` (`Object`, a `Struct` kind), so
+    /// they never match and keep lenient semantics.
+    #[inline]
+    pub(crate) fn is_gc_array_obj(&self, o: &std::sync::Arc<std::sync::Mutex<Object>>) -> bool {
+        let ob = o.lock().unwrap();
+        if !matches!(ob.kind, ObjectKind::Array(_)) {
+            return false;
+        }
+        self.type_registry.get(ob.type_id).is_some_and(|td| td.is_array())
+    }
+
+    /// Resolve an `array.new` type immediate to the instance rtt (registry id).
+    ///
+    /// The immediate is a 1-based index into the running module's own type
+    /// table (`module_type_names`, in `chunk.types` order); `0` means a
+    /// dynamic-language array with no GC type (rtt `0` = `Object`). Any named
+    /// type resolves through the registry *by name*, so the host's builtin
+    /// types — registered ahead of the module's — don't skew the mapping the
+    /// way a raw compile-time table position would.
+    #[inline]
+    pub(crate) fn resolve_gc_array_rtt(&self, type_imm: usize) -> usize {
+        if type_imm == 0 {
+            return 0;
+        }
+        self.module_type_names
+            .get(type_imm - 1)
+            .and_then(|name| self.type_registry.get_id(name))
+            .unwrap_or(0)
+    }
+}
 use std::sync::{Arc, Mutex};
 
 // ── Block table ──────────────────────────────────────────────────────────────
@@ -1011,6 +1049,34 @@ impl VM {
                     let obj = self.pop();
                     match &obj {
                         Value::Object(o) => {
+                            // WASM GC `array.get`: spec (trap on out-of-bounds),
+                            // distinct from the lenient dynamic subscript below.
+                            if self.is_gc_array_obj(o) {
+                                let ob = o.lock().unwrap();
+                                if let ObjectKind::Array(a) = &ob.kind {
+                                    let idx = match &key {
+                                        Value::I32(n) if *n >= 0 => Some(*n as usize),
+                                        Value::I64(n) if *n >= 0 => Some(*n as usize),
+                                        Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => {
+                                            Some(*n as usize)
+                                        }
+                                        _ => None,
+                                    };
+                                    match idx {
+                                        Some(i) if i < a.len() => {
+                                            let v = a[i].clone();
+                                            drop(ob);
+                                            self.push(v)?;
+                                            continue;
+                                        }
+                                        _ => {
+                                            return Err(VMError::new(
+                                                "trap: array.get out of bounds",
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                             {
                                 let ob = o.lock().unwrap();
                                 if let ObjectKind::TypedArray(ref ta) = ob.kind {
@@ -1131,6 +1197,33 @@ impl VM {
                     let key = self.pop();
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
+                        // WASM GC `array.set`: spec (trap on out-of-bounds).
+                        if self.is_gc_array_obj(o) {
+                            let idx = match &key {
+                                Value::I32(n) if *n >= 0 => Some(*n as usize),
+                                Value::I64(n) if *n >= 0 => Some(*n as usize),
+                                Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => {
+                                    Some(*n as usize)
+                                }
+                                _ => None,
+                            };
+                            let mut ob = o.lock().unwrap();
+                            if let ObjectKind::Array(a) = &mut ob.kind {
+                                match idx {
+                                    Some(i) if i < a.len() => {
+                                        a[i] = val.clone();
+                                        drop(ob);
+                                        self.push(val)?;
+                                        continue;
+                                    }
+                                    _ => {
+                                        return Err(VMError::new(
+                                            "trap: array.set out of bounds",
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         {
                             let ob = o.lock().unwrap();
                             if let ObjectKind::TypedArray(ref ta) = ob.kind {
@@ -2114,25 +2207,37 @@ impl VM {
                 // `array.new $t` — [value, length] -> [array of length,
                 // every lane = value].
                 _ if op == Op::ARRAY_NEW => {
-                    let _typeidx = self.read_u16();
+                    // Immediate is a 1-based index into the script chunk's type
+                    // table naming an `(array …)` defined type (0 = a
+                    // dynamic-language array, no GC type). Resolved to the
+                    // instance's rtt (registry id) via the type name — the
+                    // compile-time table position can't be the registry id
+                    // directly because the VM pre-registers builtin types ahead
+                    // of the module's own. Stamping the rtt makes `array.get`/
+                    // `set`/`copy` trap per spec for GC arrays and stay lenient
+                    // for dynamic arrays (id 0 = `Object`, a `Struct` kind).
+                    let typeidx = self.read_u16() as usize;
                     let len = self.pop().as_i32().max(0) as usize;
                     let value = self.pop();
                     let elems = vec![value; len];
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        elems,
-                    )))))?;
+                    let mut obj = Object::new_array(elems);
+                    obj.type_id = self.resolve_gc_array_rtt(typeidx);
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 // `array.new_default $t` — [length] -> [array of length,
                 // zero-initialised]. We use `Value::Null` as the default
                 // for externref lanes (the only lane type we actually
                 // support) per the "null is the default for refs" rule.
                 _ if op == Op::ARRAY_NEW_DEFAULT => {
-                    let _typeidx = self.read_u16();
+                    // Immediate is a 1-based script-chunk type-table index (0 =
+                    // dynamic); resolved to the instance rtt so a defaulted GC
+                    // array traps per spec, matching `array.new`.
+                    let typeidx = self.read_u16() as usize;
                     let len = self.pop().as_i32().max(0) as usize;
                     let elems = vec![Value::Null; len];
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
-                        elems,
-                    )))))?;
+                    let mut obj = Object::new_array(elems);
+                    obj.type_id = self.resolve_gc_array_rtt(typeidx);
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 // `array.new_data $t $d` / `array.new_elem $t $e` — allocate
                 // a new array initialised from a data or element segment.
@@ -3688,9 +3793,11 @@ impl VM {
                     )))))?;
                 }
                 _ if op == Op::ARRAY_FILL => {
+                    // Spec `array.fill $t`: stack `[arrayref, index, value, count]`,
+                    // so popping off the top yields count, value, index, arrayref.
                     let count = self.pop().as_i32().max(0) as usize;
-                    let start = self.pop().as_i32().max(0) as usize;
                     let val = self.pop();
+                    let start = self.pop().as_i32().max(0) as usize;
                     let arr = self.pop();
                     if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();

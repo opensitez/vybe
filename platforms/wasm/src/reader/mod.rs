@@ -3497,6 +3497,11 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
 
                 types.push(vybe_bytecode::chunk::TypeEntry {
                     name: type_name,
+                    // The custom type section does not (yet) serialize the
+                    // composite kind; decoded types are struct/class shaped.
+                    // Array-kind round-tripping is part of the deferred
+                    // imported-.wasm stamping work.
+                    kind: vybe_bytecode::chunk::CompositeKind::Struct,
                     parent,
                     fields,
                     methods,

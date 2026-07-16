@@ -48,6 +48,84 @@ wat_exec! {
 )
 "#, "120" },
 
+    // ── Tail-call frame reuse (WASM tail-call proposal) ──────────────────
+    // Depth 300 is past the VM's 256-frame limit, so these three tests form a
+    // control: the NON-tail recursion overflows (proving the limit is real),
+    // while `return_call`/`return_call_indirect` complete because they reuse
+    // the frame. The positive tests return the accumulated sum 300+299+…+1 =
+    // 45150 (not a constant), so a shortcut that skips iterations can't pass.
+
+    // Negative control: plain `call` + `return` (work after the call, so NOT a
+    // tail call) must exhaust the call stack at this depth.
+    test_deep_non_tail_recursion_overflows => { r#"
+(func $sum (param $n i32) (result i32)
+  local.get $n
+  i32.eqz
+  if (result i32)
+    i32.const 0
+  else
+    local.get $n
+    local.get $n
+    i32.const 1
+    i32.sub
+    call $sum
+    i32.add
+  end)
+(func (export "_start") (result i32)
+  i32.const 300
+  call $sum
+)
+"#, "trap" },
+
+    test_return_call_deep_tail_recursion => { r#"
+(func $sum (param $n i32) (param $acc i32) (result i32)
+  local.get $n
+  i32.eqz
+  if (result i32)
+    local.get $acc
+  else
+    local.get $n
+    i32.const 1
+    i32.sub
+    local.get $acc
+    local.get $n
+    i32.add
+    return_call $sum
+  end)
+(func (export "_start") (result i32)
+  i32.const 300
+  i32.const 0
+  return_call $sum
+)
+"#, "45150" },
+
+    test_return_call_indirect_deep_tail_recursion => { r#"
+(type $sig (func (param i32 i32) (result i32)))
+(table 1 funcref)
+(func $sum (param $n i32) (param $acc i32) (result i32)
+  local.get $n
+  i32.eqz
+  if (result i32)
+    local.get $acc
+  else
+    local.get $n
+    i32.const 1
+    i32.sub
+    local.get $acc
+    local.get $n
+    i32.add
+    i32.const 0
+    return_call_indirect (type $sig)
+  end)
+(elem (i32.const 0) $sum)
+(func (export "_start") (result i32)
+  i32.const 300  ;; n
+  i32.const 0    ;; acc
+  i32.const 0    ;; table index
+  return_call_indirect (type $sig)
+)
+"#, "45150" },
+
     test_return_call_indirect => { r#"
 (type $sig (func (result i32)))
 (table 1 funcref)

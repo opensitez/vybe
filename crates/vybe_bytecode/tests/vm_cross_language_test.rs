@@ -141,6 +141,7 @@ fn cls_case_resolution_at_link_time() {
     cs_script.emit_op(Op::HALT, 0);
     cs_script.types.push(TypeEntry {
         name: "Dog".to_string(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: vec!["Name".to_string(), "Breed".to_string()],
         methods: vec![("Bark".to_string(), 0)],

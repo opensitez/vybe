@@ -168,6 +168,7 @@ fn load_type_table_interface() {
     let entries = vec![
         TypeEntry {
             name: "ianimal".into(),
+            kind: vybe_bytecode::chunk::CompositeKind::Struct,
             parent: String::new(),
             fields: Vec::new(),
             methods: vec![("speak".into(), 0)],
@@ -178,6 +179,7 @@ fn load_type_table_interface() {
         },
         TypeEntry {
             name: "dog".into(),
+            kind: vybe_bytecode::chunk::CompositeKind::Struct,
             parent: String::new(),
             fields: vec!["name".into()],
             methods: vec![("speak".into(), 1), ("fetch".into(), 2)],
@@ -208,6 +210,7 @@ fn load_type_table_cross_language_inheritance() {
     // Simulate: VB defines Animal, C# defines Dog : Animal
     let vb_types = vec![TypeEntry {
         name: "animal".into(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: vec!["name".into(), "species".into()],
         methods: vec![("speak".into(), 0)],
@@ -219,6 +222,7 @@ fn load_type_table_cross_language_inheritance() {
 
     let cs_types = vec![TypeEntry {
         name: "dog".into(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: "animal".into(),
         fields: vec!["breed".into()],
         methods: vec![("fetch".into(), 5), ("speak".into(), 6)],

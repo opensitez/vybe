@@ -8123,6 +8123,7 @@ fn synthesize_exception_class() -> Statement {
                     array_bounds: None,
                 },
                 ClassMember::Constructor {
+                    name: None,
                     params: vec![msg_param],
                     body: vec![assign_msg],
                     base_args: None,
@@ -10073,6 +10074,7 @@ fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
 
         if !has_constructor {
             members.push(ClassMember::Constructor {
+                name: None,
                 params: vec![gcl_owner_param()],
                 body: vec![name_stmt],
                 base_args: Some(vec![Expression::ident("AOwner")]),
@@ -11624,6 +11626,7 @@ fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
     }
 
     Ok(ClassMember::Constructor {
+        name: None,
         params,
         body,
         base_args: None,
@@ -11978,6 +11981,7 @@ fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let kind_lower = method_kind.to_lowercase();
     if kind_lower == "constructor" {
         Ok(ClassMember::Constructor {
+            name: None,
             params,
             body: Vec::new(),
             base_args: None,

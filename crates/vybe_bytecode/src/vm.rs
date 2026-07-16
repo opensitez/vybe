@@ -557,6 +557,12 @@ pub struct VM {
     pub event_loop: Rc<RefCell<EventLoop>>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
+    /// Names of the running module's own defined types, in `chunk.types` order.
+    /// `array.new`'s 1-based immediate indexes this to recover the type name,
+    /// which resolves to a registry id by name — necessary because the host
+    /// pre-registers builtin types ahead of the module's, so a compile-time
+    /// table position is not the registry id.
+    pub(crate) module_type_names: Vec<String>,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -793,6 +799,7 @@ impl VM {
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
+            module_type_names: Vec::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -1486,6 +1493,8 @@ impl VM {
         for chunk in &link_result.chunks {
             if !chunk.types.is_empty() {
                 self.type_registry.load_type_table(&chunk.types);
+                self.module_type_names
+                    .extend(chunk.types.iter().map(|t| t.name.clone()));
             }
         }
 
@@ -1730,6 +1739,10 @@ impl VM {
         {
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
+                // `array.new` immediates index the module's own types in this
+                // order, resolved to registry ids by name at run time.
+                self.module_type_names
+                    .extend(types.iter().map(|t| t.name.clone()));
                 let adjusted_types: Vec<_> = types
                     .iter()
                     .map(|t| {
@@ -1975,6 +1988,10 @@ impl VM {
         {
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
+                // `array.new` immediates index the module's own types in this
+                // order, resolved to registry ids by name at run time.
+                self.module_type_names
+                    .extend(types.iter().map(|t| t.name.clone()));
                 // Adjust chunk indices in methods (same offset as ref_func)
                 let adjusted_types: Vec<_> = types
                     .iter()

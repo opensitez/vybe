@@ -33,7 +33,7 @@ go_run_cases! {
     ),
     utf16_encode_rune_supplementary => (
         "package main; import \"fmt\"; import \"unicode/utf16\"; func main() { u1, u2 := utf16.EncodeRune(0x1F600); fmt.Println(int(u1)); fmt.Println(int(u2)) }",
-        vec!["55296", "56832"]
+        vec!["55357", "56832"]
     ),
     utf16_decode_rune_single_unit => (
         "package main; import \"fmt\"; import \"unicode/utf16\"; func main() { r := utf16.DecodeRune(65, 65535); fmt.Println(int(r)) }",

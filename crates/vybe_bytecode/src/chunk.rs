@@ -70,12 +70,33 @@ impl PropertyDescriptor {
     }
 }
 
+/// The WASM GC composite-type shape of a defined type (spec: `comptype`).
+/// A defined type is exactly one of these. This is the runtime rtt discriminant
+/// `ref.test`/`ref.cast` and `array.*`/`struct.*` branch on — an array ref traps
+/// on null/out-of-bounds, a struct ref carries named fields. Defaults to `Struct`
+/// so every existing class/interface registration (which never sets it) is
+/// unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompositeKind {
+    /// `(struct …)` — named fields; also the default for class/interface types.
+    #[default]
+    Struct,
+    /// `(array …)` — homogeneous indexed storage; `array.get`/`set`/`copy` trap
+    /// on null ref or out-of-bounds index (WASM GC proposal §array).
+    Array,
+    /// `(func …)` — a function signature type.
+    Func,
+}
+
 /// A compile-time type definition — WASM GC type section entry.
 /// Describes a class/struct with named fields and vtable methods.
 /// Loaded into TypeRegistry before execution.
 #[derive(Debug, Clone)]
 pub struct TypeEntry {
     pub name: String,
+    /// WASM GC composite shape (struct / array / func). Determines the runtime
+    /// rtt kind stamped onto instances so `array.*` ops trap per spec.
+    pub kind: CompositeKind,
     /// Parent type name (for inheritance). Empty = inherits from Object.
     pub parent: String,
     /// Field names in order. Field i is at `fields[i]` in the object's indexed storage.

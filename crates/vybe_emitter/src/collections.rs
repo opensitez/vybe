@@ -319,6 +319,102 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::ARRAY_GET, line);
 }
 
+/// Trap (WASM `unreachable`) unless `arr` (in a local) is a non-null array and
+/// `idx` (in a local) is in bounds — the spec `array.get`/`array.set`/etc.
+/// null and out-of-bounds checks. Unsigned compare so a negative index (huge as
+/// u32) also traps. Leaves the stack unchanged.
+/// Trap (`unreachable`) if the array in local `arr` is a null reference.
+fn emit_null_check(chunks: &mut [Chunk], current: usize, arr: u16, line: u32) {
+    lget(&mut chunks[current], arr, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::UNREACHABLE, line);
+    chunks[current].emit_end(line);
+}
+
+/// Trap (`unreachable`) if the top-of-stack ref is null, otherwise leave it
+/// unchanged. The compiler-side null guard for WASM GC `struct.get`/`struct.set`
+/// (and any nullable ref that spec-traps on access): a null ref carries no rtt
+/// stamp, so this can't be VM-side without a typed null. Composes as a
+/// pass-through so the existing field read/write lowering is unchanged.
+pub fn emit_nonnull_or_trap(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], slot, line);
+    emit_null_check(chunks, current, slot, line);
+    lget(&mut chunks[current], slot, line);
+}
+
+/// Trap if `start + count >u array.len` — the range check for `array.copy`.
+fn emit_range_check(chunks: &mut [Chunk], current: usize, arr: u16, start: u16, count: u16, line: u32) {
+    lget(&mut chunks[current], arr, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line); // [len]
+    lget(&mut chunks[current], start, line);
+    lget(&mut chunks[current], count, line);
+    chunks[current].emit_op(Op::I32_ADD, line); // [len, start+count]
+    chunks[current].emit_op(Op::I32_LT_U, line); // len <u (start+count) → out of range
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::UNREACHABLE, line);
+    chunks[current].emit_end(line);
+}
+
+/// WASM GC `array.copy`: traps on a null source/destination array or an
+/// out-of-range copy region (spec). Stack: [dst, dst_idx, src, src_idx, len].
+pub fn emit_gc_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let len = alloc_local(&mut chunks[current]);
+    let src_idx = alloc_local(&mut chunks[current]);
+    let src = alloc_local(&mut chunks[current]);
+    let dst_idx = alloc_local(&mut chunks[current]);
+    let dst = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], len, line);
+    lset(&mut chunks[current], src_idx, line);
+    lset(&mut chunks[current], src, line);
+    lset(&mut chunks[current], dst_idx, line);
+    lset(&mut chunks[current], dst, line);
+    emit_null_check(chunks, current, dst, line);
+    emit_null_check(chunks, current, src, line);
+    emit_range_check(chunks, current, dst, dst_idx, len, line);
+    emit_range_check(chunks, current, src, src_idx, len, line);
+    lget(&mut chunks[current], dst, line);
+    lget(&mut chunks[current], dst_idx, line);
+    lget(&mut chunks[current], src, line);
+    lget(&mut chunks[current], src_idx, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::ARRAY_COPY, line);
+}
+
+/// WASM GC `array.get`: traps on a null array or out-of-bounds index (spec),
+/// unlike the polymorphic `emit_get` used for the dynamic languages' lenient
+/// subscript. Stack: [array, index] → [value].
+pub fn emit_gc_array_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Null-trap is compiler-side (a null ref carries no stamp); the OOB trap is
+    // VM-side — `Op::ARRAY_GET` traps for stamped GC arrays.
+    let arr = alloc_local(&mut chunks[current]);
+    let idx = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], idx, line);
+    lset(&mut chunks[current], arr, line);
+    emit_null_check(chunks, current, arr, line);
+    lget(&mut chunks[current], arr, line);
+    lget(&mut chunks[current], idx, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+}
+
+/// WASM GC `array.set`: same null/bounds trap checks as [`emit_gc_array_get`].
+/// Stack: [array, index, value] → [retval] (dropped by the void statement form).
+pub fn emit_gc_array_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Null-trap compiler-side; OOB-trap VM-side (stamped GC array).
+    let val = alloc_local(&mut chunks[current]);
+    let idx = alloc_local(&mut chunks[current]);
+    let arr = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], val, line);
+    lset(&mut chunks[current], idx, line);
+    lset(&mut chunks[current], arr, line);
+    emit_null_check(chunks, current, arr, line);
+    lget(&mut chunks[current], arr, line);
+    lget(&mut chunks[current], idx, line);
+    lget(&mut chunks[current], val, line);
+    chunks[current].emit_op(Op::ARRAY_SET, line);
+}
+
 /// Polymorphic indexed write. Stack: [collection, index, value] → [value].
 ///
 /// Emits the WASM GC `array.set` opcode (`Op::ARRAY_SET`, byte 0xFB 0x0E).
@@ -420,6 +516,127 @@ pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
 /// stay aligned across collection surfaces.
 pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_runtime_helper_call(chunks, current, "__vybe_sort_in_place", 1, line);
+}
+
+/// Array sort with comparator (in-place). Stack: [array, comparator] -> [array].
+pub fn emit_sort_with_comparator(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "ecma:array", "sort", 2, line);
+}
+
+/// Array sort with comparator in a standalone method chunk.
+/// Stack: [array, comparator] -> [array].
+pub fn emit_sort_with_comparator_in_chunk(chunk: &mut Chunk, line: u32) {
+    let sort = chunk.add_import("ecma:array", "sort");
+    chunk.emit_call(sort, 2, line);
+}
+
+/// Array sort by key function (in-place). Stack: [array, key_fn] -> [array].
+///
+/// This emits the sort directly instead of routing through a synthetic
+/// language helper, so Python `heapq`, JS/PHP comparators, and future language
+/// adapters can share one bytecode shape for key-based ordering.
+pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let key_fn = alloc_local(chunk);
+    let arr = alloc_local(chunk);
+    let len = alloc_local(chunk);
+    let i = alloc_local(chunk);
+    let j = alloc_local(chunk);
+    let best = alloc_local(chunk);
+    let tmp = alloc_local(chunk);
+
+    lset(chunk, key_fn, line);
+    lset(chunk, arr, line);
+
+    lget(chunk, arr, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len, line);
+
+    core_wasm::i32_const(chunk, line, 0);
+    lset(chunk, i, line);
+
+    let _ = chunk;
+    let outer = crate::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i, line);
+    lget(chunk, len, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    let _ = chunk;
+    crate::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, i, line);
+    lset(chunk, best, line);
+    lget(chunk, i, line);
+    core_wasm::i32_const(chunk, line, 1);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, j, line);
+
+    let _ = chunk;
+    let inner = crate::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, j, line);
+    lget(chunk, len, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    let _ = chunk;
+    crate::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, key_fn, line);
+    lget(chunk, arr, line);
+    lget(chunk, j, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    lget(chunk, key_fn, line);
+    lget(chunk, arr, line);
+    lget(chunk, best, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    crate::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, j, line);
+    lset(chunk, best, line);
+    chunk.emit_end(line);
+
+    lget(chunk, j, line);
+    core_wasm::i32_const(chunk, line, 1);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, j, line);
+    let _ = chunk;
+    crate::loops::emit_loop_end(chunks, current, inner, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, best, line);
+    lget(chunk, i, line);
+    chunk.emit_op(Op::I32_NE, line);
+    chunk.emit_if(line);
+    lget(chunk, arr, line);
+    lget(chunk, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, tmp, line);
+
+    lget(chunk, arr, line);
+    lget(chunk, i, line);
+    lget(chunk, arr, line);
+    lget(chunk, best, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, arr, line);
+    lget(chunk, best, line);
+    lget(chunk, tmp, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+
+    lget(chunk, i, line);
+    core_wasm::i32_const(chunk, line, 1);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, i, line);
+    let _ = chunk;
+    crate::loops::emit_loop_end(chunks, current, outer, line);
+    lget(&mut chunks[current], arr, line);
 }
 
 /// Array lastIndexOf. Stack: [array, value] → [i32] via `ecma:array.lastIndexOf`.

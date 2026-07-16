@@ -29,6 +29,7 @@ pub mod expressions;
 pub mod functions;
 pub mod generators;
 pub mod gui;
+pub mod heap;
 pub mod imports;
 pub mod instructions;
 pub mod invoke;

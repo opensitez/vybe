@@ -40,6 +40,7 @@ fn has_bytes(bytes: &[u8], needle: &[u8]) -> bool {
 fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
     TypeEntry {
         name: name.into(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: fields.iter().map(|field| field.to_string()).collect(),
         methods: Vec::new(),

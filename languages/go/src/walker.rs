@@ -155,19 +155,39 @@ fn go_uses_errors_runtime(source: &str) -> bool {
 const GO_CORE_PRELUDE: &str = r#"package main
 
 func __go_io_bytes_to_string(buf []byte) string {
-	out := ""
-	for i := 0; i < len(buf); i++ {
-		out += string(rune(buf[i]))
+	return __go_text_decode(__go_text_decoder_new(), buf)
+}
+
+func __go_io_string_to_bytes(s string) []byte {
+	return __go_array_from(__go_text_encode(__go_text_encoder_new(), s))
+}
+
+func __go_string_byte_len(s string) int {
+	return len(__go_io_string_to_bytes(s))
+}
+
+func __go_string_to_runes(s string) []rune {
+	chars := __go_array_from(s)
+	out := []rune{}
+	for i := 0; i < len(chars); i++ {
+		out = append(out, rune(__go_str_code_point_at(chars[i], 0)))
 	}
 	return out
 }
 
-func __go_io_string_to_bytes(s string) []byte {
-	out := []byte{}
-	for i := 0; i < len(s); i++ {
-		out = append(out, s[i])
+func __go_runes_to_string(rs []rune) string {
+	out := ""
+	for _, r := range rs {
+		out += __go_str_from_code_point(r)
 	}
 	return out
+}
+
+func __go_rune_value(v any) rune {
+	if __go_is_string(v) {
+		return rune(__go_str_code_point_at(v, 0))
+	}
+	return rune(v)
 }
 
 func main() {}
@@ -1867,6 +1887,7 @@ func __go_utf16_IsSurrogate(r rune) bool {
 func __go_utf16_Encode(rs []rune) []uint16 {
 	out := []uint16{}
 	for _, r := range rs {
+		r = __go_rune_value(r)
 		if r >= 0x10000 && r <= 0x10FFFF {
 			r1, r2 := __go_utf16_EncodeRune(r)
 			out = append(out, uint16(r1), uint16(r2))
@@ -7365,6 +7386,11 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("len") && next_args.len() == 1 {
+                if go_expr_type_hint(&next_args[0].value, env, signatures).as_deref()
+                    == Some("string")
+                {
+                    return go_builtin_call("__go_string_byte_len", vec![next_args[0].value.clone()]);
+                }
                 if go_expr_type_hint(&next_args[0].value, env, signatures)
                     .as_deref()
                     .is_some_and(go_is_channel_type)
@@ -7461,6 +7487,13 @@ fn normalize_go_expr(
                     expr: Box::new(go_builtin_call("__go_string_runes", vec![normalized_expr])),
                     type_name: type_name.clone(),
                 });
+            }
+            if type_name.trim() == "string"
+                && go_expr_type_hint(&normalized_expr, env, signatures)
+                    .as_deref()
+                    .is_some_and(|ty| matches!(go_array_element_type(ty).as_deref(), Some("rune" | "int32")))
+            {
+                return go_builtin_call("__go_runes_to_string", vec![normalized_expr]);
             }
             if matches!(type_name.trim(), "[]byte" | "[]uint8")
                 && go_expr_type_hint(&normalized_expr, env, signatures).as_deref() == Some("string")

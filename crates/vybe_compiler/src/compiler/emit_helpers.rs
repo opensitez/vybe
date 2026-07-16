@@ -126,6 +126,7 @@ impl Compiler {
         self.pending_classes.insert(
             name.to_string(),
             PendingClass {
+                bases: parent.iter().cloned().collect(),
                 parent,
                 enclosing_class: self.current_class.clone(),
                 fields: Vec::new(),

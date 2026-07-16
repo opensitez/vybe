@@ -24,6 +24,68 @@ fn expr_const_u16(expr: Option<&Expression>) -> u16 {
     }
 }
 
+/// The textual form of a WASM type reference operand — a symbolic id (`$t` →
+/// `"t"`) or a numeric type index (`3` → `"3"`). Used to key GC array-type
+/// registration so each declared `(array …)` type maps to one registry id.
+fn wasm_type_ref_name(expr: &Expression) -> String {
+    match &expr.kind {
+        ExprKind::Ident(n) => n.clone(),
+        ExprKind::Lit(Literal::Int(i)) => i.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A string literal argument's value (empty when not a string literal). Used
+/// for the wast struct-type registration directive's name/parent fields.
+fn expr_str_lit(expr: Option<&Expression>) -> String {
+    match expr.map(|e| &e.kind) {
+        Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The named heap type a `ref.test`/`ref.cast` operand refers to, plus whether
+/// it is nullable. A bare `$T` arrives as `Ident("T")` → `(name, false)`; a
+/// folded `(ref null $T)` carries a `null` marker → `(name, true)`. The name is
+/// recovered from the first ident found so either shape resolves.
+fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
+    let Some(e) = expr else {
+        return (String::new(), false);
+    };
+    match &e.kind {
+        ExprKind::Ident(n) => (n.clone(), false),
+        ExprKind::Lit(Literal::Str(s)) => (s.to_string(), false),
+        // A folded ref type lowers to a call like `ref(null, $T)` / an object
+        // carrying the heap type; dig for the type name and a `null` nullability
+        // marker among the sub-expressions.
+        _ => {
+            let mut name = String::new();
+            let mut nullable = false;
+            collect_heap_type_ref(e, &mut name, &mut nullable);
+            (name, nullable)
+        }
+    }
+}
+
+/// Walk a folded ref-type expression collecting the first non-`null` ident as
+/// the type name and noting whether a `null` keyword appears (nullable).
+fn collect_heap_type_ref(e: &Expression, name: &mut String, nullable: &mut bool) {
+    match &e.kind {
+        ExprKind::Ident(n) if n == "null" => *nullable = true,
+        ExprKind::Ident(n) if name.is_empty() => *name = n.clone(),
+        ExprKind::Lit(Literal::Null) => *nullable = true,
+        ExprKind::Lit(Literal::Str(s)) if &**s == "null" => *nullable = true,
+        ExprKind::Lit(Literal::Str(s)) if name.is_empty() => *name = s.to_string(),
+        ExprKind::Call { callee, args, .. } => {
+            collect_heap_type_ref(callee, name, nullable);
+            for a in args {
+                collect_heap_type_ref(&a.value, name, nullable);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Encode a `v128.const` immediate: a shape token (`i32x4`, `f64x2`, …) followed
 /// by the per-lane values, laid out little-endian into the 16-byte vector — the
 /// exact layout the VM's `V128_CONST` opcode reads back.
@@ -835,29 +897,21 @@ impl Compiler {
         // override the common import defaults (e.g. Dart `print` needs
         // toString conversion before logging, which is different from
         // generic `wasi:cli.log`).
-        if self.profile.name == "vb" && args.len() == 1 {
-            if let Some(type_hint) = self.infer_expr_type_hint(&args[0]) {
-                let normalized = Self::normalize_type_hint(&type_hint);
-                if normalized == "datetime" || normalized.ends_with(".datetime") {
-                    let field_name = if name.eq_ignore_ascii_case("year") {
-                        Some("Year")
-                    } else if name.eq_ignore_ascii_case("month") {
-                        Some("Month")
-                    } else if name.eq_ignore_ascii_case("day") {
-                        Some("Day")
-                    } else if name.eq_ignore_ascii_case("hour") {
-                        Some("Hour")
-                    } else if name.eq_ignore_ascii_case("minute") {
-                        Some("Minute")
-                    } else if name.eq_ignore_ascii_case("second") {
-                        Some("Second")
-                    } else {
-                        None
-                    };
-
-                    if let Some(field_name) = field_name {
+        // DateTime field-extractor functions (VB `Year(d)` → `d.Year`) are
+        // declared per-language in `[datetime_field_functions]`; the DateTime
+        // type check stays here (compile-time analysis). No language-name gate.
+        if args.len() == 1 {
+            if let Some(field_name) = self
+                .profile
+                .datetime_field_functions
+                .get(&name.to_lowercase())
+                .cloned()
+            {
+                if let Some(type_hint) = self.infer_expr_type_hint(&args[0]) {
+                    let normalized = Self::normalize_type_hint(&type_hint);
+                    if normalized == "datetime" || normalized.ends_with(".datetime") {
                         self.compile_expr(&args[0])?;
-                        let idx = self.str_const(field_name);
+                        let idx = self.str_const(&field_name);
                         self.emit_u16(Op::STRUCT_GET, idx);
                         return Ok(true);
                     }
@@ -1038,10 +1092,84 @@ impl Compiler {
         // so a call whose name is a WASM instruction with no higher-level builtin
         // (e.g. every SIMD lane op) emits that opcode directly. The single opcode
         // list lives in the VM — `Op::from_wasm_name` resolves it; there is no
-        // per-op list in the profile or the emitter. Scoped to wast so bare
-        // opcode-shaped identifiers (`select`, `drop`, …) in other languages are
-        // never mistaken for instructions.
-        if self.profile.name == "wast" {
+        // per-op list in the profile or the emitter. Gated on the
+        // `function_references` property (set only by raw-WASM frontends, i.e.
+        // wast) so bare opcode-shaped identifiers (`select`, `drop`, …) in other
+        // languages are never mistaken for instructions.
+        if self.profile.function_references {
+            // WASM GC array ops. `array.new`/`array.new_default` stamp the
+            // instance with the registry id of a real `(array …)` defined type
+            // so the VM applies spec trapping `array.get`/`set`/`copy` (null /
+            // out-of-bounds) — the same rtt mechanism `ref.test`/`ref.cast` use.
+            // The null check for get/set stays compiler-side (a typed null
+            // carries no instance to stamp); the VM enforces the bounds trap.
+            match name {
+                "array.new" | "array_new" => {
+                    self.emit_gc_array_new(args, false)?;
+                    return Ok(true);
+                }
+                "array.new_default" | "array_new_default" => {
+                    self.emit_gc_array_new(args, true)?;
+                    return Ok(true);
+                }
+                // Compile-time directive from the wast walker: install a GC
+                // struct type (with its parent = subtype edge) in the type
+                // table so `ref.test`/`ref.cast`/`br_on_cast` resolve identity
+                // and subtyping. Emits no runtime code.
+                "__wast_register_struct_type" => {
+                    self.register_wast_struct_type(args);
+                    return Ok(true);
+                }
+                // `ref.test <ht>` / `ref.cast <ht>` — runtime type check against
+                // the named GC type via the registered hierarchy. A nullable
+                // heap type (`(ref null $T)`) uses the `_NULL` op (null passes);
+                // a bare `$T` uses the non-null op (null → test 0 / cast trap).
+                // Null guard for WASM GC `struct.get`/`struct.set`: pass the ref
+                // through, or trap if it is null (spec). Wrapped around the field
+                // access object by the walker so the read/write lowering is
+                // unchanged; dynamic-language member access is never routed here.
+                "__wast_nonnull" => {
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    common::collections::emit_nonnull_or_trap(&mut self.chunks, self.current, l);
+                    return Ok(true);
+                }
+                "ref.test" | "ref_test" | "ref.test_null" | "ref_test_null" => {
+                    self.emit_ref_type_op(args, false)?;
+                    return Ok(true);
+                }
+                "ref.cast" | "ref_cast" | "ref.cast_null" | "ref_cast_null" => {
+                    self.emit_ref_type_op(args, true)?;
+                    return Ok(true);
+                }
+                "array_get" => {
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    common::collections::emit_gc_array_get(&mut self.chunks, self.current, l);
+                    return Ok(true);
+                }
+                "array_set" => {
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    common::collections::emit_gc_array_set(&mut self.chunks, self.current, l);
+                    return Ok(true);
+                }
+                "array_copy" => {
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
+                    let l = self.line;
+                    common::collections::emit_gc_array_copy(&mut self.chunks, self.current, l);
+                    return Ok(true);
+                }
+                _ => {}
+            }
             let dotted = name.replacen('_', ".", 1);
             if Op::from_wasm_name(name)
                 .or_else(|| Op::from_wasm_name(&dotted))
@@ -1053,6 +1181,96 @@ impl Compiler {
         }
 
         Ok(false)
+    }
+
+    /// Compile a WASM GC `array.new $t value length` (or `array.new_default $t
+    /// length` when `default_init`). The `$t` type reference is resolved to the
+    /// registry id of a registered `(array …)` defined type; the VM stamps that
+    /// id onto the instance so `array.get`/`set`/`copy` trap per spec. Stack
+    /// operands follow the type immediate in fold order (value then length).
+    fn emit_gc_array_new(
+        &mut self,
+        args: &[&Expression],
+        default_init: bool,
+    ) -> Result<(), String> {
+        let type_name = args
+            .first()
+            .map(|a| wasm_type_ref_name(a))
+            .unwrap_or_default();
+        let type_id = self.resolve_gc_array_type_id(&type_name);
+        for a in &args[1..] {
+            self.compile_expr(a)?;
+        }
+        let l = self.line;
+        let op = if default_init {
+            Op::ARRAY_NEW_DEFAULT
+        } else {
+            Op::ARRAY_NEW
+        };
+        self.chunk().emit_op_u16(op, type_id as u16, l);
+        Ok(())
+    }
+
+    /// Install a wast GC struct type in the type table: `args` are
+    /// `[name, parent, field_count]` from the walker's compile-time directive.
+    /// The parent (empty = none) becomes the subtype edge the VM's `is_subtype`
+    /// walks for `ref.test`/`ref.cast`. Fields are the positional `"0".."n-1"`.
+    fn register_wast_struct_type(&mut self, args: &[&Expression]) {
+        let name = expr_str_lit(args.first().copied());
+        if name.is_empty() {
+            return;
+        }
+        let parent = expr_str_lit(args.get(1).copied());
+        let field_count = expr_const_u16(args.get(2).copied()) as usize;
+        let field_names: Vec<String> = (0..field_count).map(|i| i.to_string()).collect();
+        common::classes::register_type(
+            &mut self.chunks,
+            &name,
+            &parent,
+            field_names,
+            Vec::new(),
+            false,
+            Vec::new(),
+            None,
+            std::collections::HashMap::new(),
+        );
+    }
+
+    /// Emit a `ref.test`/`ref.cast` against a named heap type. `args[0]` is the
+    /// heap-type reference (bare `$T` → non-null; folded `(ref null $T)` →
+    /// nullable); `args[1..]` is the ref operand. The type NAME is emitted as a
+    /// string constant the VM resolves through the registered hierarchy.
+    fn emit_ref_type_op(&mut self, args: &[&Expression], is_cast: bool) -> Result<(), String> {
+        let (type_name, nullable) = wasm_heap_type_ref(args.first().copied());
+        for a in &args[1..] {
+            self.compile_expr(a)?;
+        }
+        let l = self.line;
+        let op = match (is_cast, nullable) {
+            (false, false) => Op::REF_TEST,
+            (false, true) => Op::REF_TEST_NULL,
+            (true, false) => Op::REF_CAST,
+            (true, true) => Op::REF_CAST_NULL,
+        };
+        let cidx = self
+            .chunk()
+            .add_constant(Value::String(std::sync::Arc::from(type_name.as_str())));
+        self.chunk().emit_op_u16(op, cidx, l);
+        Ok(())
+    }
+
+    /// The `array.new` type immediate for the `(array …)` a wast `$t` reference
+    /// names: a 1-based index into `chunk 0`'s type table, keyed by the
+    /// reference so every `array.new $t` shares one type (WASM type identity)
+    /// and registered on first use. The VM turns this index into the runtime
+    /// rtt by resolving the type *name* against the registry (the host's
+    /// builtin types sit ahead of the module's, so the index is not the id).
+    fn resolve_gc_array_type_id(&mut self, type_ref: &str) -> usize {
+        let key = format!("__wast_array::{type_ref}");
+        if let Some(idx) = self.chunks[0].types.iter().position(|t| t.name == key) {
+            return idx + 1;
+        }
+        common::classes::register_gc_array_type(&mut self.chunks, &key)
     }
 
     /// Emit a compiler_common operation by namespaced name.
@@ -1209,13 +1427,25 @@ impl Compiler {
                 let l = self.line;
                 common::collections::emit_slice(&mut self.chunks, self.current, l);
             }
+            // The dynamic languages' lenient subscript is `emit_get`/`emit_set`
+            // (JS/Python/PHP return undefined / no-op out of bounds). A spec WASM
+            // profile (`function_references`, i.e. wast) uses the GC `array.get`/
+            // `array.set` that TRAP on a null array or out-of-bounds index.
             "array_get" => {
                 let l = self.line;
-                common::collections::emit_get(&mut self.chunks, self.current, l);
+                if self.profile.function_references {
+                    common::collections::emit_gc_array_get(&mut self.chunks, self.current, l);
+                } else {
+                    common::collections::emit_get(&mut self.chunks, self.current, l);
+                }
             }
             "array_set" => {
                 let l = self.line;
-                common::collections::emit_set(&mut self.chunks, self.current, l);
+                if self.profile.function_references {
+                    common::collections::emit_gc_array_set(&mut self.chunks, self.current, l);
+                } else {
+                    common::collections::emit_set(&mut self.chunks, self.current, l);
+                }
             }
             "array_contains" => {
                 let l = self.line;

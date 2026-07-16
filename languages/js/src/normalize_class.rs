@@ -203,6 +203,7 @@ pub fn normalize_class(
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
+        bases: Vec::new(),
         interfaces: Vec::new(),
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
@@ -370,6 +371,7 @@ mod tests {
         use vybe_ast::{ExprKind, Expression};
         let base_arg = Expression::new(ExprKind::Ident("x".into()));
         let member = ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![],
             base_args: Some(vec![base_arg]),
@@ -398,6 +400,7 @@ mod tests {
         // reports `BaseCall::None` so downstream emission treats the
         // missing super as user error, not a normalization default.
         let member = ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![],
             base_args: None,
@@ -421,6 +424,7 @@ mod tests {
     #[test]
     fn root_class_without_super_gets_none_base_call() {
         let member = ClassMember::Constructor {
+            name: None,
             params: vec![],
             body: vec![],
             base_args: None,

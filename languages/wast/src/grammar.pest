@@ -390,7 +390,7 @@ elem_item = { ("(" ~ "item" ~ instr* ~ ")") | folded_instr }
 // `data_mode`. The `func` keyword in the element list is optional, so bare
 // funcidx lists (`(elem $e $f1 $f2)`, `(elem (i32.const 0) $f1)`) parse.
 elem_mode = {
-    "(" ~ "table" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
+    "(" ~ "table" ~ index ~ ")" ~ ("(" ~ "offset" ~ instr* ~ ")" | folded_instr)
   | "(" ~ "offset" ~ instr* ~ ")"
   | "declare"
   | folded_instr
