@@ -691,6 +691,11 @@ fn emit_core_op(
             *ip += 1;
             let table_idx = chunk.code[*ip];
             *ip += 1;
+            // Third immediate: the expected result count (part of the VM's
+            // runtime type-shape check). Not needed for the spec `call_indirect`
+            // (the `(type $sig)` index carries it), but must be consumed to keep
+            // `*ip` aligned.
+            *ip += 1;
             if let Some(&type_idx) = type_ctx.func_type_by_arity.get(&argc) {
                 body.push(0x11);
                 write_leb128_u32(body, type_idx);
