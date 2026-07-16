@@ -1195,6 +1195,71 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
 
 // ── Decorated ───────────────────────────────────────────────────────────────
 
+/// A decorator with dedicated compile-time handling (class-member kind,
+/// dataclass, generator, …) rather than Python's runtime `f = deco(f)` wrapping.
+/// These stay on the declaration's modifiers for the specialized paths.
+fn is_special_decorator(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => matches!(
+            name.as_str(),
+            "property"
+                | "staticmethod"
+                | "classmethod"
+                | "abstractmethod"
+                | "dataclass"
+                | "generator"
+                | "final"
+                | "override"
+        ),
+        ExprKind::Member { field, .. } => {
+            matches!(field.as_str(), "setter" | "getter" | "deleter")
+        }
+        _ => false,
+    }
+}
+
+/// Desugar Python function decorators to runtime application:
+/// `@a @b def f(...)` → `f = a(b(<function f>))`. Fires only when every
+/// decorator is a general (user) decorator; if any is special the declaration
+/// is returned unchanged so the specialized compile paths still see it.
+fn desugar_function_decorators(decl: StmtKind, decorators: Vec<Expression>) -> StmtKind {
+    if decorators.is_empty() || decorators.iter().any(is_special_decorator) {
+        return decl;
+    }
+    let StmtKind::FunctionDecl { name, .. } = &decl else {
+        return decl;
+    };
+    let fn_name = name.clone();
+    // Strip the now-runtime-applied decorators off the inner declaration so the
+    // metadata pass doesn't ALSO treat them as (inert) annotations.
+    let mut inner = decl;
+    if let StmtKind::FunctionDecl { modifiers, .. } = &mut inner {
+        modifiers.decorators = Vec::new();
+    }
+    let func_expr = Expression::new(ExprKind::FunctionExpr(Box::new(Statement {
+        kind: inner,
+        span: Span::default(),
+    })));
+    // Fold innermost-first (reversed) so `@a @b def f` becomes `a(b(f))`.
+    let mut acc = func_expr;
+    for d in decorators.into_iter().rev() {
+        acc = Expression::new(ExprKind::Call {
+            callee: Box::new(d),
+            args: vec![Argument {
+                value: acc,
+                name: None,
+                by_ref: false,
+                spread: false,
+            }],
+            optional: false,
+        });
+    }
+    StmtKind::Assign {
+        targets: vec![Expression::ident(&fn_name)],
+        value: acc,
+    }
+}
+
 fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut decorators = Vec::new();
     let mut inner_pairs: Vec<Pair<Rule>> = pair.into_inner().collect();
@@ -1217,13 +1282,19 @@ fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Remaining should be the def/class
     if let Some(item) = inner_pairs.into_iter().next() {
         match item.as_rule() {
-            Rule::function_def => walk_func_def(item, false, decorators),
+            Rule::function_def => {
+                let decl = walk_func_def(item, false, decorators.clone())?;
+                Ok(desugar_function_decorators(decl, decorators))
+            }
             Rule::class_def => walk_class_def(item, decorators),
             Rule::async_stmt => {
                 // async def with decorators
                 for p in item.into_inner() {
                     match p.as_rule() {
-                        Rule::function_def => return walk_func_def(p, true, decorators),
+                        Rule::function_def => {
+                            let decl = walk_func_def(p, true, decorators.clone())?;
+                            return Ok(desugar_function_decorators(decl, decorators));
+                        }
                         Rule::for_stmt => return walk_for(p, true),
                         Rule::with_stmt => return walk_with(p, true),
                         _ => {}
@@ -1586,11 +1657,137 @@ fn walk_with(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::With {
-        items,
-        body,
-        is_async,
+    // Desugar `with` to the PEP-343 try/except/finally so the standard Try
+    // compilation drives the context-manager protocol — reusing errors.rs's
+    // try_table AND the finally machinery that already runs on break/continue/
+    // return/exception paths (a hand-rolled try_table hangs on break/nested).
+    let _ = is_async;
+    if items.is_empty() {
+        return Ok(StmtKind::Block(body));
+    }
+    Ok(StmtKind::Block(build_with_desugar(&items, body)))
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+static WITH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn with_stmt(kind: StmtKind) -> Statement {
+    Statement::new(kind)
+}
+fn with_member(recv: &str, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(recv)),
+        field: field.to_string(),
+        null_safe: false,
     })
+}
+fn with_arg(value: Expression) -> Argument {
+    Argument {
+        value,
+        name: None,
+        by_ref: false,
+        spread: false,
+    }
+}
+fn with_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    })
+}
+fn with_not(e: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::Not,
+        expr: Box::new(e),
+    })
+}
+
+/// `with A as a, B as b: body` → nested PEP-343 blocks:
+/// ```text
+/// __mgr = A; a = __mgr.__enter__(); __hit = False
+/// try: <inner>
+/// except as __e: __hit = True; if not __mgr.__exit__(__e, __e, None): raise
+/// finally: if not __hit: __mgr.__exit__(None, None, None)
+/// ```
+fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement> {
+    let first = &items[0];
+    let n = WITH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mgr = format!("__with_mgr_{n}");
+    let hit = format!("__with_hit_{n}");
+    let exc = format!("__with_exc_{n}");
+    let target = first
+        .var
+        .clone()
+        .unwrap_or_else(|| format!("__with_target_{n}"));
+
+    let inner_body = if items.len() > 1 {
+        build_with_desugar(&items[1..], body)
+    } else {
+        body
+    };
+
+    let assign = |name: &str, value: Expression| {
+        with_stmt(StmtKind::Assign {
+            targets: vec![Expression::ident(name)],
+            value,
+        })
+    };
+
+    let catch = CatchClause {
+        types: vec![],
+        var_name: Some(exc.clone()),
+        stack_var: None,
+        body: vec![
+            assign(&hit, Expression::bool(true)),
+            with_stmt(StmtKind::If {
+                cond: with_not(with_call(
+                    with_member(&mgr, "__exit__"),
+                    vec![
+                        with_arg(Expression::ident(&exc)),
+                        with_arg(Expression::ident(&exc)),
+                        with_arg(Expression::null()),
+                    ],
+                )),
+                then_body: vec![with_stmt(StmtKind::Throw {
+                    expr: None,
+                    cause: None,
+                })],
+                elifs: vec![],
+                else_body: None,
+            }),
+        ],
+        when_clause: None,
+    };
+
+    let finally = vec![with_stmt(StmtKind::If {
+        cond: with_not(Expression::ident(&hit)),
+        then_body: vec![with_stmt(StmtKind::Expr(with_call(
+            with_member(&mgr, "__exit__"),
+            vec![
+                with_arg(Expression::null()),
+                with_arg(Expression::null()),
+                with_arg(Expression::null()),
+            ],
+        )))],
+        elifs: vec![],
+        else_body: None,
+    })];
+
+    vec![
+        assign(&mgr, first.expr.clone()),
+        assign(
+            &target,
+            with_call(with_member(&mgr, "__enter__"), vec![]),
+        ),
+        assign(&hit, Expression::bool(false)),
+        with_stmt(StmtKind::Try {
+            body: inner_body,
+            catches: vec![catch],
+            else_body: None,
+            finally: Some(finally),
+        }),
+    ]
 }
 
 // ── Match ───────────────────────────────────────────────────────────────────

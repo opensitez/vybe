@@ -2634,19 +2634,7 @@ impl Compiler {
         if self.try_compile_dotnet_case_insensitive_collection_call(callee, args)? {
             return Ok(());
         }
-        if self.try_compile_dotnet_delegate_call(callee, args)? {
-            return Ok(());
-        }
-        if self.try_compile_dotnet_numeric_try_parse(callee, args)? {
-            return Ok(());
-        }
         if self.try_compile_dotnet_dictionary_try_get_value(callee, args)? {
-            return Ok(());
-        }
-        if self.try_compile_dotnet_formatted_tostring(callee, args)? {
-            return Ok(());
-        }
-        if self.try_compile_dotnet_guid_try_parse(callee, args)? {
             return Ok(());
         }
         if self.try_compile_dotnet_enum_call(callee, args)? {
@@ -2685,9 +2673,6 @@ impl Compiler {
                     }
                 }
             }
-        }
-        if self.try_compile_dotnet_zero_arg_tostring(callee, args)? {
-            return Ok(());
         }
         if self.try_compile_dotnet_attribute_reflection_call(callee, args)? {
             return Ok(());
@@ -3027,12 +3012,34 @@ impl Compiler {
                     .or_else(|| self.scope().resolve_ci(&self_kw));
 
                 if let Some(parent) = parent_name {
-                    // Look up parent class via emit_var_get so closure-
-                    // captured parents (mixin pattern: `(Base) => class
-                    // extends Base`) resolve through the upvalue scope.
-                    self.emit_var_get(&parent);
-                    let method_idx = self.str_const(&canon_field);
-                    self.emit_u16(Op::STRUCT_GET, method_idx);
+                    if self.profile.class_multiple_inheritance {
+                        // Cooperative super (multiple inheritance): resolve the NEXT
+                        // method by walking the instance's runtime C3 MRO from the
+                        // class this `super()` textually belongs to — so B.f's
+                        // `super().f()` reaches C (not B's static parent A) when self
+                        // is a D. `__mro__` carries the full C3 from Tier 1.
+                        let cur_canon = self.canon(class_name.as_deref().unwrap_or(""));
+                        let line = self.line;
+                        let helper =
+                            common::classes::ensure_super_lookup_chunk(&mut self.chunks, line);
+                        self.emit_u16(Op::REF_FUNC, helper as u16);
+                        self.chunk().emit(0, line); // 0 upvalues
+                        if let Some(s) = self_slot {
+                            self.emit_u16(Op::LOCAL_GET, s);
+                        } else {
+                            self.emit(Op::NULL);
+                        }
+                        self.emit_const(Value::String(Arc::from(cur_canon.as_str())));
+                        self.emit_const(Value::String(Arc::from(canon_field.as_str())));
+                        self.emit_u8(Op::CALL_REF, 3);
+                    } else {
+                        // Look up parent class via emit_var_get so closure-
+                        // captured parents (mixin pattern: `(Base) => class
+                        // extends Base`) resolve through the upvalue scope.
+                        self.emit_var_get(&parent);
+                        let method_idx = self.str_const(&canon_field);
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
+                    }
 
                     if self.profile.ambient_this_binding {
                         let saved_js_this = self.save_js_this("__js_prev_this_super_method");
@@ -3141,8 +3148,6 @@ impl Compiler {
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
-                            let sort_global = self.str_const("__vybe_sort_with_comparator");
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.compile_expr(object)?;
                             self.compile_lambda(
                                 &[
@@ -3192,7 +3197,11 @@ impl Compiler {
                                 }))),
                                 &[],
                             )?;
-                            self.emit_u8(Op::CALL_REF, 2);
+                            common::collections::emit_sort_with_comparator(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             return Ok(());
                         }
 
@@ -3204,11 +3213,13 @@ impl Compiler {
                             })
                             && matches!(&arg_exprs[0].kind, ExprKind::Lambda { params, .. } if params.len() == 2)
                         {
-                            let sort_global = self.str_const("__vybe_sort_with_comparator");
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.compile_expr(object)?;
                             self.compile_expr(&arg_exprs[0])?;
-                            self.emit_u8(Op::CALL_REF, 2);
+                            common::collections::emit_sort_with_comparator(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             return Ok(());
                         }
 
@@ -4745,8 +4756,6 @@ impl Compiler {
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
-                            let sort_global = self.str_const("__vybe_sort_with_comparator");
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.compile_expr(object)?;
                             self.compile_lambda(
                                 &[
@@ -4796,7 +4805,11 @@ impl Compiler {
                                 }))),
                                 &[],
                             )?;
-                            self.emit_u8(Op::CALL_REF, 2);
+                            common::collections::emit_sort_with_comparator(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             return Ok(());
                         }
 
@@ -4808,11 +4821,13 @@ impl Compiler {
                             })
                             && matches!(&arg_exprs[0].kind, ExprKind::Lambda { params, .. } if params.len() == 2)
                         {
-                            let sort_global = self.str_const("__vybe_sort_with_comparator");
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.compile_expr(object)?;
                             self.compile_expr(&arg_exprs[0])?;
-                            self.emit_u8(Op::CALL_REF, 2);
+                            common::collections::emit_sort_with_comparator(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             return Ok(());
                         }
 
@@ -5467,8 +5482,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_host_call(idx, 1);
                         } else {
-                            let sort_global = self.str_const("__vybe_sort_with_comparator");
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.compile_lambda(
                                 &[
@@ -5518,7 +5531,11 @@ impl Compiler {
                                 }))),
                                 &[],
                             )?;
-                            self.emit_u8(Op::CALL_REF, 2);
+                            common::collections::emit_sort_with_comparator(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
                         }
                         self.chunk().emit_else(line);
                         // JS is 1-to-1 with the ECMA runtime: `Array.prototype.sort`
@@ -5536,16 +5553,16 @@ impl Compiler {
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
-                        let sort_global = self.str_const("__vybe_sort_in_place");
-                        self.emit_u16(Op::GLOBAL_GET, sort_global);
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        common::collections::emit_sort(&mut self.chunks, self.current, line);
                         self.chunk().emit_else(line);
-                        let global = self.str_const("__vybe_sort_by_key");
-                        self.emit_u16(Op::GLOBAL_GET, global);
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_u8(Op::CALL_REF, 2);
+                        common::collections::emit_sort_by_key_in_place(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
                         self.chunk().emit_end(line);
                     }
                     "indexOf" | "indexof" => {

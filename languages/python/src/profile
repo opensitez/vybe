@@ -32,6 +32,7 @@ dynamic_add = true
 dynamic_member_access = true
 materialize_bool_results = true
 class_introspection_metadata = true
+class_multiple_inheritance = true
 # NOTE: Python's `a[-1]` (offset-from-end) is NOT handled by the shared
 # `negative_index_wraps` compiler flag — that flag blindly emits `key < 0`
 # on every subscript and traps on string dict keys (`d['a']`). Instead the
@@ -370,8 +371,8 @@ setattr         = { emit = "host:ecma:object:set",          min_args = 3, max_ar
 delattr         = { emit = "host:ecma:object:delete",       min_args = 2, max_args = 2 }
 id              = { emit = "common:python.id",            min_args = 1, max_args = 1 }
 hash            = { emit = "common:python.hash",          min_args = 1, max_args = 1 }
-vars            = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
-dir             = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
+vars            = { emit = "common:python.vars",              min_args = 0, max_args = 1 }
+dir             = { emit = "common:python.dir",               min_args = 0, max_args = 1 }
 
 # ── String ───────────────────────────────────────────────────────────────────
 

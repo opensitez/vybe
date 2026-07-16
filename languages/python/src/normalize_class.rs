@@ -203,6 +203,7 @@ pub fn normalize_class(
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
+        bases: Vec::new(),
         // Python multiple inheritance — walker currently puts all parents
         // in `parents`. The first becomes the principal superclass; any
         // remaining go into `interfaces` so `isinstance` can still check

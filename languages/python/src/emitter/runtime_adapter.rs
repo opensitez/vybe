@@ -724,6 +724,65 @@ pub fn emit_issubclass(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::collections::emit_contains(chunks, current, line);
 }
 
+/// Python `vars(obj)` → the object's namespace dict. Builds a fresh dict from
+/// the object's own enumerable entries (`ecma:object.entries` already skips the
+/// `__`-prefixed internal stamps), so `vars(obj)['a']` reads a data attribute
+/// rather than indexing a keys array. A bare `vars()` (argc 0) yields `{}`.
+pub fn emit_vars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc == 0 {
+        let new_obj = chunk.add_import("ecma:object", "create");
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_call(new_obj, 1, line);
+        return;
+    }
+    let entries = chunk.add_import("ecma:object", "entries");
+    let from_entries = chunk.add_import("ecma:object", "fromEntries");
+    chunk.emit_call(entries, 1, line); // [[k, v], …]
+    chunk.emit_call(from_entries, 1, line); // {k: v, …}
+}
+
+/// Python `dir(obj)` → the names on the object AND on its class. `object.keys`
+/// alone sees only instance attributes; class variables and methods live on the
+/// class object, reached via the `__class__` link. Concatenates the two key sets
+/// (`__`-internals already filtered by `keys`). Ordering/dedup is not yet
+/// Python-exact, which is enough for membership (`'x' in dir(obj)`).
+pub fn emit_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let keys = chunk.add_import("ecma:object", "keys");
+    let new_len = chunk.add_import("vybe:js-array", "newWithLength");
+    if argc == 0 {
+        // `dir()` with no argument → module/local names; not modelled. Empty list.
+        chunk.emit_i32_const(0, line);
+        chunk.emit_call(new_len, 1, line);
+        return;
+    }
+    let get = chunk.add_import("ecma:object", "get");
+    let concat = chunk.add_import("ecma:array", "concat");
+    let obj = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+    // instance keys
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_call(keys, 1, line);
+    // class keys via the `__class__` link (empty if unlinked, so keys() is valid)
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const("__class__", line);
+    chunk.emit_call(get, 2, line);
+    let cls = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, cls, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_call(new_len, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
+    chunk.emit_call(keys, 1, line);
+    chunk.emit_end(line);
+    // instance_keys.concat(class_keys)
+    chunk.emit_call(concat, 2, line);
+}
+
 /// Python `type(x)`. A user instance carries a `__class__` link to its class
 /// object (stamped at construction, gated on `class_introspection_metadata`),
 /// so `type(obj) is Cls` and `type(obj).__name__` resolve to the real class.

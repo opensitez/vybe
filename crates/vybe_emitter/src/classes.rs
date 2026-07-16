@@ -214,6 +214,245 @@ pub fn emit_bind_method(
     chunk.emit_op(Op::DROP, line);
 }
 
+/// Stamp `__name__` (the class's own name) on the class/constructor object so
+/// `Cls.__name__` and `type(obj).__name__` resolve. Stack: unchanged.
+pub fn emit_stamp_class_name(chunk: &mut Chunk, ctor_slot: u16, class_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
+    chunk.emit_string_const(class_name, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__name__")));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// Stamp `__mro__` on the class object: an array of the ancestor class objects
+/// (self first, then each base up the chain, ending with a synthetic `object`).
+/// `self_ctor_slot` holds this class; `base_globals` are the canonical global
+/// names of the ancestor classes in method-resolution order (excluding self and
+/// `object`). Each entry is loaded by global name; a synthetic `{__name__:
+/// "object"}` terminates the list so `[c.__name__ for c in Cls.__mro__]` works.
+/// Stack: unchanged.
+pub fn emit_stamp_class_mro(
+    chunks: &mut [Chunk],
+    current: usize,
+    self_ctor_slot: u16,
+    base_globals: &[String],
+    line: u32,
+) {
+    // Build the MRO array: [self, base0, base1, …, object].
+    chunks[current].emit_op_u16(Op::LOCAL_GET, self_ctor_slot, line);
+    crate::collections::emit_array_new(chunks, current, 0, line);
+    // push self
+    push_array_value_local(chunks, current, self_ctor_slot, line);
+    // push each base by global name
+    for g in base_globals {
+        let gk = chunks[current].add_constant(Value::String(Arc::from(g.as_str())));
+        chunks[current].emit_dup(line); // [ctor, arr, arr]
+        chunks[current].emit_op_u16(Op::GLOBAL_GET, gk, line); // [ctor, arr, arr, base]
+        crate::collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    // push synthetic `object` (a small stand-in carrying just __name__)
+    chunks[current].emit_dup(line); // [ctor, arr, arr]
+    emit_object_base_stub(&mut chunks[current], line); // [ctor, arr, arr, objstub]
+    crate::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // ctor.__mro__ = arr
+    let key = chunks[current].add_constant(Value::String(Arc::from("__mro__")));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, key, line); // [ctor]
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// Stamp `__bases__` on the class object: an array of the DIRECT parent class
+/// objects (no self, no full MRO). `base_globals` are the canonical global names
+/// of the immediate bases. A class with no explicit base gets `[object]` (the
+/// synthetic stub), matching Python's `C.__bases__ == (object,)`. Stack: unchanged.
+pub fn emit_stamp_class_bases(
+    chunks: &mut [Chunk],
+    current: usize,
+    self_ctor_slot: u16,
+    base_globals: &[String],
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, self_ctor_slot, line); // [ctor]
+    crate::collections::emit_array_new(chunks, current, 0, line); // [ctor, arr]
+    if base_globals.is_empty() {
+        chunks[current].emit_dup(line);
+        emit_object_base_stub(&mut chunks[current], line);
+        crate::collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    } else {
+        for g in base_globals {
+            let gk = chunks[current].add_constant(Value::String(Arc::from(g.as_str())));
+            chunks[current].emit_dup(line);
+            chunks[current].emit_op_u16(Op::GLOBAL_GET, gk, line);
+            crate::collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+        }
+    }
+    let key = chunks[current].add_constant(Value::String(Arc::from("__bases__")));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, key, line); // [ctor]
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+const SUPER_LOOKUP_CHUNK: &str = "__mi_super_lookup";
+
+/// Ensure the shared cooperative-`super()` lookup chunk exists; return its index.
+///
+/// Signature `(self, className, methodName) -> fn | null`. Walks
+/// `self.__class__.__mro__` (the full C3 linearization stamped by
+/// `emit_stamp_class_mro`), finds the class whose `__name__` equals `className`,
+/// and returns the first `methodName` found on a class AFTER it in the MRO — the
+/// cooperative next method for multiple inheritance. Generic: uses only the
+/// `__class__`/`__mro__`/`__name__` introspection stamps, so every MI language
+/// shares one implementation. Returns `null` when the receiver is untyped or no
+/// later class defines the method.
+pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    if let Some(idx) = chunks.iter().position(|c| c.name == SUPER_LOOKUP_CHUNK) {
+        return idx;
+    }
+    let mut c = crate::functions::create_function_chunk(SUPER_LOOKUP_CHUNK, 3);
+    c.alloc_scratch(3); // arg slots 0=self, 1=className, 2=methodName
+    let self_a = 0u16;
+    let class_a = 1u16;
+    let method_a = 2u16;
+    let mro = c.alloc_scratch(1);
+    let n = c.alloc_scratch(1);
+    let i = c.alloc_scratch(1);
+    let passed = c.alloc_scratch(1);
+    let elem = c.alloc_scratch(1);
+    let m = c.alloc_scratch(1);
+    let found = c.alloc_scratch(1);
+
+    let obj_get = c.add_import("ecma:object", "get");
+    let arr_get = c.add_import("ecma:array", "get");
+    let arr_len = c.add_import("ecma:array", "length");
+    let to_f64 = c.add_import("wasm:js-number", "toF64");
+    let from_f64 = c.add_import("wasm:js-number", "fromF64");
+
+    // cls = self.__class__; return null if absent
+    c.emit_op_u16(Op::LOCAL_GET, self_a, line);
+    c.emit_string_const("__class__", line);
+    c.emit_call(obj_get, 2, line);
+    c.emit_dup(line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_if(line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+    // mro = cls.__mro__; return null if absent
+    c.emit_string_const("__mro__", line);
+    c.emit_call(obj_get, 2, line);
+    c.emit_dup(line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_if(line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_SET, mro, line);
+
+    // n = len(mro); i = 0; passed = 0; found = null
+    // `__mro__` is a growable host array (built with ecma:array.push), so use
+    // ecma:array access — GC `array.get`/`array.len` read only fixed GC arrays.
+    c.emit_op_u16(Op::LOCAL_GET, mro, line);
+    c.emit_call(arr_len, 1, line);
+    c.emit_call(to_f64, 1, line);
+    c.emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    c.emit_op_u16(Op::LOCAL_SET, n, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, passed, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op_u16(Op::LOCAL_SET, found, line);
+
+    let block_patch = c.emit_block(line);
+    let (loop_patch, _) = c.emit_loop_s(line);
+    // if i >= n: break out of block
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+    // elem = mro[i]  (host-array element access; index boxed to a number value)
+    c.emit_op_u16(Op::LOCAL_GET, mro, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op(Op::F64_FROM_I32, line);
+    c.emit_call(from_f64, 1, line);
+    c.emit_call(arr_get, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, elem, line);
+    // if passed == 0 { look for the current class } else { look for the method }
+    c.emit_op_u16(Op::LOCAL_GET, passed, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    {
+        c.emit_op_u16(Op::LOCAL_GET, elem, line);
+        c.emit_string_const("__name__", line);
+        c.emit_call(obj_get, 2, line);
+        c.emit_op_u16(Op::LOCAL_GET, class_a, line);
+        crate::ops::emit_dyn_eq(&mut c, line);
+        c.emit_if(line);
+        c.emit_i32_const(1, line);
+        c.emit_op_u16(Op::LOCAL_SET, passed, line);
+        c.emit_end(line);
+    }
+    c.emit_else(line);
+    {
+        // m = elem[methodName]; if m != null && found == null: found = m
+        c.emit_op_u16(Op::LOCAL_GET, elem, line);
+        c.emit_op_u16(Op::LOCAL_GET, method_a, line);
+        c.emit_call(obj_get, 2, line);
+        c.emit_op_u16(Op::LOCAL_SET, m, line);
+        c.emit_op_u16(Op::LOCAL_GET, m, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op(Op::I32_EQZ, line); // 1 if m not null
+        c.emit_op_u16(Op::LOCAL_GET, found, line);
+        c.emit_op(Op::REF_IS_NULL, line); // 1 if found null
+        c.emit_op(Op::I32_AND, line);
+        c.emit_if(line);
+        c.emit_op_u16(Op::LOCAL_GET, m, line);
+        c.emit_op_u16(Op::LOCAL_SET, found, line);
+        c.emit_end(line);
+    }
+    c.emit_end(line); // end if passed==0
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line); // end loop
+    c.patch_loop(loop_patch);
+    c.emit_end(line); // end block
+    c.patch_block(block_patch);
+
+    c.emit_op_u16(Op::LOCAL_GET, found, line);
+    c.emit_op(Op::RETURN, line);
+
+    let idx = chunks.len();
+    chunks.push(c);
+    idx
+}
+
+/// `[ctor, arr]` → push `LOCAL_GET(slot)` onto `arr`, preserving `[ctor, arr]`.
+fn push_array_value_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    crate::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+/// Push a minimal `object` class stand-in carrying `__name__ = "object"`, for the
+/// tail of every class's `__mro__`. Stack: `[] -> [obj]`.
+fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const("object", line);
+    let key = chunk.add_constant(Value::String(Arc::from("__name__")));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_f64_const(fixed_count as f64, line);
@@ -783,6 +1022,7 @@ pub fn register_type(
     // compile-time concern via `canon()`.
     chunks[0].types.push(TypeEntry {
         name: name.to_string(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: parent.to_string(),
         fields,
         methods,
@@ -791,6 +1031,33 @@ pub fn register_type(
         constructor_chunk,
         field_descriptors,
     });
+}
+
+/// Register a WASM GC `(array …)` defined type in chunk 0's type table and
+/// return the **1-based index of the entry within that table** — the value the
+/// compiler emits as the `array.new` immediate.
+///
+/// This is deliberately *not* the runtime registry id: the host pre-registers
+/// its builtin types ahead of the module's own, so a compile-time table
+/// position can't equal the registry id. Instead the VM recovers the type name
+/// from this index at run time (`module_type_names[imm - 1]`) and resolves it to
+/// the registry id *by name*, then `TypeDef::is_array` reads the `Array` kind
+/// back to apply spec trapping `array.get`/`set`/`copy`. Names are unique per
+/// declaration so the index↔name mapping is stable.
+pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str) -> usize {
+    let type_index = chunks[0].types.len() + 1;
+    chunks[0].types.push(TypeEntry {
+        name: name.to_string(),
+        kind: vybe_bytecode::chunk::CompositeKind::Array,
+        parent: String::new(),
+        fields: Vec::new(),
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
+    });
+    type_index
 }
 
 /// Register an interface/trait/protocol in the type table.
@@ -807,6 +1074,7 @@ pub fn register_interface(
     let method_entries: Vec<(String, usize)> = methods.into_iter().map(|m| (m, 0usize)).collect();
     chunks[0].types.push(TypeEntry {
         name: name.to_string(),
+        kind: vybe_bytecode::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: Vec::new(),
         methods: method_entries,
