@@ -47,6 +47,10 @@ has_generators = true
 
 [builtins]
 
+# `identical(a, b)` is Dart's reference equality — the same comparison C#
+# spells `Object.ReferenceEquals`, so it shares that emit.
+identical           = { emit = "common:ref_eq",                  min_args = 2, max_args = 2 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print               = { emit = "common:dart.print",              min_args = 1, max_args = 1 }
@@ -147,7 +151,16 @@ hasMatch      = { emit = "common:dart.regexp_has_match", min_args = 1, max_args 
 firstMatch    = { emit = "common:dart.regexp_first_match", min_args = 1, max_args = 1 }
 allMatches    = { emit = "common:dart.regexp_all_matches", min_args = 1, max_args = 1 }
 group         = { emit = "common:dart.regexp_group",   min_args = 1, max_args = 1 }
-abs           = { emit = "common:dart.duration_abs",   min_args = 0, max_args = 0 }
+abs           = { emit = "common:dart.abs",            min_args = 0, max_args = 0 }
+floor         = { emit = "common:dart.num_floor",      min_args = 0, max_args = 0 }
+ceil          = { emit = "common:dart.num_ceil",       min_args = 0, max_args = 0 }
+round         = { emit = "common:dart.num_round",      min_args = 0, max_args = 0 }
+truncate      = { emit = "common:dart.num_truncate",   min_args = 0, max_args = 0 }
+toInt         = { emit = "common:dart.num_truncate",   min_args = 0, max_args = 0 }
+toDouble      = { emit = "common:dart.num_to_double",  min_args = 0, max_args = 0 }
+remainder     = { emit = "common:dart.num_remainder",  min_args = 1, max_args = 1 }
+isNegative    = { emit = "common:dart.num_is_negative", min_args = 0, max_args = 0 }
+sign          = { emit = "common:dart.num_sign",       min_args = 0, max_args = 0 }
 negate        = { emit = "common:dart.duration_negate", min_args = 0, max_args = 0 }
 add           = { emit = "common:dart.add",            min_args = 1, max_args = 1 }
 subtract      = { emit = "common:dart.datetime_subtract", min_args = 1, max_args = 1 }

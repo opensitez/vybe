@@ -103,6 +103,70 @@ pub fn emit_duration_abs(chunks: &mut [Chunk], current: usize, line: u32) {
     wrap_duration_ms(&mut chunks[current], line);
 }
 
+fn emit_slot_is_type(chunk: &mut Chunk, slot: u16, type_name: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    get_field(chunk, "__type", line);
+    chunk.emit_string_const(type_name, line);
+    chunk.emit_op(Op::EQ, line);
+}
+
+pub fn emit_dart_abs(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_slot_is_type(&mut chunks[current], value, "Duration", line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_duration_abs(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_num_floor(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+}
+
+pub fn emit_num_ceil(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::F64_CEIL, line);
+}
+
+pub fn emit_num_round(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:math", "round", 1, line);
+}
+
+pub fn emit_num_truncate(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+}
+
+pub fn emit_num_to_double(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+}
+
+pub fn emit_num_remainder(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_emitter::math::emit_c_fmod(&mut chunks[current], line);
+}
+
+pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_slot_is_type(&mut chunks[current], value, "Duration", line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    get_field(&mut chunks[current], "isNegative", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_f64_const(0.0, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_num_sign(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:math", "sign", 1, line);
+}
+
 pub fn emit_duration_negate(chunks: &mut [Chunk], current: usize, line: u32) {
     let slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);

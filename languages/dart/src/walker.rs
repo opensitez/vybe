@@ -1134,7 +1134,13 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     );
                 }
             }
-            Rule::class_member => {
+            Rule::class_member
+            | Rule::constructor_declaration
+            | Rule::operator_declaration
+            | Rule::getter_declaration
+            | Rule::setter_declaration
+            | Rule::method_declaration
+            | Rule::field_declaration => {
                 if let Some(member) = walk_class_member(p, &name)? {
                     body_members.push(member);
                 }
@@ -1146,7 +1152,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     Ok(StmtKind::EnumDecl {
         name,
-        interfaces: Vec::new(),
+        interfaces,
         members,
         visibility: Visibility::Public,
         is_flags: false,
@@ -1381,11 +1387,12 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
     full_body.append(&mut field_inits);
     full_body.append(&mut body);
 
-    if is_factory {
-        // Factory constructor → static method
+    if let (true, Some(named)) = (is_factory, _named_ctor.clone()) {
+        // `factory Box.empty()` — reached as `Box.empty(...)`, so a static
+        // method returning an instance is exactly its shape.
         Ok(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
-                name: _named_ctor.unwrap_or_else(|| "create".to_string()),
+                name: named,
                 params,
                 return_type: Some(class_name.to_string()),
                 body: full_body,
@@ -1399,8 +1406,28 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
                 is_sub: false,
             },
         ))))
-    } else {
+    } else if is_factory {
+        // `factory Box(...)` — an UNNAMED factory *is* what `Box(...)` runs,
+        // so it has to be the constructor. Its body always returns the
+        // instance, and an explicit `return` from a constructor body yields
+        // that value instead of the freshly allocated `this` — which is the
+        // whole point of a factory (caches, singletons, subtype dispatch).
+        // Naming it as a static method left it unreachable.
         Ok(ClassMember::Constructor {
+            name: None,
+            params,
+            body: full_body,
+            base_args,
+            initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        })
+    } else {
+        // `Point.origin()` — a named generative constructor. Carrying the
+        // name (rather than dropping it) is what lets the class keep both it
+        // and the unnamed ctor: they are different constructors, not
+        // overloads, and both are arity-0 here.
+        Ok(ClassMember::Constructor {
+            name: _named_ctor,
             params,
             body: full_body,
             base_args,
@@ -1648,6 +1675,14 @@ fn walk_operator(pair: Pair<Rule>) -> Result<ClassMember, String> {
         }
     }
 
+    // Dart spells unary minus and binary minus with the same token and tells
+    // them apart by arity: `operator -()` negates, `operator -(other)`
+    // subtracts. They are different methods, so a zero-parameter `-` is
+    // `__neg__` — otherwise a class defining both binds only one of them.
+    if op_name == "__sub__" && params.is_empty() {
+        op_name = "__neg__".to_string();
+    }
+
     Ok(ClassMember::Method(Box::new(Statement::new(
         StmtKind::FunctionDecl {
             name: op_name,
@@ -1756,7 +1791,7 @@ fn build_is_type(expr: Expression, type_name: &str) -> Expression {
 fn is_dart_zero_arg_getter(name: &str) -> bool {
     matches!(
         name,
-        "isEmpty" | "isNotEmpty" | "isEven" | "isOdd" | "first" | "last" | "length" | "runes"
+        "isEmpty" | "isNotEmpty" | "isEven" | "isOdd" | "isNegative" | "sign" | "first" | "last" | "length" | "runes"
     )
 }
 

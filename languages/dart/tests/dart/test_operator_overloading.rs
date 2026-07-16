@@ -172,7 +172,7 @@ void main() {
 void main() {
   var g = Grid([1, 2, 3]);
   g[1] = 99;
-  print(g[1]);
+  print(g.data[1]);
 }"#,
         ["99"]
     };

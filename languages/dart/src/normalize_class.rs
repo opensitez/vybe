@@ -42,6 +42,7 @@ pub fn normalize_class(
     let mut static_methods: Vec<NormalMethod> = Vec::new();
     let mut properties: Vec<NormalProperty> = Vec::new();
     let mut constructor: Option<NormalConstructor> = None;
+    let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
 
     for member in members {
@@ -97,12 +98,13 @@ pub fn normalize_class(
                 }
             }
             ClassMember::Constructor {
+                name: ctor_name,
                 params,
                 body,
                 base_args,
                 ..
             } => {
-                constructor = Some(NormalConstructor {
+                let normal = NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
@@ -112,15 +114,25 @@ pub fn normalize_class(
                                 .map(|e| vybe_ast::Argument::positional(e.clone()))
                                 .collect(),
                         ),
-                        // Dart: subclass ctor without explicit `: super(...)`
-                        // auto-calls the no-arg super ctor in real Dart, but
-                        // the Vybe compiler doesn't yet implement that
-                        // auto-insertion. Walker mirrors the source — emit
-                        // layer can opt in later by switching this to Auto.
+                        // A Dart subclass ctor without an explicit
+                        // `: super(...)` implicitly calls the parent's no-arg
+                        // ctor — which is exactly `BaseCall::Auto`, the same
+                        // preamble C# and VB already use. A class with no
+                        // parent has nothing to call.
+                        None if !parents.is_empty() => BaseCall::Auto,
                         None => BaseCall::None,
                     },
-                    named_name: None, // TODO: plumb Dart named ctors when walker marks them
-                });
+                    named_name: ctor_name.clone(),
+                };
+                // A class can declare an unnamed ctor AND several named ones
+                // (`Point(this.x)` + `Point.origin()`); they are distinct
+                // constructors, not overloads, and often share an arity. Every
+                // one is a variant — assigning to a single slot would keep
+                // only the last one walked.
+                if ctor_name.is_none() {
+                    constructor = Some(normal.clone());
+                }
+                constructors.push(normal);
             }
             ClassMember::Property {
                 name: pname,
@@ -201,7 +213,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
-        constructors: Vec::new(),
+        constructors,
         constructor,
         destructor: None,
         auto_init_methods: Vec::new(),
