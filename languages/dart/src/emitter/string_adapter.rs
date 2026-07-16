@@ -863,7 +863,27 @@ pub fn emit_dart_stopwatch_elapsed_microseconds(chunks: &mut [Chunk], current: u
 }
 
 pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let index_slot = reserve_slot(&mut chunks[current]);
+    let receiver_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    host::emit(&mut chunks[current], "ecma:number", "Number", 1, line);
+    host::emit(&mut chunks[current], "ecma:array", "get", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
     emit_undefined_to_null(&mut chunks[current], line);
 }
 
@@ -968,8 +988,6 @@ pub fn emit_dart_replace_first(chunks: &mut [Chunk], current: usize, line: u32) 
 /// fields happen to be named `first`/`last`/`length` keep working
 /// through plain STRUCT_GET when the receiver isn't a list.
 pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
-    use std::sync::Arc;
-    use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
     let receiver_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
@@ -990,9 +1008,21 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    // Not an array — read the `first` field via STRUCT_GET.
-    let key = chunks[current].add_constant(Value::String(Arc::from("first")));
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, receiver_slot, "iterator", iter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let key = string_key(&mut chunks[current], "first");
     chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -1000,8 +1030,6 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Dart `list.last` — `list[length - 1]`. Polymorphic; non-list
 /// receivers fall through to STRUCT_GET("last").
 pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
-    use std::sync::Arc;
-    use vybe_bytecode::Value;
     let chunk = &mut chunks[current];
     let receiver_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
@@ -1028,8 +1056,24 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let key = chunks[current].add_constant(Value::String(Arc::from("last")));
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, receiver_slot, "iterator", iter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+    core_wasm::dup(&mut chunks[current], line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let key = string_key(&mut chunks[current], "last");
     chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -1061,7 +1105,7 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_generator(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    collections::emit_spread_iterable(chunks, current, line);
+    generators::emit_drain_into_array(chunks, current, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -1069,6 +1113,24 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     emit_sb_buffer_get(&mut chunks[current], line);
     strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    let length_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, receiver_slot, "length", length_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, length_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, length_slot, line);
+    chunks[current].emit_else(line);
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, receiver_slot, "iterator", iter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+    collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     // Object/Map fall-through — count own enumerable properties via
@@ -1081,12 +1143,30 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// Dart `iterable.toList()` — materialize generators/custom iterables.
 /// Stack: [iterable] -> [array].
 pub fn emit_dart_iter_to_list(chunks: &mut [Chunk], current: usize, line: u32) {
-    collections::emit_spread_iterable(chunks, current, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+}
+
+/// Dart `for-in` preparation. Keep generator continuations lazy so the common
+/// compiler generator loop can honor `break`/manual take, but materialize
+/// Dart custom `IterableBase` objects before the shared array loop sees them.
+pub fn emit_dart_for_in_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_is_generator(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 /// Dart `iterable.join([separator])`.
@@ -1102,7 +1182,7 @@ pub fn emit_dart_iter_join(chunks: &mut [Chunk], current: usize, argc: u8, line:
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    collections::emit_spread_iterable(chunks, current, line);
+    emit_dart_materialize_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, sep_slot, line);
     collections::emit_join(chunks, current, line);
 }
@@ -1140,7 +1220,7 @@ pub fn emit_dart_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle_slot, line);
     host::emit(&mut chunks[current], "ecma:string", "includes", 2, line);
     chunks[current].emit_else(line);
-    collections::emit_spread_iterable(chunks, current, line);
+    emit_dart_materialize_iterable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle_slot, line);
     collections::emit_contains(chunks, current, line);
     chunks[current].emit_end(line);
@@ -1157,6 +1237,45 @@ fn emit_undefined_to_null(chunk: &mut Chunk, line: u32) {
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_end(line);
+}
+
+fn emit_get_field_or_null_to_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, dst_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let key = string_key(chunk, key);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    emit_undefined_to_null(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, dst_slot, line);
+}
+
+fn emit_call_ref_on_receiver(chunks: &mut [Chunk], current: usize, receiver_slot: u16, fn_slot: u16, line: u32) {
+    let js_this_key = string_key(&mut chunks[current], "__js_this");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+}
+
+fn emit_getter_or_field_to_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    field: &str,
+    dst_slot: u16,
+    line: u32,
+) {
+    let getter_slot = reserve_slot(&mut chunks[current]);
+    let getter_name = format!("__get_{}", field);
+    emit_get_field_or_null_to_slot(&mut chunks[current], obj_slot, &getter_name, getter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, getter_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_call_ref_on_receiver(chunks, current, obj_slot, getter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dst_slot, line);
+    chunks[current].emit_else(line);
+    emit_get_field_or_null_to_slot(&mut chunks[current], obj_slot, field, dst_slot, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_set_string_field_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, val_slot: u16, line: u32) {
@@ -1800,6 +1919,17 @@ pub fn emit_dart_map_general(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx_slot = reserve_slot(&mut chunks[current]);
     loops::emit_map(chunks, current, fn_slot, arr_slot, result_slot, idx_slot, line);
     chunks[current].emit_else(line);
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, receiver_slot, "iterator", iter_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iter_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    let arr_slot = materialize_slot(chunks, current, receiver_slot, line);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    let idx_slot = reserve_slot(&mut chunks[current]);
+    loops::emit_map(chunks, current, fn_slot, arr_slot, result_slot, idx_slot, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     host::emit(&mut chunks[current], "ecma:object", "entries", 1, line);
     let entries_slot = reserve_slot(&mut chunks[current]);
@@ -1825,6 +1955,7 @@ pub fn emit_dart_map_general(chunks: &mut [Chunk], current: usize, line: u32) {
     loops::emit_for_in_end(chunks, current, idx2_slot, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, pairs_slot, line);
     host::emit(&mut chunks[current], "ecma:map", "fromEntries", 1, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -2777,6 +2908,50 @@ fn stash_iterable_and_arg(chunks: &mut [Chunk], current: usize, line: u32) -> (u
     (receiver_slot, arg_slot)
 }
 
+fn emit_dart_drain_iterator_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    let move_next_slot = reserve_slot(&mut chunks[current]);
+    let current_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, iter_slot, line);
+    emit_get_field_or_null_to_slot(&mut chunks[current], iter_slot, "moveNext", move_next_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    emit_call_ref_on_receiver(chunks, current, iter_slot, move_next_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    loops::emit_loop_cond(chunks, current, line);
+    emit_getter_or_field_to_slot(chunks, current, iter_slot, "current", current_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+fn emit_dart_drain_iterator_to_array_precurrent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let iter_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    let move_next_slot = reserve_slot(&mut chunks[current]);
+    let current_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, iter_slot, line);
+    emit_get_field_or_null_to_slot(&mut chunks[current], iter_slot, "moveNext", move_next_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let state = loops::emit_loop_start(chunks, current, line);
+    emit_getter_or_field_to_slot(chunks, current, iter_slot, "current", current_slot, line);
+    emit_call_ref_on_receiver(chunks, current, iter_slot, move_next_slot, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 fn emit_dart_materialize_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
     let slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
@@ -2786,8 +2961,94 @@ fn emit_dart_materialize_iterable(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     generators::emit_drain_into_array(chunks, current, line);
     chunks[current].emit_else(line);
+    let move_next_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(&mut chunks[current], slot, "moveNext", move_next_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, move_next_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_dart_drain_iterator_to_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    let iterator_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, slot, "iterator", iterator_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    let iterator_move_next_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        iterator_slot,
+        "moveNext",
+        iterator_move_next_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_move_next_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_slot, line);
+    emit_dart_drain_iterator_to_array(chunks, current, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_dart_materialize_iterable_precurrent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_is_generator(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    generators::emit_drain_into_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    let move_next_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(&mut chunks[current], slot, "moveNext", move_next_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, move_next_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_dart_drain_iterator_to_array_precurrent(chunks, current, line);
+    chunks[current].emit_else(line);
+    let iterator_slot = reserve_slot(&mut chunks[current]);
+    emit_getter_or_field_to_slot(chunks, current, slot, "iterator", iterator_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    let iterator_move_next_slot = reserve_slot(&mut chunks[current]);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        iterator_slot,
+        "moveNext",
+        iterator_move_next_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_move_next_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterator_slot, line);
+    emit_dart_drain_iterator_to_array_precurrent(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -2955,6 +3216,33 @@ pub fn emit_dart_iter_skip(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_dart_iter_expand(chunks: &mut [Chunk], current: usize, line: u32) {
     let (receiver_slot, fn_slot) = stash_iterable_and_arg(chunks, current, line);
     let arr_slot = materialize_slot(chunks, current, receiver_slot, line);
+    let result_slot = reserve_slot(&mut chunks[current]);
+    let idx_slot = reserve_slot(&mut chunks[current]);
+    let elem_slot = reserve_slot(&mut chunks[current]);
+    let inner_slot = reserve_slot(&mut chunks[current]);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    emit_dart_materialize_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, inner_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    collections::emit_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+pub fn emit_dart_iter_expand_precurrent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let (receiver_slot, fn_slot) = stash_iterable_and_arg(chunks, current, line);
+    let arr_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    emit_dart_materialize_iterable_precurrent(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     let result_slot = reserve_slot(&mut chunks[current]);
     let idx_slot = reserve_slot(&mut chunks[current]);
     let elem_slot = reserve_slot(&mut chunks[current]);

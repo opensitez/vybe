@@ -251,8 +251,14 @@ fn collect_instance_member_names_for_type(
 fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
     let mut add_return_types: HashMap<String, Option<String>> = HashMap::new();
     let mut operator_return_types: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut iterator_return_classes: HashMap<String, String> = HashMap::new();
+    let mut iterator_current_types: HashMap<String, String> = HashMap::new();
+    let mut class_parents: Vec<(String, Vec<String>)> = Vec::new();
     for stmt in body.iter() {
         if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            if let StmtKind::ClassDecl { parents, .. } = &stmt.kind {
+                class_parents.push((name.clone(), parents.clone()));
+            }
             for member in members {
                 if let ClassMember::Method(method) = member {
                     if let StmtKind::FunctionDecl {
@@ -295,6 +301,11 @@ fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
                     ..
                 } = member
                 {
+                    if property_name == "current" && !modifiers.is_static {
+                        if let Some(type_hint) = type_hint {
+                            iterator_current_types.insert(name.clone(), type_hint.clone());
+                        }
+                    }
                     if !modifiers.is_static {
                         if let Some(type_hint) = type_hint {
                             operator_return_types.insert(
@@ -309,8 +320,51 @@ fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
                             type_hint.clone(),
                         );
                     }
+                    if property_name == "iterator" && !modifiers.is_static {
+                        if let ClassMember::Property {
+                            getter: Some(getter),
+                            ..
+                        } = member
+                        {
+                            if let Some(iterator_class) = dart_returned_class_from_body(getter) {
+                                iterator_return_classes.insert(name.clone(), iterator_class);
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+    for (class_name, iterator_class) in &iterator_return_classes {
+        if let Some(current_type) = iterator_current_types.get(iterator_class) {
+            operator_return_types.insert(
+                (class_name.clone(), "__dart_iter_element".to_string()),
+                Some(current_type.clone()),
+            );
+        }
+    }
+    for _ in 0..class_parents.len() {
+        let mut changed = false;
+        for (class_name, parents) in &class_parents {
+            if operator_return_types
+                .contains_key(&(class_name.clone(), "__dart_iter_element".to_string()))
+            {
+                continue;
+            }
+            if let Some(parent_type) = parents.iter().find_map(|parent| {
+                operator_return_types
+                    .get(&(parent.clone(), "__dart_iter_element".to_string()))
+                    .and_then(|ty| ty.clone())
+            }) {
+                operator_return_types.insert(
+                    (class_name.clone(), "__dart_iter_element".to_string()),
+                    Some(parent_type),
+                );
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     for stmt in body.iter_mut() {
@@ -846,6 +900,70 @@ fn rewrite_user_add_calls_in_expr(
                     add_return_types,
                     operator_return_types,
                 );
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "toString" && args.is_empty() {
+                    if matches!(
+                        dart_user_add_expr_type(
+                            object,
+                            env,
+                            current_class,
+                            add_return_types,
+                            operator_return_types,
+                        )
+                        .as_deref(),
+                        Some("double")
+                    ) {
+                        expr.kind = ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_double_to_string")),
+                            args: vec![Argument::positional((**object).clone())],
+                            optional: false,
+                        };
+                        return;
+                    }
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if field == "map" {
+                    if let Some(type_name) = dart_user_add_expr_type(
+                        object,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    ) {
+                        if let Some(element_type) =
+                            dart_iter_element_type(&type_name, operator_return_types)
+                        {
+                            if let Some(arg) = args.get_mut(0) {
+                                rewrite_lambda_with_param_type(
+                                    &mut arg.value,
+                                    &element_type,
+                                    env,
+                                    current_class,
+                                    add_return_types,
+                                    operator_return_types,
+                                );
+                            }
+                        }
+                    }
+                }
+                if field == "expand" {
+                    if let Some(type_name) = dart_user_add_expr_type(
+                        object,
+                        env,
+                        current_class,
+                        add_return_types,
+                        operator_return_types,
+                    ) {
+                        if matches!(
+                            dart_iter_element_type(&type_name, operator_return_types).as_deref(),
+                            Some("List")
+                        ) {
+                            *field = "__dart_iter_expand_precurrent".to_string();
+                        }
+                    }
+                }
             }
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__dart_index_get")
                 && args.len() == 2
@@ -1426,6 +1544,79 @@ fn dart_user_add_expr_type(
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn dart_iter_element_type(
+    class_name: &str,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) -> Option<String> {
+    operator_return_types
+        .get(&(class_name.to_string(), "__dart_iter_element".to_string()))
+        .and_then(|ty| ty.clone())
+}
+
+fn dart_returned_class_from_body(body: &[Statement]) -> Option<String> {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => {
+                if let Some(name) = dart_constructor_expr_type(expr) {
+                    return Some(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn dart_constructor_expr_type(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Member { field, .. } => Some(field.clone()),
+            _ => None,
+        },
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Member { field, .. } => Some(field.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn rewrite_lambda_with_param_type(
+    expr: &mut Expression,
+    param_type: &str,
+    env: &HashMap<String, String>,
+    current_class: Option<&str>,
+    add_return_types: &HashMap<String, Option<String>>,
+    operator_return_types: &HashMap<(String, String), Option<String>>,
+) {
+    let ExprKind::Lambda { params, body, .. } = &mut expr.kind else {
+        return;
+    };
+    let Some(param) = params.first() else {
+        return;
+    };
+    let mut lambda_env = env.clone();
+    lambda_env.insert(param.name.clone(), param_type.to_string());
+    match body {
+        LambdaBody::Expr(value) => rewrite_user_add_calls_in_expr(
+            value,
+            &lambda_env,
+            current_class,
+            add_return_types,
+            operator_return_types,
+        ),
+        LambdaBody::Block(stmts) => rewrite_user_add_calls_in_stmts(
+            stmts,
+            &mut lambda_env,
+            current_class,
+            add_return_types,
+            operator_return_types,
+        ),
     }
 }
 
@@ -2022,9 +2213,17 @@ fn lower_for_in_header_parts(
         body = prefix;
     }
 
+    let iter = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__dart_for_in_iterable")),
+        args: vec![Argument::positional(
+            iter_expr.ok_or("for-in: missing iterable")?,
+        )],
+        optional: false,
+    });
+
     Ok((
         var_name,
-        iter_expr.ok_or("for-in: missing iterable")?,
+        iter,
         body,
     ))
 }
@@ -2373,6 +2572,11 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
             Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
             Rule::ident_name => *name = p.as_str().to_string(),
             Rule::this_param | Rule::super_param | Rule::typed_or_untyped_param => {
+                if p.as_rule() == Rule::this_param {
+                    *is_this = true;
+                } else if p.as_rule() == Rule::super_param {
+                    *is_super = true;
+                }
                 // Unwrap the wrapper rule and recurse into its children.
                 for inner in p.into_inner() {
                     handle(inner, name, type_hint, default, is_this, is_super)?;
@@ -2441,6 +2645,11 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool, bool), String>
             Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
             Rule::ident_name => *name = p.as_str().to_string(),
             Rule::this_param | Rule::super_param | Rule::typed_or_untyped_param => {
+                if p.as_rule() == Rule::this_param {
+                    *is_this = true;
+                } else if p.as_rule() == Rule::super_param {
+                    *is_super = true;
+                }
                 for inner in p.into_inner() {
                     handle(inner, name, type_hint, default, is_this, is_super)?;
                 }
@@ -2597,8 +2806,6 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
-    rewrite_instance_member_idents(&mut members, &[]);
-
     rewrite_instance_member_idents(&mut members, &[]);
 
     Ok(StmtKind::ClassDecl {

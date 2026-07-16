@@ -262,6 +262,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.iter_to_list" => {
             crate::emitter::string_adapter::emit_dart_iter_to_list(chunks, current, line)
         }
+        "dart.for_in_iterable" => {
+            crate::emitter::string_adapter::emit_dart_for_in_iterable(chunks, current, line)
+        }
         "dart.iter_join" => {
             crate::emitter::string_adapter::emit_dart_iter_join(chunks, current, argc, line)
         }
@@ -366,6 +369,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.iter_expand" => {
             crate::emitter::string_adapter::emit_dart_iter_expand(chunks, current, line)
+        }
+        "dart.iter_expand_precurrent" => {
+            crate::emitter::string_adapter::emit_dart_iter_expand_precurrent(chunks, current, line)
         }
         "dart.iter_followed_by" => {
             crate::emitter::string_adapter::emit_dart_iter_followed_by(chunks, current, line)

@@ -99,6 +99,7 @@ __dart_stack_trace  = { emit = "common:dart.stack_trace",        min_args = 1, m
 __dart_index_get    = { emit = "common:dart.index_get",          min_args = 2, max_args = 2 }
 __dart_index_set    = { emit = "common:dart.index_set",          min_args = 3, max_args = 3 }
 __dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
+__dart_for_in_iterable = { emit = "common:dart.for_in_iterable", min_args = 1, max_args = 1 }
 __dart_eq           = { emit = "common:dart.eq",                 min_args = 2, max_args = 2 }
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
@@ -300,12 +301,13 @@ sort          = { emit = "common:dart.list_sort",      min_args = 0, max_args = 
 join          = { emit = "common:dart.iter_join",      min_args = 0, max_args = 1 }
 reversed      = { emit = "common:dart.list_reversed",  min_args = 0, max_args = 0 }
 toList        = { emit = "common:dart.iter_to_list",   min_args = 0, max_args = 0 }
-toSet         = { emit = "host:ecma:set:fromIterable",  min_args = 0, max_args = 0 }
+toSet         = { emit = "common:dart.set_from",       min_args = 0, max_args = 0 }
 elementAt     = { emit = "common:dart.iter_element_at", min_args = 1, max_args = 1 }
 map           = { emit = "common:dart.map_general",    min_args = 1, max_args = 1 }
 asyncMap      = { emit = "common:dart.iter_async_map", min_args = 1, max_args = 1 }
 where         = { emit = "common:dart.iter_where",     min_args = 1, max_args = 1 }
 expand        = { emit = "common:dart.iter_expand",    min_args = 1, max_args = 1 }
+__dart_iter_expand_precurrent = { emit = "common:dart.iter_expand_precurrent", min_args = 1, max_args = 1 }
 followedBy    = { emit = "common:dart.iter_followed_by", min_args = 1, max_args = 1 }
 take          = { emit = "common:dart.iter_take",      min_args = 1, max_args = 1 }
 skip          = { emit = "common:dart.iter_skip",      min_args = 1, max_args = 1 }
