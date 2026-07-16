@@ -9,6 +9,7 @@ use pest::iterators::Pair;
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.replace("2>/dev/null", "");
+    let source = normalize_percent_array_literals(&source);
     let pairs =
         RubyParser::parse(Rule::program, source.as_str()).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -40,6 +41,122 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+fn normalize_percent_array_literals(source: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 2 < chars.len() && matches!(chars[i + 1], 'w' | 'W' | 'i' | 'I') {
+            let kind = chars[i + 1];
+            let open = chars[i + 2];
+            let close = match open {
+                '(' => ')',
+                '[' => ']',
+                '{' => '}',
+                '<' => '>',
+                '/' => '/',
+                '|' => '|',
+                '!' => '!',
+                _ => {
+                    out.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+            };
+            let mut j = i + 3;
+            let mut body = String::new();
+            let mut escaped = false;
+            while j < chars.len() {
+                let ch = chars[j];
+                if escaped {
+                    body.push('\\');
+                    body.push(ch);
+                    escaped = false;
+                    j += 1;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    j += 1;
+                    continue;
+                }
+                if ch == close {
+                    break;
+                }
+                body.push(ch);
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == close {
+                let interpolate = matches!(kind, 'W' | 'I');
+                let symbolish = matches!(kind, 'i' | 'I');
+                let words = ruby_percent_words(&body, interpolate);
+                out.push('[');
+                for (idx, word) in words.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    if interpolate && word.starts_with("#{") && word.ends_with('}') {
+                        out.push_str(&word[2..word.len() - 1]);
+                    } else if symbolish && is_simple_ruby_symbol_word(word) {
+                        out.push(':');
+                        out.push_str(word);
+                    } else if !interpolate && word.starts_with("#{") && word.ends_with('}') {
+                        out.push_str(&ruby_single_quoted(&format!("\\{}", word)));
+                    } else if !interpolate {
+                        out.push_str(&ruby_single_quoted(word));
+                    } else {
+                        out.push_str(&ruby_double_quoted(word));
+                    }
+                }
+                out.push(']');
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn ruby_double_quoted(s: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn ruby_single_quoted(s: &str) -> String {
+    let mut out = String::from("'");
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn is_simple_ruby_symbol_word(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn walk_stmt_into(
@@ -1111,6 +1228,12 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
+    if let Some(target_name) = ruby_mutating_shl_target(&expr) {
+        return Some(StmtKind::Assign {
+            targets: vec![Expression::ident(&target_name)],
+            value: expr,
+        });
+    }
     let ExprKind::Call {
         callee,
         args,
@@ -1137,8 +1260,20 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
         "strip!" => "strip",
         "chomp!" => "chomp",
         "chop!" => "chop",
+        "reverse!" => "reverse",
+        "succ!" => "succ",
+        "next!" => "next",
+        "squeeze!" => "squeeze",
+        "tr!" => "tr",
+        "tr_s!" => "tr_s",
+        "delete!" => "delete",
         "gsub!" => "gsub",
         "sub!" => "sub",
+        "insert" => "insert",
+        "clear" => "clear",
+        "replace" => "replace",
+        "concat" => "concat",
+        "prepend" => "prepend",
         _ => return None,
     };
     let ExprKind::Ident(name) = &object.kind else {
@@ -1158,6 +1293,23 @@ fn normalize_bang_method_stmt(expr: Expression) -> Option<StmtKind> {
         targets: vec![target],
         value,
     })
+}
+
+fn ruby_mutating_shl_target(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Ident(name) = &callee.kind else {
+                return None;
+            };
+            if name != "__ruby_op_shl" {
+                return None;
+            }
+            args.first()
+                .and_then(|arg| ruby_mutating_shl_target(&arg.value))
+        }
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }
 }
 
 fn walk_raw_command_builtin(raw: &str) -> Result<Option<StmtKind>, String> {
@@ -1580,10 +1732,34 @@ fn walk_binary_chain(
         if is_expression_rule(item.as_rule()) {
             let right = walk_expression(item)?;
             let op = op_fn("");
-            left = maybe_ruby_array_binary(left, op, right);
+            left = match op {
+                BinOp::And => Expression::new(ExprKind::Ternary {
+                    cond: Box::new(left),
+                    then: Box::new(ruby_boolify_expr(right)),
+                    else_: Box::new(ruby_bool_expr(false)),
+                }),
+                BinOp::Or => Expression::new(ExprKind::Ternary {
+                    cond: Box::new(left),
+                    then: Box::new(ruby_bool_expr(true)),
+                    else_: Box::new(ruby_boolify_expr(right)),
+                }),
+                _ => maybe_ruby_array_binary(left, op, right),
+            };
         }
     }
     Ok(left.kind)
+}
+
+fn ruby_bool_expr(value: bool) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Bool(value)))
+}
+
+fn ruby_boolify_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(expr),
+        then: Box::new(ruby_bool_expr(true)),
+        else_: Box::new(ruby_bool_expr(false)),
+    })
 }
 
 /// Ruby `*` is dynamic (string repeat OR numeric mul), same as Python.
@@ -1666,6 +1842,7 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
         BinOp::Add => Some("__ruby_op_add"),
         BinOp::Sub => Some("__ruby_op_sub"),
         BinOp::Mul => Some("__ruby_op_mul"),
+        BinOp::Shl => Some("__ruby_op_shl"),
         BinOp::BitAnd => Some("__ruby_op_and"),
         BinOp::BitOr => Some("__ruby_op_or"),
         _ => None,
@@ -1948,6 +2125,16 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 && matches!(final_args[0].value.kind, ExprKind::Lambda { .. })
             {
                 method_name = "__ruby_rindex_block".to_string();
+            } else if matches!(method_name.as_str(), "bsearch" | "bsearch_index")
+                && final_args.len() == 1
+                && matches!(final_args[0].value.kind, ExprKind::Lambda { .. })
+            {
+                let suffix = if lambda_contains_spaceship(&final_args[0].value) {
+                    "cmp"
+                } else {
+                    "bool"
+                };
+                method_name = format!("__ruby_{}_{}", method_name, suffix);
             } else if matches!(method_name.as_str(), "find" | "detect")
                 && final_args.len() == 2
                 && matches!(final_args[1].value.kind, ExprKind::Lambda { .. })
@@ -2179,11 +2366,14 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         spread: true,
                     });
                 }
-            } else if first_text == "&" {
+            } else if first_text == "&" || raw_arg.trim_start().starts_with('&') {
                 // Block arg
-                if children.len() > 1 {
+                if raw_arg.trim_start().starts_with('&') {
+                    let val = walk_expression(children.into_iter().next().unwrap())?;
+                    args.push(Argument::positional(ruby_block_arg_to_lambda(val)));
+                } else if children.len() > 1 {
                     let val = walk_expression(children.into_iter().nth(1).unwrap())?;
-                    args.push(Argument::positional(val));
+                    args.push(Argument::positional(ruby_block_arg_to_lambda(val)));
                 }
             } else if children.len() >= 2 && children[0].as_rule() == Rule::identifier {
                 // Check if keyword arg: identifier ":" expression
@@ -2213,6 +2403,37 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
         ))));
     }
     Ok(args)
+}
+
+fn ruby_block_arg_to_lambda(expr: Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Str(method)) = &expr.kind {
+        let param = Param {
+            name: "__ruby_proc_arg".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__ruby_proc_arg")),
+                field: method.clone(),
+                null_safe: false,
+            })),
+            args: Vec::new(),
+            optional: false,
+        });
+        return Expression::new(ExprKind::Lambda {
+            params: vec![param],
+            body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(call)))]),
+            is_async: false,
+            captures: Vec::new(),
+        });
+    }
+    expr
 }
 
 // ── Block literal ───────────────────────────────────────────────────────────
@@ -2278,6 +2499,81 @@ fn apply_implicit_return(body: &mut Vec<Statement>) {
                 apply_implicit_return(body);
             }
         }
+    }
+}
+
+fn lambda_contains_spaceship(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(e) => expr_contains_spaceship(e),
+            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
+        },
+        _ => false,
+    }
+}
+
+fn stmt_contains_spaceship(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) => expr_contains_spaceship(e),
+        StmtKind::Return(Some(e)) => expr_contains_spaceship(e),
+        StmtKind::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_contains_spaceship(cond)
+                || then_body.iter().any(stmt_contains_spaceship)
+                || elifs.iter().any(|(cond, body)| {
+                    expr_contains_spaceship(cond) || body.iter().any(stmt_contains_spaceship)
+                })
+                || else_body
+                    .as_ref()
+                    .map(|body| body.iter().any(stmt_contains_spaceship))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_spaceship(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            *op == BinOp::Spaceship || expr_contains_spaceship(left) || expr_contains_spaceship(right)
+        }
+        ExprKind::Unary { expr, .. } => expr_contains_spaceship(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_contains_spaceship(cond) || expr_contains_spaceship(then) || expr_contains_spaceship(else_)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            expr_contains_spaceship(callee) || args.iter().any(|arg| expr_contains_spaceship(&arg.value))
+        }
+        ExprKind::Member { object, .. } => expr_contains_spaceship(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_contains_spaceship(object) || expr_contains_spaceship(index)
+        }
+        ExprKind::Assign { target, value } => {
+            expr_contains_spaceship(target) || expr_contains_spaceship(value)
+        }
+        ExprKind::Array(elements) => elements.iter().any(|element| {
+            element
+                .key
+                .as_ref()
+                .map(expr_contains_spaceship)
+                .unwrap_or(false)
+                || expr_contains_spaceship(&element.value)
+        }),
+        ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
+            InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => expr_contains_spaceship(e),
+            InterpolPart::Text(_) => false,
+        }),
+        ExprKind::Range { start, end, .. } => expr_contains_spaceship(start) || expr_contains_spaceship(end),
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(e) => expr_contains_spaceship(e),
+            LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
+        },
+        _ => false,
     }
 }
 
@@ -3065,36 +3361,40 @@ fn parse_heredoc(s: &str) -> String {
 
 fn walk_percent_literal(s: &str) -> ExprKind {
     // %w[a b c] → array of strings
+    // %W[a #{x} c] → array of interpolated strings
     // %i[a b c] → array of symbols (strings)
+    // %I[a #{x} c] → array of interpolated symbols (strings)
     // %q[...] → single-quoted string
     // %Q[...] or %[...] → double-quoted string
-    let (kind, rest) = if s.starts_with("%w") || s.starts_with("%i") {
-        ("array", &s[2..])
+    let (kind, interpolate, rest) = if s.starts_with("%w") || s.starts_with("%i") {
+        ("array", false, &s[2..])
+    } else if s.starts_with("%W") || s.starts_with("%I") {
+        ("array", true, &s[2..])
     } else if s.starts_with("%q") || s.starts_with("%Q") {
-        ("string", &s[2..])
+        ("string", s.starts_with("%Q"), &s[2..])
     } else {
-        ("string", &s[1..])
+        ("string", true, &s[1..])
     };
 
     // Strip delimiters
-    let body = if rest.starts_with('[') {
-        &rest[1..rest.len() - 1]
-    } else if rest.starts_with('(') {
-        &rest[1..rest.len() - 1]
-    } else if rest.starts_with('{') {
-        &rest[1..rest.len() - 1]
-    } else if rest.starts_with('<') {
+    let body = if rest.len() >= 2 {
         &rest[1..rest.len() - 1]
     } else {
         rest
     };
 
     if kind == "array" {
-        let words: Vec<ArrayElement> = body
-            .split_whitespace()
+        let words: Vec<ArrayElement> = ruby_percent_words(body, interpolate)
+            .into_iter()
             .map(|w| ArrayElement {
                 key: None,
-                value: Expression::new(ExprKind::Lit(Literal::Str(w.to_string()))),
+                value: if interpolate && w.starts_with("#{") && w.ends_with('}') {
+                    Expression::ident(&w[2..w.len() - 1])
+                } else if !interpolate && w.starts_with("#{") && w.ends_with('}') {
+                    Expression::new(ExprKind::Lit(Literal::Str(format!("\\{}", w))))
+                } else {
+                    Expression::new(ExprKind::Lit(Literal::Str(w)))
+                },
                 spread: false,
                 by_ref: false,
             })
@@ -3103,4 +3403,32 @@ fn walk_percent_literal(s: &str) -> ExprKind {
     } else {
         ExprKind::Lit(Literal::Str(body.to_string()))
     }
+}
+
+fn ruby_percent_words(body: &str, interpolate: bool) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_whitespace() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        if ch == '\\' {
+            match chars.next() {
+                Some(' ') => cur.push(' '),
+                Some('n') if interpolate => cur.push('\n'),
+                Some(other) => cur.push(other),
+                None => cur.push('\\'),
+            }
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
 }

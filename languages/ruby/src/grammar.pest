@@ -433,7 +433,9 @@ heredoc = @{
 // ── Percent literals ───────────────────────────────────────────────────────
 percent_literal = @{
     "%w" ~ percent_delim_body
+    | "%W" ~ percent_delim_body
     | "%i" ~ percent_delim_body
+    | "%I" ~ percent_delim_body
     | "%q" ~ percent_delim_body
     | "%Q" ~ percent_delim_body
     | "%" ~ percent_delim_body
@@ -444,6 +446,9 @@ percent_delim_body = _{
     | "(" ~ (!")" ~ ANY)* ~ ")"
     | "{" ~ (!"}" ~ ANY)* ~ "}"
     | "<" ~ (!">" ~ ANY)* ~ ">"
+    | "/" ~ (!"/" ~ ANY)* ~ "/"
+    | "|" ~ (!"|" ~ ANY)* ~ "|"
+    | "!" ~ (!"!" ~ ANY)* ~ "!"
 }
 
 // ── Regex ──────────────────────────────────────────────────────────────────
