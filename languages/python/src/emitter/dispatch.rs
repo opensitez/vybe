@@ -8,6 +8,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.extend" => {
             crate::emitter::collections_adapter::emit_extend(chunks, current, line)
         }
+        "python.deque_extendleft" => {
+            crate::emitter::collections_adapter::emit_extendleft(chunks, current, line)
+        }
+        "python.deque_rotate" => {
+            crate::emitter::collections_adapter::emit_rotate(chunks, current, argc, line)
+        }
+        "python.move_to_end" => {
+            crate::emitter::collections_adapter::emit_move_to_end(chunks, current, argc, line)
+        }
+        "python.popitem" => {
+            crate::emitter::collections_adapter::emit_popitem(chunks, current, argc, line)
+        }
+        "python.counter_new" => {
+            crate::emitter::collections_adapter::emit_counter_new(chunks, current, argc, line)
+        }
         "python.get" => {
             crate::emitter::collections_adapter::emit_get(chunks, current, argc, line)
         }

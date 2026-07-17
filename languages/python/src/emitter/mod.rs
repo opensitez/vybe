@@ -7,6 +7,7 @@
 pub mod array_adapter;
 pub mod bisect_adapter;
 pub mod collections_adapter;
+pub mod tree_register;
 pub mod datetime_adapter;
 pub mod dispatch;
 pub mod float_adapter;
