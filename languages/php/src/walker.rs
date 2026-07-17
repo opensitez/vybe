@@ -19559,7 +19559,8 @@ fn php_flatten_labels(stmts: Vec<Statement>) -> Vec<Statement> {
 
 /// Lower `goto`/labels in a PHP statement block via the shared C-goto state
 /// machine, iff the block declares a label (labels only appear as goto targets
-/// in PHP). The PC variable is `$`-prefixed so it is a real PHP variable.
+/// in PHP). The PC is compiler-internal state, not a user PHP variable; keeping
+/// it unprefixed avoids PHP's global-variable fallback for synthetic reads.
 fn php_lower_gotos(stmts: Vec<Statement>) -> Vec<Statement> {
     let has_label = stmts
         .iter()
@@ -19567,7 +19568,7 @@ fn php_lower_gotos(stmts: Vec<Statement>) -> Vec<Statement> {
     if !has_label {
         return stmts;
     }
-    vybe_language_c::walker::lower_gotos(php_flatten_labels(stmts), "$__goto_pc", "__goto_dispatch")
+    vybe_language_c::walker::lower_gotos(php_flatten_labels(stmts), "__goto_pc", "__goto_dispatch")
 }
 
 /// Apply `php_lower_gotos` to a function declaration's body (free functions);
