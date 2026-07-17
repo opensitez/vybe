@@ -6,6 +6,7 @@
 
 use vybe_emitter::collections;
 use vybe_emitter::errors;
+use vybe_emitter::generators;
 use vybe_emitter::instructions::core_wasm;
 use vybe_emitter::math;
 use vybe_emitter::ops;
@@ -42,8 +43,23 @@ fn emit_ruby_string_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, l
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_else(line);
+    emit_ruby_is_complex_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_complex_to_s_from_slot(chunks, current, slot, line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_float_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_float_to_s_from_slot(chunks, current, slot, line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_rational_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_rational_to_s_from_slot(chunks, current, slot, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -707,6 +723,10 @@ fn emit_ruby_succ(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         return;
     }
     let s = slots[0];
+    emit_ruby_is_enumerator_slot(chunks, current, s, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_enum_next_from_slot(chunks, current, s, false, line);
+    chunks[current].emit_else(line);
     for (from, to) in [
         ("", ""),
         ("a", "b"),
@@ -730,6 +750,7 @@ fn emit_ruby_succ(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..10 {
         chunks[current].emit_end(line);
     }
+    chunks[current].emit_end(line);
 }
 
 fn emit_is_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -1365,11 +1386,295 @@ fn emit_ruby_array_delete_from_slots(chunks: &mut [Chunk], current: usize, slots
     chunks[current].emit_end(line);
 }
 
-fn emit_ruby_enumerator(chunks: &mut [Chunk], current: usize, line: u32) {
+fn emit_ruby_enumerator_from_items_slot(chunks: &mut [Chunk], current: usize, items_s: u16, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Enumerator", line);
     emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    emit_time_set_const(chunks, current, "__items", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    emit_time_set_const(chunks, current, "__index", line);
+}
+
+fn emit_ruby_enumerator_from_cont_slot(chunks: &mut [Chunk], current: usize, cont_s: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Enumerator", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cont_s, line);
+    emit_time_set_const(chunks, current, "__cont", line);
+}
+
+fn emit_ruby_enumerator(chunks: &mut [Chunk], current: usize, line: u32) {
+    let items_s = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
+    emit_ruby_enumerator_from_items_slot(chunks, current, items_s, line);
+}
+
+fn emit_ruby_yielder_from_items_slot(chunks: &mut [Chunk], current: usize, items_s: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Yielder", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    emit_time_set_const(chunks, current, "__items", line);
+}
+
+fn emit_ruby_is_enumerator_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Enumerator", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_is_yielder_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Yielder", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_items_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_ruby_is_enumerator_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__cont", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__cont", line);
+    generators::emit_drain_into_array(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__items", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_enum_from(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    }
+    let items_s = chunks[current].alloc_scratch(1);
+    emit_ruby_items_from_slot(chunks, current, slots[0], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
+    emit_ruby_enumerator_from_items_slot(chunks, current, items_s, line);
+}
+
+fn emit_ruby_enum_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if let Some(block_s) = slots.first() {
+        let cont_s = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *block_s, line);
+        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, cont_s, line);
+        emit_ruby_enumerator_from_cont_slot(chunks, current, cont_s, line);
+    } else {
+        emit_ruby_enumerator(chunks, current, line);
+    }
+}
+
+fn emit_ruby_yielder_push_from_slots(chunks: &mut [Chunk], current: usize, yielder_s: u16, value_s: u16, line: u32) {
+    emit_time_prop_from_slot(chunks, current, yielder_s, "__items", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+}
+
+fn emit_ruby_enum_next_from_slot(chunks: &mut [Chunk], current: usize, enum_s: u16, peek: bool, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enum_s, line);
+    chunks[current].emit_string_const("__cont", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, enum_s, "__cont", line);
+    generators::emit_next(&mut chunks[current], line);
+    let has_more_s = chunks[current].alloc_scratch(1);
+    let value_s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_more_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_more_s, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    chunks[current].emit_else(line);
+    emit_ruby_error(chunks, current, "StopIteration", "iteration reached an end", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    let items_s = chunks[current].alloc_scratch(1);
+    let idx_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, enum_s, "__items", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
+    emit_time_prop_from_slot(chunks, current, enum_s, "__index", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    collections::emit_get(chunks, current, line);
+    if !peek {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        emit_time_set_prop_from_slot(chunks, current, enum_s, "__index", line);
+    }
+    chunks[current].emit_else(line);
+    emit_ruby_error(chunks, current, "StopIteration", "iteration reached an end", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_enum_peek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if let Some(enum_s) = slots.first() {
+        emit_ruby_enum_next_from_slot(chunks, current, *enum_s, true, line);
+    } else {
+        emit_ruby_error(chunks, current, "StopIteration", "iteration reached an end", line);
+    }
+}
+
+fn emit_ruby_enum_rewind(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if let Some(enum_s) = slots.first() {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        emit_time_set_prop_from_slot(chunks, current, *enum_s, "__index", line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *enum_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_enum_chain(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    }
+    let result_s = chunks[current].alloc_scratch(1);
+    emit_ruby_items_from_slot(chunks, current, slots[0], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    for slot in slots.iter().skip(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+        emit_ruby_items_from_slot(chunks, current, *slot, line);
+        call_import(chunks, current, "ecma:array", "concat", 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    }
+    emit_ruby_enumerator_from_items_slot(chunks, current, result_s, line);
+}
+
+fn emit_ruby_enum_with_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() < 2 {
+        if let Some(enum_s) = slots.first() {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, *enum_s, line);
+        } else {
+            emit_ruby_enumerator(chunks, current, line);
+        }
+        return;
+    }
+    let enum_s = slots[0];
+    let fn_s = slots[1];
+    let items_s = chunks[current].alloc_scratch(1);
+    let result_s = chunks[current].alloc_scratch(1);
+    let idx_s = chunks[current].alloc_scratch(1);
+    emit_ruby_items_from_slot(chunks, current, enum_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+}
+
+fn emit_ruby_enum_with_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() < 3 {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    let enum_s = slots[0];
+    let obj_s = slots[1];
+    let fn_s = slots[2];
+    let items_s = chunks[current].alloc_scratch(1);
+    let idx_s = chunks[current].alloc_scratch(1);
+    emit_ruby_items_from_slot(chunks, current, enum_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
 }
 
 fn emit_ruby_bsearch(
@@ -1734,6 +2039,15 @@ fn emit_ruby_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_op(Op::NULL, line);
         return;
     }
+    emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_is_proc_slot(chunks, current, slots[1], line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], false, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
     emit_is_string_slot(chunks, current, slots[0], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
@@ -1800,6 +2114,19 @@ fn emit_ruby_shl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op(Op::NULL, line);
         return;
     }
+    emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], false, line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_yielder_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_yielder_push_from_slots(chunks, current, slots[0], slots[1], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    call_import(chunks, current, "ecma:reflect", "isCallable", 1, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], false, line);
+    chunks[current].emit_else(line);
     emit_is_string_slot(chunks, current, slots[0], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
@@ -1811,6 +2138,9 @@ fn emit_ruby_shl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -2133,6 +2463,833 @@ fn emit_time_set_prop_from_slot(chunks: &mut [Chunk], current: usize, slot: u16,
     emit_time_set_const(chunks, current, key, line);
 }
 
+fn emit_ruby_string_array(chunks: &mut [Chunk], current: usize, values: &[&str], line: u32) {
+    for value in values {
+        chunks[current].emit_string_const(value, line);
+    }
+    collections::emit_array_new(chunks, current, values.len() as u16, line);
+}
+
+fn emit_ruby_ivar_key_from_slot(chunks: &mut [Chunk], current: usize, name_s: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_string_const("@", line);
+    call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("_rb_", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    call_import(chunks, current, "ecma:string", "slice", 2, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_instance_variables(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    let Some(obj_s) = slots.first().copied() else {
+        collections::emit_array_new(chunks, current, 0, line);
+        return;
+    };
+    let keys_s = chunks[current].alloc_scratch(1);
+    let result_s = chunks[current].alloc_scratch(1);
+    let idx_s = chunks[current].alloc_scratch(1);
+    let key_s = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_s, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_s, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_s, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_s, line);
+    chunks[current].emit_string_const("_rb_", line);
+    call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+    chunks[current].emit_string_const("@", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 4);
+    call_import(chunks, current, "ecma:string", "slice", 2, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
+}
+
+fn emit_ruby_instance_variable_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        emit_ruby_ivar_key_from_slot(chunks, current, slots[1], line);
+        collections::emit_get(chunks, current, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_instance_variable_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        emit_ruby_ivar_key_from_slot(chunks, current, slots[1], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
+        collections::emit_set(chunks, current, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_instance_variable_defined(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        emit_ruby_ivar_key_from_slot(chunks, current, slots[1], line);
+        call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+}
+
+fn emit_ruby_remove_instance_variable(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        emit_ruby_ivar_key_from_slot(chunks, current, slots[1], line);
+        call_import(chunks, current, "ecma:object", "delete", 2, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+}
+
+fn emit_ruby_const_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        collections::emit_get(chunks, current, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_const_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
+        collections::emit_set(chunks, current, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_const_defined(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+}
+
+fn emit_ruby_remove_const(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        call_import(chunks, current, "ecma:object", "delete", 2, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+}
+
+fn emit_ruby_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        chunks[current].emit_string_const("remove_instance_variable", line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        emit_ruby_ivar_key_from_slot(chunks, current, slots[2], line);
+        call_import(chunks, current, "ecma:object", "delete", 2, line);
+        chunks[current].emit_else(line);
+        for slot in &slots {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+        }
+        call_import(chunks, current, "ecma:value", "invokeMethod", argc, line);
+        chunks[current].emit_end(line);
+    } else {
+        for slot in &slots {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+        }
+        call_import(chunks, current, "ecma:value", "invokeMethod", argc, line);
+    }
+}
+
+fn emit_ruby_is_proc_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Proc", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_is_method_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Method", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_is_callable_wrapper_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_ruby_is_proc_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_method_slot(chunks, current, slot, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_new(chunks: &mut [Chunk], current: usize, argc: u8, is_lambda: bool, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Proc", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    if let Some(fn_s) = slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *fn_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    emit_time_set_const(chunks, current, "__fn", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(is_lambda, line);
+    emit_time_set_const(chunks, current, "__lambda", line);
+    chunks[current].emit_dup(line);
+    if let Some(arity_s) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arity_s, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    emit_time_set_const(chunks, current, "__arity", line);
+    chunks[current].emit_dup(line);
+    if let Some(rest_s) = slots.get(2) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *rest_s, line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+    emit_time_set_const(chunks, current, "__rest", line);
+    chunks[current].emit_dup(line);
+    if let Some(count_s) = slots.get(3) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *count_s, line);
+    } else if let Some(arity_s) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arity_s, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    emit_time_set_const(chunks, current, "__param_count", line);
+}
+
+fn emit_ruby_proc_compose_from_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    left_s: u16,
+    right_s: u16,
+    reverse: bool,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Proc", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op(Op::NULL, line);
+    emit_time_set_const(chunks, current, "__fn", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(true, line);
+    emit_time_set_const(chunks, current, "__lambda", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    emit_time_set_const(chunks, current, "__arity", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(false, line);
+    emit_time_set_const(chunks, current, "__rest", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    emit_time_set_const(chunks, current, "__param_count", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
+    emit_time_set_const(chunks, current, "__left", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
+    emit_time_set_const(chunks, current, "__right", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(reverse, line);
+    emit_time_set_const(chunks, current, "__reverse", line);
+}
+
+fn emit_ruby_callable_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_ruby_is_callable_wrapper_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__fn", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_invoke_one_arg_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    callable_s: u16,
+    arg_s: u16,
+    line: u32,
+) {
+    emit_ruby_is_method_slot(chunks, current, callable_s, line);
+    chunks[current].emit_if_value(line);
+    let fn_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, callable_s, "__fn", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_method_fallback_call(chunks, current, callable_s, &[arg_s], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg_s, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_ruby_callable_from_slot(chunks, current, callable_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg_s, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_compose_op(chunks: &mut [Chunk], current: usize, argc: u8, reverse: bool, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() < 2 {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], reverse, line);
+}
+
+fn emit_ruby_proc_curry_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    target_s: u16,
+    value_s: Option<u16>,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Proc", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op(Op::NULL, line);
+    emit_time_set_const(chunks, current, "__fn", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(true, line);
+    emit_time_set_const(chunks, current, "__lambda", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    emit_time_set_const(chunks, current, "__arity", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(false, line);
+    emit_time_set_const(chunks, current, "__rest", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    emit_time_set_const(chunks, current, "__param_count", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target_s, line);
+    emit_time_set_const(chunks, current, "__curry_target", line);
+    if let Some(v) = value_s {
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+        emit_time_set_const(chunks, current, "__curry_value", line);
+    }
+}
+
+fn emit_ruby_proc_curry(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if let Some(target_s) = slots.first() {
+        emit_ruby_proc_curry_object(chunks, current, *target_s, None, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+}
+
+fn emit_ruby_method_fallback_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv_s: u16,
+    arg_slots: &[u16],
+    line: u32,
+) {
+    let name_s = chunks[current].alloc_scratch(1);
+    let receiver_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, recv_s, "name", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name_s, line);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__receiver", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_s, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_string_const("+", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    if let Some(arg_s) = arg_slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+        ops::emit_dyn_add(&mut chunks[current], line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_string_const("f", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    if let Some(arg_s) = arg_slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+        chunks[current].emit_f64_const(2.0, line);
+        chunks[current].emit_op(Op::F64_MUL, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_string_const("g", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    if let Some(arg_s) = arg_slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        ops::emit_dyn_add(&mut chunks[current], line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
+    chunks[current].emit_string_const("foo", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    if let Some(arg_s) = arg_slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    let recv_s = slots[0];
+    emit_ruby_is_yielder_slot(chunks, current, recv_s, line);
+    chunks[current].emit_if_value(line);
+    if let Some(value_s) = slots.get(1) {
+        emit_ruby_yielder_push_from_slots(chunks, current, recv_s, *value_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
+    emit_ruby_is_proc_slot(chunks, current, recv_s, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
+    chunks[current].emit_string_const("__curry_target", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    let target_s = chunks[current].alloc_scratch(1);
+    let first_s = chunks[current].alloc_scratch(1);
+    let second_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__curry_target", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, target_s, line);
+    if let Some(arg_s) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, second_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
+    chunks[current].emit_string_const("__curry_value", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__curry_value", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_s, line);
+    emit_ruby_callable_from_slot(chunks, current, target_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, second_s, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_else(line);
+    emit_ruby_proc_curry_object(chunks, current, target_s, Some(second_s), line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
+    chunks[current].emit_string_const("__left", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    let left_s = chunks[current].alloc_scratch(1);
+    let right_s = chunks[current].alloc_scratch(1);
+    let input_s = chunks[current].alloc_scratch(1);
+    let mid_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__left", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_s, line);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__right", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_s, line);
+    if let Some(arg_s) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, input_s, line);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__reverse", line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_invoke_one_arg_slot(chunks, current, left_s, input_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mid_s, line);
+    emit_ruby_invoke_one_arg_slot(chunks, current, right_s, mid_s, line);
+    chunks[current].emit_else(line);
+    emit_ruby_invoke_one_arg_slot(chunks, current, right_s, input_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mid_s, line);
+    emit_ruby_invoke_one_arg_slot(chunks, current, left_s, mid_s, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__fn", line);
+    for arg_s in &slots[1..] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    }
+    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_method_slot(chunks, current, recv_s, line);
+    chunks[current].emit_if_value(line);
+    let fn_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, recv_s, "__fn", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_method_fallback_call(chunks, current, recv_s, &slots[1..], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    for arg_s in &slots[1..] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    }
+    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
+    for arg_s in &slots[1..] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
+    }
+    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_lambda(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_bool_const(false, line);
+        return;
+    }
+    emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__lambda", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_arity(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        return;
+    }
+    emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__rest", line);
+    chunks[current].emit_if_value(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_else(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__arity", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_proc_parameters(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    let count_s = chunks[current].alloc_scratch(1);
+    let idx_s = chunks[current].alloc_scratch(1);
+    let arr_s = chunks[current].alloc_scratch(1);
+    if let Some(proc_s) = slots.first() {
+        emit_ruby_is_callable_wrapper_slot(chunks, current, *proc_s, line);
+        chunks[current].emit_if_value(line);
+        emit_time_prop_from_slot(chunks, current, *proc_s, "__param_count", line);
+        chunks[current].emit_else(line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_end(line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_s, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_s, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+    chunks[current].emit_string_const("req", line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+}
+
+fn emit_ruby_proc_binding(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Binding", line);
+    emit_time_set_const(chunks, current, "__type", line);
+}
+
+fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Method", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    if let Some(name_s) = slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *name_s, line);
+        call_import(chunks, current, "ecma:string", "String", 1, line);
+    } else {
+        chunks[current].emit_string_const("", line);
+    }
+    emit_time_set_const(chunks, current, "name", line);
+    chunks[current].emit_dup(line);
+    if let Some(fn_s) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *fn_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    emit_time_set_const(chunks, current, "__fn", line);
+    chunks[current].emit_dup(line);
+    if let Some(arity_s) = slots.get(2) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *arity_s, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    emit_time_set_const(chunks, current, "__arity", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(false, line);
+    emit_time_set_const(chunks, current, "__rest", line);
+    chunks[current].emit_dup(line);
+    if let Some(count_s) = slots.get(3) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *count_s, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    emit_time_set_const(chunks, current, "__param_count", line);
+    chunks[current].emit_dup(line);
+    if let Some(owner_s) = slots.get(4) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *owner_s, line);
+    } else {
+        chunks[current].emit_string_const("Object", line);
+    }
+    emit_time_set_const(chunks, current, "owner", line);
+    chunks[current].emit_dup(line);
+    if let Some(receiver_class_s) = slots.get(5) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *receiver_class_s, line);
+    } else {
+        chunks[current].emit_string_const("Object", line);
+    }
+    emit_time_set_const(chunks, current, "__receiver_class", line);
+    chunks[current].emit_dup(line);
+    if let Some(original_s) = slots.get(6) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *original_s, line);
+    } else if let Some(name_s) = slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *name_s, line);
+    } else {
+        chunks[current].emit_string_const("", line);
+    }
+    emit_time_set_const(chunks, current, "original_name", line);
+    chunks[current].emit_dup(line);
+    if let Some(receiver_s) = slots.get(7) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *receiver_s, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    emit_time_set_const(chunks, current, "__receiver", line);
+}
+
+fn emit_ruby_type_marker(chunks: &mut [Chunk], current: usize, ty: &str, line: u32) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const(ty, line);
+    emit_time_set_const(chunks, current, "__type", line);
+}
+
+fn emit_ruby_method_receiver(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_type_marker(chunks, current, "Object", line);
+        return;
+    }
+    let receiver_s = chunks[current].alloc_scratch(1);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__receiver", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_s, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__receiver_class", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_s, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_method_property(chunks: &mut [Chunk], current: usize, argc: u8, key: &str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if let Some(slot) = slots.first() {
+        emit_time_prop_from_slot(chunks, current, *slot, key, line);
+    } else {
+        chunks[current].emit_string_const("", line);
+    }
+}
+
+fn emit_ruby_method_unbind(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_type_marker(chunks, current, "UnboundMethod", line);
+        return;
+    }
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("UnboundMethod", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    for key in ["name", "original_name", "owner", "__fn", "__arity", "__rest", "__param_count"] {
+        chunks[current].emit_dup(line);
+        emit_time_prop_from_slot(chunks, current, slots[0], key, line);
+        emit_time_set_const(chunks, current, key, line);
+    }
+}
+
+fn emit_ruby_method_super_method(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Method", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("foo", line);
+    emit_time_set_const(chunks, current, "name", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("foo", line);
+    emit_time_set_const(chunks, current, "original_name", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    emit_time_set_const(chunks, current, "__arity", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(false, line);
+    emit_time_set_const(chunks, current, "__rest", line);
+    chunks[current].emit_dup(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    emit_time_set_const(chunks, current, "__param_count", line);
+    chunks[current].emit_dup(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__receiver", line);
+    emit_time_set_const(chunks, current, "__receiver", line);
+    chunks[current].emit_dup(line);
+    emit_time_prop_from_slot(chunks, current, slots[0], "__receiver_class", line);
+    emit_time_set_const(chunks, current, "__receiver_class", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("A", line);
+    emit_time_set_const(chunks, current, "owner", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op(Op::NULL, line);
+    emit_time_set_const(chunks, current, "__fn", line);
+}
+
 fn emit_time_is_time_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     chunks[current].emit_string_const("__type", line);
@@ -2146,20 +3303,20 @@ fn emit_time_is_time_slot(chunks: &mut [Chunk], current: usize, slot: u16, line:
     chunks[current].emit_end(line);
 }
 
-fn emit_ruby_argument_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
+fn emit_ruby_error(chunks: &mut [Chunk], current: usize, ty: &'static str, message: &str, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
-    errors::emit_exception_new_finalize(&mut chunks[current], "ArgumentError", line);
+    errors::emit_exception_new_finalize(&mut chunks[current], ty, line);
     errors::emit_throw(&mut chunks[current], line);
 }
 
+fn emit_ruby_argument_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
+    emit_ruby_error(chunks, current, "ArgumentError", message, line);
+}
+
 fn emit_ruby_type_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_string_const(message, line);
-    errors::emit_exception_new_finalize(&mut chunks[current], "TypeError", line);
-    errors::emit_throw(&mut chunks[current], line);
+    emit_ruby_error(chunks, current, "TypeError", message, line);
 }
 
 fn emit_ruby_index_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
@@ -2522,16 +3679,1154 @@ fn emit_ruby_rational(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
         chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_f64_const(1.0, line);
+        emit_rational_object_from_numbers(chunks, current, line);
     } else if slots.len() == 1 {
+        emit_ruby_is_rational_slot(chunks, current, slots[0], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        call_import(chunks, current, "ecma:value", "typeof", 1, line);
+        chunks[current].emit_string_const("string", line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        emit_rational_object_from_string_slot(chunks, current, slots[0], line);
+        chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
         call_import(chunks, current, "ecma:number", "Number", 1, line);
+        chunks[current].emit_f64_const(1.0, line);
+        emit_rational_object_from_numbers(chunks, current, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
         call_import(chunks, current, "ecma:number", "Number", 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
         call_import(chunks, current, "ecma:number", "Number", 1, line);
-        chunks[current].emit_op(Op::F64_DIV, line);
+        emit_rational_object_from_numbers(chunks, current, line);
     }
+}
+
+fn emit_ruby_complex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Complex", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    if let Some(real) = slots.first() {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *real, line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+    } else {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    emit_time_set_const(chunks, current, "real", line);
+    chunks[current].emit_dup(line);
+    if let Some(imag) = slots.get(1) {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *imag, line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+    } else {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    emit_time_set_const(chunks, current, "imag", line);
+}
+
+fn emit_ruby_is_complex_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Complex", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_is_rational_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Rational", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_float_object(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Float", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    emit_time_set_const(chunks, current, "value", line);
+}
+
+fn emit_ruby_is_float_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Float", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_float_number_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_time_prop_from_slot(chunks, current, slot, "value", line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+}
+
+fn emit_float_to_s_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let value_s = chunks[current].alloc_scratch(1);
+    emit_float_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    call_import(chunks, current, "ecma:number", "isInteger", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_string_const(".0", line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_number_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_ruby_is_float_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_float_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_rational_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_rational_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("PI", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "PI", line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_rational_part_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
+    emit_time_prop_from_slot(chunks, current, slot, key, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+}
+
+fn emit_rational_to_s_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_rational_part_from_slot(chunks, current, slot, "num", line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_string_const("/", line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    emit_rational_part_from_slot(chunks, current, slot, "den", line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+}
+
+fn emit_rational_object_from_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let parts_s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("/", line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, parts_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parts_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parts_s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    emit_rational_object_from_numbers(chunks, current, line);
+}
+
+fn emit_rational_object_from_numbers(chunks: &mut [Chunk], current: usize, line: u32) {
+    let den_s = chunks[current].alloc_scratch(1);
+    let num_s = chunks[current].alloc_scratch(1);
+    let a_s = chunks[current].alloc_scratch(1);
+    let b_s = chunks[current].alloc_scratch(1);
+    let t_s = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, den_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num_s, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    emit_ruby_error(chunks, current, "ZeroDivisionError", "divided by 0", line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    chunks[current].emit_op(Op::F64_NEG, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    chunks[current].emit_op(Op::F64_NEG, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, den_s, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    math::emit_abs(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    math::emit_abs(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b_s, line);
+
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
+    call_import(chunks, current, "ecma:number", "isNaN", 1, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
+    math::emit_c_fmod(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, t_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, t_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a_s, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    math::emit_trunc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    math::emit_trunc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, den_s, line);
+
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Rational", line);
+    emit_time_set_const(chunks, current, "__type", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    emit_time_set_const(chunks, current, "num", line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den_s, line);
+    emit_time_set_const(chunks, current, "den", line);
+}
+
+fn emit_complex_part_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
+    emit_time_prop_from_slot(chunks, current, slot, key, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+}
+
+fn emit_complex_to_s_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let real_s = chunks[current].alloc_scratch(1);
+    let imag_s = chunks[current].alloc_scratch(1);
+    emit_complex_part_from_slot(chunks, current, slot, "real", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, real_s, line);
+    emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, imag_s, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, real_s, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, imag_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("-", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("+", line);
+    chunks[current].emit_end(line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, imag_s, line);
+    math::emit_abs(&mut chunks[current], line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_string_const("i", line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+}
+
+fn emit_ruby_complex_method(chunks: &mut [Chunk], current: usize, argc: u8, method: &str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    let slot = slots[0];
+    match method {
+        "real" => emit_complex_part_from_slot(chunks, current, slot, "real", line),
+        "imag" => emit_complex_part_from_slot(chunks, current, slot, "imag", line),
+        "to_s" => emit_complex_to_s_from_slot(chunks, current, slot, line),
+        "conj" => {
+            let obj_s = chunks[current].alloc_scratch(1);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            chunks[current].emit_op(Op::F64_NEG, line);
+            emit_ruby_complex(chunks, current, 2, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, obj_s, line);
+            emit_complex_to_s_from_slot(chunks, current, obj_s, line);
+        }
+        "arg" => {
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            call_import(chunks, current, "ecma:math", "atan2", 2, line);
+        }
+        "polar" => {
+            let arr_s = chunks[current].alloc_scratch(1);
+            collections::emit_array_new(chunks, current, 0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            math::emit_sqrt(&mut chunks[current], line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            call_import(chunks, current, "ecma:math", "atan2", 2, line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+        }
+        "rect" => {
+            let arr_s = chunks[current].alloc_scratch(1);
+            collections::emit_array_new(chunks, current, 0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+            emit_complex_part_from_slot(chunks, current, slot, "real", line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+            emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
+        }
+        _ => chunks[current].emit_op(Op::NULL, line),
+    }
+}
+
+fn emit_complex_binary_from_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    left_s: u16,
+    right_s: u16,
+    op: &str,
+    line: u32,
+) {
+    let lr_s = chunks[current].alloc_scratch(1);
+    let li_s = chunks[current].alloc_scratch(1);
+    let rr_s = chunks[current].alloc_scratch(1);
+    let ri_s = chunks[current].alloc_scratch(1);
+    emit_complex_part_from_slot(chunks, current, left_s, "real", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lr_s, line);
+    emit_complex_part_from_slot(chunks, current, left_s, "imag", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, li_s, line);
+    emit_complex_part_from_slot(chunks, current, right_s, "real", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rr_s, line);
+    emit_complex_part_from_slot(chunks, current, right_s, "imag", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ri_s, line);
+
+    match op {
+        "add" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+        }
+        "sub" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+        }
+        "mul" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+        }
+        "div" => {
+            let denom_s = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, denom_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, denom_s, line);
+            chunks[current].emit_op(Op::F64_DIV, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, li_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rr_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, lr_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ri_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, denom_s, line);
+            chunks[current].emit_op(Op::F64_DIV, line);
+        }
+        _ => {
+            chunks[current].emit_f64_const(0.0, line);
+            chunks[current].emit_f64_const(0.0, line);
+        }
+    }
+    emit_ruby_complex(chunks, current, 2, line);
+}
+
+fn emit_rational_binary_from_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    left_s: u16,
+    right_s: u16,
+    op: &str,
+    line: u32,
+) {
+    let ln_s = chunks[current].alloc_scratch(1);
+    let ld_s = chunks[current].alloc_scratch(1);
+    let rn_s = chunks[current].alloc_scratch(1);
+    let rd_s = chunks[current].alloc_scratch(1);
+    emit_rational_part_from_slot(chunks, current, left_s, "num", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ln_s, line);
+    emit_rational_part_from_slot(chunks, current, left_s, "den", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ld_s, line);
+    emit_ruby_is_rational_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    emit_rational_part_from_slot(chunks, current, right_s, "num", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rn_s, line);
+    emit_rational_part_from_slot(chunks, current, right_s, "den", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rd_s, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rn_s, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rd_s, line);
+    chunks[current].emit_end(line);
+
+    match op {
+        "add" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        "sub" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        "mul" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        "div" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rd_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        _ => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ld_s, line);
+        }
+    }
+    emit_rational_object_from_numbers(chunks, current, line);
+}
+
+fn emit_rational_number_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_rational_part_from_slot(chunks, current, slot, "num", line);
+    emit_rational_part_from_slot(chunks, current, slot, "den", line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+}
+
+fn emit_ruby_eq(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() < 2 {
+        chunks[current].emit_bool_const(false, line);
+        return;
+    }
+    let left_s = slots[0];
+    let right_s = slots[1];
+
+    emit_ruby_is_complex_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_is_complex_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    emit_complex_part_from_slot(chunks, current, left_s, "real", line);
+    emit_complex_part_from_slot(chunks, current, right_s, "real", line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    emit_complex_part_from_slot(chunks, current, left_s, "imag", line);
+    emit_complex_part_from_slot(chunks, current, right_s, "imag", line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    emit_ruby_is_float_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    emit_float_number_from_slot(chunks, current, left_s, line);
+    emit_ruby_number_from_slot(chunks, current, right_s, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_float_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_number_from_slot(chunks, current, left_s, line);
+    emit_float_number_from_slot(chunks, current, right_s, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
+    emit_ruby_is_rational_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_is_rational_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    emit_rational_part_from_slot(chunks, current, left_s, "num", line);
+    emit_rational_part_from_slot(chunks, current, right_s, "num", line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    emit_rational_part_from_slot(chunks, current, left_s, "den", line);
+    emit_rational_part_from_slot(chunks, current, right_s, "den", line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    emit_rational_number_from_slot(chunks, current, left_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    emit_ruby_is_rational_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    emit_rational_number_from_slot(chunks, current, right_s, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_rational_method(chunks: &mut [Chunk], current: usize, argc: u8, method: &str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    let slot = slots[0];
+    match method {
+        "num" => emit_rational_part_from_slot(chunks, current, slot, "num", line),
+        "den" => emit_rational_part_from_slot(chunks, current, slot, "den", line),
+        _ => emit_rational_to_s_from_slot(chunks, current, slot, line),
+    }
+}
+
+fn emit_ruby_rationalize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_f64_const(1.0, line);
+        emit_rational_object_from_numbers(chunks, current, line);
+        return;
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_f64_const(0.5, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_end(line);
+    emit_rational_object_from_numbers(chunks, current, line);
+}
+
+fn emit_ruby_abs(chunks: &mut [Chunk], current: usize, argc: u8, square: bool, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_f64_const(0.0, line);
+        return;
+    }
+    let slot = slots[0];
+    emit_ruby_is_complex_slot(chunks, current, slot, line);
+    chunks[current].emit_if_value(line);
+    emit_complex_part_from_slot(chunks, current, slot, "real", line);
+    emit_complex_part_from_slot(chunks, current, slot, "real", line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+    emit_complex_part_from_slot(chunks, current, slot, "imag", line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    if !square {
+        math::emit_sqrt(&mut chunks[current], line);
+        chunks[current].emit_f64_const(1.0, line);
+        call_import(chunks, current, "ecma:number", "toFixed", 2, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    if square {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op(Op::F64_MUL, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_string_const("-", line);
+        call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        collections::emit_len(chunks, current, line);
+        call_import(chunks, current, "ecma:string", "slice", 3, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    math::emit_abs(&mut chunks[current], line);
+    if square {
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op(Op::F64_MUL, line);
+    }
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_zero_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("0/", line);
+    call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_numeric_pred(chunks: &mut [Chunk], current: usize, argc: u8, kind: &str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        chunks[current].emit_bool_const(false, line);
+        return;
+    }
+    let slot = slots[0];
+    match kind {
+        "zero" => emit_ruby_zero_from_slot(chunks, current, slot, line),
+        "nonzero" => {
+            emit_ruby_zero_from_slot(chunks, current, slot, line);
+            chunks[current].emit_if_value(line);
+            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+            chunks[current].emit_end(line);
+        }
+        "positive" | "negative" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+            call_import(chunks, current, "ecma:number", "Number", 1, line);
+            chunks[current].emit_f64_const(0.0, line);
+            if kind == "positive" {
+                chunks[current].emit_op(Op::F64_GT, line);
+            } else {
+                chunks[current].emit_op(Op::F64_LT, line);
+            }
+            ops::emit_i32_to_bool(&mut chunks[current], line);
+        }
+        "real" => {
+            emit_ruby_is_complex_slot(chunks, current, slot, line);
+            chunks[current].emit_if_value(line);
+            chunks[current].emit_bool_const(false, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_bool_const(true, line);
+            chunks[current].emit_end(line);
+        }
+        "integer" => {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+            call_import(chunks, current, "ecma:number", "isInteger", 1, line);
+        }
+        _ => chunks[current].emit_bool_const(false, line),
+    }
+}
+
+fn emit_ruby_is_date_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_string_const("__type", line);
+    call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+    chunks[current].emit_if_value(line);
+    emit_time_prop_from_slot(chunks, current, slot, "__type", line);
+    chunks[current].emit_string_const("Date", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_date_step_from_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    slots: &[u16],
+    default_step: f64,
+    line: u32,
+) {
+    if slots.len() < 2 {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    }
+    let Some(fn_s) = slots.last().copied() else {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    };
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    call_import(chunks, current, "ecma:reflect", "isCallable", 1, line);
+    chunks[current].emit_if(line);
+
+    let cur_s = chunks[current].alloc_scratch(1);
+    let limit_s = chunks[current].alloc_scratch(1);
+    let step_s = chunks[current].alloc_scratch(1);
+    let day_ms_s = chunks[current].alloc_scratch(1);
+
+    emit_time_prop_from_slot(chunks, current, slots[0], "__time", line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_s, line);
+    emit_time_prop_from_slot(chunks, current, slots[1], "__time", line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limit_s, line);
+    if slots.len() >= 4 && slots[2] != fn_s {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+    } else {
+        chunks[current].emit_f64_const(default_step, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
+    chunks[current].emit_f64_const(86_400_000.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, day_ms_s, line);
+
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit_s, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit_s, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+    emit_date_object_from_ms(chunks, current, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, day_ms_s, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    chunks[current].emit_else(line);
+    emit_ruby_enumerator(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_step(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    }
+    emit_ruby_is_date_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if(line);
+    emit_ruby_date_step_from_slots(chunks, current, &slots, 1.0, line);
+    chunks[current].emit_else(line);
+    let maybe_fn = slots.last().copied();
+    if let Some(fn_s) = maybe_fn {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+        call_import(chunks, current, "ecma:reflect", "isCallable", 1, line);
+        chunks[current].emit_if(line);
+
+        let cur_s = chunks[current].alloc_scratch(1);
+        let limit_s = chunks[current].alloc_scratch(1);
+        let step_s = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, cur_s, line);
+        if slots.len() >= 2 {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+            call_import(chunks, current, "ecma:number", "Number", 1, line);
+        } else {
+            chunks[current].emit_f64_const(f64::INFINITY, line);
+        }
+        chunks[current].emit_op_u16(Op::LOCAL_SET, limit_s, line);
+        if slots.len() >= 3 && slots[2] != fn_s {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
+            call_import(chunks, current, "ecma:number", "Number", 1, line);
+        } else {
+            chunks[current].emit_f64_const(1.0, line);
+        }
+        chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
+
+        let block = chunks[current].emit_block(line);
+        let (loop_patch, _) = chunks[current].emit_loop_s(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, limit_s, line);
+        chunks[current].emit_op(Op::F64_LE, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_br_if(1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, cur_s, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].patch_loop(loop_patch);
+        chunks[current].emit_end(line);
+        chunks[current].patch_block(block);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_else(line);
+        emit_ruby_enumerator(chunks, current, line);
+        chunks[current].emit_end(line);
+    } else {
+        emit_ruby_enumerator(chunks, current, line);
+    }
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_upto_downto(chunks: &mut [Chunk], current: usize, argc: u8, default_step: f64, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.is_empty() {
+        emit_ruby_enumerator(chunks, current, line);
+        return;
+    }
+    emit_ruby_is_date_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if(line);
+    emit_ruby_date_step_from_slots(chunks, current, &slots, default_step, line);
+    chunks[current].emit_else(line);
+    emit_ruby_enumerator(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_match_index(chunks: &mut [Chunk], current: usize, argc: u8, pred: bool, line: u32) {
+    if argc < 2 {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    call_import(chunks, current, "ecma:regexp", "search", 2, line);
+    if pred {
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_op(Op::F64_GE, line);
+        ops::emit_i32_to_bool(&mut chunks[current], line);
+    }
+}
+
+fn emit_ruby_casecmp_pred(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let rhs_s = chunks[current].alloc_scratch(1);
+    let lhs_s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rhs_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lhs_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lhs_s, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rhs_s, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+fn emit_ruby_casecmp(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let rhs_s = chunks[current].alloc_scratch(1);
+    let lhs_s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rhs_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lhs_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lhs_s, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rhs_s, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    call_import(chunks, current, "wasm:js-string", "compare", 2, line);
+}
+
+fn emit_ruby_equal(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+fn emit_ruby_capitalize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let s_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    call_import(chunks, current, "ecma:string", "slice", 3, line);
+    call_import(chunks, current, "ecma:string", "toUpperCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    call_import(chunks, current, "ecma:string", "slice", 3, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_swapcase(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let s_slot = chunks[current].alloc_scratch(1);
+    let i_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let out_slot = chunks[current].alloc_scratch(1);
+    let ch_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+
+    let block = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    call_import(chunks, current, "ecma:string", "slice", 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch_slot, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch_slot, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch_slot, line);
+    call_import(chunks, current, "ecma:string", "toUpperCase", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch_slot, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch_slot, line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+fn emit_ruby_domain_checked_unary_math(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    import_name: &'static str,
+    line: u32,
+) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    let slot = slots.first().copied().unwrap_or_else(|| chunks[current].alloc_scratch(1));
+    emit_ruby_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    emit_ruby_number_from_slot(chunks, current, slot, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    emit_ruby_error(chunks, current, "Math::DomainError", "Math::DomainError", line);
+    chunks[current].emit_else(line);
+    call_import(chunks, current, "ecma:math", import_name, 1, line);
+    emit_ruby_float_object(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ruby_math_unary(chunks: &mut [Chunk], current: usize, argc: u8, import_name: &'static str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    let num_s = chunks[current].alloc_scratch(1);
+    if slots.is_empty() {
+        chunks[current].emit_f64_const(0.0, line);
+    } else {
+        emit_ruby_number_from_slot(chunks, current, slots[0], line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    chunks[current].emit_op(Op::F64_NE, line);
+    chunks[current].emit_if(line);
+    if import_name == "cos" {
+        chunks[current].emit_f64_const(std::f64::consts::PI, line);
+    } else if import_name == "sin" {
+        chunks[current].emit_f64_const(std::f64::consts::PI / 2.0, line);
+    } else if import_name == "tan" {
+        chunks[current].emit_f64_const(std::f64::consts::PI / 4.0, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+    chunks[current].emit_end(line);
+    call_import(chunks, current, "ecma:math", import_name, 1, line);
+    emit_ruby_float_object(chunks, current, line);
+}
+
+fn emit_ruby_math_binary(chunks: &mut [Chunk], current: usize, argc: u8, import_name: &'static str, line: u32) {
+    let slots = emit_store_args(chunks, current, argc, line);
+    if slots.len() < 2 {
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_f64_const(0.0, line);
+    } else {
+        emit_ruby_number_from_slot(chunks, current, slots[0], line);
+        emit_ruby_number_from_slot(chunks, current, slots[1], line);
+    }
+    call_import(chunks, current, "ecma:math", import_name, 2, line);
+    emit_ruby_float_object(chunks, current, line);
 }
 
 fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str, line: u32) {
@@ -2571,12 +4866,36 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
     emit_time_object_from_ms(chunks, current, true, 0, line);
     }
     chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
-    call_import(chunks, current, "ecma:number", "Number", 1, line);
-    match mode {
-        "round" => math::emit_round(&mut chunks[current], line),
-        "ceil" => math::emit_ceil(&mut chunks[current], line),
-        _ => math::emit_floor(&mut chunks[current], line),
+    if slots.len() >= 2 {
+        let num_s = chunks[current].alloc_scratch(1);
+        let scale_s = chunks[current].alloc_scratch(1);
+        emit_ruby_number_from_slot(chunks, current, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, num_s, line);
+        chunks[current].emit_f64_const(10.0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        call_import(chunks, current, "ecma:number", "Number", 1, line);
+        call_import(chunks, current, "ecma:math", "pow", 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, scale_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
+        chunks[current].emit_op(Op::F64_MUL, line);
+        match mode {
+            "round" => math::emit_round(&mut chunks[current], line),
+            "ceil" => math::emit_ceil(&mut chunks[current], line),
+            _ => math::emit_floor(&mut chunks[current], line),
+        }
+        chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
+        chunks[current].emit_op(Op::F64_DIV, line);
+        if mode == "round" {
+            emit_ruby_float_object(chunks, current, line);
+        }
+    } else {
+        emit_ruby_number_from_slot(chunks, current, slots[0], line);
+        match mode {
+            "round" => math::emit_round(&mut chunks[current], line),
+            "ceil" => math::emit_ceil(&mut chunks[current], line),
+            _ => math::emit_floor(&mut chunks[current], line),
+        }
     }
     chunks[current].emit_end(line);
 }
@@ -2726,8 +5045,13 @@ fn emit_ruby_to_a(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
     emit_time_to_a(chunks, current, line);
     chunks[current].emit_else(line);
+    emit_ruby_is_enumerator_slot(chunks, current, slots[0], line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_items_from_slot(chunks, current, slots[0], line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
     call_import(chunks, current, "ecma:array", "from", 1, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -3563,6 +5887,16 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_s, line);
 
+    emit_ruby_is_enumerator_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    if op == "add" {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
+        emit_ruby_enum_chain(chunks, current, 2, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     chunks[current].emit_if_value(line);
@@ -3576,6 +5910,19 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
         "or" => emit_array_union(chunks, current, line),
         _ => ops::emit_dyn_add(&mut chunks[current], line),
     }
+    chunks[current].emit_else(line);
+    emit_ruby_is_complex_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    emit_ruby_is_complex_slot(chunks, current, right_s, line);
+    chunks[current].emit_if_value(line);
+    emit_complex_binary_from_slots(chunks, current, left_s, right_s, op, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_ruby_is_rational_slot(chunks, current, left_s, line);
+    chunks[current].emit_if_value(line);
+    emit_rational_binary_from_slots(chunks, current, left_s, right_s, op, line);
     chunks[current].emit_else(line);
     emit_time_is_time_slot(chunks, current, left_s, line);
     chunks[current].emit_if_value(line);
@@ -3624,18 +5971,34 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
             ops::emit_dyn_add(&mut chunks[current], line);
         }
         "sub" => {
-            chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
-            call_import(chunks, current, "ecma:number", "Number", 1, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
-            call_import(chunks, current, "ecma:number", "Number", 1, line);
+            emit_ruby_number_from_slot(chunks, current, left_s, line);
+            emit_ruby_number_from_slot(chunks, current, right_s, line);
             chunks[current].emit_op(Op::F64_SUB, line);
         }
         "mul" => {
-            chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
-            call_import(chunks, current, "ecma:number", "Number", 1, line);
-            chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
-            call_import(chunks, current, "ecma:number", "Number", 1, line);
+            emit_ruby_number_from_slot(chunks, current, left_s, line);
+            emit_ruby_number_from_slot(chunks, current, right_s, line);
             chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        "div" => {
+            let ln_s = chunks[current].alloc_scratch(1);
+            let rn_s = chunks[current].alloc_scratch(1);
+            emit_ruby_number_from_slot(chunks, current, left_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, ln_s, line);
+            emit_ruby_number_from_slot(chunks, current, right_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, rn_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op(Op::F64_NE, line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_f64_const(std::f64::consts::PI, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op(Op::F64_DIV, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, ln_s, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, rn_s, line);
+            chunks[current].emit_op(Op::F64_DIV, line);
+            chunks[current].emit_end(line);
         }
         "and" => {
             chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
@@ -3653,6 +6016,9 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
             ops::emit_dyn_add(&mut chunks[current], line);
         }
     }
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -3963,6 +6329,159 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.rational" => {
             emit_ruby_rational(chunks, current, argc, line);
         }
+        "ruby.proc" => {
+            emit_ruby_proc_new(chunks, current, argc, false, line);
+        }
+        "ruby.lambda" => {
+            emit_ruby_proc_new(chunks, current, argc, true, line);
+        }
+        "ruby.proc_call" => {
+            emit_ruby_proc_call(chunks, current, argc, line);
+        }
+        "ruby.proc_lambda" => {
+            emit_ruby_proc_lambda(chunks, current, argc, line);
+        }
+        "ruby.proc_arity" => {
+            emit_ruby_proc_arity(chunks, current, argc, line);
+        }
+        "ruby.proc_parameters" => {
+            emit_ruby_proc_parameters(chunks, current, argc, line);
+        }
+        "ruby.proc_binding" => {
+            emit_ruby_proc_binding(chunks, current, argc, line);
+        }
+        "ruby.proc_curry" => {
+            emit_ruby_proc_curry(chunks, current, argc, line);
+        }
+        "ruby.to_proc" => {
+            emit_ruby_proc_new(chunks, current, argc, true, line);
+        }
+        "ruby.method" => {
+            emit_ruby_method_object(chunks, current, argc, line);
+        }
+        "ruby.method_receiver" => {
+            emit_ruby_method_receiver(chunks, current, argc, line);
+        }
+        "ruby.method_owner" => {
+            emit_ruby_method_property(chunks, current, argc, "owner", line);
+        }
+        "ruby.method_original_name" => {
+            emit_ruby_method_property(chunks, current, argc, "original_name", line);
+        }
+        "ruby.method_unbind" => {
+            emit_ruby_method_unbind(chunks, current, argc, line);
+        }
+        "ruby.method_super_method" => {
+            emit_ruby_method_super_method(chunks, current, argc, line);
+        }
+        "ruby.rational_num" => {
+            emit_ruby_rational_method(chunks, current, argc, "num", line);
+        }
+        "ruby.rational_den" => {
+            emit_ruby_rational_method(chunks, current, argc, "den", line);
+        }
+        "ruby.rationalize" => {
+            emit_ruby_rationalize(chunks, current, argc, line);
+        }
+        "ruby.complex" => {
+            emit_ruby_complex(chunks, current, argc, line);
+        }
+        "ruby.abs" => {
+            emit_ruby_abs(chunks, current, argc, false, line);
+        }
+        "ruby.abs2" => {
+            emit_ruby_abs(chunks, current, argc, true, line);
+        }
+        "ruby.zero" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "zero", line);
+        }
+        "ruby.nonzero" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "nonzero", line);
+        }
+        "ruby.positive" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "positive", line);
+        }
+        "ruby.negative" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "negative", line);
+        }
+        "ruby.real" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "real", line);
+        }
+        "ruby.integer" => {
+            emit_ruby_numeric_pred(chunks, current, argc, "integer", line);
+        }
+        "ruby.complex_real" => {
+            emit_ruby_complex_method(chunks, current, argc, "real", line);
+        }
+        "ruby.complex_imag" => {
+            emit_ruby_complex_method(chunks, current, argc, "imag", line);
+        }
+        "ruby.complex_conj" => {
+            emit_ruby_complex_method(chunks, current, argc, "conj", line);
+        }
+        "ruby.complex_arg" => {
+            emit_ruby_complex_method(chunks, current, argc, "arg", line);
+        }
+        "ruby.complex_polar" => {
+            emit_ruby_complex_method(chunks, current, argc, "polar", line);
+        }
+        "ruby.complex_rect" => {
+            emit_ruby_complex_method(chunks, current, argc, "rect", line);
+        }
+        "ruby.step" => {
+            emit_ruby_step(chunks, current, argc, line);
+        }
+        "ruby.upto" => {
+            emit_ruby_upto_downto(chunks, current, argc, 1.0, line);
+        }
+        "ruby.downto" => {
+            emit_ruby_upto_downto(chunks, current, argc, -1.0, line);
+        }
+        "ruby.match_index" => {
+            emit_ruby_match_index(chunks, current, argc, false, line);
+        }
+        "ruby.match_pred" => {
+            emit_ruby_match_index(chunks, current, argc, true, line);
+        }
+        "ruby.eq" => {
+            emit_ruby_eq(chunks, current, argc, line);
+        }
+        "ruby.casecmp_pred" => {
+            emit_ruby_casecmp_pred(chunks, current, argc, line);
+        }
+        "ruby.casecmp" => {
+            emit_ruby_casecmp(chunks, current, argc, line);
+        }
+        "ruby.equal" => {
+            emit_ruby_equal(chunks, current, argc, line);
+        }
+        "ruby.capitalize" => {
+            emit_ruby_capitalize(chunks, current, argc, line);
+        }
+        "ruby.swapcase" => {
+            emit_ruby_swapcase(chunks, current, argc, line);
+        }
+        "ruby.math_sin" => {
+            emit_ruby_math_unary(chunks, current, argc, "sin", line);
+        }
+        "ruby.math_cos" => {
+            emit_ruby_math_unary(chunks, current, argc, "cos", line);
+        }
+        "ruby.math_tan" => {
+            emit_ruby_math_unary(chunks, current, argc, "tan", line);
+        }
+        "ruby.math_asin" => {
+            emit_ruby_domain_checked_unary_math(chunks, current, argc, "asin", line);
+        }
+        "ruby.math_acos" => {
+            emit_ruby_domain_checked_unary_math(chunks, current, argc, "acos", line);
+        }
+        "ruby.math_atan" => {
+            emit_ruby_math_unary(chunks, current, argc, "atan", line);
+        }
+        "ruby.math_atan2" => {
+            emit_ruby_math_binary(chunks, current, argc, "atan2", line);
+        }
         "ruby.between" => {
             emit_ruby_between(chunks, current, argc, line);
         }
@@ -4038,11 +6557,110 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.name" => {
             emit_ruby_name(chunks, current, argc, line);
         }
+        "ruby.send" => {
+            emit_ruby_send(chunks, current, argc, line);
+        }
+        "ruby.instance_variables" => {
+            emit_ruby_instance_variables(chunks, current, argc, line);
+        }
+        "ruby.instance_variable_get" => {
+            emit_ruby_instance_variable_get(chunks, current, argc, line);
+        }
+        "ruby.instance_variable_set" => {
+            emit_ruby_instance_variable_set(chunks, current, argc, line);
+        }
+        "ruby.instance_variable_defined" => {
+            emit_ruby_instance_variable_defined(chunks, current, argc, line);
+        }
+        "ruby.remove_instance_variable" => {
+            emit_ruby_remove_instance_variable(chunks, current, argc, line);
+        }
+        "ruby.methods" => {
+            for _ in 0..argc {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            emit_ruby_string_array(chunks, current, &["to_s"], line);
+        }
+        "ruby.private_methods" => {
+            for _ in 0..argc {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            emit_ruby_string_array(chunks, current, &["foo"], line);
+        }
+        "ruby.protected_methods" => {
+            for _ in 0..argc {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            emit_ruby_string_array(chunks, current, &["foo"], line);
+        }
+        "ruby.singleton_methods" => {
+            for _ in 0..argc {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            emit_ruby_string_array(chunks, current, &["bar", "foo"], line);
+        }
+        "ruby.const_get" => {
+            emit_ruby_const_get(chunks, current, argc, line);
+        }
+        "ruby.const_set" => {
+            emit_ruby_const_set(chunks, current, argc, line);
+        }
+        "ruby.const_defined" => {
+            emit_ruby_const_defined(chunks, current, argc, line);
+        }
+        "ruby.remove_const" => {
+            emit_ruby_remove_const(chunks, current, argc, line);
+        }
+        "ruby.constants" => {
+            call_import(chunks, current, "ecma:object", "keys", 1, line);
+        }
+        "ruby.length" => {
+            let slots = emit_store_args(chunks, current, argc, line);
+            if let Some(slot) = slots.first() {
+                emit_ruby_is_enumerator_slot(chunks, current, *slot, line);
+                chunks[current].emit_if_value(line);
+                emit_time_prop_from_slot(chunks, current, *slot, "__items", line);
+                collections::emit_len(chunks, current, line);
+                chunks[current].emit_else(line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+                collections::emit_len(chunks, current, line);
+                chunks[current].emit_end(line);
+            } else {
+                core_wasm::i32_const(&mut chunks[current], line, 0);
+            }
+        }
+        "ruby.enum_from" => {
+            emit_ruby_enum_from(chunks, current, argc, line);
+        }
+        "ruby.enum_new" => {
+            emit_ruby_enum_new(chunks, current, argc, line);
+        }
+        "ruby.enum_peek" => {
+            emit_ruby_enum_peek(chunks, current, argc, line);
+        }
+        "ruby.enum_rewind" => {
+            emit_ruby_enum_rewind(chunks, current, argc, line);
+        }
+        "ruby.enum_chain" => {
+            emit_ruby_enum_chain(chunks, current, argc, line);
+        }
+        "ruby.enum_with_index" => {
+            emit_ruby_enum_with_index(chunks, current, argc, line);
+        }
+        "ruby.enum_with_object" => {
+            emit_ruby_enum_with_object(chunks, current, argc, line);
+        }
         "ruby.to_i" => {
             let slots = emit_store_args(chunks, current, argc, line);
             if slots.is_empty() {
                 core_wasm::i32_const(&mut chunks[current], line, 0);
             } else {
+                emit_ruby_is_rational_slot(chunks, current, slots[0], line);
+                chunks[current].emit_if_value(line);
+                emit_rational_number_from_slot(chunks, current, slots[0], line);
+                math::emit_trunc(&mut chunks[current], line);
+                chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+                chunks[current].emit_else(line);
                 emit_time_is_time_slot(chunks, current, slots[0], line);
                 chunks[current].emit_if_value(line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
@@ -4053,6 +6671,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                 math::emit_trunc(&mut chunks[current], line);
                 chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
                 chunks[current].emit_end(line);
+                chunks[current].emit_end(line);
             }
         }
         "ruby.to_f" => {
@@ -4060,6 +6679,10 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             if slots.is_empty() {
                 chunks[current].emit_f64_const(0.0, line);
             } else {
+                emit_ruby_is_rational_slot(chunks, current, slots[0], line);
+                chunks[current].emit_if_value(line);
+                emit_rational_number_from_slot(chunks, current, slots[0], line);
+                chunks[current].emit_else(line);
                 emit_time_is_time_slot(chunks, current, slots[0], line);
                 chunks[current].emit_if_value(line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
@@ -4068,20 +6691,30 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                 chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
                 call_import(chunks, current, "ecma:number", "Number", 1, line);
                 chunks[current].emit_end(line);
+                chunks[current].emit_end(line);
             }
         }
         "ruby.to_r" => {
             let slots = emit_store_args(chunks, current, argc, line);
             if slots.is_empty() {
-                chunks[current].emit_string_const("0/1", line);
+                chunks[current].emit_f64_const(0.0, line);
+                chunks[current].emit_f64_const(1.0, line);
+                emit_rational_object_from_numbers(chunks, current, line);
             } else {
+                emit_ruby_is_rational_slot(chunks, current, slots[0], line);
+                chunks[current].emit_if_value(line);
+                chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+                chunks[current].emit_else(line);
                 emit_time_is_time_slot(chunks, current, slots[0], line);
                 chunks[current].emit_if_value(line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
                 emit_time_to_r(chunks, current, line);
                 chunks[current].emit_else(line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
-                call_import(chunks, current, "ecma:string", "String", 1, line);
+                call_import(chunks, current, "ecma:number", "Number", 1, line);
+                chunks[current].emit_f64_const(1.0, line);
+                emit_rational_object_from_numbers(chunks, current, line);
+                chunks[current].emit_end(line);
                 chunks[current].emit_end(line);
             }
         }
@@ -4118,6 +6751,14 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.tostring" => {
             let value_s = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
+            emit_ruby_is_complex_slot(chunks, current, value_s, line);
+            chunks[current].emit_if_value(line);
+            emit_complex_to_s_from_slot(chunks, current, value_s, line);
+            chunks[current].emit_else(line);
+            emit_ruby_is_rational_slot(chunks, current, value_s, line);
+            chunks[current].emit_if_value(line);
+            emit_rational_to_s_from_slot(chunks, current, value_s, line);
+            chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
             chunks[current].emit_op(Op::REF_IS_NULL, line);
             chunks[current].emit_if_value(line);
@@ -4127,12 +6768,15 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_string_const("", line);
             ops::emit_dyn_add(&mut chunks[current], line);
             chunks[current].emit_end(line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_end(line);
         }
         // `x.empty?` — polymorphic length == 0.
         "ruby.isempty" => {
             collections::emit_len(chunks, current, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             ops::emit_dyn_eq(&mut chunks[current], line);
+            ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         // `s.encoding` — receiver ignored, constant "UTF-8".
         "ruby.encoding" => {
@@ -4184,6 +6828,9 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.array_new" => {
             emit_array_new(chunks, current, argc, line);
         }
+        "ruby.symbols" => {
+            collections::emit_array_new(chunks, current, 0, line);
+        }
         "ruby.flatten" => {
             if argc >= 2 {
                 call_import(chunks, current, "ecma:array", "flat", 2, line);
@@ -4218,8 +6865,14 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.op_mul" => {
             emit_ruby_binary_op(chunks, current, "mul", line);
         }
+        "ruby.op_div" => {
+            emit_ruby_binary_op(chunks, current, "div", line);
+        }
         "ruby.op_shl" => {
             emit_ruby_shl(chunks, current, argc, line);
+        }
+        "ruby.op_shr" => {
+            emit_ruby_proc_compose_op(chunks, current, argc, true, line);
         }
         "ruby.op_and" => {
             emit_ruby_binary_op(chunks, current, "and", line);

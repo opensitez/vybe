@@ -54,6 +54,8 @@ p               = { emit = "common:ruby.p",                 min_args = 0, max_ar
 pp              = { emit = "common:ruby.p",                 min_args = 0, max_args = 255 }
 gets            = { emit = "host:wasi:cli:readLine",        min_args = 0, max_args = 0 }
 warn            = { emit = "noop",                          min_args = 1, max_args = 255 }
+lambda          = { emit = "common:ruby.lambda",            min_args = 1, max_args = 4 }
+method          = { emit = "common:ruby.method",            min_args = 1, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
@@ -62,13 +64,29 @@ warn            = { emit = "noop",                          min_args = 1, max_ar
 "String"        = { emit = "common:ruby.tostring",                min_args = 1, max_args = 1 }
 "Array"         = { emit = "host:ecma:array:from",           min_args = 1, max_args = 1 }
 "Rational"      = { emit = "common:ruby.rational",           min_args = 1, max_args = 2 }
+"Complex"       = { emit = "common:ruby.complex",            min_args = 1, max_args = 2 }
 "__ruby_array_new" = { emit = "common:ruby.array_new",       min_args = 1, max_args = 2 }
 "__ruby_op_add" = { emit = "common:ruby.op_add",             min_args = 2, max_args = 2 }
 "__ruby_op_sub" = { emit = "common:ruby.op_sub",             min_args = 2, max_args = 2 }
 "__ruby_op_mul" = { emit = "common:ruby.op_mul",             min_args = 2, max_args = 2 }
+"__ruby_op_div" = { emit = "common:ruby.op_div",             min_args = 2, max_args = 2 }
 "__ruby_op_shl" = { emit = "common:ruby.op_shl",             min_args = 2, max_args = 2 }
+"__ruby_op_shr" = { emit = "common:ruby.op_shr",             min_args = 2, max_args = 2 }
 "__ruby_op_and" = { emit = "common:ruby.op_and",             min_args = 2, max_args = 2 }
 "__ruby_op_or"  = { emit = "common:ruby.op_or",              min_args = 2, max_args = 2 }
+"__ruby_eq"     = { emit = "common:ruby.eq",                 min_args = 2, max_args = 2 }
+"__ruby_proc"   = { emit = "common:ruby.proc",               min_args = 1, max_args = 4 }
+"__ruby_lambda" = { emit = "common:ruby.lambda",             min_args = 1, max_args = 4 }
+"__ruby_proc_call" = { emit = "common:ruby.proc_call",       min_args = 1, max_args = 255 }
+"__ruby_method" = { emit = "common:ruby.method",             min_args = 1, max_args = 8 }
+"__ruby_enum_from" = { emit = "common:ruby.enum_from",       min_args = 1, max_args = 2 }
+"__ruby_enum_new" = { emit = "common:ruby.enum_new",         min_args = 0, max_args = 1 }
+"__vybe_eval" = { emit = "host:vybe:eval:eval",              min_args = 2, max_args = 3 }
+"__ruby_const_get" = { emit = "common:ruby.const_get",       min_args = 2, max_args = 2 }
+"__ruby_const_set" = { emit = "common:ruby.const_set",       min_args = 3, max_args = 3 }
+"__ruby_const_defined" = { emit = "common:ruby.const_defined", min_args = 2, max_args = 2 }
+"__ruby_remove_const" = { emit = "common:ruby.remove_const", min_args = 2, max_args = 2 }
+"__ruby_constants" = { emit = "common:ruby.constants",       min_args = 1, max_args = 1 }
 "__ruby_time_utc" = { emit = "common:ruby.time_utc",         min_args = 1, max_args = 7 }
 "__ruby_time_local" = { emit = "common:ruby.time_local",     min_args = 0, max_args = 7 }
 "__ruby_time_now" = { emit = "common:ruby.time_now",         min_args = 0, max_args = 0 }
@@ -81,6 +99,8 @@ warn            = { emit = "noop",                          min_args = 1, max_ar
 "__ruby_time_gte" = { emit = "common:ruby.time_gte",         min_args = 2, max_args = 2 }
 "__ruby_time_cmp" = { emit = "common:ruby.time_cmp",         min_args = 2, max_args = 2 }
 "__ruby_date_new" = { emit = "common:ruby.date_new",         min_args = 1, max_args = 3 }
+"__ruby_match_index" = { emit = "common:ruby.match_index",   min_args = 2, max_args = 2 }
+"__ruby_symbols" = { emit = "common:ruby.symbols",           min_args = 0, max_args = 0 }
 
 # ── Math (WASM opcodes) ─────────────────────────────────────────────────────
 
@@ -88,9 +108,13 @@ abs             = { emit = "opcode:f64_abs",                min_args = 1, max_ar
 rand            = { emit = "common:ruby.rand",              min_args = 0, max_args = 1 }
 srand           = { emit = "common:ruby.srand",             min_args = 0, max_args = 1 }
 "Math.sqrt"     = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
-"Math.sin"      = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
-"Math.cos"      = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
-"Math.tan"      = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
+"Math.sin"      = { emit = "common:ruby.math_sin",          min_args = 1, max_args = 1 }
+"Math.cos"      = { emit = "common:ruby.math_cos",          min_args = 1, max_args = 1 }
+"Math.tan"      = { emit = "common:ruby.math_tan",          min_args = 1, max_args = 1 }
+"Math.asin"     = { emit = "common:ruby.math_asin",         min_args = 1, max_args = 1 }
+"Math.acos"     = { emit = "common:ruby.math_acos",         min_args = 1, max_args = 1 }
+"Math.atan"     = { emit = "common:ruby.math_atan",         min_args = 1, max_args = 1 }
+"Math.atan2"    = { emit = "common:ruby.math_atan2",        min_args = 2, max_args = 2 }
 "Math.log"      = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
 "Math.log2"     = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
 "Math.log10"    = { emit = "host:ecma:math:log10",          min_args = 1, max_args = 1 }
@@ -123,8 +147,8 @@ caller          = { emit = "noop",                           min_args = 0, max_a
 # was string-only, so `arr.length`/`hash.length` hit `wasm:js-string:length`
 # on a non-string → `toF64` error. `collections.length` (emit_len) dispatches
 # on the runtime type.
-length          = { emit = "common:collections.length",     min_args = 0, max_args = 0 }
-size            = { emit = "common:collections.length",     min_args = 0, max_args = 0 }
+length          = { emit = "common:ruby.length",            min_args = 0, max_args = 0 }
+size            = { emit = "common:ruby.length",            min_args = 0, max_args = 0 }
 upcase          = { emit = "common:strings.to_upper",       min_args = 0, max_args = 0 }
 downcase        = { emit = "common:strings.to_lower",       min_args = 0, max_args = 0 }
 strip           = { emit = "common:strings.trim",           min_args = 0, max_args = 0 }
@@ -163,7 +187,8 @@ rindex          = { emit = "common:ruby.rindex",            min_args = 1, max_ar
 "member?"       = { emit = "common:ruby.includes",          min_args = 1, max_args = 1 }
 "start_with?"   = { emit = "common:str_starts_with",        min_args = 1, max_args = 1 }
 "end_with?"     = { emit = "common:str_ends_with",          min_args = 1, max_args = 1 }
-capitalize      = { emit = "intrinsic:capitalize",   min_args = 0, max_args = 0 }
+capitalize      = { emit = "common:ruby.capitalize",        min_args = 0, max_args = 0 }
+swapcase        = { emit = "common:ruby.swapcase",           min_args = 0, max_args = 0 }
 reverse         = { emit = "common:str_reverse",            min_args = 0, max_args = 0 }
 succ            = { emit = "common:ruby.succ",              min_args = 0, max_args = 0 }
 next            = { emit = "common:ruby.succ",              min_args = 0, max_args = 0 }
@@ -179,8 +204,11 @@ to_str          = { emit = "common:ruby.tostring",               min_args = 0, m
 to_i            = { emit = "common:ruby.to_i",              min_args = 0, max_args = 0 }
 to_f            = { emit = "common:ruby.to_f",              min_args = 0, max_args = 0 }
 to_r            = { emit = "common:ruby.to_r",              min_args = 0, max_args = 0 }
+rationalize     = { emit = "common:ruby.rationalize",       min_args = 0, max_args = 0 }
 to_a            = { emit = "common:ruby.to_a",              min_args = 0, max_args = 0 }
 to_sym          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
+id2name         = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
+intern          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
 inspect         = { emit = "common:ruby.inspect",                min_args = 0, max_args = 0 }
 freeze          = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 "frozen?"       = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
@@ -192,11 +220,37 @@ clone           = { emit = "host:ecma:array:slice",          min_args = 0, max_a
 # so they need no value-method entry here.
 class           = { emit = "common:ruby.class",             min_args = 0, max_args = 0 }
 name            = { emit = "common:ruby.name",              min_args = 0, max_args = 0 }
+"lambda?"       = { emit = "common:ruby.proc_lambda",       min_args = 0, max_args = 0 }
+arity           = { emit = "common:ruby.proc_arity",        min_args = 0, max_args = 0 }
+parameters      = { emit = "common:ruby.proc_parameters",   min_args = 0, max_args = 0 }
+binding         = { emit = "common:ruby.proc_binding",      min_args = 0, max_args = 0 }
+curry           = { emit = "common:ruby.proc_curry",        min_args = 0, max_args = 0 }
+"to_proc"       = { emit = "common:ruby.to_proc",           min_args = 0, max_args = 0 }
+receiver        = { emit = "common:ruby.method_receiver",   min_args = 0, max_args = 0 }
+owner           = { emit = "common:ruby.method_owner",      min_args = 0, max_args = 0 }
+original_name   = { emit = "common:ruby.method_original_name", min_args = 0, max_args = 0 }
+unbind          = { emit = "common:ruby.method_unbind",     min_args = 0, max_args = 0 }
+super_method    = { emit = "common:ruby.method_super_method", min_args = 0, max_args = 0 }
 "respond_to?"   = { emit = "host:ecma:object:hasOwn",       min_args = 1, max_args = 1 }
-send            = { emit = "host:ecma:value:invokeMethod", min_args = 1, max_args = 255 }
+send            = { emit = "common:ruby.send", min_args = 1, max_args = 255 }
+instance_variables = { emit = "common:ruby.instance_variables", min_args = 0, max_args = 0 }
+instance_variable_get = { emit = "common:ruby.instance_variable_get", min_args = 1, max_args = 1 }
+instance_variable_set = { emit = "common:ruby.instance_variable_set", min_args = 2, max_args = 2 }
+"instance_variable_defined?" = { emit = "common:ruby.instance_variable_defined", min_args = 1, max_args = 1 }
+remove_instance_variable = { emit = "common:ruby.remove_instance_variable", min_args = 1, max_args = 1 }
+methods         = { emit = "common:ruby.methods", min_args = 0, max_args = 0 }
+public_methods  = { emit = "common:ruby.methods", min_args = 0, max_args = 0 }
+private_methods = { emit = "common:ruby.private_methods", min_args = 0, max_args = 0 }
+protected_methods = { emit = "common:ruby.protected_methods", min_args = 0, max_args = 0 }
+singleton_methods = { emit = "common:ruby.singleton_methods", min_args = 0, max_args = 0 }
+const_get       = { emit = "common:ruby.const_get", min_args = 1, max_args = 1 }
+const_set       = { emit = "common:ruby.const_set", min_args = 2, max_args = 2 }
+"const_defined?" = { emit = "common:ruby.const_defined", min_args = 1, max_args = 1 }
+remove_const    = { emit = "common:ruby.remove_const", min_args = 1, max_args = 1 }
+constants       = { emit = "common:ruby.constants", min_args = 0, max_args = 0 }
 tap             = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 "eql?"          = { emit = "common:ruby.time_eq",           min_args = 1, max_args = 1 }
-"equal?"        = { emit = "common:dyn_eq",                 min_args = 1, max_args = 1 }
+"equal?"        = { emit = "common:ruby.equal",             min_args = 1, max_args = 1 }
 hash            = { emit = "common:ruby.hash",        min_args = 0, max_args = 0 }
 object_id       = { emit = "common:ruby.id",          min_args = 0, max_args = 0 }
 encoding        = { emit = "common:ruby.encoding",              min_args = 0, max_args = 0 }
@@ -205,11 +259,12 @@ encode          = { emit = "common:ruby.tostring",               min_args = 0, m
 force_encoding  = { emit = "common:ruby.force_encoding",     min_args = 1, max_args = 1 }
 scan            = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
 "match"         = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
-"match?"        = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
+"match?"        = { emit = "common:ruby.match_pred",        min_args = 1, max_args = 1 }
 chr             = { emit = "common:str_from_char_code",     min_args = 0, max_args = 0 }
 ord             = { emit = "intrinsic:asc",                 min_args = 0, max_args = 0 }
 hex             = { emit = "common:ruby.hex",                  min_args = 0, max_args = 0 }
-casecmp         = { emit = "common:str_compare",            min_args = 1, max_args = 1 }
+casecmp         = { emit = "common:ruby.casecmp",           min_args = 1, max_args = 1 }
+"casecmp?"      = { emit = "common:ruby.casecmp_pred",      min_args = 1, max_args = 1 }
 strftime        = { emit = "common:ruby.time_strftime",     min_args = 1, max_args = 1 }
 iso8601         = { emit = "common:ruby.time_iso8601",      min_args = 0, max_args = 0 }
 rfc2822         = { emit = "common:ruby.time_rfc2822",      min_args = 0, max_args = 0 }
@@ -269,6 +324,11 @@ zip             = { emit = "common:ruby.zip",                    min_args = 0, m
 product         = { emit = "common:ruby.product",                min_args = 0, max_args = 255 }
 dig             = { emit = "common:ruby.dig",              min_args = 1, max_args = 255 }
 lazy            = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
+peek            = { emit = "common:ruby.enum_peek",         min_args = 0, max_args = 0 }
+rewind          = { emit = "common:ruby.enum_rewind",       min_args = 0, max_args = 0 }
+chain           = { emit = "common:ruby.enum_chain",        min_args = 1, max_args = 255 }
+with_index      = { emit = "common:ruby.enum_with_index",   min_args = 0, max_args = 1 }
+with_object     = { emit = "common:ruby.enum_with_object",  min_args = 1, max_args = 2 }
 slice           = { emit = "common:collections.slice",      min_args = 1, max_args = 2 }
 "slice!"        = { emit = "host:ecma:array:splice",        min_args = 2, max_args = 2 }
 "none?"         = { emit = "common:ruby.none",              min_args = 1, max_args = 1 }
@@ -319,15 +379,35 @@ to_h            = { emit = "common:dict.new",               min_args = 0, max_ar
 
 # ── Numeric instance methods (opcode:f64_*) ──────────────────────────────────
 
-abs             = { emit = "opcode:f64_abs",                min_args = 0, max_args = 0 }
+abs             = { emit = "common:ruby.abs",               min_args = 0, max_args = 0 }
+abs2            = { emit = "common:ruby.abs2",              min_args = 0, max_args = 0 }
+magnitude       = { emit = "common:ruby.abs",               min_args = 0, max_args = 0 }
 round           = { emit = "common:ruby.round",             min_args = 0, max_args = 1 }
 floor           = { emit = "common:ruby.floor",             min_args = 0, max_args = 1 }
 ceil            = { emit = "common:ruby.ceil",              min_args = 0, max_args = 1 }
 "even?"         = { emit = "common:ruby.even",              min_args = 0, max_args = 0 }
 "odd?"          = { emit = "common:ruby.odd",               min_args = 0, max_args = 0 }
-"zero?"         = { emit = "host:ecma:math:isZero",         min_args = 0, max_args = 0 }
-"positive?"     = { emit = "host:ecma:math:isPositive",     min_args = 0, max_args = 0 }
-"negative?"     = { emit = "host:ecma:math:isNegative",     min_args = 0, max_args = 0 }
+"zero?"         = { emit = "common:ruby.zero",              min_args = 0, max_args = 0 }
+"nonzero?"      = { emit = "common:ruby.nonzero",           min_args = 0, max_args = 0 }
+"positive?"     = { emit = "common:ruby.positive",          min_args = 0, max_args = 0 }
+"negative?"     = { emit = "common:ruby.negative",          min_args = 0, max_args = 0 }
+"real?"         = { emit = "common:ruby.real",              min_args = 0, max_args = 0 }
+"integer?"      = { emit = "common:ruby.integer",           min_args = 0, max_args = 0 }
+real            = { emit = "common:ruby.complex_real",      min_args = 0, max_args = 0 }
+imaginary       = { emit = "common:ruby.complex_imag",      min_args = 0, max_args = 0 }
+imag            = { emit = "common:ruby.complex_imag",      min_args = 0, max_args = 0 }
+numerator       = { emit = "common:ruby.rational_num",      min_args = 0, max_args = 0 }
+denominator     = { emit = "common:ruby.rational_den",      min_args = 0, max_args = 0 }
+conjugate       = { emit = "common:ruby.complex_conj",      min_args = 0, max_args = 0 }
+conj            = { emit = "common:ruby.complex_conj",      min_args = 0, max_args = 0 }
+arg             = { emit = "common:ruby.complex_arg",       min_args = 0, max_args = 0 }
+angle           = { emit = "common:ruby.complex_arg",       min_args = 0, max_args = 0 }
+polar           = { emit = "common:ruby.complex_polar",     min_args = 0, max_args = 0 }
+rect            = { emit = "common:ruby.complex_rect",      min_args = 0, max_args = 0 }
+rectangular     = { emit = "common:ruby.complex_rect",      min_args = 0, max_args = 0 }
+step            = { emit = "common:ruby.step",              min_args = 0, max_args = 3 }
+upto            = { emit = "common:ruby.upto",              min_args = 1, max_args = 2 }
+downto          = { emit = "common:ruby.downto",            min_args = 1, max_args = 2 }
 "between?"      = { emit = "common:ruby.between",           min_args = 2, max_args = 2 }
 clamp           = { emit = "common:math.clamp",             min_args = 2, max_args = 2 }
 gcd             = { emit = "host:ecma:math:gcd",            min_args = 1, max_args = 1 }
@@ -344,6 +424,7 @@ divmod          = { emit = "host:ecma:math:divmod",         min_args = 1, max_ar
 "File.delete"   = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
 "File.readlines"= { emit = "host:wasi:filesystem:readLines", min_args = 1, max_args = 1 }
 "File.directory?"= { emit = "host:wasi:filesystem:isDirectory", min_args = 1, max_args = 1 }
+"Symbol.all_symbols" = { emit = "common:ruby.symbols",       min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS

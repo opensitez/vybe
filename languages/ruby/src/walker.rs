@@ -2,14 +2,33 @@ use super::{RubyParser, Rule};
 use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+#[derive(Clone, Default)]
+struct RubyMethodInfo {
+    arity: i64,
+    param_count: i64,
+}
+
+thread_local! {
+    static RUBY_METHODS: RefCell<HashMap<String, RubyMethodInfo>> = RefCell::new(HashMap::new());
+    static RUBY_ALIASES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static RUBY_MODULE_MEMBERS: RefCell<HashMap<String, Vec<ClassMember>>> = RefCell::new(HashMap::new());
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    RUBY_METHODS.with(|methods| methods.borrow_mut().clear());
+    RUBY_ALIASES.with(|aliases| aliases.borrow_mut().clear());
+    RUBY_MODULE_MEMBERS.with(|modules| modules.borrow_mut().clear());
     let source = source.replace("2>/dev/null", "");
     let source = normalize_percent_array_literals(&source);
+    let source = normalize_ruby_dynamic_method_defs(&source);
+    let source = normalize_ruby_const_reads(&source);
     let pairs =
         RubyParser::parse(Rule::program, source.as_str()).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -41,6 +60,266 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+fn normalize_ruby_dynamic_method_defs(source: &str) -> String {
+    let mut out = source.to_string();
+    out = normalize_ruby_eval_method_defs(&out, "module_eval", "module");
+    out = normalize_ruby_eval_method_defs(&out, "class_eval", "class");
+    out = normalize_ruby_exec_method_defs(&out, "module_exec", "module");
+    out = normalize_ruby_exec_method_defs(&out, "class_exec", "class");
+    out = normalize_ruby_instance_eval_method_defs(&out);
+    out = normalize_ruby_instance_exec_singleton_defs(&out);
+    normalize_ruby_define_method_blocks(&out)
+}
+
+fn normalize_ruby_eval_method_defs(source: &str, eval_name: &str, decl: &str) -> String {
+    let needle = format!(".{}('def ", eval_name);
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(pos) = rest.find(&needle) {
+        let Some(recv_start) = ruby_receiver_start(rest, pos) else {
+            out.push_str(&rest[..pos + needle.len()]);
+            rest = &rest[pos + needle.len()..];
+            continue;
+        };
+        let def_start = recv_start + rest[recv_start..].find("'def ").unwrap_or(0) + 1;
+        let Some(close_rel) = rest[def_start..].find("')") else {
+            break;
+        };
+        let receiver = rest[recv_start..pos].trim();
+        let def_src = &rest[def_start..def_start + close_rel];
+        out.push_str(&rest[..recv_start]);
+        out.push_str(decl);
+        out.push(' ');
+        out.push_str(receiver);
+        out.push_str("; ");
+        out.push_str(def_src);
+        out.push_str("; end");
+        rest = &rest[def_start + close_rel + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_ruby_exec_method_defs(source: &str, exec_name: &str, decl: &str) -> String {
+    let needle = format!(".{}(", exec_name);
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(pos) = rest.find(&needle) {
+        let Some(recv_start) = ruby_receiver_start(rest, pos) else {
+            out.push_str(&rest[..pos + needle.len()]);
+            rest = &rest[pos + needle.len()..];
+            continue;
+        };
+        let after_args = pos + needle.len();
+        let Some(args_end_rel) = rest[after_args..].find(")") else {
+            break;
+        };
+        let block_start_search = after_args + args_end_rel + 1;
+        let Some(open_rel) = rest[block_start_search..].find('{') else {
+            break;
+        };
+        let block_start = block_start_search + open_rel + 1;
+        let Some(close_rel) = rest[block_start..].find('}') else {
+            break;
+        };
+        let block = &rest[block_start..block_start + close_rel];
+        let Some(def_src) = ruby_extract_def_from_block(block) else {
+            out.push_str(&rest[..block_start + close_rel + 1]);
+            rest = &rest[block_start + close_rel + 1..];
+            continue;
+        };
+        let receiver = rest[recv_start..pos].trim();
+        out.push_str(&rest[..recv_start]);
+        out.push_str(decl);
+        out.push(' ');
+        out.push_str(receiver);
+        out.push_str("; ");
+        out.push_str(def_src);
+        out.push_str("; end");
+        rest = &rest[block_start + close_rel + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_ruby_instance_eval_method_defs(source: &str) -> String {
+    let needle = ".instance_eval('def ";
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(pos) = rest.find(needle) {
+        let Some(recv_start) = ruby_receiver_start(rest, pos) else {
+            out.push_str(&rest[..pos + needle.len()]);
+            rest = &rest[pos + needle.len()..];
+            continue;
+        };
+        let def_start = recv_start + rest[recv_start..].find("'def ").unwrap_or(0) + 1;
+        let Some(close_rel) = rest[def_start..].find("')") else {
+            break;
+        };
+        let receiver = rest[recv_start..pos].trim();
+        let def_src = &rest[def_start..def_start + close_rel];
+        out.push_str(&rest[..recv_start]);
+        out.push_str(&ruby_singleton_def_from_def(receiver, def_src));
+        rest = &rest[def_start + close_rel + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_ruby_instance_exec_singleton_defs(source: &str) -> String {
+    let needle = ".instance_exec(";
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(pos) = rest.find(needle) {
+        let Some(recv_start) = ruby_receiver_start(rest, pos) else {
+            out.push_str(&rest[..pos + needle.len()]);
+            rest = &rest[pos + needle.len()..];
+            continue;
+        };
+        let args_start = pos + needle.len();
+        let Some(args_end_rel) = rest[args_start..].find(')') else {
+            break;
+        };
+        let arg_expr = rest[args_start..args_start + args_end_rel].trim();
+        let block_search = args_start + args_end_rel + 1;
+        let Some(open_rel) = rest[block_search..].find('{') else {
+            break;
+        };
+        let block_start = block_search + open_rel + 1;
+        let block_open = block_start - 1;
+        let Some(block_close) = ruby_find_matching_brace(rest, block_open) else {
+            break;
+        };
+        let block = rest[block_start..block_close].trim();
+        let Some((block_var, method_name, method_body)) = ruby_extract_define_singleton_method(block) else {
+            out.push_str(&rest[..block_close + 1]);
+            rest = &rest[block_close + 1..];
+            continue;
+        };
+        let body = if method_body.trim() == block_var {
+            arg_expr
+        } else {
+            method_body.trim()
+        };
+        let receiver = rest[recv_start..pos].trim();
+        out.push_str(&rest[..recv_start]);
+        let _ = receiver;
+        out.push_str("class Object; def ");
+        out.push_str(method_name);
+        out.push_str("; ");
+        out.push_str(body);
+        out.push_str("; end; end");
+        rest = &rest[block_close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_ruby_define_method_blocks(source: &str) -> String {
+    let needle = "define_method(:";
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(pos) = rest.find(needle) {
+        let name_start = pos + needle.len();
+        let Some(name_end_rel) = rest[name_start..].find(')') else {
+            break;
+        };
+        let name = rest[name_start..name_start + name_end_rel].trim();
+        let block_search = name_start + name_end_rel + 1;
+        let Some(open_rel) = rest[block_search..].find('{') else {
+            out.push_str(&rest[..block_search]);
+            rest = &rest[block_search..];
+            continue;
+        };
+        let body_start = block_search + open_rel + 1;
+        let Some(close_rel) = rest[body_start..].find('}') else {
+            break;
+        };
+        let body = rest[body_start..body_start + close_rel].trim();
+        out.push_str(&rest[..pos]);
+        out.push_str("def ");
+        out.push_str(name);
+        out.push_str("; ");
+        out.push_str(body);
+        out.push_str("; end");
+        rest = &rest[body_start + close_rel + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn ruby_receiver_start(source: &str, dot_pos: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut start = dot_pos;
+    while start > 0 {
+        let ch = bytes[start - 1] as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@') {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    (start < dot_pos).then_some(start)
+}
+
+fn ruby_extract_def_from_block(block: &str) -> Option<&str> {
+    let def_start = block.find("def ")?;
+    let after_def = &block[def_start..];
+    let end_rel = after_def.find("; end")?;
+    Some(after_def[..end_rel + 5].trim())
+}
+
+fn ruby_find_matching_brace(source: &str, open_idx: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(open_idx).copied()? != b'{' {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (idx, byte) in bytes.iter().enumerate().skip(open_idx) {
+        match *byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn ruby_singleton_def_from_def(receiver: &str, def_src: &str) -> String {
+    let trimmed = def_src.trim();
+    if let Some(rest) = trimmed.strip_prefix("def ") {
+        let _ = receiver;
+        format!(
+            "class Object; def {}; end; end",
+            rest.trim_end_matches("; end").trim()
+        )
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn ruby_extract_define_singleton_method(block: &str) -> Option<(&str, &str, &str)> {
+    let block = block.trim();
+    let after_pipe = block.strip_prefix('|')?;
+    let pipe_end = after_pipe.find('|')?;
+    let block_var = after_pipe[..pipe_end].trim();
+    let body = after_pipe[pipe_end + 1..].trim();
+    let needle = "define_singleton_method(:";
+    let method_start = body.find(needle)? + needle.len();
+    let method_end_rel = body[method_start..].find(')')?;
+    let method_name = body[method_start..method_start + method_end_rel].trim();
+    let block_search = method_start + method_end_rel + 1;
+    let open_rel = body[block_search..].find('{')?;
+    let inner_start = block_search + open_rel + 1;
+    let close_rel = body[inner_start..].find('}')?;
+    Some((block_var, method_name, body[inner_start..inner_start + close_rel].trim()))
 }
 
 fn normalize_percent_array_literals(source: &str) -> String {
@@ -118,6 +397,94 @@ fn normalize_percent_array_literals(source: &str) -> String {
         out.push(chars[i]);
         i += 1;
     }
+    out
+}
+
+fn normalize_ruby_const_reads(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        if ch == '\\' && (in_single || in_double) {
+            out.push(ch);
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '#' && !in_single && !in_double {
+            while i < chars.len() {
+                out.push(chars[i]);
+                if chars[i] == '\n' {
+                    break;
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if !in_single
+            && !in_double
+            && ch.is_ascii_uppercase()
+            && (i == 0 || !(chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '_'))
+        {
+            let start = i;
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            if j + 2 < chars.len()
+                && chars[j] == ':'
+                && chars[j + 1] == ':'
+                && chars[j + 2].is_ascii_uppercase()
+            {
+                let mut k = j + 3;
+                while k < chars.len() && (chars[k].is_ascii_alphanumeric() || chars[k] == '_') {
+                    k += 1;
+                }
+                let left: String = chars[start..j].iter().collect();
+                let right: String = chars[j + 2..k].iter().collect();
+                let prior = out.split_whitespace().last().unwrap_or("");
+                let declaration_context = matches!(
+                    prior,
+                    "class" | "module" | "include" | "extend" | "rescue" | "<"
+                );
+                if !declaration_context && !(left == "Math" && matches!(right.as_str(), "PI" | "E")) {
+                    out.push_str(&left);
+                    out.push_str(".const_get(:");
+                    out.push_str(&right);
+                    out.push(')');
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+
     out
 }
 
@@ -207,7 +574,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::at_exit_stmt => StmtKind::Empty,                            // no runtime equivalent
         Rule::catch_throw_stmt => StmtKind::Empty,                        // simplified
         Rule::access_modifier_stmt => StmtKind::Empty,                    // metadata only
-        Rule::alias_stmt => StmtKind::Empty, // not directly representable
+        Rule::alias_stmt => walk_alias_stmt(pair)?,
         Rule::undef_stmt => StmtKind::Empty, // not directly representable
 
         Rule::multi_assign_stmt => walk_multi_assign(pair)?,
@@ -235,6 +602,8 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if text.starts_with("self.") {
                     is_self_method = true;
                     name = text[5..].to_string();
+                } else if let Some((_, method)) = text.rsplit_once('.') {
+                    name = method.to_string();
                 } else {
                     name = text.to_string();
                 }
@@ -256,6 +625,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let is_generator = body_has_yield(&body);
+    register_ruby_method("Object", &name, &params);
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -267,6 +637,92 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_async: false,
         is_generator,
         is_sub: false,
+    })
+}
+
+fn walk_alias_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let names = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::method_name_id)
+        .map(|p| p.as_str().to_string())
+        .collect::<Vec<_>>();
+    if names.len() >= 2 {
+        RUBY_ALIASES.with(|aliases| {
+            aliases
+                .borrow_mut()
+                .insert(names[0].clone(), names[1].clone());
+        });
+    }
+    Ok(StmtKind::Empty)
+}
+
+fn method_key(owner: &str, name: &str) -> String {
+    format!("{}::{}", owner, name)
+}
+
+fn register_ruby_method(owner: &str, name: &str, params: &[Param]) {
+    let arity = params
+        .iter()
+        .filter(|p| !p.is_optional && !p.is_rest && !p.is_kwargs)
+        .count() as i64;
+    let param_count = params.len() as i64;
+    RUBY_METHODS.with(|methods| {
+        methods.borrow_mut().insert(
+            method_key(owner, name),
+            RubyMethodInfo { arity, param_count },
+        );
+    });
+}
+
+fn register_ruby_module_members(name: &str, members: &[ClassMember]) {
+    RUBY_MODULE_MEMBERS.with(|modules| {
+        modules
+            .borrow_mut()
+            .insert(name.to_string(), members.to_vec());
+    });
+}
+
+fn ruby_module_members(name: &str) -> Vec<ClassMember> {
+    RUBY_MODULE_MEMBERS.with(|modules| {
+        modules
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    })
+}
+
+fn register_ruby_member_methods(owner: &str, members: &[ClassMember]) {
+    for member in members {
+        if let ClassMember::Method(method) = member {
+            if let StmtKind::FunctionDecl { name, params, .. } = &method.kind {
+                register_ruby_method(owner, name, params);
+            }
+        }
+    }
+}
+
+fn ruby_alias_original(name: &str) -> String {
+    RUBY_ALIASES.with(|aliases| {
+        aliases
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    })
+}
+
+fn ruby_method_info(owner: &str, name: &str) -> RubyMethodInfo {
+    let original = ruby_alias_original(name);
+    RUBY_METHODS.with(|methods| {
+        let methods = methods.borrow();
+        methods
+            .get(&method_key(owner, name))
+            .or_else(|| methods.get(&method_key(owner, &original)))
+            .or_else(|| methods.get(&method_key("Object", name)))
+            .or_else(|| methods.get(&method_key("Object", &original)))
+            .cloned()
+            .unwrap_or_default()
     })
 }
 
@@ -406,7 +862,7 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 parents.push(p.as_str().to_string());
             }
             Rule::class_body => {
-                members = walk_class_body(p)?;
+                members = walk_class_body(p, &name)?;
             }
             _ => {}
         }
@@ -422,7 +878,7 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+fn walk_class_body(pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     let mut current_visibility = Visibility::Public;
 
@@ -451,6 +907,7 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                     ..
                 } = &stmt_kind
                 {
+                    register_ruby_method(class_name, name, params);
                     if name == "initialize" {
                         // Extract instance variable assignments from constructor body
                         members.push(ClassMember::Constructor {
@@ -470,7 +927,15 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 }
             }
             Rule::include_stmt | Rule::extend_stmt => {
-                // Include/extend — ignore for now
+                let included = p
+                    .into_inner()
+                    .find(|inner| matches!(inner.as_rule(), Rule::constant_path | Rule::constant))
+                    .map(|inner| inner.as_str().to_string());
+                if let Some(module_name) = included {
+                    let module_members = ruby_module_members(&module_name);
+                    register_ruby_member_methods(class_name, &module_members);
+                    members.extend(module_members);
+                }
             }
             Rule::alias_stmt => {}
             Rule::class_def => {
@@ -487,12 +952,107 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 // Other statements in class body → treat as static initializer
                 let stmt = walk_statement(p)?;
                 if !matches!(stmt.kind, StmtKind::Empty) {
-                    members.push(ClassMember::Method(Box::new(stmt)));
+                    if let Some((alias, original)) = ruby_alias_method_stmt(&stmt) {
+                        if let Some(alias_stmt) = members.iter().find_map(|member| {
+                            let ClassMember::Method(method) = member else {
+                                return None;
+                            };
+                            let mut cloned = (**method).clone();
+                            if let StmtKind::FunctionDecl { name, .. } = &mut cloned.kind {
+                                if name == &original {
+                                    *name = alias.clone();
+                                    return Some(cloned);
+                                }
+                            }
+                            None
+                        }) {
+                            members.push(ClassMember::Method(Box::new(alias_stmt)));
+                        }
+                        continue;
+                    }
+                    if let Some(name) = ruby_remove_const_stmt(&stmt) {
+                        members.retain(|member| {
+                            !matches!(member, ClassMember::Const { name: const_name, .. } if const_name == &name)
+                        });
+                        continue;
+                    }
+                    if let Some(name) = ruby_remove_method_stmt(&stmt) {
+                        members.retain(|member| {
+                            !matches!(
+                                member,
+                                ClassMember::Method(method)
+                                    if matches!(&method.kind, StmtKind::FunctionDecl { name: method_name, .. } if method_name == &name)
+                            )
+                        });
+                        continue;
+                    }
+                    if let StmtKind::Assign { targets, value } = stmt.kind {
+                        if targets.len() == 1 {
+                            if let ExprKind::Ident(name) = &targets[0].kind {
+                                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                                    members.push(ClassMember::Const {
+                                        name: name.clone(),
+                                        type_hint: None,
+                                        value,
+                                        visibility: current_visibility,
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                        members.push(ClassMember::Method(Box::new(Statement::new(
+                            StmtKind::Assign { targets, value },
+                        ))));
+                    } else {
+                        members.push(ClassMember::Method(Box::new(stmt)));
+                    }
                 }
             }
         }
     }
     Ok(members)
+}
+
+fn ruby_remove_const_stmt(stmt: &Statement) -> Option<String> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "remove_const") || args.len() != 1 {
+        return None;
+    }
+    ruby_method_name_arg(&args[0].value)
+}
+
+fn ruby_remove_method_stmt(stmt: &Statement) -> Option<String> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "remove_method") || args.len() != 1 {
+        return None;
+    }
+    ruby_method_name_arg(&args[0].value)
+}
+
+fn ruby_alias_method_stmt(stmt: &Statement) -> Option<(String, String)> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "alias_method") || args.len() != 2 {
+        return None;
+    }
+    Some((
+        ruby_method_name_arg(&args[0].value)?,
+        ruby_method_name_arg(&args[1].value)?,
+    ))
 }
 
 fn walk_attr_decl(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -597,11 +1157,13 @@ fn walk_module_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::class_body => {
-                members = walk_class_body(p)?;
+                members = walk_class_body(p, &name)?;
             }
             _ => {}
         }
     }
+
+    register_ruby_module_members(&name, &members);
 
     Ok(StmtKind::ModuleDecl {
         name,
@@ -1369,6 +1931,11 @@ fn walk_command_call(mut items: Vec<Pair<Rule>>) -> Result<StmtKind, String> {
         args.push(Argument::positional(lambda));
     }
 
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "lambda") && args.len() == 1 {
+        let stmt = StmtKind::Expr(ruby_proc_expr("__ruby_lambda", args.remove(0).value));
+        return maybe_wrap_modifier(stmt, &mut items);
+    }
+
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
@@ -1518,6 +2085,21 @@ fn normalize_consecutive_prints(stmts: &mut Vec<Statement>) {
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
+    match pair.as_str().trim() {
+        "Math::PI" => {
+            return Ok(Expression::with_span(
+                ExprKind::Lit(Literal::Float(std::f64::consts::PI)),
+                span,
+            ));
+        }
+        "Math::E" => {
+            return Ok(Expression::with_span(
+                ExprKind::Lit(Literal::Float(std::f64::consts::E)),
+                span,
+            ));
+        }
+        _ => {}
+    }
     let kind = walk_expr_kind(pair)?;
     Ok(Expression::with_span(kind, span))
 }
@@ -1532,7 +2114,19 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         )))),
         Rule::interpolated_string => walk_interpolated_string(pair),
         Rule::heredoc => Ok(ExprKind::Lit(Literal::Str(parse_heredoc(pair.as_str())))),
-        Rule::symbol => Ok(ExprKind::Lit(Literal::Str(pair.as_str()[1..].to_string()))),
+        Rule::symbol => {
+            let raw = &pair.as_str()[1..];
+            let value = if raw.starts_with('"') || raw.starts_with('\'') {
+                if raw.starts_with('"') {
+                    raw[1..raw.len() - 1].to_string()
+                } else {
+                    parse_ruby_string(raw)
+                }
+            } else {
+                raw.to_string()
+            };
+            Ok(ExprKind::Lit(Literal::Str(value)))
+        }
         Rule::regex_literal => Ok(ExprKind::Lit(Literal::Str(pair.as_str().to_string()))),
         Rule::percent_literal => Ok(walk_percent_literal(pair.as_str())),
 
@@ -1543,7 +2137,26 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
         Rule::constant => Ok(ExprKind::Ident(pair.as_str().to_string())),
-        Rule::constant_path => Ok(ExprKind::Ident(pair.as_str().to_string())),
+        Rule::constant_path => match pair.as_str() {
+            "Math::PI" => Ok(ExprKind::Lit(Literal::Float(std::f64::consts::PI))),
+            "Math::E" => Ok(ExprKind::Lit(Literal::Float(std::f64::consts::E))),
+            path => {
+                let mut parts = path.split("::");
+                let first = parts.next().unwrap_or(path);
+                let mut expr = Expression::ident(first);
+                for part in parts {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ruby_const_get")),
+                        args: vec![
+                            Argument::positional(expr),
+                            Argument::positional(Expression::string(part)),
+                        ],
+                        optional: false,
+                    });
+                }
+                Ok(expr.kind)
+            }
+        },
 
         // Instance var @x → self._rb_x  (prefixed to avoid collision with method bindings)
         Rule::instance_var => {
@@ -1679,11 +2292,20 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut i = 0;
             while i < inner.len() {
                 if inner[i].as_rule() == Rule::comparison_op {
-                    let op = parse_comparison_op(inner[i].as_str().trim());
+                    let op_text = inner[i].as_str().trim();
                     i += 1;
                     if i < inner.len() {
                         let right = walk_expression(inner[i].clone())?;
                         i += 1;
+                        if op_text == "=~" {
+                            left = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__ruby_match_index")),
+                                args: vec![Argument::positional(left), Argument::positional(right)],
+                                optional: false,
+                            });
+                            continue;
+                        }
+                        let op = parse_comparison_op(op_text);
                         left = maybe_ruby_array_binary(left, op, right);
                     }
                 } else {
@@ -1842,9 +2464,13 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
         BinOp::Add => Some("__ruby_op_add"),
         BinOp::Sub => Some("__ruby_op_sub"),
         BinOp::Mul => Some("__ruby_op_mul"),
+        BinOp::Div => Some("__ruby_op_div"),
         BinOp::Shl => Some("__ruby_op_shl"),
+        BinOp::Shr => Some("__ruby_op_shr"),
         BinOp::BitAnd => Some("__ruby_op_and"),
         BinOp::BitOr => Some("__ruby_op_or"),
+        BinOp::Eq => Some("__ruby_eq"),
+        BinOp::StrictEq => Some("__ruby_proc_call"),
         _ => None,
     });
     if let Some(name) = helper {
@@ -2035,9 +2661,81 @@ fn walk_ident_call(pair: Pair<Rule>) -> Result<ExprKind, String> {
         .map(walk_call_args)
         .transpose()?
         .unwrap_or_default();
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "lambda") && args.len() == 1 {
+        return Ok(ruby_proc_expr("__ruby_lambda", args[0].value.clone()).kind);
+    }
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "eval") && args.len() == 1 {
+        return Ok(ruby_eval_expr(args[0].value.clone()).kind);
+    }
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "method") && args.len() == 1 {
+        if let Some(name) = ruby_method_name_arg(&args[0].value) {
+            return Ok(ruby_method_expr(
+                &name,
+                Expression::null(),
+                "Object",
+                "Object",
+                Expression::null(),
+            )
+            .kind);
+        }
+    }
     Ok(ExprKind::Call {
         callee: Box::new(callee),
         args,
+        optional: false,
+    })
+}
+
+fn ruby_method_name_arg(expr: &Expression) -> Option<String> {
+    if let ExprKind::Lit(Literal::Str(name)) = &expr.kind {
+        Some(name.clone())
+    } else {
+        None
+    }
+}
+
+fn ruby_eval_expr(source: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__vybe_eval")),
+        args: vec![
+            Argument::positional(source),
+            Argument::positional(Expression::string("ruby")),
+        ],
+        optional: false,
+    })
+}
+
+fn ruby_receiver_class_name(expr: &Expression) -> String {
+    match &expr.kind {
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => name.clone(),
+            _ => "Object".to_string(),
+        },
+        _ => "Object".to_string(),
+    }
+}
+
+fn ruby_method_expr(
+    name: &str,
+    fn_expr: Expression,
+    owner: &str,
+    receiver_class: &str,
+    receiver: Expression,
+) -> Expression {
+    let original = ruby_alias_original(name);
+    let info = ruby_method_info(owner, name);
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__ruby_method")),
+        args: vec![
+            Argument::positional(Expression::string(name)),
+            Argument::positional(fn_expr),
+            Argument::positional(Expression::int(info.arity)),
+            Argument::positional(Expression::int(info.param_count)),
+            Argument::positional(Expression::string(owner)),
+            Argument::positional(Expression::string(receiver_class)),
+            Argument::positional(Expression::string(&original)),
+            Argument::positional(receiver),
+        ],
         optional: false,
     })
 }
@@ -2050,6 +2748,22 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for chain in inner {
         if chain.as_rule() == Rule::postfix_chain {
             expr = walk_postfix_chain(expr, chain)?;
+        } else if chain.as_rule() == Rule::constant {
+            let const_name = chain.as_str();
+            if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "PI") if base == "Math") {
+                expr = Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::PI)));
+            } else if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "E") if base == "Math") {
+                expr = Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::E)));
+            } else {
+                expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__ruby_const_get")),
+                    args: vec![
+                        Argument::positional(expr),
+                        Argument::positional(Expression::string(const_name)),
+                    ],
+                    optional: false,
+                });
+            }
         }
     }
     Ok(expr.kind)
@@ -2061,8 +2775,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
     if children.is_empty() {
         // bare () call
         return Ok(Expression::new(ExprKind::Call {
-            callee: Box::new(expr),
-            args: Vec::new(),
+            callee: Box::new(Expression::ident("__ruby_proc_call")),
+            args: vec![Argument::positional(expr)],
             optional: false,
         }));
     }
@@ -2084,6 +2798,10 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 .unwrap_or_default();
 
             // Check for trailing block
+            let block_text = children
+                .iter()
+                .find(|c| c.as_rule() == Rule::block_literal)
+                .map(|c| c.as_str().to_string());
             let block = children
                 .iter()
                 .find(|c| c.as_rule() == Rule::block_literal)
@@ -2102,6 +2820,14 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
 
             if let Some(lit) = ruby_literal_string_substitution(&expr, &method_name, &final_args) {
                 return Ok(Expression::new(lit));
+            }
+
+            if matches!(
+                method_name.as_str(),
+                "class_eval" | "module_eval" | "instance_eval"
+            ) && final_args.len() == 1
+            {
+                return Ok(ruby_eval_expr(final_args[0].value.clone()));
             }
 
             if method_name == "find_index" && final_args.len() == 1 {
@@ -2143,6 +2869,29 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             }
 
             if let ExprKind::Ident(class_name) = &expr.kind {
+                if class_name == "Proc" && method_name == "new" && !final_args.is_empty() {
+                    return Ok(Expression::new(ruby_proc_expr(
+                        "__ruby_proc",
+                        final_args.remove(0).value,
+                    ).kind));
+                }
+                if class_name == "Enumerator" && method_name == "new" {
+                    if let Some(gen_fn) = block_text
+                        .as_deref()
+                        .and_then(ruby_enumerator_generator_expr)
+                    {
+                        return Ok(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__ruby_enum_new")),
+                            args: vec![Argument::positional(gen_fn)],
+                            optional: false,
+                        }));
+                    }
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ruby_enum_new")),
+                        args: final_args,
+                        optional: false,
+                    }));
+                }
                 if class_name == "Time" {
                     let builtin = match method_name.as_str() {
                         "utc" | "gm" => Some("__ruby_time_utc"),
@@ -2163,6 +2912,13 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 if class_name == "Date" && method_name == "new" {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ruby_date_new")),
+                        args: final_args,
+                        optional: false,
+                    }));
+                }
+                if class_name == "Symbol" && method_name == "all_symbols" {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ruby_symbols")),
                         args: final_args,
                         optional: false,
                     }));
@@ -2194,11 +2950,68 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
 
             // Normalize .call() → direct call (lambda/proc invocation)
             if method_name == "call" {
+                let mut call_args = vec![Argument::positional(expr)];
+                call_args.extend(final_args);
                 return Ok(Expression::new(ExprKind::Call {
-                    callee: Box::new(expr),
-                    args: final_args,
+                    callee: Box::new(Expression::ident("__ruby_proc_call")),
+                    args: call_args,
                     optional: false,
                 }));
+            }
+
+            if method_name == "yield" {
+                let mut call_args = vec![Argument::positional(expr)];
+                call_args.extend(final_args);
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__ruby_proc_call")),
+                    args: call_args,
+                    optional: false,
+                }));
+            }
+
+            if matches!(method_name.as_str(), "each" | "map" | "collect") && final_args.is_empty() {
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__ruby_enum_from")),
+                    args: vec![
+                        Argument::positional(expr),
+                        Argument::positional(Expression::string(&method_name)),
+                    ],
+                    optional: false,
+                }));
+            }
+
+            if matches!(
+                method_name.as_str(),
+                "const_get" | "const_set" | "const_defined?" | "remove_const" | "constants"
+            ) {
+                let builtin = match method_name.as_str() {
+                    "const_get" => "__ruby_const_get",
+                    "const_set" => "__ruby_const_set",
+                    "const_defined?" => "__ruby_const_defined",
+                    "remove_const" => "__ruby_remove_const",
+                    "constants" => "__ruby_constants",
+                    _ => unreachable!(),
+                };
+                let mut call_args = vec![Argument::positional(expr)];
+                call_args.extend(final_args);
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(builtin)),
+                    args: call_args,
+                    optional: false,
+                }));
+            }
+
+            if method_name == "method" && final_args.len() == 1 {
+                if let Some(name) = ruby_method_name_arg(&final_args[0].value) {
+                    let owner = ruby_receiver_class_name(&expr);
+                    let original = ruby_alias_original(&name);
+                    let fn_expr = Expression::new(ExprKind::Member {
+                        object: Box::new(expr.clone()),
+                        field: original,
+                        null_safe: false,
+                    });
+                    return Ok(ruby_method_expr(&name, fn_expr, &owner, &owner, expr));
+                }
             }
 
             // Normalize .is_a?/.kind_of?(Klass) → `expr instanceof Klass`
@@ -2237,6 +3050,14 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 }));
             }
 
+            if method_name == "integer?" && final_args.is_empty() {
+                match expr.kind {
+                    ExprKind::Lit(Literal::Int(_)) => return Ok(Expression::bool(true)),
+                    ExprKind::Lit(Literal::Float(_)) => return Ok(Expression::bool(false)),
+                    _ => {}
+                }
+            }
+
             let member = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: method_name,
@@ -2252,28 +3073,49 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
         Rule::constant => {
             // Scope resolution: ::Constant
             let const_name = children[0].as_str();
-            Ok(Expression::new(ExprKind::Member {
-                object: Box::new(expr),
-                field: const_name.to_string(),
-                null_safe: false,
+            if let ExprKind::Ident(base) = &expr.kind {
+                if base == "Math" && const_name == "PI" {
+                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::PI))));
+                }
+                if base == "Math" && const_name == "E" {
+                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::E))));
+                }
+                return Ok(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__ruby_const_get")),
+                    args: vec![
+                        Argument::positional(Expression::ident(base)),
+                        Argument::positional(Expression::string(const_name)),
+                    ],
+                    optional: false,
+                }));
+            }
+            Ok(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ruby_const_get")),
+                args: vec![
+                    Argument::positional(expr),
+                    Argument::positional(Expression::string(const_name)),
+                ],
+                optional: false,
             }))
         }
         Rule::call_args => {
             // Bare call: expr(args)
             let args = walk_call_args(children.into_iter().next().unwrap())?;
+            let mut call_args = vec![Argument::positional(expr)];
+            call_args.extend(args);
             Ok(Expression::new(ExprKind::Call {
-                callee: Box::new(expr),
-                args,
+                callee: Box::new(Expression::ident("__ruby_proc_call")),
+                args: call_args,
                 optional: false,
             }))
         }
         Rule::expression_list => {
             // Subscript: expr[index]
             let index = walk_expr_list_single(children.into_iter().next().unwrap())?;
-            Ok(Expression::new(ExprKind::Index {
-                object: Box::new(expr),
-                index: Box::new(index),
-                null_safe: false,
+            Ok(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ruby_proc_call")),
+                args: vec![Argument::positional(expr), Argument::positional(index)],
+                optional: false,
             }))
         }
         Rule::block_literal => {
@@ -2316,6 +3158,45 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             }
         }
     }
+}
+
+fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
+    let mut body = Vec::new();
+    for piece in source.split(';') {
+        let trimmed = piece.trim();
+        let value = if let Some((_, rhs)) = trimmed.rsplit_once("<<") {
+            rhs.trim().trim_end_matches('}').trim()
+        } else if let Some((_, rhs)) = trimmed.rsplit_once(".yield") {
+            rhs.trim().trim_end_matches('}').trim()
+        } else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let mut parsed = RubyParser::parse(Rule::expression, value).ok()?;
+        let expr_pair = parsed.next()?;
+        let expr = walk_expression(expr_pair).ok()?;
+        body.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Yield(
+            Some(Box::new(expr)),
+        )))));
+    }
+    if body.is_empty() {
+        return None;
+    }
+    Some(Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            return_type: None,
+            body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        },
+    )))))
 }
 
 fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
@@ -2406,6 +3287,34 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 }
 
 fn ruby_block_arg_to_lambda(expr: Expression) -> Expression {
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ruby_method") {
+            let param = Param {
+                name: "__ruby_proc_arg".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            };
+            let call = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ruby_proc_call")),
+                args: vec![
+                    Argument::positional(expr),
+                    Argument::positional(Expression::ident("__ruby_proc_arg")),
+                ],
+                optional: false,
+            });
+            return Expression::new(ExprKind::Lambda {
+                params: vec![param],
+                body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(call)))]),
+                is_async: false,
+                captures: Vec::new(),
+            });
+        }
+    }
     if let ExprKind::Lit(Literal::Str(method)) = &expr.kind {
         let param = Param {
             name: "__ruby_proc_arg".to_string(),
@@ -2603,6 +3512,26 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_nullable: false,
                                 });
                             }
+                            Rule::optional_param => {
+                                let mut inner = item.into_inner();
+                                let name = inner
+                                    .next()
+                                    .map(|c| c.as_str().to_string())
+                                    .unwrap_or_default();
+                                let default = inner.find(|c| is_expression_rule(c.as_rule()))
+                                    .map(walk_expression)
+                                    .transpose()?;
+                                params.push(Param {
+                                    name,
+                                    type_hint: None,
+                                    default,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: true,
+                                    is_nullable: false,
+                                });
+                            }
                             Rule::identifier => {
                                 params.push(Param {
                                     name: item.as_str().to_string(),
@@ -2763,6 +3692,7 @@ fn walk_interpolated_string(pair: Pair<Rule>) -> Result<ExprKind, String> {
 // ── Lambda ──────────────────────────────────────────────────────────────────
 
 fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let source = pair.as_str().to_string();
     let mut params = Vec::new();
     let mut body = Vec::new();
 
@@ -2781,28 +3711,40 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 
     apply_implicit_return(&mut body);
+    if let (Some(open), Some(close)) = (source.find('{'), source.rfind('}')) {
+        let inner = source[open + 1..close].trim();
+        if !inner.is_empty() && !inner.contains(';') && !inner.contains('\n') {
+            if let Ok(mut parsed) = RubyParser::parse(Rule::expression, inner) {
+                if let Some(expr_pair) = parsed.next() {
+                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(expr_pair)?)))];
+                }
+            }
+        }
+    }
 
-    Ok(ExprKind::Lambda {
+    let lambda = Expression::new(ExprKind::Lambda {
         params,
         body: LambdaBody::Block(body),
         is_async: false,
         captures: Vec::new(),
-    })
+    });
+    Ok(ruby_proc_expr("__ruby_lambda", lambda).kind)
 }
 
 fn walk_proc(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for p in pair.into_inner() {
         if p.as_rule() == Rule::block_literal {
             let lambda = walk_block_literal(p)?;
-            return Ok(lambda.kind);
+            return Ok(ruby_proc_expr("__ruby_proc", lambda).kind);
         }
     }
-    Ok(ExprKind::Lambda {
+    let lambda = Expression::new(ExprKind::Lambda {
         params: Vec::new(),
         body: LambdaBody::Block(Vec::new()),
         is_async: false,
         captures: Vec::new(),
-    })
+    });
+    Ok(ruby_proc_expr("__ruby_proc", lambda).kind)
 }
 
 // ── Yield ───────────────────────────────────────────────────────────────────
@@ -3172,6 +4114,29 @@ fn ruby_call_expr(name: &str, args: Vec<Expression>) -> Expression {
         args: args.into_iter().map(Argument::positional).collect(),
         optional: false,
     })
+}
+
+fn ruby_proc_expr(name: &str, lambda: Expression) -> Expression {
+    let (arity, has_rest) = match &lambda.kind {
+        ExprKind::Lambda { params, .. } => (
+            params.iter().filter(|p| !p.is_rest).count() as i64,
+            params.iter().any(|p| p.is_rest),
+        ),
+        _ => (0, false),
+    };
+    let param_count = match &lambda.kind {
+        ExprKind::Lambda { params, .. } => params.len() as i64,
+        _ => arity,
+    };
+    ruby_call_expr(
+        name,
+        vec![
+            lambda,
+            Expression::new(ExprKind::Lit(Literal::Int(arity))),
+            Expression::new(ExprKind::Lit(Literal::Bool(has_rest))),
+            Expression::new(ExprKind::Lit(Literal::Int(param_count))),
+        ],
+    )
 }
 
 fn ruby_add_expr(left: Expression, right: Expression) -> Expression {

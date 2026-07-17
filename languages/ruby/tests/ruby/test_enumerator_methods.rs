@@ -20,7 +20,7 @@ ruby_test!(
 ruby_test!(
     test_enumerator_next,
     "e = [1, 2].each; puts e.next; puts e.next",
-    "1\\n2"
+    "1\n2"
 );
 ruby_test!(
     test_enumerator_rewind,
@@ -30,7 +30,7 @@ ruby_test!(
 ruby_test!(
     test_enumerator_peek,
     "e = [1, 2].each; puts e.peek; puts e.next",
-    "1\\n1"
+    "1\n1"
 );
 ruby_test!(
     test_enumerator_next_stopiteration,

@@ -52,6 +52,7 @@ method_def = {
 
 method_name = {
     "self" ~ "." ~ method_name_id
+    | identifier ~ "." ~ method_name_id
     | method_name_id
 }
 
@@ -265,7 +266,7 @@ not_expr = { (not_kw | "!") ~ not_expr | comparison }
 // ── Comparison ─────────────────────────────────────────────────────────────
 comparison = { bitor_expr ~ (comparison_op ~ bitor_expr)* }
 comparison_op = {
-    "<=>" | "===" | "==" | "!=" | "<=" | ">=" | "<" | ">"
+    "<=>" | "===" | "=~" | "==" | "!=" | "<=" | ">=" | "<" | ">"
 }
 
 // ── Bitwise ────────────────────────────────────────────────────────────────
@@ -295,6 +296,7 @@ postfix = { primary ~ postfix_chain* }
 postfix_chain = {
     "&." ~ method_name_id ~ ("(" ~ call_args? ~ ")")? ~ block_literal?   // safe navigation
     | "." ~ method_name_id ~ ("(" ~ call_args? ~ ")")? ~ block_literal?  // method call
+    | "." ~ "(" ~ call_args? ~ ")"                                        // proc shorthand call: f.(x)
     | "::" ~ constant                                                     // scope resolution
     | "[" ~ expression_list? ~ "]"                                        // subscript
     | block_literal                                                       // trailing block
@@ -331,7 +333,7 @@ brace_block = { "{" ~ block_params? ~ eat_term ~ (statement ~ eat_term)* ~ "}" }
 
 block_params = { "|" ~ block_param_list? ~ "|" }
 block_param_list = { block_param_item ~ ("," ~ block_param_item)* }
-block_param_item = { splat_param | identifier }
+block_param_item = { splat_param | optional_param | identifier }
 
 // ── Primary ────────────────────────────────────────────────────────────────
 primary = {
@@ -363,6 +365,7 @@ primary = {
     | class_var
     | instance_var
     | ident_call
+    | constant_path
     | constant
     | identifier
 }
@@ -380,8 +383,8 @@ hash_pair  = {
 
 // ── Lambda ─────────────────────────────────────────────────────────────────
 lambda_literal = {
-    "->" ~ ("(" ~ param_list? ~ ")")? ~ "{" ~ eat_term ~ (statement ~ eat_term)* ~ "}"
-    | "->" ~ ("(" ~ param_list? ~ ")")? ~ "do" ~ eat_term ~ body ~ "end"
+    "->" ~ (("(" ~ param_list? ~ ")") | param_list)? ~ "{" ~ eat_term ~ (statement ~ eat_term)* ~ "}"
+    | "->" ~ (("(" ~ param_list? ~ ")") | param_list)? ~ "do" ~ eat_term ~ body ~ "end"
 }
 
 // ── Proc literal ───────────────────────────────────────────────────────────
@@ -468,7 +471,7 @@ integer_literal = @{
 }
 
 // ── Symbol ─────────────────────────────────────────────────────────────────
-symbol = @{ ":" ~ ((ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")? | operator_method_name) }
+symbol = @{ ":" ~ (("\"" ~ (!"\"" ~ ("\\" ~ ANY | ANY))* ~ "\"") | ("'" ~ (!"'" ~ ("\\" ~ ANY | ANY))* ~ "'") | ("@@" | "@") ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("?" | "!")? | operator_method_name) }
 
 // ── Variables ──────────────────────────────────────────────────────────────
 global_var   = @{ "$" ~ (ASCII_ALPHANUMERIC | "_")+ }
