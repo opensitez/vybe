@@ -11,7 +11,7 @@ use crate::languages::{self, Language};
 use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::chunk::Import;
 use vybe_bytecode::value::{Function, Object, ObjectKind};
-use vybe_bytecode::{HostContext, ImportTarget, Value, VM};
+use vybe_bytecode::{HostContext, ImportTarget, VM, Value};
 use vybe_host::{Capabilities, Capability};
 
 thread_local! {
@@ -1546,8 +1546,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{ensure_js_runtime_registered, JsDynamicRuntime, RuntimeCompilerService};
-    use vybe_bytecode::{Value, VM};
+    use super::{JsDynamicRuntime, RuntimeCompilerService, ensure_js_runtime_registered};
+    use vybe_bytecode::{VM, Value};
 
     struct DynamicSmokeCase {
         language: &'static str,

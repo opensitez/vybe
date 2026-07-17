@@ -332,7 +332,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "Exception",
             "BaseException",
         ],
-        "OverflowError" => &["OverflowError", "ArithmeticError", "Exception", "BaseException"],
+        "OverflowError" => &[
+            "OverflowError",
+            "ArithmeticError",
+            "Exception",
+            "BaseException",
+        ],
         "FloatingPointError" => &[
             "FloatingPointError",
             "ArithmeticError",
@@ -347,7 +352,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "Exception",
             "BaseException",
         ],
-        "RecursionError" => &["RecursionError", "RuntimeError", "Exception", "BaseException"],
+        "RecursionError" => &[
+            "RecursionError",
+            "RuntimeError",
+            "Exception",
+            "BaseException",
+        ],
         "RuntimeError" => &["RuntimeError", "Exception", "BaseException"],
         // OSError branch (IOError/EnvironmentError are aliases in Py3)
         "FileNotFoundError" => &["FileNotFoundError", "OSError", "Exception", "BaseException"],
@@ -355,7 +365,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         "TimeoutError" => &["TimeoutError", "OSError", "Exception", "BaseException"],
         "FileExistsError" => &["FileExistsError", "OSError", "Exception", "BaseException"],
         "IsADirectoryError" => &["IsADirectoryError", "OSError", "Exception", "BaseException"],
-        "NotADirectoryError" => &["NotADirectoryError", "OSError", "Exception", "BaseException"],
+        "NotADirectoryError" => &[
+            "NotADirectoryError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
         "BlockingIOError" => &["BlockingIOError", "OSError", "Exception", "BaseException"],
         "ConnectionError" => &["ConnectionError", "OSError", "Exception", "BaseException"],
         "BrokenPipeError" => &[
@@ -386,7 +401,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "Exception",
             "BaseException",
         ],
-        "ProcessLookupError" => &["ProcessLookupError", "OSError", "Exception", "BaseException"],
+        "ProcessLookupError" => &[
+            "ProcessLookupError",
+            "OSError",
+            "Exception",
+            "BaseException",
+        ],
         "InterruptedError" => &["InterruptedError", "OSError", "Exception", "BaseException"],
         "ChildProcessError" => &["ChildProcessError", "OSError", "Exception", "BaseException"],
         "IOError" | "OSError" | "EnvironmentError" => &["OSError", "Exception", "BaseException"],
@@ -408,7 +428,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
         "UnicodeError" => &["UnicodeError", "ValueError", "Exception", "BaseException"],
         "ValueError" => &["ValueError", "Exception", "BaseException"],
         // NameError / ImportError / SyntaxError branches
-        "UnboundLocalError" => &["UnboundLocalError", "NameError", "Exception", "BaseException"],
+        "UnboundLocalError" => &[
+            "UnboundLocalError",
+            "NameError",
+            "Exception",
+            "BaseException",
+        ],
         "NameError" => &["NameError", "Exception", "BaseException"],
         "ModuleNotFoundError" => &[
             "ModuleNotFoundError",
@@ -417,7 +442,12 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "ImportError" => &["ImportError", "Exception", "BaseException"],
-        "IndentationError" => &["IndentationError", "SyntaxError", "Exception", "BaseException"],
+        "IndentationError" => &[
+            "IndentationError",
+            "SyntaxError",
+            "Exception",
+            "BaseException",
+        ],
         "TabError" => &[
             "TabError",
             "IndentationError",

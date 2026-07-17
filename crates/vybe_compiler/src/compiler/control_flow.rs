@@ -754,7 +754,7 @@ impl Compiler {
         self.emit_host_call(str_test, 1);
         self.chunk().emit_if(line); // string key → skip wrap
         self.chunk().emit_else(line); // non-string → wrap
-                                      // if idx < 0: idx = arr.length + idx
+        // if idx < 0: idx = arr.length + idx
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         self.emit_const(Value::I32(0));
         {
@@ -784,7 +784,7 @@ impl Compiler {
         self.chunk().patch_block(block_p);
         self.label_depth -= 1;
         self.chunk().emit_end(line); // close the string-key guard `if`
-                                     // Re-push [arr, idx_norm] for the caller's emit_get.
+        // Re-push [arr, idx_norm] for the caller's emit_get.
         self.emit_u16(Op::LOCAL_GET, arr_slot);
         self.emit_u16(Op::LOCAL_GET, idx_slot);
     }

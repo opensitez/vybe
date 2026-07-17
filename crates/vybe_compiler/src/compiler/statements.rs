@@ -242,9 +242,7 @@ impl Compiler {
                         }
                     }
                 }
-                if self.profile.namespaces.use_dotnet
-                    && targets.len() == 1
-                {
+                if self.profile.namespaces.use_dotnet && targets.len() == 1 {
                     if let ExprKind::Binary { op, left, right } = &value.kind {
                         if self.assign_target_matches_expr(&targets[0], left)
                             && self.is_csharp_delegate_handler_expr(right)
@@ -3360,8 +3358,7 @@ impl Compiler {
                 // A tag is a load-time entity resolved by name; importing it
                 // here (and at every `throw`/`catch` site) coalesces to one
                 // entity. Nothing is emitted into the instruction stream.
-                self.chunks[self.current]
-                    .import_exception_tag(format!("wast:tag:{name}"), *arity);
+                self.chunks[self.current].import_exception_tag(format!("wast:tag:{name}"), *arity);
             }
             StmtKind::WasmThrow { tag, args } => {
                 let line = self.line;

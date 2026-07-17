@@ -298,9 +298,13 @@ fn normalize_slice_into(
     }
 
     // lo default: step<0 ? len-1 : 0 ; clamp low: step<0 ? -1 : 0
-    normalize_bound(chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1);
+    normalize_bound(
+        chunks, current, lower_in, lo, step_n, len, line, LEN_M1, 0, -1,
+    );
     // hi default: step<0 ? -1 : len ; clamp low: step<0 ? -1 : 0
-    normalize_bound(chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1);
+    normalize_bound(
+        chunks, current, upper_in, hi, step_n, len, line, -1, LEN, -1,
+    );
 
     // Empty policy: if step still 0, force an empty range (lo=hi=0, step=1).
     if opts.zero_step == ZeroStep::Empty {

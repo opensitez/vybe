@@ -357,8 +357,7 @@ pub fn emit_values_from_local(
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     // for i in 0..keys.length: result.push(dict[keys[i]])
-    let state =
-        crate::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
+    let state = crate::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
     // Stack: [key_string]. Use it to get value from dict.
     // Store key, get dict[key], push to result
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
@@ -409,8 +408,7 @@ pub fn emit_items_from_local(
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     // for i in 0..keys.length: result.push([keys[i], dict[keys[i]]])
-    let state =
-        crate::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
+    let state = crate::loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line); // drop element from for_in_start
 
     // Build [key, value] pair

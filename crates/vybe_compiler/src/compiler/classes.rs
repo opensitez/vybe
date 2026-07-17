@@ -6,8 +6,8 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
-use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
 use crate::compiler::ArrayBindingMetadata;
+use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
 
 impl Compiler {
     fn fixed_array_zero_expr(type_hint: &str) -> Option<Expression> {
@@ -354,9 +354,10 @@ impl Compiler {
                 .iter()
                 .filter_map(|(mname, overloads)| {
                     overloads.first().map(|ov| {
-                        let rest_fixed = ov.signature.has_rest.then(|| {
-                            ov.signature.param_names.len().saturating_sub(1) as u8
-                        });
+                        let rest_fixed = ov
+                            .signature
+                            .has_rest
+                            .then(|| ov.signature.param_names.len().saturating_sub(1) as u8);
                         (mname.clone(), ov.chunk_idx, rest_fixed)
                     })
                 })
@@ -1706,9 +1707,7 @@ impl Compiler {
             // An index operator makes `x[i]` on this type a method call. Record
             // it against the class so the index site can resolve it from the
             // receiver's static type instead of probing every index at runtime.
-            if common::classes::cross_language_aliases(&m.source_name)
-                .contains(&"__getitem__")
-            {
+            if common::classes::cross_language_aliases(&m.source_name).contains(&"__getitem__") {
                 let cname = self.canon(&class.name);
                 self.classes_with_indexer.insert(cname);
             }
@@ -1838,9 +1837,8 @@ impl Compiler {
             } else {
                 true
             };
-            let arity = (user_params.len()
-                + usize::from(has_receiver)
-                + generator_control_arity) as u8;
+            let arity =
+                (user_params.len() + usize::from(has_receiver) + generator_control_arity) as u8;
 
             let ci = cc.chunks.len();
             let mut chunk = common::functions::create_function_chunk(mname, arity);
@@ -2420,8 +2418,7 @@ impl Compiler {
             cc.emit_ref_func_with_captures(helper_idx, helper_captures)
         };
 
-        let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> =
-            Vec::new();
+        let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> = Vec::new();
         for (ctor_index, ctor_variant) in ctor_variants.iter().enumerate() {
             let helper_name = format!("__{}_ctor_{}", name, ctor_index);
             let ctor_base_args_from_nc: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
@@ -3178,7 +3175,9 @@ impl Compiler {
             // while the helper's scope is still on the stack, since
             // `captured_name_for_upvalue` walks it to name each upvalue.
             let helper_scope_idx = self.scopes.len() - 1;
-            let mut helper_captures: Vec<String> = (0..self.scopes[helper_scope_idx].upvalues.len())
+            let mut helper_captures: Vec<String> = (0..self.scopes[helper_scope_idx]
+                .upvalues
+                .len())
                 .filter_map(|index| self.captured_name_for_upvalue(helper_scope_idx, index as u8))
                 .collect();
             // Same rule the methods use: a ctor body reading an enclosing
@@ -3683,8 +3682,7 @@ impl Compiler {
                 let bases = class.bases.iter().map(|b| self.canon(b)).collect();
                 (mro, bases)
             } else {
-                let bg: Vec<String> =
-                    parent.as_ref().map(|p| vec![p.clone()]).unwrap_or_default();
+                let bg: Vec<String> = parent.as_ref().map(|p| vec![p.clone()]).unwrap_or_default();
                 (bg.clone(), bg)
             };
             common::classes::emit_stamp_class_mro(

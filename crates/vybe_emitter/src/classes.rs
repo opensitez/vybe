@@ -819,12 +819,7 @@ pub fn emit_attach_static_method_kinded(
     chunk.emit(0, line);
     if is_async || is_generator {
         chunk.emit_dup(line);
-        crate::prototypes::emit_stamp_function_kind_proto(
-            chunk,
-            is_async,
-            is_generator,
-            line,
-        );
+        crate::prototypes::emit_stamp_function_kind_proto(chunk, is_async, is_generator, line);
     }
     if let Some(receiver_slot) = receiver_slot {
         chunk.emit_dup(line);

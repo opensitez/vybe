@@ -12,9 +12,9 @@
 //! lambdas in compiler/calls.rs, methods) must route through these
 //! helpers rather than inlining raw opcodes.
 
+use std::sync::Arc;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use std::sync::Arc;
 
 /// The intrinsic constructor global whose `.prototype` becomes a function
 /// object's [[Prototype]], selected by function kind.

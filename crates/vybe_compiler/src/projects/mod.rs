@@ -8,10 +8,10 @@
 //! full form designer round-trip support.
 
 pub mod encoding;
+pub mod form_modules;
 mod managed_msbuild;
 mod single_file;
 pub mod vbforms;
-pub mod form_modules;
 mod vbproj;
 mod vybe;
 

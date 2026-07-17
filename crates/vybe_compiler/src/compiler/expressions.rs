@@ -2090,19 +2090,18 @@ impl Compiler {
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
 
-                let receiver_array_rank =
-                    if self.profile.namespaces.use_dotnet && field == "Rank" {
-                        let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
-                            let normalized = Self::normalize_type_hint(type_hint);
-                            let start = normalized.find('[')?;
-                            let rest = &normalized[start + 1..];
-                            let end = rest.find(']')?;
-                            Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
-                        });
-                        Some(inferred.unwrap_or(1))
-                    } else {
-                        None
-                    };
+                let receiver_array_rank = if self.profile.namespaces.use_dotnet && field == "Rank" {
+                    let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let normalized = Self::normalize_type_hint(type_hint);
+                        let start = normalized.find('[')?;
+                        let rest = &normalized[start + 1..];
+                        let end = rest.find(']')?;
+                        Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
+                    });
+                    Some(inferred.unwrap_or(1))
+                } else {
+                    None
+                };
 
                 if self.profile.namespaces.use_dotnet && receiver_is_nullable {
                     match field.as_str() {
@@ -2128,57 +2127,56 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let receiver_is_collection_like =
-                    if self.profile.namespaces.use_dotnet
-                        && matches!(field.as_str(), "Length" | "Count")
-                    {
-                        let unknown_receiver_default = field == "Length";
-                        let is_collection_like_type = |type_hint: &str| {
-                            let normalized = Self::normalize_type_hint(type_hint);
-                            let bare = normalized
-                                .split('<')
-                                .next()
-                                .unwrap_or(normalized.as_str())
-                                .trim_end_matches('?');
-                            let terminal = bare.rsplit('.').next().unwrap_or(bare);
-                            Self::is_string_type_hint(type_hint)
-                                || matches!(
-                                    terminal,
-                                    "list"
-                                        | "arraylist"
-                                        | "dictionary"
-                                        | "queue"
-                                        | "stack"
-                                        | "hashset"
-                                        | "sortedset"
-                                        | "set"
-                                        | "collection"
-                                        | "icollection"
-                                        | "readonlycollection"
-                                        | "enumerable"
-                                        | "ienumerable"
-                                        | "readonlylist"
-                                        | "ilist"
-                                        | "array"
-                                )
-                                || bare.ends_with("[]")
-                        };
-
-                        match &object.kind {
-                            ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => {
-                                receiver_type_hint
-                                    .as_deref()
-                                    .map(is_collection_like_type)
-                                    .unwrap_or(unknown_receiver_default)
-                            }
-                            ExprKind::Lit(Literal::Str(_))
-                            | ExprKind::Interpolation(_)
-                            | ExprKind::Array(_) => true,
-                            _ => unknown_receiver_default,
-                        }
-                    } else {
-                        false
+                let receiver_is_collection_like = if self.profile.namespaces.use_dotnet
+                    && matches!(field.as_str(), "Length" | "Count")
+                {
+                    let unknown_receiver_default = field == "Length";
+                    let is_collection_like_type = |type_hint: &str| {
+                        let normalized = Self::normalize_type_hint(type_hint);
+                        let bare = normalized
+                            .split('<')
+                            .next()
+                            .unwrap_or(normalized.as_str())
+                            .trim_end_matches('?');
+                        let terminal = bare.rsplit('.').next().unwrap_or(bare);
+                        Self::is_string_type_hint(type_hint)
+                            || matches!(
+                                terminal,
+                                "list"
+                                    | "arraylist"
+                                    | "dictionary"
+                                    | "queue"
+                                    | "stack"
+                                    | "hashset"
+                                    | "sortedset"
+                                    | "set"
+                                    | "collection"
+                                    | "icollection"
+                                    | "readonlycollection"
+                                    | "enumerable"
+                                    | "ienumerable"
+                                    | "readonlylist"
+                                    | "ilist"
+                                    | "array"
+                            )
+                            || bare.ends_with("[]")
                     };
+
+                    match &object.kind {
+                        ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => {
+                            receiver_type_hint
+                                .as_deref()
+                                .map(is_collection_like_type)
+                                .unwrap_or(unknown_receiver_default)
+                        }
+                        ExprKind::Lit(Literal::Str(_))
+                        | ExprKind::Interpolation(_)
+                        | ExprKind::Array(_) => true,
+                        _ => unknown_receiver_default,
+                    }
+                } else {
+                    false
+                };
 
                 let is_dotnet_dictionary_accessor = !self.case_sensitive
                     && matches!(field.as_str(), "Keys" | "Values")
@@ -2217,17 +2215,16 @@ impl Compiler {
                         ExprKind::Ident(name)
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
-                let is_csharp_runtime_count_accessor =
-                    self.profile.namespaces.use_dotnet
-                        && self.profile.namespaces.use_dotnet
-                        && field == "Count"
-                        && !is_csharp_len_accessor
-                        && !*null_safe
-                        && !matches!(
-                            &object.kind,
-                            ExprKind::Ident(name)
-                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
-                        );
+                let is_csharp_runtime_count_accessor = self.profile.namespaces.use_dotnet
+                    && self.profile.namespaces.use_dotnet
+                    && field == "Count"
+                    && !is_csharp_len_accessor
+                    && !*null_safe
+                    && !matches!(
+                        &object.kind,
+                        ExprKind::Ident(name)
+                        if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                    );
 
                 if self.profile.namespaces.use_dotnet
                     && self.profile.namespaces.use_dotnet
@@ -2279,18 +2276,17 @@ impl Compiler {
                     }
                 }
 
-                let dotnet_instance_property =
-                    if self.profile.namespaces.use_dotnet
-                        && self.profile.namespaces.use_dotnet
-                        && !*null_safe
-                    {
-                        receiver_type_hint.as_deref().and_then(|type_hint| {
-                            let class_name = Self::normalize_type_hint(type_hint);
-                            common::dotnet::surface().lookup_instance_property(&class_name, field)
-                        })
-                    } else {
-                        None
-                    };
+                let dotnet_instance_property = if self.profile.namespaces.use_dotnet
+                    && self.profile.namespaces.use_dotnet
+                    && !*null_safe
+                {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let class_name = Self::normalize_type_hint(type_hint);
+                        common::dotnet::surface().lookup_instance_property(&class_name, field)
+                    })
+                } else {
+                    None
+                };
 
                 if let Some(target) = dotnet_instance_property {
                     match target {
@@ -2302,20 +2298,19 @@ impl Compiler {
                     }
                 }
 
-                let dotnet_instance_zero_arg_method =
-                    if self.profile.namespaces.use_dotnet
-                        && self.profile.namespaces.use_dotnet
-                        && !*null_safe
-                        && !is_csharp_len_accessor
-                        && !is_csharp_runtime_count_accessor
-                    {
-                        receiver_type_hint.as_deref().and_then(|type_hint| {
-                            let class_name = Self::normalize_type_hint(type_hint);
-                            common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
-                        })
-                    } else {
-                        None
-                    };
+                let dotnet_instance_zero_arg_method = if self.profile.namespaces.use_dotnet
+                    && self.profile.namespaces.use_dotnet
+                    && !*null_safe
+                    && !is_csharp_len_accessor
+                    && !is_csharp_runtime_count_accessor
+                {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let class_name = Self::normalize_type_hint(type_hint);
+                        common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
+                    })
+                } else {
+                    None
+                };
 
                 if let Some(target) = dotnet_instance_zero_arg_method {
                     if let common::dotnet::InstanceMethodTarget::Common { emit, .. } = &target {
@@ -2471,10 +2466,7 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if *null_safe
-                    && self.profile.namespaces.use_dotnet
-                    && !is_csharp_len_accessor
-                {
+                if *null_safe && self.profile.namespaces.use_dotnet && !is_csharp_len_accessor {
                     let obj_slot = self.define_local("__dotnet_nullsafe_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -4297,7 +4289,7 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                                     // Track dynamic key in __keys (stringified)
+                                // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4477,9 +4469,9 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                                                 // Track key — host fn checks if it's a
-                                                 // Symbol and routes to `__sym_keys` so
-                                                 // Object.keys excludes it (ECMA-262 §7.3.22).
+                            // Track key — host fn checks if it's a
+                            // Symbol and routes to `__sym_keys` so
+                            // Object.keys excludes it (ECMA-262 §7.3.22).
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                             let track_idx = self.import("ecma:object", "trackKey");

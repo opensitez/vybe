@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{channels, collections, dict, heap, object, ops, strings, threading};
+use crate::emitter::{channels, collections, dict, heap, object, ops, strings, threading, xml};
 use vybe_emitter::threading as thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
@@ -108,6 +108,19 @@ pub fn emit_common(
             }
             object::emit_to_string_or(&mut chunks[current], line);
         }
+
+        // ── XML qualified names ──
+        // Portable QName shape shared by Go xml.Name, .NET XName, Java QName,
+        // DOM nodes, and Vybe XML values. Full XML parsing/tree work stays in
+        // the host `web:dom-parser`; these are only language-surface adapters.
+        "xml.name" => xml::emit_name(chunks, current, argc, line),
+        "xml.local" => xml::emit_local(chunks, current, argc, line),
+        "xml.namespace" => xml::emit_namespace(chunks, current, argc, line),
+        "xml.prefix" => xml::emit_prefix(chunks, current, argc, line),
+        "xml.qualified" => xml::emit_qualified(chunks, current, argc, line),
+        "xml.equal" => xml::emit_equal(chunks, current, argc, line),
+        "xml.from_dom_node" => xml::emit_from_dom_node(chunks, current, argc, line),
+        "xml.node_name" => xml::emit_node_name(chunks, current, argc, line),
 
         // ── Collection ops (route through ecma:array imports;
         // `chunks` slice lets the helper register on chunks[0] while

@@ -335,7 +335,6 @@ pub fn emit_reduce(
     idx_slot: u16,
     line: u32,
 ) {
-
     // acc = arr[0]
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_i32_const(0, line);

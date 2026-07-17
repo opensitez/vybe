@@ -974,9 +974,9 @@ fn collect_closure_captured_in_class_members(members: &[ClassMember], out: &mut 
                     }
                 }
             }
-            ClassMember::Field { init: Some(init), .. } => {
-                collect_closure_captured_in_expr(init, out)
-            }
+            ClassMember::Field {
+                init: Some(init), ..
+            } => collect_closure_captured_in_expr(init, out),
             _ => {}
         }
     }
@@ -2652,26 +2652,27 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
     if !walk(body, &mut arity, &mut saw_any) {
         return None;
     }
-    if saw_any {
-        arity
-    } else {
-        None
-    }
+    if saw_any { arity } else { None }
 }
 
 fn is_hoisted_deconstruction_block(stmts: &[Statement]) -> bool {
     let call_stmt = match stmts {
-        [Statement {
-            kind: StmtKind::Expr(expr),
-            ..
-        }] => expr,
-        [Statement {
-            kind: StmtKind::VarDecl { .. },
-            ..
-        }, Statement {
-            kind: StmtKind::Expr(expr),
-            ..
-        }] => expr,
+        [
+            Statement {
+                kind: StmtKind::Expr(expr),
+                ..
+            },
+        ] => expr,
+        [
+            Statement {
+                kind: StmtKind::VarDecl { .. },
+                ..
+            },
+            Statement {
+                kind: StmtKind::Expr(expr),
+                ..
+            },
+        ] => expr,
         _ => return false,
     };
 

@@ -345,7 +345,14 @@ pub fn emit_nonnull_or_trap(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Trap if `start + count >u array.len` — the range check for `array.copy`.
-fn emit_range_check(chunks: &mut [Chunk], current: usize, arr: u16, start: u16, count: u16, line: u32) {
+fn emit_range_check(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr: u16,
+    start: u16,
+    count: u16,
+    line: u32,
+) {
     lget(&mut chunks[current], arr, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line); // [len]
     lget(&mut chunks[current], start, line);

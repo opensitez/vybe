@@ -2634,9 +2634,6 @@ impl Compiler {
         if self.try_compile_dotnet_case_insensitive_collection_call(callee, args)? {
             return Ok(());
         }
-        if self.try_compile_dotnet_dictionary_try_get_value(callee, args)? {
-            return Ok(());
-        }
         if self.try_compile_dotnet_enum_call(callee, args)? {
             return Ok(());
         }
@@ -2680,7 +2677,11 @@ impl Compiler {
 
         if self.is_python_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
-                if name == "dict" {
+                // `OrderedDict` IS a dict — ecma objects are insertion-ordered —
+                // so it shares the pairs/kwargs/empty construction path (the
+                // `collections` namespace tree resolves the NAME; the pairs/kwargs
+                // handling needs the AST, which only this compile-time path has).
+                if name == "dict" || name == "OrderedDict" {
                     let line = self.line;
                     common::dict::emit_new(&mut self.chunks, self.current, line);
 
@@ -2740,6 +2741,33 @@ impl Compiler {
                     if args.is_empty() {
                         return Ok(());
                     }
+                }
+                // `Counter(a=3, b=1)` — keyword form sets counts directly (needs
+                // the AST, like `dict` kwargs). The positional/iterable form
+                // `Counter([...])` falls through to `python.counter_new` (counting
+                // loop), and empty `Counter()` too.
+                if name == "Counter"
+                    && !args.is_empty()
+                    && args.iter().all(|arg| arg.name.is_some())
+                {
+                    let line = self.line;
+                    common::dict::emit_new(&mut self.chunks, self.current, line);
+                    for arg in args {
+                        let key = arg.name.as_ref().unwrap();
+                        inst!(self, core_wasm::dup);
+                        self.compile_expr(&arg.value)?;
+                        let key_idx = self.str_const(key);
+                        self.emit_u16(Op::STRUCT_SET, key_idx);
+                        self.emit(Op::DROP);
+
+                        inst!(self, core_wasm::dup);
+                        let keys_key = self.str_const("__keys");
+                        self.emit_u16(Op::STRUCT_GET, keys_key);
+                        self.emit_const(Value::String(Arc::from(key.as_str())));
+                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                    }
+                    return Ok(());
                 }
             }
         }
@@ -8008,7 +8036,8 @@ impl Compiler {
                             }
                         }
 
-                        if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                        if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread
+                        {
                             if self
                                 .resolve_static_method_overload_for_type(
                                     &class_name,

@@ -50,6 +50,7 @@ pub mod target;
 pub mod threading;
 pub mod tuples;
 pub mod type_registry;
+pub mod xml;
 
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;

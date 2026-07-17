@@ -444,7 +444,11 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_hash");
     chunks.push(build_vb_format(imports));
     exports.push("__stdlib_vb_format");
-    chunks.push(crate::platforms::dotnet::emitter::core::numeric_format::build_dotnet_numeric_format(imports));
+    chunks.push(
+        crate::platforms::dotnet::emitter::core::numeric_format::build_dotnet_numeric_format(
+            imports,
+        ),
+    );
     exports.push("__stdlib_dotnet_numeric_format");
     // PHP `$x++` / `$x--` stay in the PHP emitter path (`common:php.{inc,dec}`)
     // rather than going through bundled stdlib/polyfill helpers.
@@ -3710,7 +3714,6 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
-
 
 // ── format_map(s, d) → string — Python `str.format_map` ────────
 //

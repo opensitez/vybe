@@ -2619,7 +2619,28 @@ impl VM {
                     let eq = match (&a, &b) {
                         (Value::Null, Value::Null) => true,
                         (Value::Undefined, Value::Undefined) => true,
-                        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+                        (Value::Object(a), Value::Object(b)) => {
+                            // Object identity, plus plain-function-reference
+                            // identity: two `ref.func $f` tear-offs mint distinct
+                            // objects yet reference the same function, so they are
+                            // ref.eq. Restricted to upvalue-free funcrefs — two
+                            // closures over the same code but different captures
+                            // are distinct instances and keep object identity.
+                            Arc::ptr_eq(a, b) || {
+                                let (ao, bo) = (a.lock().unwrap(), b.lock().unwrap());
+                                match (&ao.kind, &bo.kind) {
+                                    (
+                                        ObjectKind::Function(fa),
+                                        ObjectKind::Function(fb),
+                                    ) => {
+                                        fa.chunk_index == fb.chunk_index
+                                            && fa.upvalues.is_empty()
+                                            && fb.upvalues.is_empty()
+                                    }
+                                    _ => false,
+                                }
+                            }
+                        }
                         (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
                         (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
                         _ => false,
