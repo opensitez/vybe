@@ -76,6 +76,8 @@ thread_local! {
         RefCell::new(Vec::new());
     // Locals declared as java.net.URL/URI — __j_url_* runtime.
     static JAVA_URL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    // Locals declared as javax.xml.namespace.QName — common XML name runtime.
+    static JAVA_QNAME_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -119,6 +121,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_URL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_QNAME_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow_mut().clear());
 
     let mut pairs =
@@ -1953,10 +1956,12 @@ fn walk_var_declarator(
     {
         JAVA_BIGDECIMAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
-    if type_hint
-        .as_deref()
-        .is_some_and(|hint| matches!(java_type_simple_name(hint), "DecimalFormat" | "NumberFormat"))
-    {
+    if type_hint.as_deref().is_some_and(|hint| {
+        matches!(
+            java_type_simple_name(hint),
+            "DecimalFormat" | "NumberFormat"
+        )
+    }) {
         JAVA_DECIMAL_FORMAT_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
     if type_hint
@@ -2007,6 +2012,12 @@ fn walk_var_declarator(
     {
         JAVA_URL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| java_type_simple_name(hint) == "QName")
+    {
+        JAVA_QNAME_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
 
     // `java.io.PrintStream ps = …` — route ps's print/append/format calls
     // through the __j_* PrintStream runtime, same as `System.out`.
@@ -2041,8 +2052,10 @@ fn walk_var_declarator(
     }
 
     if let Some(init_expr) = &init {
-        if matches!(type_hint.as_deref(), Some("Runnable" | "java.lang.Runnable"))
-        {
+        if matches!(
+            type_hint.as_deref(),
+            Some("Runnable" | "java.lang.Runnable")
+        ) {
             JAVA_RUNNABLE_TARGETS.with(|targets| {
                 targets.borrow_mut().insert(name.clone(), init_expr.clone());
             });
@@ -2052,8 +2065,10 @@ fn walk_var_declarator(
                 });
             }
         }
-        if matches!(type_hint.as_deref(), Some("Runnable" | "java.lang.Runnable"))
-            && java_thread_target_is_unsafe(init_expr, &HashSet::new())
+        if matches!(
+            type_hint.as_deref(),
+            Some("Runnable" | "java.lang.Runnable")
+        ) && java_thread_target_is_unsafe(init_expr, &HashSet::new())
         {
             JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| {
                 targets.borrow_mut().insert(name.clone());
@@ -2077,13 +2092,10 @@ fn walk_var_declarator(
         }
     }
 
-    let emitted_type_hint = if type_hint
-        .as_deref()
-        .is_some_and(|hint| {
-            java_numeric_width_fn(hint).is_some()
-                || matches!(java_type_simple_name(hint), "char" | "Character")
-        })
-    {
+    let emitted_type_hint = if type_hint.as_deref().is_some_and(|hint| {
+        java_numeric_width_fn(hint).is_some()
+            || matches!(java_type_simple_name(hint), "char" | "Character")
+    }) {
         None
     } else {
         type_hint
@@ -3332,7 +3344,10 @@ fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
                 )
         ),
         ExprKind::Cast { type_name, .. } => {
-            matches!(java_type_simple_name(type_name), "double" | "Double" | "float" | "Float")
+            matches!(
+                java_type_simple_name(type_name),
+                "double" | "Double" | "float" | "Float"
+            )
         }
         ExprKind::Binary {
             op, left, right, ..
@@ -3600,8 +3615,11 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
                 if let ExprKind::Ident(name) = &current.kind {
                     if matches!(name.as_str(), "wait" | "notify" | "notifyAll") {
-                        current =
-                            normalise_method_call(Expression::new(ExprKind::This), name.clone(), args);
+                        current = normalise_method_call(
+                            Expression::new(ExprKind::This),
+                            name.clone(),
+                            args,
+                        );
                         continue;
                     }
                 }
@@ -3917,8 +3935,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 
     let functional_call_result_receiver = matches!(receiver.kind, ExprKind::Call { .. })
         && java_functional_result_method(method.as_str());
-    if (java_functional_receiver(&receiver)
-        || functional_call_result_receiver)
+    if (java_functional_receiver(&receiver) || functional_call_result_receiver)
         && java_functional_method(method.as_str())
     {
         return Expression::new(ExprKind::Call {
@@ -3947,13 +3964,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if let Some((class_name, type_name)) = java_current_static_field_type(name) {
             if java_type_is_semaphore(Some(&type_name)) {
                 if let Some(internal) = java_semaphore_method_name(&method) {
-                    let mut call_args = vec![Argument::positional(Expression::new(
-                        ExprKind::Member {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
                             null_safe: false,
-                        },
-                    ))];
+                        }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
@@ -3983,8 +3999,9 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         let prelude_fn = match method.as_str() {
             "join" => {
                 let unsafe_target = match &receiver.kind {
-                    ExprKind::Ident(name) => JAVA_THREAD_UNSAFE_TARGETS
-                        .with(|targets| targets.borrow().contains(name)),
+                    ExprKind::Ident(name) => {
+                        JAVA_THREAD_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name))
+                    }
                     _ => false,
                 };
                 Some(if unsafe_target {
@@ -4715,6 +4732,37 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     // group() is group(0) — the whole match.
                     call_args.push(Argument::positional(Expression::int(0)));
                 }
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(prelude_fn)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+    }
+
+    // javax.xml.namespace.QName receivers → common XML name accessors.
+    {
+        let qname_recv = match &receiver.kind {
+            ExprKind::Ident(n) => JAVA_QNAME_VARS.with(|vars| vars.borrow().contains(n.as_str())),
+            ExprKind::Call { callee, .. } => matches!(
+                &callee.kind,
+                ExprKind::Ident(n) if matches!(n.as_str(), "__java_xml_name" | "__java_xml_node_name")
+            ),
+            _ => false,
+        };
+        if qname_recv {
+            let prelude_fn = match method.as_str() {
+                "getLocalPart" => Some("__java_xml_local"),
+                "getNamespaceURI" => Some("__java_xml_namespace"),
+                "getPrefix" => Some("__java_xml_prefix"),
+                "toString" => Some("__java_xml_qualified"),
+                "equals" if args.len() == 1 => Some("__java_xml_equal"),
+                _ => None,
+            };
+            if let Some(prelude_fn) = prelude_fn {
+                let mut call_args = vec![Argument::positional(receiver)];
                 call_args.extend(args);
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(prelude_fn)),
@@ -5774,27 +5822,29 @@ fn java_functional_receiver(receiver: &Expression) -> bool {
 fn java_optional_receiver(receiver: &Expression) -> bool {
     match &receiver.kind {
         ExprKind::Ident(name) => JAVA_OPTIONAL_VARS.with(|vars| vars.borrow().contains(name)),
-        ExprKind::Call { callee, .. } => matches!(
-            &callee.kind,
-            ExprKind::Ident(name)
-                if matches!(
-                    name.as_str(),
-                    "Optional.empty"
-                        | "Optional.of"
-                        | "Optional.ofNullable"
-                        | "__java_optional_filter"
-                        | "__java_optional_map"
-                        | "__java_optional_flat_map"
-                        | "__java_optional_or"
-                        | "__java_optional_or_get"
-                        | "__java_stream_find_first"
-                        | "__java_stream_min"
-                        | "__java_stream_max"
-                )
-        ) || matches!(
-            &callee.kind,
-            ExprKind::Member { field, .. } if matches!(field.as_str(), "findFirst" | "findAny" | "min" | "max")
-        ),
+        ExprKind::Call { callee, .. } => {
+            matches!(
+                &callee.kind,
+                ExprKind::Ident(name)
+                    if matches!(
+                        name.as_str(),
+                        "Optional.empty"
+                            | "Optional.of"
+                            | "Optional.ofNullable"
+                            | "__java_optional_filter"
+                            | "__java_optional_map"
+                            | "__java_optional_flat_map"
+                            | "__java_optional_or"
+                            | "__java_optional_or_get"
+                            | "__java_stream_find_first"
+                            | "__java_stream_min"
+                            | "__java_stream_max"
+                    )
+            ) || matches!(
+                &callee.kind,
+                ExprKind::Member { field, .. } if matches!(field.as_str(), "findFirst" | "findAny" | "min" | "max")
+            )
+        }
         _ => false,
     }
 }
@@ -6136,6 +6186,49 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         inner.next().unwrap(),
                     );
                 }
+                if matches!(
+                    class_name.as_str(),
+                    "QName" | "java.xml.namespace.QName" | "javax.xml.namespace.QName"
+                ) {
+                    let mut values: Vec<Expression> =
+                        args.into_iter().map(|arg| arg.value).collect();
+                    let call_args = match values.len() {
+                        1 => vec![
+                            Argument::positional(Expression::string("")),
+                            Argument::positional(values.remove(0)),
+                            Argument::positional(Expression::string("")),
+                        ],
+                        2 => vec![
+                            Argument::positional(values.remove(0)),
+                            Argument::positional(values.remove(0)),
+                            Argument::positional(Expression::string("")),
+                        ],
+                        _ => {
+                            let namespace = values
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| Expression::string(""));
+                            let local = values
+                                .get(1)
+                                .cloned()
+                                .unwrap_or_else(|| Expression::string(""));
+                            let prefix = values
+                                .get(2)
+                                .cloned()
+                                .unwrap_or_else(|| Expression::string(""));
+                            vec![
+                                Argument::positional(namespace),
+                                Argument::positional(local),
+                                Argument::positional(prefix),
+                            ]
+                        }
+                    };
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_xml_name")),
+                        args: call_args,
+                        optional: false,
+                    }));
+                }
                 // java.net.URL / java.net.URI → the WHATWG-parsed object
                 // (web:url) the __j_url_* prelude getters read. Arity picks
                 // the java constructor form: (spec), (context, spec), or
@@ -6213,7 +6306,10 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
-                if matches!(java_type_simple_name(&class_name), "GregorianCalendar" | "Calendar") {
+                if matches!(
+                    java_type_simple_name(&class_name),
+                    "GregorianCalendar" | "Calendar"
+                ) {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_cal_new")),
                         args,
@@ -6848,7 +6944,10 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         })));
     }
 
-    if matches!((obj_name.as_str(), method.as_str()), ("Integer", "sum") | ("Long", "sum")) {
+    if matches!(
+        (obj_name.as_str(), method.as_str()),
+        ("Integer", "sum") | ("Long", "sum")
+    ) {
         return Ok(java_two_arg_lambda(Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(Expression::ident("__a__")),
@@ -6867,9 +6966,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         })));
     }
 
-    if matches!(obj_name.as_str(), "Objects" | "java.util.Objects")
-        && method == "requireNonNull"
-    {
+    if matches!(obj_name.as_str(), "Objects" | "java.util.Objects") && method == "requireNonNull" {
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
                 name: "__value__".to_string(),
@@ -10366,9 +10463,7 @@ fn rewrite_java_tostring_expr(
                             .map(java_type_simple_name)
                             .unwrap_or_default();
                         let internal = match field.as_str() {
-                            "add" if matches!(simple_type, "TreeSet") => {
-                                Some("__java_sorted_add")
-                            }
+                            "add" if matches!(simple_type, "TreeSet") => Some("__java_sorted_add"),
                             "add" => Some("__java_set_add"),
                             "remove" => Some("__java_set_remove"),
                             _ => None,
@@ -11640,7 +11735,12 @@ fn normalize_java_class_tree_with_members(
                 ..
             } => {
                 let mut names = class_members.get(name).cloned().unwrap_or_default();
-                merge_java_inherited_member_names(&mut names, parents, class_members, class_parents);
+                merge_java_inherited_member_names(
+                    &mut names,
+                    parents,
+                    class_members,
+                    class_parents,
+                );
                 normalize_java_class_members(members, name, &names, class_members);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
@@ -13143,10 +13243,7 @@ fn java_collect_overload_targets(
         let ClassMember::Method(func) = member else {
             continue;
         };
-        let StmtKind::FunctionDecl {
-            name, ..
-        } = &func.kind
-        else {
+        let StmtKind::FunctionDecl { name, .. } = &func.kind else {
             continue;
         };
         *counts.entry(name.clone()).or_default() += 1;
@@ -13192,10 +13289,7 @@ fn normalize_java_overload_names(members: &mut [ClassMember]) {
         let ClassMember::Method(func) = member else {
             continue;
         };
-        let StmtKind::FunctionDecl {
-            name, ..
-        } = &func.kind
-        else {
+        let StmtKind::FunctionDecl { name, .. } = &func.kind else {
             continue;
         };
         *counts.entry(name.clone()).or_default() += 1;
@@ -13205,12 +13299,7 @@ fn normalize_java_overload_names(members: &mut [ClassMember]) {
         let ClassMember::Method(func) = member else {
             continue;
         };
-        let StmtKind::FunctionDecl {
-            name,
-            params,
-            ..
-        } = &mut func.kind
-        else {
+        let StmtKind::FunctionDecl { name, params, .. } = &mut func.kind else {
             continue;
         };
         if counts.get(name).copied().unwrap_or(0) < 2 {
@@ -13335,7 +13424,10 @@ fn java_overload_receiver_type(
     }
 }
 
-fn java_static_field_receiver(object: &Expression, current_class: Option<&str>) -> Option<Expression> {
+fn java_static_field_receiver(
+    object: &Expression,
+    current_class: Option<&str>,
+) -> Option<Expression> {
     let class_name = current_class?;
     let ExprKind::Ident(field_name) = &object.kind else {
         return None;
@@ -13369,15 +13461,17 @@ fn java_static_field_type(object: &Expression) -> Option<String> {
 }
 
 fn java_current_static_field_type(field_name: &str) -> Option<(String, String)> {
-    let class_name =
-        JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow().last().cloned())?;
+    let class_name = JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow().last().cloned())?;
     let key = format!("{class_name}.{field_name}");
     JAVA_STATIC_FIELD_TYPES
         .with(|types| types.borrow().get(&key).cloned())
         .map(|ty| (class_name, ty))
 }
 
-fn java_receiver_type(object: &Expression, local_types: &HashMap<String, String>) -> Option<String> {
+fn java_receiver_type(
+    object: &Expression,
+    local_types: &HashMap<String, String>,
+) -> Option<String> {
     java_overload_receiver_type(object, local_types).or_else(|| java_static_field_type(object))
 }
 
@@ -13386,7 +13480,9 @@ fn java_lookup_class_members<'a>(
     type_name: &str,
 ) -> Option<&'a JavaClassMemberNames> {
     let simple = java_type_simple_name(type_name);
-    class_members.get(type_name).or_else(|| class_members.get(simple))
+    class_members
+        .get(type_name)
+        .or_else(|| class_members.get(simple))
 }
 
 fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> bool {
@@ -13399,12 +13495,16 @@ fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> boo
             }
             match body {
                 LambdaBody::Expr(inner) => java_expr_reads_any_local(inner, &nested),
-                LambdaBody::Block(stmts) => stmts.iter().any(|stmt| java_stmt_reads_any_local(stmt, &nested)),
+                LambdaBody::Block(stmts) => stmts
+                    .iter()
+                    .any(|stmt| java_stmt_reads_any_local(stmt, &nested)),
             }
         }
         ExprKind::Call { callee, args, .. } => {
             java_expr_reads_any_local(callee, locals)
-                || args.iter().any(|arg| java_expr_reads_any_local(&arg.value, locals))
+                || args
+                    .iter()
+                    .any(|arg| java_expr_reads_any_local(&arg.value, locals))
         }
         ExprKind::Member { object, .. } => java_expr_reads_any_local(object, locals),
         ExprKind::Index { object, index, .. } => {
@@ -13424,10 +13524,14 @@ fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> boo
         }
         ExprKind::New { class, args, .. } => {
             java_expr_reads_any_local(class, locals)
-                || args.iter().any(|arg| java_expr_reads_any_local(&arg.value, locals))
+                || args
+                    .iter()
+                    .any(|arg| java_expr_reads_any_local(&arg.value, locals))
         }
         ExprKind::Array(items) => items.iter().any(|item| {
-            item.key.as_ref().is_some_and(|key| java_expr_reads_any_local(key, locals))
+            item.key
+                .as_ref()
+                .is_some_and(|key| java_expr_reads_any_local(key, locals))
                 || java_expr_reads_any_local(&item.value, locals)
         }),
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
@@ -13438,51 +13542,95 @@ fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> boo
             ObjectProperty::Shorthand(name) => locals.contains(name),
             _ => true,
         }),
-        ExprKind::Sequence(exprs) => exprs.iter().any(|expr| java_expr_reads_any_local(expr, locals)),
+        ExprKind::Sequence(exprs) => exprs
+            .iter()
+            .any(|expr| java_expr_reads_any_local(expr, locals)),
         _ => false,
     }
 }
 
 fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => java_expr_reads_any_local(expr, locals),
-        StmtKind::VarDecl { declarations, .. } => declarations
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            java_expr_reads_any_local(expr, locals)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.init
+                .as_ref()
+                .is_some_and(|init| java_expr_reads_any_local(init, locals))
+        }),
+        StmtKind::Block(stmts) => stmts
             .iter()
-            .any(|decl| decl.init.as_ref().is_some_and(|init| java_expr_reads_any_local(init, locals))),
-        StmtKind::Block(stmts) => stmts.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)),
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+            .any(|stmt| java_stmt_reads_any_local(stmt, locals)),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             java_expr_reads_any_local(cond, locals)
-                || then_body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || then_body
+                    .iter()
+                    .any(|stmt| java_stmt_reads_any_local(stmt, locals))
                 || elifs.iter().any(|(cond, body)| {
                     java_expr_reads_any_local(cond, locals)
-                        || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                        || body
+                            .iter()
+                            .any(|stmt| java_stmt_reads_any_local(stmt, locals))
                 })
-                || else_body
-                    .as_ref()
-                    .is_some_and(|body| body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                })
         }
         StmtKind::While { cond, body, .. } => {
             java_expr_reads_any_local(cond, locals)
-                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || body
+                    .iter()
+                    .any(|stmt| java_stmt_reads_any_local(stmt, locals))
         }
-        StmtKind::For { init, cond, update, body } => {
-            init.as_ref().is_some_and(|stmt| java_stmt_reads_any_local(stmt, locals))
-                || cond.as_ref().is_some_and(|expr| java_expr_reads_any_local(expr, locals))
-                || update.as_ref().is_some_and(|expr| java_expr_reads_any_local(expr, locals))
-                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref()
+                .is_some_and(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || cond
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_reads_any_local(expr, locals))
+                || update
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_reads_any_local(expr, locals))
+                || body
+                    .iter()
+                    .any(|stmt| java_stmt_reads_any_local(stmt, locals))
         }
         StmtKind::ForIn { iter, body, .. } => {
             java_expr_reads_any_local(iter, locals)
-                || body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
-        }
-        StmtKind::Try { body, catches, finally, .. } => {
-            body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals))
-                || catches
+                || body
                     .iter()
-                    .any(|catch| catch.body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
-                || finally
-                    .as_ref()
-                    .is_some_and(|body| body.iter().any(|stmt| java_stmt_reads_any_local(stmt, locals)))
+                    .any(|stmt| java_stmt_reads_any_local(stmt, locals))
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            body.iter()
+                .any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                || catches.iter().any(|catch| {
+                    catch
+                        .body
+                        .iter()
+                        .any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                })
+                || finally.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_reads_any_local(stmt, locals))
+                })
         }
         StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) => false,
         _ => false,
@@ -13491,7 +13639,9 @@ fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool
 
 fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -> bool {
     match &target.kind {
-        ExprKind::Ident(name) => JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name)),
+        ExprKind::Ident(name) => {
+            JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name))
+        }
         ExprKind::Lambda { .. } => java_expr_reads_any_local(target, locals),
         _ => false,
     }
@@ -13499,7 +13649,9 @@ fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -
 
 fn java_resolve_runnable_target(target: Expression) -> Expression {
     if let ExprKind::Ident(name) = &target.kind {
-        if let Some(resolved) = JAVA_RUNNABLE_TARGETS.with(|targets| targets.borrow().get(name).cloned()) {
+        if let Some(resolved) =
+            JAVA_RUNNABLE_TARGETS.with(|targets| targets.borrow().get(name).cloned())
+        {
             return resolved;
         }
     }
@@ -13584,7 +13736,12 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             java_rewrite_spawned_thread_sleep_expr(cond);
             for stmt in then_body {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
@@ -13607,7 +13764,12 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             if let Some(init) = init {
                 java_rewrite_spawned_thread_sleep_stmt(init);
             }
@@ -13627,7 +13789,13 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally, .. } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+            ..
+        } => {
             for stmt in body {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
             }
@@ -14044,8 +14212,11 @@ fn normalize_java_expr(
             if !locals.contains(name)
                 && current_class.is_some()
                 && JAVA_STATIC_FIELD_VARS.with(|vars| {
-                    vars.borrow()
-                        .contains(&format!("{}.{}", current_class.unwrap_or_default(), name))
+                    vars.borrow().contains(&format!(
+                        "{}.{}",
+                        current_class.unwrap_or_default(),
+                        name
+                    ))
                 }) =>
         {
             let class_name = current_class.unwrap_or_default();
@@ -14088,8 +14259,8 @@ fn normalize_java_expr(
                     if unsafe_target {
                         return;
                     }
-                    if let Some(mut target) =
-                        JAVA_THREAD_TARGETS.with(|targets| targets.borrow().get(thread_name).cloned())
+                    if let Some(mut target) = JAVA_THREAD_TARGETS
+                        .with(|targets| targets.borrow().get(thread_name).cloned())
                     {
                         target = java_resolve_runnable_target(target);
                         java_rewrite_spawned_thread_sleep_expr(&mut target);
@@ -14104,7 +14275,8 @@ fn normalize_java_expr(
             }
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
                 if let Some(type_name) = java_expr_dotted_name(object) {
-                    if let Some(class_names) = java_lookup_class_members(class_members, &type_name) {
+                    if let Some(class_names) = java_lookup_class_members(class_members, &type_name)
+                    {
                         if let Some(target) =
                             select_java_overload_target(field, args, &class_names.static_overloads)
                         {
@@ -14123,7 +14295,8 @@ fn normalize_java_expr(
                     }
                 }
                 if let Some(receiver_type) = java_overload_receiver_type(object, local_types) {
-                    if let Some(class_names) = java_lookup_class_members(class_members, &receiver_type)
+                    if let Some(class_names) =
+                        java_lookup_class_members(class_members, &receiver_type)
                     {
                         if let Some(target) = select_java_overload_target(
                             field,

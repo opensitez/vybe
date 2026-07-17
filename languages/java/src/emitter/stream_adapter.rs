@@ -1130,7 +1130,14 @@ fn emit_collect_grouping(
     line: u32,
 ) {
     if preseed_partitions {
-        emit_collect_partitioning(chunks, current, collector_slot, array_slot, result_slot, line);
+        emit_collect_partitioning(
+            chunks,
+            current,
+            collector_slot,
+            array_slot,
+            result_slot,
+            line,
+        );
         return;
     }
 
@@ -1274,9 +1281,23 @@ fn emit_collect_partitioning(
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
     vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    emit_partition_bucket_add(chunks, current, downstream_slot, true_slot, value_slot, line);
+    emit_partition_bucket_add(
+        chunks,
+        current,
+        downstream_slot,
+        true_slot,
+        value_slot,
+        line,
+    );
     chunks[current].emit_else(line);
-    emit_partition_bucket_add(chunks, current, downstream_slot, false_slot, value_slot, line);
+    emit_partition_bucket_add(
+        chunks,
+        current,
+        downstream_slot,
+        false_slot,
+        value_slot,
+        line,
+    );
     chunks[current].emit_end(line);
 
     increment_index(chunks, current, index_slot, line);

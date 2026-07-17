@@ -995,7 +995,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::stream_adapter::emit_collector_tag(chunks, current, "filtering", 2, line);
         }
         "java.collectors_collecting_and_then" => {
-            super::stream_adapter::emit_collector_tag(chunks, current, "collectingAndThen", 2, line);
+            super::stream_adapter::emit_collector_tag(
+                chunks,
+                current,
+                "collectingAndThen",
+                2,
+                line,
+            );
         }
         "java.collectors_reducing" => {
             super::stream_adapter::emit_collector_tag(chunks, current, "reducing", argc, line);

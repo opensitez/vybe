@@ -90,7 +90,13 @@ fn emit_sublist_absolute_index(
     vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
 }
 
-fn emit_sublist_increment_to(chunks: &mut [Chunk], current: usize, list: u16, delta: i32, line: u32) {
+fn emit_sublist_increment_to(
+    chunks: &mut [Chunk],
+    current: usize,
+    list: u16,
+    delta: i32,
+    line: u32,
+) {
     let next = chunks[current].alloc_scratch(1);
     emit_sublist_to(chunks, current, list, line);
     core_wasm::i32_const(&mut chunks[current], line, delta);
@@ -2862,7 +2868,14 @@ pub fn emit_vector_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u
     let list = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], min_capacity, line);
     set(&mut chunks[current], list, line);
-    set_object_prop_from_local(chunks, current, list, VECTOR_CAPACITY_KEY, min_capacity, line);
+    set_object_prop_from_local(
+        chunks,
+        current,
+        list,
+        VECTOR_CAPACITY_KEY,
+        min_capacity,
+        line,
+    );
     chunks[current].emit_op(Op::NULL, line);
 }
 
@@ -2929,7 +2942,14 @@ pub fn emit_enumeration_next(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 1);
     vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], next_index, line);
-    set_object_prop_from_local(chunks, current, enumeration, ENUM_INDEX_KEY, next_index, line);
+    set_object_prop_from_local(
+        chunks,
+        current,
+        enumeration,
+        ENUM_INDEX_KEY,
+        next_index,
+        line,
+    );
     get_object_prop(chunks, current, enumeration, ENUM_ITEMS_KEY, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);

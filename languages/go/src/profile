@@ -54,6 +54,12 @@ materialize_bool_results = true
 "__go_parse_float"   = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 "__go_json_stringify" = { emit = "host:ecma:json:stringify",    min_args = 1, max_args = 3 }
 "__go_json_parse"     = { emit = "host:ecma:json:parse",        min_args = 1, max_args = 2 }
+"__go_xml_name"       = { emit = "common:xml.name",             min_args = 3, max_args = 3 }
+"__go_xml_name_local" = { emit = "common:xml.local",            min_args = 1, max_args = 1 }
+"__go_xml_name_space" = { emit = "common:xml.namespace",        min_args = 1, max_args = 1 }
+"__go_xml_name_prefix" = { emit = "common:xml.prefix",          min_args = 1, max_args = 1 }
+"__go_xml_name_equal" = { emit = "common:xml.equal",            min_args = 2, max_args = 2 }
+"__go_xml_node_name"  = { emit = "common:xml.node_name",        min_args = 1, max_args = 1 }
 "__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
 "__go_btoa"           = { emit = "host:ecma:string:btoa",       min_args = 1, max_args = 1 }
 "__go_atob"           = { emit = "host:ecma:string:atob",       min_args = 1, max_args = 1 }

@@ -918,7 +918,10 @@ pub fn prelude() -> Vec<Statement> {
                     ),
                     assign(
                         ident("s"),
-                        call("__j_replace_all", vec![ident("s"), str_lit("."), str_lit(",")]),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit("."), str_lit(",")],
+                        ),
                     ),
                     assign(
                         ident("s"),
@@ -947,7 +950,10 @@ pub fn prelude() -> Vec<Statement> {
                     ),
                     assign(
                         ident("s"),
-                        call("__j_replace_all", vec![ident("s"), str_lit("."), str_lit(",")]),
+                        call(
+                            "__j_replace_all",
+                            vec![ident("s"), str_lit("."), str_lit(",")],
+                        ),
                     ),
                     assign(
                         ident("s"),
@@ -1161,7 +1167,10 @@ pub fn prelude() -> Vec<Statement> {
                 )],
                 None,
             ),
-            ret(call("__j_locale_number", vec![ident("s"), fld("d", "locale")])),
+            ret(call(
+                "__j_locale_number",
+                vec![ident("s"), fld("d", "locale")],
+            )),
         ],
     ));
     out.push(function_stmt(
@@ -1468,7 +1477,10 @@ pub fn prelude() -> Vec<Statement> {
         vec!["fmt", "args", "loc"],
         vec![ret(call(
             "__j_locale_number",
-            vec![call("__j_sprintf", vec![ident("fmt"), ident("args")]), ident("loc")],
+            vec![
+                call("__j_sprintf", vec![ident("fmt"), ident("args")]),
+                ident("loc"),
+            ],
         ))],
     ));
     out.push(function_stmt(
@@ -1608,7 +1620,10 @@ pub fn prelude() -> Vec<Statement> {
         vec!["pattern", "args"],
         vec![ret(call(
             "__j_mf_format",
-            vec![call("__j_mf_new", vec![ident("pattern"), str_lit("US")]), ident("args")],
+            vec![
+                call("__j_mf_new", vec![ident("pattern"), str_lit("US")]),
+                ident("args"),
+            ],
         ))],
     ));
     out.push(function_stmt(
@@ -1622,7 +1637,10 @@ pub fn prelude() -> Vec<Statement> {
     out.push(function_stmt(
         "__j_mf_apply_pattern",
         vec!["m", "pattern"],
-        vec![assign(fld("m", "pattern"), ident("pattern")), ret(null_lit())],
+        vec![
+            assign(fld("m", "pattern"), ident("pattern")),
+            ret(null_lit()),
+        ],
     ));
     out.push(function_stmt(
         "__j_mf_to_pattern",
@@ -1637,7 +1655,10 @@ pub fn prelude() -> Vec<Statement> {
     out.push(function_stmt(
         "__j_mf_clone",
         vec!["m"],
-        vec![ret(call("__j_mf_new", vec![fld("m", "pattern"), fld("m", "loc")]))],
+        vec![ret(call(
+            "__j_mf_new",
+            vec![fld("m", "pattern"), fld("m", "loc")],
+        ))],
     ));
     out.push(function_stmt(
         "__j_mf_equals",
@@ -1737,14 +1758,28 @@ pub fn prelude() -> Vec<Statement> {
                                         call_member(
                                             ident("Math"),
                                             "floor",
-                                            vec![div(mul(int_lit(13), add(ident("m"), int_lit(1))), int_lit(5))],
+                                            vec![div(
+                                                mul(int_lit(13), add(ident("m"), int_lit(1))),
+                                                int_lit(5),
+                                            )],
                                         ),
                                     ),
                                     ident("y"),
                                 ),
-                                call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(4))]),
+                                call_member(
+                                    ident("Math"),
+                                    "floor",
+                                    vec![div(ident("y"), int_lit(4))],
+                                ),
                             ),
-                            sub(int_lit(0), call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(100))])),
+                            sub(
+                                int_lit(0),
+                                call_member(
+                                    ident("Math"),
+                                    "floor",
+                                    vec![div(ident("y"), int_lit(100))],
+                                ),
+                            ),
                         ),
                         call_member(ident("Math"), "floor", vec![div(ident("y"), int_lit(400))]),
                     ),
@@ -1760,7 +1795,11 @@ pub fn prelude() -> Vec<Statement> {
         vec![
             var_decl(
                 "iscal",
-                binary(BinOp::NotEq, typeof_expr(fld("x", "y")), str_lit("undefined")),
+                binary(
+                    BinOp::NotEq,
+                    typeof_expr(fld("x", "y")),
+                    str_lit("undefined"),
+                ),
             ),
             var_decl("y", int_lit(0)),
             var_decl("mo", int_lit(0)),
@@ -1779,15 +1818,24 @@ pub fn prelude() -> Vec<Statement> {
                     assign(ident("se"), fld("x", "s")),
                 ],
                 Some(vec![
-                    assign(ident("y"), call_member(ident("x"), "getUTCFullYear", vec![])),
+                    assign(
+                        ident("y"),
+                        call_member(ident("x"), "getUTCFullYear", vec![]),
+                    ),
                     assign(
                         ident("mo"),
                         add(call_member(ident("x"), "getUTCMonth", vec![]), int_lit(1)),
                     ),
                     assign(ident("d"), call_member(ident("x"), "getUTCDate", vec![])),
                     assign(ident("h"), call_member(ident("x"), "getUTCHours", vec![])),
-                    assign(ident("mi"), call_member(ident("x"), "getUTCMinutes", vec![])),
-                    assign(ident("se"), call_member(ident("x"), "getUTCSeconds", vec![])),
+                    assign(
+                        ident("mi"),
+                        call_member(ident("x"), "getUTCMinutes", vec![]),
+                    ),
+                    assign(
+                        ident("se"),
+                        call_member(ident("x"), "getUTCSeconds", vec![]),
+                    ),
                 ]),
             ),
             if_stmt(
@@ -1795,7 +1843,10 @@ pub fn prelude() -> Vec<Statement> {
                 vec![if_stmt(
                     binary(BinOp::Eq, ident("style"), str_lit("yyyy-MM-dd")),
                     vec![ret(add(
-                        add(add(to_str(ident("y")), str_lit("-")), call("__j_mf_pad2", vec![ident("mo")])),
+                        add(
+                            add(to_str(ident("y")), str_lit("-")),
+                            call("__j_mf_pad2", vec![ident("mo")]),
+                        ),
                         add(str_lit("-"), call("__j_mf_pad2", vec![ident("d")])),
                     ))],
                     Some(vec![if_stmt(
@@ -1814,7 +1865,10 @@ pub fn prelude() -> Vec<Statement> {
                                                 str_lit("Friday"),
                                                 str_lit("Saturday"),
                                             ]),
-                                            call("__j_mf_day", vec![ident("y"), ident("mo"), ident("d")]),
+                                            call(
+                                                "__j_mf_day",
+                                                vec![ident("y"), ident("mo"), ident("d")],
+                                            ),
                                         ),
                                         str_lit(", "),
                                     ),
@@ -1842,7 +1896,10 @@ pub fn prelude() -> Vec<Statement> {
                         ))],
                         Some(vec![ret(add(
                             add(add(to_str(ident("mo")), str_lit("/")), to_str(ident("d"))),
-                            add(str_lit("/"), call_member(to_str(ident("y")), "substring", vec![int_lit(2)])),
+                            add(
+                                str_lit("/"),
+                                call_member(to_str(ident("y")), "substring", vec![int_lit(2)]),
+                            ),
                         ))]),
                     )]),
                 )],
@@ -1851,7 +1908,10 @@ pub fn prelude() -> Vec<Statement> {
             if_stmt(
                 binary(BinOp::Eq, ident("style"), str_lit("HH:mm:ss")),
                 vec![ret(add(
-                    add(add(call("__j_mf_pad2", vec![ident("h")]), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                    add(
+                        add(call("__j_mf_pad2", vec![ident("h")]), str_lit(":")),
+                        call("__j_mf_pad2", vec![ident("mi")]),
+                    ),
                     add(str_lit(":"), call("__j_mf_pad2", vec![ident("se")])),
                 ))],
                 None,
@@ -1871,18 +1931,28 @@ pub fn prelude() -> Vec<Statement> {
                 None,
             ),
             var_decl("hh", binary(BinOp::Mod, ident("h"), int_lit(12))),
-            if_stmt(binary(BinOp::Eq, ident("hh"), int_lit(0)), vec![assign(ident("hh"), int_lit(12))], None),
+            if_stmt(
+                binary(BinOp::Eq, ident("hh"), int_lit(0)),
+                vec![assign(ident("hh"), int_lit(12))],
+                None,
+            ),
             if_stmt(
                 binary(BinOp::Eq, ident("style"), str_lit("medium")),
                 vec![ret(add(
                     add(
-                        add(add(to_str(ident("hh")), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                        add(
+                            add(to_str(ident("hh")), str_lit(":")),
+                            call("__j_mf_pad2", vec![ident("mi")]),
+                        ),
                         add(str_lit(":"), call("__j_mf_pad2", vec![ident("se")])),
                     ),
                     add(str_lit(" "), ident("ap")),
                 ))],
                 Some(vec![ret(add(
-                    add(add(to_str(ident("hh")), str_lit(":")), call("__j_mf_pad2", vec![ident("mi")])),
+                    add(
+                        add(to_str(ident("hh")), str_lit(":")),
+                        call("__j_mf_pad2", vec![ident("mi")]),
+                    ),
                     add(str_lit(" "), ident("ap")),
                 ))]),
             ),
@@ -1898,20 +1968,72 @@ pub fn prelude() -> Vec<Statement> {
             while_stmt(
                 binary(BinOp::LtEq, ident("start"), ident("n")),
                 vec![
-                    var_decl("end", call_member(ident("style"), "indexOf", vec![str_lit("|"), ident("start")])),
-                    if_stmt(binary(BinOp::Lt, ident("end"), int_lit(0)), vec![assign(ident("end"), ident("n"))], None),
-                    var_decl("part", call_member(ident("style"), "substring", vec![ident("start"), ident("end")])),
-                    var_decl("hash", call_member(ident("part"), "indexOf", vec![str_lit("#")])),
-                    var_decl("lt", call_member(ident("part"), "indexOf", vec![str_lit("<")])),
+                    var_decl(
+                        "end",
+                        call_member(
+                            ident("style"),
+                            "indexOf",
+                            vec![str_lit("|"), ident("start")],
+                        ),
+                    ),
+                    if_stmt(
+                        binary(BinOp::Lt, ident("end"), int_lit(0)),
+                        vec![assign(ident("end"), ident("n"))],
+                        None,
+                    ),
+                    var_decl(
+                        "part",
+                        call_member(
+                            ident("style"),
+                            "substring",
+                            vec![ident("start"), ident("end")],
+                        ),
+                    ),
+                    var_decl(
+                        "hash",
+                        call_member(ident("part"), "indexOf", vec![str_lit("#")]),
+                    ),
+                    var_decl(
+                        "lt",
+                        call_member(ident("part"), "indexOf", vec![str_lit("<")]),
+                    ),
                     var_decl("op", str_lit("#")),
                     var_decl("pos", ident("hash")),
                     if_stmt(
-                        binary(BinOp::Or, binary(BinOp::Lt, ident("pos"), int_lit(0)), binary(BinOp::And, binary(BinOp::GtEq, ident("lt"), int_lit(0)), binary(BinOp::Lt, ident("lt"), ident("pos")))),
-                        vec![assign(ident("op"), str_lit("<")), assign(ident("pos"), ident("lt"))],
+                        binary(
+                            BinOp::Or,
+                            binary(BinOp::Lt, ident("pos"), int_lit(0)),
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::GtEq, ident("lt"), int_lit(0)),
+                                binary(BinOp::Lt, ident("lt"), ident("pos")),
+                            ),
+                        ),
+                        vec![
+                            assign(ident("op"), str_lit("<")),
+                            assign(ident("pos"), ident("lt")),
+                        ],
                         None,
                     ),
-                    var_decl("limit", call_expr(ident("Number"), vec![call_member(ident("part"), "substring", vec![int_lit(0), ident("pos")])])),
-                    var_decl("text", call_member(ident("part"), "substring", vec![add(ident("pos"), int_lit(1))])),
+                    var_decl(
+                        "limit",
+                        call_expr(
+                            ident("Number"),
+                            vec![call_member(
+                                ident("part"),
+                                "substring",
+                                vec![int_lit(0), ident("pos")],
+                            )],
+                        ),
+                    ),
+                    var_decl(
+                        "text",
+                        call_member(
+                            ident("part"),
+                            "substring",
+                            vec![add(ident("pos"), int_lit(1))],
+                        ),
+                    ),
                     if_stmt(
                         binary(
                             BinOp::And,
@@ -1922,41 +2044,118 @@ pub fn prelude() -> Vec<Statement> {
                         None,
                     ),
                     if_stmt(
-                        binary(BinOp::Or, binary(BinOp::And, binary(BinOp::Eq, ident("op"), str_lit("#")), binary(BinOp::Eq, ident("x"), ident("limit"))), binary(BinOp::And, binary(BinOp::Eq, ident("op"), str_lit("<")), binary(BinOp::Gt, ident("x"), ident("limit")))),
+                        binary(
+                            BinOp::Or,
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::Eq, ident("op"), str_lit("#")),
+                                binary(BinOp::Eq, ident("x"), ident("limit")),
+                            ),
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::Eq, ident("op"), str_lit("<")),
+                                binary(BinOp::Gt, ident("x"), ident("limit")),
+                            ),
+                        ),
                         vec![assign(ident("selected"), ident("text"))],
                         None,
                     ),
                     assign(ident("start"), add(ident("end"), int_lit(1))),
                 ],
             ),
-            ret(call("__j_mf_format_pattern", vec![ident("selected"), ident("args"), ident("loc")])),
+            ret(call(
+                "__j_mf_format_pattern",
+                vec![ident("selected"), ident("args"), ident("loc")],
+            )),
         ],
     ));
     out.push(function_stmt(
         "__j_mf_piece",
         vec!["spec", "args", "loc"],
         vec![
-            var_decl("c1", call_member(ident("spec"), "indexOf", vec![str_lit(",")])),
+            var_decl(
+                "c1",
+                call_member(ident("spec"), "indexOf", vec![str_lit(",")]),
+            ),
             var_decl("idxs", ident("spec")),
-            if_stmt(binary(BinOp::GtEq, ident("c1"), int_lit(0)), vec![assign(ident("idxs"), call_member(ident("spec"), "substring", vec![int_lit(0), ident("c1")]))], None),
-            var_decl("idx", call_member(ident("Integer"), "parseInt", vec![ident("idxs")])),
+            if_stmt(
+                binary(BinOp::GtEq, ident("c1"), int_lit(0)),
+                vec![assign(
+                    ident("idxs"),
+                    call_member(ident("spec"), "substring", vec![int_lit(0), ident("c1")]),
+                )],
+                None,
+            ),
+            var_decl(
+                "idx",
+                call_member(ident("Integer"), "parseInt", vec![ident("idxs")]),
+            ),
             var_decl("x", index_expr(ident("args"), ident("idx"))),
-            if_stmt(binary(BinOp::Lt, ident("c1"), int_lit(0)), vec![ret(to_str(ident("x")))], None),
-            var_decl("rest", call_member(ident("spec"), "substring", vec![add(ident("c1"), int_lit(1))])),
-            var_decl("c2", call_member(ident("rest"), "indexOf", vec![str_lit(",")])),
+            if_stmt(
+                binary(BinOp::Lt, ident("c1"), int_lit(0)),
+                vec![ret(to_str(ident("x")))],
+                None,
+            ),
+            var_decl(
+                "rest",
+                call_member(
+                    ident("spec"),
+                    "substring",
+                    vec![add(ident("c1"), int_lit(1))],
+                ),
+            ),
+            var_decl(
+                "c2",
+                call_member(ident("rest"), "indexOf", vec![str_lit(",")]),
+            ),
             var_decl("typ", ident("rest")),
             var_decl("style", str_lit("")),
             if_stmt(
                 binary(BinOp::GtEq, ident("c2"), int_lit(0)),
                 vec![
-                    assign(ident("typ"), call_member(ident("rest"), "substring", vec![int_lit(0), ident("c2")])),
-                    assign(ident("style"), call_member(ident("rest"), "substring", vec![add(ident("c2"), int_lit(1))])),
+                    assign(
+                        ident("typ"),
+                        call_member(ident("rest"), "substring", vec![int_lit(0), ident("c2")]),
+                    ),
+                    assign(
+                        ident("style"),
+                        call_member(
+                            ident("rest"),
+                            "substring",
+                            vec![add(ident("c2"), int_lit(1))],
+                        ),
+                    ),
                 ],
                 None,
             ),
-            if_stmt(binary(BinOp::Eq, ident("typ"), str_lit("number")), vec![ret(call("__j_mf_number", vec![ident("x"), ident("style"), ident("loc")]))], None),
-            if_stmt(binary(BinOp::Eq, ident("typ"), str_lit("choice")), vec![ret(call("__j_mf_choice", vec![ident("x"), ident("style"), ident("args"), ident("loc")]))], None),
-            if_stmt(binary(BinOp::Or, binary(BinOp::Eq, ident("typ"), str_lit("date")), binary(BinOp::Eq, ident("typ"), str_lit("time"))), vec![ret(call("__j_mf_datetime", vec![ident("x"), ident("typ"), ident("style")]))], None),
+            if_stmt(
+                binary(BinOp::Eq, ident("typ"), str_lit("number")),
+                vec![ret(call(
+                    "__j_mf_number",
+                    vec![ident("x"), ident("style"), ident("loc")],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, ident("typ"), str_lit("choice")),
+                vec![ret(call(
+                    "__j_mf_choice",
+                    vec![ident("x"), ident("style"), ident("args"), ident("loc")],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, ident("typ"), str_lit("date")),
+                    binary(BinOp::Eq, ident("typ"), str_lit("time")),
+                ),
+                vec![ret(call(
+                    "__j_mf_datetime",
+                    vec![ident("x"), ident("typ"), ident("style")],
+                ))],
+                None,
+            ),
             ret(to_str(ident("x"))),
         ],
     ));
@@ -1974,11 +2173,42 @@ pub fn prelude() -> Vec<Statement> {
                     if_stmt(
                         binary(BinOp::Eq, ident("c"), str_lit("'")),
                         vec![if_stmt(
-                            binary(BinOp::And, binary(BinOp::Lt, add(ident("i"), int_lit(1)), ident("n")), binary(BinOp::Eq, char_at(ident("pattern"), add(ident("i"), int_lit(1))), str_lit("'"))),
-                            vec![assign(ident("out"), add(ident("out"), str_lit("'"))), assign(ident("i"), add(ident("i"), int_lit(2)))],
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::Lt, add(ident("i"), int_lit(1)), ident("n")),
+                                binary(
+                                    BinOp::Eq,
+                                    char_at(ident("pattern"), add(ident("i"), int_lit(1))),
+                                    str_lit("'"),
+                                ),
+                            ),
+                            vec![
+                                assign(ident("out"), add(ident("out"), str_lit("'"))),
+                                assign(ident("i"), add(ident("i"), int_lit(2))),
+                            ],
                             Some(vec![
                                 assign(ident("i"), add(ident("i"), int_lit(1))),
-                                while_stmt(binary(BinOp::And, binary(BinOp::Lt, ident("i"), ident("n")), binary(BinOp::NotEq, char_at(ident("pattern"), ident("i")), str_lit("'"))), vec![assign(ident("out"), add(ident("out"), char_at(ident("pattern"), ident("i")))), assign(ident("i"), add(ident("i"), int_lit(1)))]),
+                                while_stmt(
+                                    binary(
+                                        BinOp::And,
+                                        binary(BinOp::Lt, ident("i"), ident("n")),
+                                        binary(
+                                            BinOp::NotEq,
+                                            char_at(ident("pattern"), ident("i")),
+                                            str_lit("'"),
+                                        ),
+                                    ),
+                                    vec![
+                                        assign(
+                                            ident("out"),
+                                            add(
+                                                ident("out"),
+                                                char_at(ident("pattern"), ident("i")),
+                                            ),
+                                        ),
+                                        assign(ident("i"), add(ident("i"), int_lit(1))),
+                                    ],
+                                ),
                                 assign(ident("i"), add(ident("i"), int_lit(1))),
                             ]),
                         )],
@@ -1988,19 +2218,60 @@ pub fn prelude() -> Vec<Statement> {
                                 var_decl("j", add(ident("i"), int_lit(1))),
                                 var_decl("depth", int_lit(1)),
                                 while_stmt(
-                                    binary(BinOp::And, binary(BinOp::Lt, ident("j"), ident("n")), binary(BinOp::Gt, ident("depth"), int_lit(0))),
+                                    binary(
+                                        BinOp::And,
+                                        binary(BinOp::Lt, ident("j"), ident("n")),
+                                        binary(BinOp::Gt, ident("depth"), int_lit(0)),
+                                    ),
                                     vec![
                                         var_decl("ch", char_at(ident("pattern"), ident("j"))),
-                                        if_stmt(binary(BinOp::Eq, ident("ch"), str_lit("{")), vec![assign(ident("depth"), add(ident("depth"), int_lit(1)))], None),
-                                        if_stmt(binary(BinOp::Eq, ident("ch"), str_lit("}")), vec![assign(ident("depth"), sub(ident("depth"), int_lit(1)))], None),
-                                        if_stmt(binary(BinOp::Gt, ident("depth"), int_lit(0)), vec![assign(ident("j"), add(ident("j"), int_lit(1)))], None),
+                                        if_stmt(
+                                            binary(BinOp::Eq, ident("ch"), str_lit("{")),
+                                            vec![assign(
+                                                ident("depth"),
+                                                add(ident("depth"), int_lit(1)),
+                                            )],
+                                            None,
+                                        ),
+                                        if_stmt(
+                                            binary(BinOp::Eq, ident("ch"), str_lit("}")),
+                                            vec![assign(
+                                                ident("depth"),
+                                                sub(ident("depth"), int_lit(1)),
+                                            )],
+                                            None,
+                                        ),
+                                        if_stmt(
+                                            binary(BinOp::Gt, ident("depth"), int_lit(0)),
+                                            vec![assign(ident("j"), add(ident("j"), int_lit(1)))],
+                                            None,
+                                        ),
                                     ],
                                 ),
-                                var_decl("spec", call_member(ident("pattern"), "substring", vec![add(ident("i"), int_lit(1)), ident("j")])),
-                                assign(ident("out"), add(ident("out"), call("__j_mf_piece", vec![ident("spec"), ident("args"), ident("loc")]))),
+                                var_decl(
+                                    "spec",
+                                    call_member(
+                                        ident("pattern"),
+                                        "substring",
+                                        vec![add(ident("i"), int_lit(1)), ident("j")],
+                                    ),
+                                ),
+                                assign(
+                                    ident("out"),
+                                    add(
+                                        ident("out"),
+                                        call(
+                                            "__j_mf_piece",
+                                            vec![ident("spec"), ident("args"), ident("loc")],
+                                        ),
+                                    ),
+                                ),
                                 assign(ident("i"), add(ident("j"), int_lit(1))),
                             ],
-                            Some(vec![assign(ident("out"), add(ident("out"), ident("c"))), assign(ident("i"), add(ident("i"), int_lit(1)))]),
+                            Some(vec![
+                                assign(ident("out"), add(ident("out"), ident("c"))),
+                                assign(ident("i"), add(ident("i"), int_lit(1))),
+                            ]),
                         )]),
                     ),
                 ],
@@ -2022,22 +2293,79 @@ pub fn prelude() -> Vec<Statement> {
                 vec![if_stmt(
                     binary(BinOp::Eq, char_at(ident("p"), ident("pi")), str_lit("{")),
                     vec![
-                        var_decl("end", call_member(ident("p"), "indexOf", vec![str_lit("}"), ident("pi")])),
-                        var_decl("spec", call_member(ident("p"), "substring", vec![add(ident("pi"), int_lit(1)), ident("end")])),
-                        var_decl("comma", call_member(ident("spec"), "indexOf", vec![str_lit(",")])),
-                        if_stmt(binary(BinOp::GtEq, ident("comma"), int_lit(0)), vec![assign(ident("spec"), call_member(ident("spec"), "substring", vec![int_lit(0), ident("comma")]))], None),
-                        var_decl("idx", call_member(ident("Integer"), "parseInt", vec![ident("spec")])),
+                        var_decl(
+                            "end",
+                            call_member(ident("p"), "indexOf", vec![str_lit("}"), ident("pi")]),
+                        ),
+                        var_decl(
+                            "spec",
+                            call_member(
+                                ident("p"),
+                                "substring",
+                                vec![add(ident("pi"), int_lit(1)), ident("end")],
+                            ),
+                        ),
+                        var_decl(
+                            "comma",
+                            call_member(ident("spec"), "indexOf", vec![str_lit(",")]),
+                        ),
+                        if_stmt(
+                            binary(BinOp::GtEq, ident("comma"), int_lit(0)),
+                            vec![assign(
+                                ident("spec"),
+                                call_member(
+                                    ident("spec"),
+                                    "substring",
+                                    vec![int_lit(0), ident("comma")],
+                                ),
+                            )],
+                            None,
+                        ),
+                        var_decl(
+                            "idx",
+                            call_member(ident("Integer"), "parseInt", vec![ident("spec")]),
+                        ),
                         assign(ident("pi"), add(ident("end"), int_lit(1))),
-                        var_decl("next", call_member(ident("p"), "indexOf", vec![str_lit("{"), ident("pi")])),
-                        if_stmt(binary(BinOp::Lt, ident("next"), int_lit(0)), vec![assign(ident("next"), ident("n"))], None),
-                        var_decl("lit", call_member(ident("p"), "substring", vec![ident("pi"), ident("next")])),
+                        var_decl(
+                            "next",
+                            call_member(ident("p"), "indexOf", vec![str_lit("{"), ident("pi")]),
+                        ),
+                        if_stmt(
+                            binary(BinOp::Lt, ident("next"), int_lit(0)),
+                            vec![assign(ident("next"), ident("n"))],
+                            None,
+                        ),
+                        var_decl(
+                            "lit",
+                            call_member(ident("p"), "substring", vec![ident("pi"), ident("next")]),
+                        ),
                         var_decl("te", member(ident("text"), "length")),
-                        if_stmt(binary(BinOp::Gt, member(ident("lit"), "length"), int_lit(0)), vec![assign(ident("te"), call_member(ident("text"), "indexOf", vec![ident("lit"), ident("si")]))], None),
-                        assign(index_expr(ident("res"), ident("idx")), call_member(ident("text"), "substring", vec![ident("si"), ident("te")])),
-                        assign(ident("si"), add(ident("te"), member(ident("lit"), "length"))),
+                        if_stmt(
+                            binary(BinOp::Gt, member(ident("lit"), "length"), int_lit(0)),
+                            vec![assign(
+                                ident("te"),
+                                call_member(
+                                    ident("text"),
+                                    "indexOf",
+                                    vec![ident("lit"), ident("si")],
+                                ),
+                            )],
+                            None,
+                        ),
+                        assign(
+                            index_expr(ident("res"), ident("idx")),
+                            call_member(ident("text"), "substring", vec![ident("si"), ident("te")]),
+                        ),
+                        assign(
+                            ident("si"),
+                            add(ident("te"), member(ident("lit"), "length")),
+                        ),
                         assign(ident("pi"), ident("next")),
                     ],
-                    Some(vec![assign(ident("pi"), add(ident("pi"), int_lit(1))), assign(ident("si"), add(ident("si"), int_lit(1)))]),
+                    Some(vec![
+                        assign(ident("pi"), add(ident("pi"), int_lit(1))),
+                        assign(ident("si"), add(ident("si"), int_lit(1))),
+                    ]),
                 )],
             ),
             ret(ident("res")),
@@ -2149,7 +2477,10 @@ pub fn prelude() -> Vec<Statement> {
         vec!["s"],
         vec![
             assign(ident("s"), to_str(ident("s"))),
-            var_decl("dot", call_member(ident("s"), "indexOf", vec![str_lit(".")])),
+            var_decl(
+                "dot",
+                call_member(ident("s"), "indexOf", vec![str_lit(".")]),
+            ),
             if_stmt(
                 binary(BinOp::Lt, ident("dot"), int_lit(0)),
                 vec![ret(call("__j_group", vec![ident("s")]))],
@@ -7098,7 +7429,10 @@ fn sprintf_fn() -> Statement {
                             vec![
                                 call(
                                     "__j_bd_round_half_up",
-                                    vec![call_expr(ident("Number"), vec![ident("a")]), ident("prf")],
+                                    vec![
+                                        call_expr(ident("Number"), vec![ident("a")]),
+                                        ident("prf"),
+                                    ],
                                 ),
                                 ident("prf"),
                             ],

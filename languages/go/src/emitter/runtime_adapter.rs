@@ -1,8 +1,8 @@
 //! Go runtime-surface helpers routed via `common:go.*`.
 
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::host;
 
 pub fn emit_helper(
     name: &str,

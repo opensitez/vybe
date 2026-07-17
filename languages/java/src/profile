@@ -66,6 +66,13 @@ __j_objects_hash_code = { emit = "common:object.hash_code",       min_args = 1, 
 __j_objects_hash   = { emit = "common:object.hash",               min_args = 0, max_args = 255 }
 __j_objects_compare = { emit = "common:object.compare",           min_args = 3, max_args = 3 }
 __j_objects_to_string = { emit = "common:object.to_string_or",    min_args = 1, max_args = 2 }
+__java_xml_name    = { emit = "common:xml.name",                  min_args = 3, max_args = 3 }
+__java_xml_local   = { emit = "common:xml.local",                 min_args = 1, max_args = 1 }
+__java_xml_namespace = { emit = "common:xml.namespace",           min_args = 1, max_args = 1 }
+__java_xml_prefix  = { emit = "common:xml.prefix",                min_args = 1, max_args = 1 }
+__java_xml_qualified = { emit = "common:xml.qualified",           min_args = 1, max_args = 1 }
+__java_xml_equal   = { emit = "common:xml.equal",                 min_args = 2, max_args = 2 }
+__java_xml_node_name = { emit = "common:xml.node_name",           min_args = 1, max_args = 1 }
 __j_object_notify   = { emit = "common:threading.monitor_notify", min_args = 1, max_args = 1 }
 __j_object_notify_all = { emit = "common:threading.monitor_notify_all", min_args = 1, max_args = 1 }
 

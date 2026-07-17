@@ -4691,6 +4691,35 @@ fn php_member_call_expr(
     )
 }
 
+fn php_call_helper_expr(name: &str, args: Vec<Expression>, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Ident(name.to_string()),
+                span.clone(),
+            )),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        },
+        span.clone(),
+    )
+}
+
+fn php_dom_xml_name_property_expr(
+    object: Expression,
+    field: &str,
+    span: &Span,
+) -> Option<Expression> {
+    let name = php_call_helper_expr("__php_xml_node_name", vec![object], span);
+    match field {
+        "nodeName" => Some(php_call_helper_expr("__php_xml_qualified", vec![name], span)),
+        "localName" => Some(php_call_helper_expr("__php_xml_local", vec![name], span)),
+        "namespaceURI" => Some(php_call_helper_expr("__php_xml_namespace", vec![name], span)),
+        "prefix" => Some(php_call_helper_expr("__php_xml_prefix", vec![name], span)),
+        _ => None,
+    }
+}
+
 fn php_iterator_foreach_rewrite(
     iter: &Expression,
     key_var: Option<&str>,
@@ -12528,14 +12557,17 @@ fn apply_postfix(
                 ));
             }
             if method_name == "getName" && args.is_empty() {
-                return Ok(Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(member_object.clone()),
-                        field: "nodeName".to_string(),
-                        null_safe,
-                    },
-                    span.clone(),
-                ));
+                return Ok(php_dom_xml_name_property_expr(member_object.clone(), "nodeName", span)
+                    .unwrap_or_else(|| {
+                        Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(member_object.clone()),
+                                field: "nodeName".to_string(),
+                                null_safe,
+                            },
+                            span.clone(),
+                        )
+                    }));
             }
             // `createElement($name, $text)` — PHP's 2-arg form creates the
             // element and a child text node with `$text`.
@@ -12847,6 +12879,30 @@ fn apply_postfix(
                         }
                         if class_has_field(&class_name, field) {
                             return Ok(member);
+                        }
+                    }
+                }
+            }
+            if !null_safe && !is_assign_target && !silent_property_access {
+                if let ExprKind::Member { object, field, .. } = &member.kind {
+                    let is_known_non_dom =
+                        php_object_class_from_expr(object).is_some_and(|class_name| {
+                            !matches!(
+                                class_name.trim_start_matches('\\'),
+                                "DOMDocument"
+                                    | "DOMElement"
+                                    | "DOMNode"
+                                    | "DOMDocumentFragment"
+                                    | "DOMText"
+                                    | "DOMAttr"
+                                    | "SimpleXMLElement"
+                            )
+                        });
+                    if !is_known_non_dom {
+                        if let Some(xml_name) =
+                            php_dom_xml_name_property_expr((**object).clone(), field, span)
+                        {
+                            return Ok(xml_name);
                         }
                     }
                 }

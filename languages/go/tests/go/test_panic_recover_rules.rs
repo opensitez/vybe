@@ -65,7 +65,9 @@ fn nested_defer_inner_recover_gets_nil() {
     use std::sync::{Arc, Mutex};
     use vybe_bytecode::{HostContext, VM, Value};
 
-    let chunks = crate::helpers::compile("package main; import \"fmt\"; func run() { defer func() { defer func() { fmt.Println(recover() == nil) }() }(); panic(\"outer\") }; func main() { run() }");
+    let chunks = crate::helpers::compile(
+        "package main; import \"fmt\"; func run() { defer func() { defer func() { fmt.Println(recover() == nil) }() }(); panic(\"outer\") }; func main() { run() }",
+    );
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
@@ -80,7 +82,9 @@ fn nested_defer_inner_recover_gets_nil() {
         }),
     );
     vybe_host::setup_namespaces(&mut vm);
-    let err = vm.run(chunks).expect_err("run should keep panicking with outer");
+    let err = vm
+        .run(chunks)
+        .expect_err("run should keep panicking with outer");
     assert!(err.message.contains("outer"));
     assert_eq!(output.lock().unwrap().clone(), vec!["true"]);
 }
@@ -90,7 +94,9 @@ fn defer_recover_three_level_nesting() {
     use std::sync::{Arc, Mutex};
     use vybe_bytecode::{HostContext, VM, Value};
 
-    let chunks = crate::helpers::compile("package main; import \"fmt\"; func run() { defer func() { defer func() { defer func() { fmt.Println(recover()) }() }(); panic(\"triple\") }(); fmt.Println(\"start\") }; func main() { run() }");
+    let chunks = crate::helpers::compile(
+        "package main; import \"fmt\"; func run() { defer func() { defer func() { defer func() { fmt.Println(recover()) }() }(); panic(\"triple\") }(); fmt.Println(\"start\") }; func main() { run() }",
+    );
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
@@ -105,7 +111,9 @@ fn defer_recover_three_level_nesting() {
         }),
     );
     vybe_host::setup_namespaces(&mut vm);
-    let err = vm.run(chunks).expect_err("run should keep panicking with triple");
+    let err = vm
+        .run(chunks)
+        .expect_err("run should keep panicking with triple");
     assert!(err.message.contains("triple"));
     assert_eq!(output.lock().unwrap().clone(), vec!["start", "null"]);
 }

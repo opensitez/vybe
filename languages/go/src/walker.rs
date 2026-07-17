@@ -27,12 +27,12 @@
 //! - **`_` blank identifier**: Ignored in assignments.
 
 use super::{GoParser, Rule};
-use vybe_ast::*;
-use vybe_emitter::channels;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use vybe_ast::*;
+use vybe_emitter::channels;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // Entry point
@@ -86,7 +86,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("slices.") || source.contains("maps.") {
         prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
     }
-    if source.contains("unicode.") || source.contains("unicode/utf8") || source.contains("unicode/utf16") {
+    if source.contains("unicode.")
+        || source.contains("unicode/utf8")
+        || source.contains("unicode/utf16")
+    {
         prelude.extend(go_prelude_body(GO_UNICODE_PRELUDE)?);
     }
     if source.contains("encoding/hex")
@@ -102,6 +105,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         || source.contains("log.")
         || source.contains("xml.")
         || source.contains("encoding/xml")
+        || source.contains("encoding/gob")
         || source.contains("encoding/hex")
         || source.contains("encoding/base64")
         || source.contains("encoding/binary")
@@ -122,6 +126,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     if source.contains("xml.") || source.contains("encoding/xml") {
         prelude.extend(go_prelude_body(GO_XML_PRELUDE)?);
+    }
+    if source.contains("gob.") || source.contains("encoding/gob") {
+        prelude.extend(go_prelude_body(GO_GOB_PRELUDE)?);
     }
     if source.contains("slog.") {
         prelude.extend(go_prelude_body(GO_SLOG_PRELUDE)?);
@@ -155,7 +162,11 @@ fn go_uses_errors_runtime(source: &str) -> bool {
 const GO_CORE_PRELUDE: &str = r#"package main
 
 func __go_io_bytes_to_string(buf []byte) string {
-	return __go_text_decode(__go_text_decoder_new(), buf)
+	out := ""
+	for _, b := range buf {
+		out = out + __go_str_from_char_code(int(b))
+	}
+	return out
 }
 
 func __go_io_string_to_bytes(s string) []byte {
@@ -845,6 +856,16 @@ const GO_BYTES_PRELUDE: &str = r#"package main
 type __goBuffer struct {
 	data string
 	pos  int
+	gob  []any
+	gob0 any
+	gob1 any
+	gob2 any
+	gob3 any
+	gob4 any
+	gob5 any
+	gob6 any
+	gob7 any
+	gob_len int
 }
 
 var __go_log_out *__goBuffer = nil
@@ -2041,14 +2062,19 @@ func main() {}
 const GO_XML_PRELUDE: &str = r#"package main
 
 type __goXMLName struct {
-	Space string
-	Local string
+	namespaceURI string
+	localName    string
+	prefix       string
 }
 type __goXMLStartElement struct {
 	Name __goXMLName
+	Kind string
+	Tag  string
 }
 type __goXMLEndElement struct {
 	Name __goXMLName
+	Kind string
+	Tag  string
 }
 type __goXMLProcInst struct {
 	Target string
@@ -2057,6 +2083,7 @@ type __goXMLProcInst struct {
 type __goXMLDecoder struct {
 	data   string
 	pos    int
+	pendingEnd string
 	Entity map[string]string
 }
 type __goXMLEncoder struct {
@@ -2086,7 +2113,8 @@ func __go_xml_replace_all(s string, old string, repl string) string {
 	}
 }
 
-func __go_xml_escape_string(s string) string {
+func __go_xml_escape_string(v any) string {
+	s := __go_fmt_string(v)
 	s = __go_xml_replace_all(s, "&", "&amp;")
 	s = __go_xml_replace_all(s, "<", "&lt;")
 	s = __go_xml_replace_all(s, ">", "&gt;")
@@ -2095,13 +2123,37 @@ func __go_xml_escape_string(s string) string {
 	return s
 }
 
-func __go_xml_unescape_string(s string) string {
+func __go_xml_unescape_string(v any) string {
+	s := __go_fmt_string(v)
 	s = __go_xml_replace_all(s, "&lt;", "<")
 	s = __go_xml_replace_all(s, "&gt;", ">")
 	s = __go_xml_replace_all(s, "&quot;", "\"")
 	s = __go_xml_replace_all(s, "&apos;", "'")
 	s = __go_xml_replace_all(s, "&amp;", "&")
 	return s
+}
+
+func __go_xml_source_string(src []byte) string {
+	out := ""
+	for _, b := range src {
+		out = out + __go_str_from_char_code(int(b))
+	}
+	return out
+}
+
+func __go_xml_any_string(src any) string {
+	if __go_is_string(src) {
+		return __go_fmt_string(src)
+	}
+	return __go_xml_source_string(src)
+}
+
+func __go_xml_string_bytes(s string) []byte {
+	out := []byte{}
+	for i := 0; i < len(s); i++ {
+		out = append(out, byte(s[i]))
+	}
+	return out
 }
 
 func __go_xml_index(s string, needle string) int {
@@ -2114,7 +2166,7 @@ func __go_xml_index(s string, needle string) int {
 }
 
 func __go_xml_attr(src any, name string) string {
-	s := __go_fmt_string(src)
+	s := __go_xml_any_string(src)
 	needle := name + "=\""
 	i := __go_xml_index(s, needle)
 	if i < 0 {
@@ -2122,14 +2174,14 @@ func __go_xml_attr(src any, name string) string {
 	}
 	start := i + len(needle)
 	end := start
-	for end < len(s) && s[end] != '"' {
+	for end < len(s) && s[end:end+1] != "\"" {
 		end++
 	}
 	return __go_xml_unescape_string(s[start:end])
 }
 
 func __go_xml_elem(src any, name string) string {
-	s := __go_fmt_string(src)
+	s := __go_xml_any_string(src)
 	open := "<" + name
 	i := __go_xml_index(s, open)
 	if i < 0 {
@@ -2152,7 +2204,7 @@ func __go_xml_elem(src any, name string) string {
 }
 
 func __go_xml_chardata(src any) string {
-	s := __go_fmt_string(src)
+	s := __go_xml_any_string(src)
 	start := __go_xml_index(s, ">")
 	if start < 0 {
 		return ""
@@ -2165,52 +2217,81 @@ func __go_xml_chardata(src any) string {
 }
 
 func __go_xml_EscapeText(w *__goBuffer, b []byte) error {
-	__go_bytes_WriteString(w, __go_xml_escape_string(string(b)))
+	__go_bytes_WriteString(w, __go_xml_escape_string(__go_xml_source_string(b)))
 	return nil
 }
 
-func __go_xml_Unescape(b []byte) ([]byte, error) {
-	return []byte(__go_xml_unescape_string(string(b))), nil
+func __go_xml_Unescape(b []byte) (string, error) {
+	return __go_xml_unescape_string(__go_xml_source_string(b)), nil
 }
 
-func __go_xml_NewDecoder(r any) *__goXMLDecoder {
-	return &__goXMLDecoder{data: __go_fmt_string(r), Entity: map[string]string{}}
+func __go_xml_NewDecoder(r *__goReader) *__goXMLDecoder {
+	return &__goXMLDecoder{data: __go_reader_text(r), Entity: map[string]string{}}
+}
+func __go_xml_NewDecoderString(s string) *__goXMLDecoder {
+	return &__goXMLDecoder{data: s, Entity: map[string]string{}}
+}
+func __go_xml_NewDecoderBytes(b []byte) *__goXMLDecoder {
+	return &__goXMLDecoder{data: __go_xml_source_string(b), Entity: map[string]string{}}
+}
+
+func __go_xml_token_kind(tok any) string {
+	return tok.Kind
+}
+
+func __go_xml_token_local(tok any) string {
+	return tok.Name.localName
 }
 
 func (d *__goXMLDecoder) Token() (any, error) {
+	if d.pendingEnd != "" {
+		tag := d.pendingEnd
+		d.pendingEnd = ""
+		tag = __go_xml_replace_all(tag, "/", "")
+		name := __go_xml_name("", tag, "")
+		return __goXMLEndElement{Name: name, Kind: "end", Tag: tag}, nil
+	}
 	if d.pos >= len(d.data) {
 		return nil, "EOF"
 	}
-	if d.data[d.pos] != '<' {
+	if d.data[d.pos:d.pos+1] != "<" {
 		start := d.pos
-		for d.pos < len(d.data) && d.data[d.pos] != '<' {
-			d.pos++
+		next := __go_xml_index(d.data[start:], "<")
+		if next < 0 {
+			d.pos = len(d.data)
+		} else {
+			d.pos = start + next
 		}
-		return []byte(d.data[start:d.pos]), nil
+		return d.data[start:d.pos], nil
 	}
-	close := d.pos + 1
-	for close < len(d.data) && d.data[close] != '>' {
-		close++
-	}
-	if close >= len(d.data) {
+	close_rel := __go_xml_index(d.data[d.pos:], ">")
+	if close_rel < 0 {
 		d.pos = len(d.data)
 		return nil, "EOF"
 	}
-	tag := d.data[d.pos+1:close]
+	close := d.pos + close_rel
+	tag_start := d.pos + 1
+	tag := d.data[tag_start:close]
 	d.pos = close + 1
-	if len(tag) > 0 && tag[0] == '/' {
-		return __goXMLEndElement{Name: __goXMLName{Local: tag[1:]}}, nil
+	if len(tag) > 0 && tag[0:1] == "/" {
+		name := __go_xml_name("", tag[1:], "")
+		return __goXMLEndElement{Name: name, Kind: "end", Tag: tag[1:]}, nil
 	}
-	if len(tag) > 0 && tag[len(tag)-1] == '/' {
-		tag = tag[:len(tag)-1]
+	selfClosing := false
+	slash := __go_xml_index(tag, "/")
+	if slash >= 0 {
+		tag = __go_xml_replace_all(tag, "/", "")
+		selfClosing = true
 	}
-	for i := 0; i < len(tag); i++ {
-		if tag[i] == ' ' {
-			tag = tag[:i]
-			break
-		}
+	space := __go_xml_index(tag, " ")
+	if space >= 0 {
+		tag = tag[:space]
 	}
-	return __goXMLStartElement{Name: __goXMLName{Local: tag}}, nil
+	if selfClosing {
+		d.pendingEnd = tag
+	}
+	name := __go_xml_name("", tag, "")
+	return __goXMLStartElement{Name: name, Kind: "start", Tag: tag}, nil
 }
 func (d *__goXMLDecoder) RawToken() (any, error) { return d.Token() }
 func (d *__goXMLDecoder) Skip() error            { return nil }
@@ -2227,25 +2308,121 @@ func (e *__goXMLEncoder) Indent(prefix string, indent string) {
 }
 func (e *__goXMLEncoder) Encode(v any) error {
 	b, _ := __go_xml_MarshalIndent(v, e.prefix, e.indent)
-	__go_bytes_Write(e.w, b)
+	__go_bytes_WriteString(e.w, __go_fmt_string(b))
 	return nil
 }
 
 func __go_xml_Marshal(v any) ([]byte, error) {
 	return []byte(__go_fmt_string(v)), nil
 }
-func __go_xml_MarshalIndent(v any, prefix string, indent string) ([]byte, error) {
+func __go_xml_MarshalIndent(v any, prefix string, indent string) (string, error) {
 	s := __go_fmt_string(v)
+	if indent != "" {
+		s = "\n" + s
+	}
 	if prefix != "" {
 		s = prefix + s
 	}
-	return []byte(s), nil
+	return s, nil
 }
 func __go_xml_Unmarshal(b []byte, v any) error { return nil }
 func __go_xml_Copy(dst *__goBuffer, src *__goBuffer) error {
 	__go_bytes_WriteString(dst, __go_bytes_String(src))
 	return nil
 }
+
+func main() {}
+"#;
+
+const GO_GOB_PRELUDE: &str = r#"package main
+
+type __goGobEncoder struct {
+	w *__goBuffer
+}
+type __goGobDecoder struct {
+	r   *__goBuffer
+	pos int
+}
+
+func __go_gob_NewEncoder(w *__goBuffer) *__goGobEncoder {
+	return &__goGobEncoder{w: w}
+}
+
+func __go_gob_NewDecoder(r *__goBuffer) *__goGobDecoder {
+	return &__goGobDecoder{r: r}
+}
+
+func (e *__goGobEncoder) Encode(v any) error {
+	return __go_gob_encode(e, v)
+}
+
+func __go_gob_encode(e *__goGobEncoder, v any) error {
+	if e == nil || e.w == nil {
+		return nil
+	}
+	if e.w.gob_len == 0 {
+		e.w.gob0 = v
+	} else if e.w.gob_len == 1 {
+		e.w.gob1 = v
+	} else if e.w.gob_len == 2 {
+		e.w.gob2 = v
+	} else if e.w.gob_len == 3 {
+		e.w.gob3 = v
+	} else if e.w.gob_len == 4 {
+		e.w.gob4 = v
+	} else if e.w.gob_len == 5 {
+		e.w.gob5 = v
+	} else if e.w.gob_len == 6 {
+		e.w.gob6 = v
+	} else {
+		e.w.gob7 = v
+	}
+	e.w.gob_len = e.w.gob_len + 1
+	__go_bytes_WriteString(e.w, "g")
+	return nil
+}
+
+func (e *__goGobEncoder) EncodeValue(v any) error {
+	return e.Encode(v)
+}
+
+func (d *__goGobDecoder) Decode(v any) error {
+	__go_gob_next(d)
+	return nil
+}
+
+func __go_gob_next(d *__goGobDecoder) any {
+	if d == nil || d.r == nil || d.pos >= d.r.gob_len {
+		return nil
+	}
+	var val any
+	if d.pos == 0 {
+		val = d.r.gob0
+	} else if d.pos == 1 {
+		val = d.r.gob1
+	} else if d.pos == 2 {
+		val = d.r.gob2
+	} else if d.pos == 3 {
+		val = d.r.gob3
+	} else if d.pos == 4 {
+		val = d.r.gob4
+	} else if d.pos == 5 {
+		val = d.r.gob5
+	} else if d.pos == 6 {
+		val = d.r.gob6
+	} else {
+		val = d.r.gob7
+	}
+	d.pos++
+	return val
+}
+
+func (d *__goGobDecoder) DecodeValue(v any) error {
+	return d.Decode(v)
+}
+
+func __go_gob_Register(v any) {}
+func __go_gob_RegisterName(name string, v any) {}
 
 func main() {}
 "#;
@@ -4438,15 +4615,16 @@ fn go_rewrite_named_result_cell_stmt(stmt: Statement, result_name: &str) -> Stat
                 .collect(),
             value: go_rewrite_named_result_cell_expr(value, result_name),
         }),
-        StmtKind::CompoundAssign { target, op, value } => Statement::new(StmtKind::CompoundAssign {
-            target: go_rewrite_named_result_cell_target(target, result_name),
-            op,
-            value: go_rewrite_named_result_cell_expr(value, result_name),
-        }),
-        StmtKind::Block(body) => Statement::new(StmtKind::Block(go_rewrite_named_result_cell_body(
-            body,
-            result_name,
-        ))),
+        StmtKind::CompoundAssign { target, op, value } => {
+            Statement::new(StmtKind::CompoundAssign {
+                target: go_rewrite_named_result_cell_target(target, result_name),
+                op,
+                value: go_rewrite_named_result_cell_expr(value, result_name),
+            })
+        }
+        StmtKind::Block(body) => Statement::new(StmtKind::Block(
+            go_rewrite_named_result_cell_body(body, result_name),
+        )),
         StmtKind::If {
             cond,
             then_body,
@@ -4486,8 +4664,7 @@ fn go_rewrite_named_result_cell_stmt(stmt: Statement, result_name: &str) -> Stat
             update,
             body,
         } => Statement::new(StmtKind::For {
-            init: init
-                .map(|stmt| Box::new(go_rewrite_named_result_cell_stmt(*stmt, result_name))),
+            init: init.map(|stmt| Box::new(go_rewrite_named_result_cell_stmt(*stmt, result_name))),
             cond: cond.map(|expr| go_rewrite_named_result_cell_expr(expr, result_name)),
             update: update.map(|expr| go_rewrite_named_result_cell_expr(expr, result_name)),
             body: go_rewrite_named_result_cell_body(body, result_name),
@@ -4639,12 +4816,9 @@ fn go_rewrite_named_result_cell_expr(expr: Expression, result_name: &str) -> Exp
                         key: go_rewrite_named_result_cell_expr(key, result_name),
                         value: go_rewrite_named_result_cell_expr(value, result_name),
                     },
-                    ObjectProperty::Spread(value) => {
-                        ObjectProperty::Spread(go_rewrite_named_result_cell_expr(
-                            value,
-                            result_name,
-                        ))
-                    }
+                    ObjectProperty::Spread(value) => ObjectProperty::Spread(
+                        go_rewrite_named_result_cell_expr(value, result_name),
+                    ),
                     ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
                         key: go_rewrite_named_result_cell_expr(key, result_name),
                         value: go_rewrite_named_result_cell_expr(value, result_name),
@@ -4693,9 +4867,10 @@ fn go_rewrite_named_result_cell_expr(expr: Expression, result_name: &str) -> Exp
 
 fn go_rewrite_named_result_cell_lambda_body(body: LambdaBody, result_name: &str) -> LambdaBody {
     match body {
-        LambdaBody::Expr(expr) => {
-            LambdaBody::Expr(Box::new(go_rewrite_named_result_cell_expr(*expr, result_name)))
-        }
+        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(go_rewrite_named_result_cell_expr(
+            *expr,
+            result_name,
+        ))),
         LambdaBody::Block(body) => {
             LambdaBody::Block(go_rewrite_named_result_cell_body(body, result_name))
         }
@@ -6575,16 +6750,22 @@ fn normalize_go_statement(
         }
         StmtKind::Expr(_) if go_extract_named_type_marker(stmt).is_some() => vec![stmt.clone()],
         StmtKind::Expr(expr) => {
-            if let Some(panic_expr) = go_extract_panic_expr(expr) {
+            let expr = go_unwrap_spawned_gob_expr(expr).unwrap_or_else(|| expr.clone());
+            if let Some(panic_expr) = go_extract_panic_expr(&expr) {
                 vec![Statement::new(StmtKind::Throw {
                     expr: Some(normalize_go_expr(panic_expr, env, signatures, state)),
                     cause: None,
                 })]
             } else {
-                if let Some(rewritten) = go_rewrite_big_expr_statement(expr) {
+                if let Some(rewritten) =
+                    go_rewrite_gob_decode_expr_statement(&expr, env, signatures, state)
+                {
                     return rewritten;
                 }
-                let normalized = normalize_go_expr(expr, env, signatures, state);
+                if let Some(rewritten) = go_rewrite_big_expr_statement(&expr) {
+                    return rewritten;
+                }
+                let normalized = normalize_go_expr(&expr, env, signatures, state);
                 if let Some(rewritten) = go_rewrite_big_expr_statement(&normalized) {
                     return rewritten;
                 }
@@ -6886,7 +7067,9 @@ fn normalize_go_expr(
         ExprKind::Binary { op, left, right } => {
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
-            if let Some(complex) = go_complex_binary_expr(*op, next_left.clone(), next_right.clone()) {
+            if let Some(complex) =
+                go_complex_binary_expr(*op, next_left.clone(), next_right.clone())
+            {
                 return complex;
             }
             let normalized_op = if *op == BinOp::Div
@@ -7017,6 +7200,50 @@ fn normalize_go_expr(
                     return rewritten;
                 }
             }
+            if field == "Local" {
+                if let ExprKind::Member {
+                    object: token_object,
+                    field: name_field,
+                    ..
+                } = &object.kind
+                {
+                    if name_field == "Name" {
+                        let token_type = go_expr_type_hint(token_object, env, signatures);
+                        if matches!(
+                            token_type.as_deref().map(str::trim),
+                            Some("__goXMLStartElement" | "__goXMLEndElement")
+                        ) {
+                            let normalized_name = Expression::new(ExprKind::Member {
+                                object: Box::new(normalize_go_expr(
+                                    token_object,
+                                    env,
+                                    signatures,
+                                    state,
+                                )),
+                                field: "Name".to_string(),
+                                null_safe: false,
+                            });
+                            return go_builtin_call("__go_xml_name_local", vec![normalized_name]);
+                        } else {
+                            let token = normalize_go_expr(token_object, env, signatures, state);
+                            return go_builtin_call("__go_xml_token_local", vec![token]);
+                        }
+                    }
+                }
+            }
+            if matches!(field.as_str(), "Local" | "Space")
+                && go_expr_type_hint(object, env, signatures)
+                    .as_deref()
+                    .is_some_and(|ty| ty.trim() == "__goXMLName")
+            {
+                let normalized_object = normalize_go_expr(object, env, signatures, state);
+                let helper = if field == "Local" {
+                    "__go_xml_name_local"
+                } else {
+                    "__go_xml_name_space"
+                };
+                return go_builtin_call(helper, vec![normalized_object]);
+            }
             let next_object = normalize_go_expr(object, env, signatures, state);
             let rewritten =
                 go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
@@ -7064,6 +7291,22 @@ fn normalize_go_expr(
             optional,
         } => {
             let next_callee = normalize_go_expr(callee, env, signatures, state);
+            if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "__go_type_assert")
+                && args.len() == 2
+            {
+                if let Some(type_name) = go_type_name_from_expr(&args[1].value) {
+                    return go_type_assert_value_expr(
+                        normalize_go_expr(&args[0].value, env, signatures, state),
+                        &type_name,
+                    );
+                }
+                if let Some(kind) = go_xml_type_assert_kind_marker(&args[1].value) {
+                    return go_xml_token_element_from_go_expr(
+                        normalize_go_expr(&args[0].value, env, signatures, state),
+                        kind,
+                    );
+                }
+            }
             let signature = match &next_callee.kind {
                 ExprKind::Ident(name) => signatures.get(name),
                 _ => None,
@@ -7118,6 +7361,12 @@ fn normalize_go_expr(
 
             if let Some(rewritten_call) =
                 go_rewrite_big_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
+                go_rewrite_gob_method_call(&next_callee, &next_args, env, signatures)
             {
                 return rewritten_call;
             }
@@ -7207,6 +7456,9 @@ fn normalize_go_expr(
                 {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_gob_call(name, &next_args) {
+                    return rewritten;
+                }
                 if let Some(rewritten) = go_rewrite_unicode_call(name, &next_args) {
                     return rewritten;
                 }
@@ -7216,7 +7468,9 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
                     return rewritten;
                 }
-                if let Some(rewritten) = go_rewrite_container_call(name, &next_args, env, signatures) {
+                if let Some(rewritten) =
+                    go_rewrite_container_call(name, &next_args, env, signatures)
+                {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_slices_maps_call(name, &next_args) {
@@ -7389,7 +7643,10 @@ fn normalize_go_expr(
                 if go_expr_type_hint(&next_args[0].value, env, signatures).as_deref()
                     == Some("string")
                 {
-                    return go_builtin_call("__go_string_byte_len", vec![next_args[0].value.clone()]);
+                    return go_builtin_call(
+                        "__go_string_byte_len",
+                        vec![next_args[0].value.clone()],
+                    );
                 }
                 if go_expr_type_hint(&next_args[0].value, env, signatures)
                     .as_deref()
@@ -7489,9 +7746,20 @@ fn normalize_go_expr(
                 });
             }
             if type_name.trim() == "string"
+                && matches!(
+                    &normalized_expr.kind,
+                    ExprKind::Call { callee, .. }
+                        if go_expr_call_name(callee).as_deref() == Some("__go_utf16_Decode")
+                )
+            {
+                return go_builtin_call("__go_runes_to_string", vec![normalized_expr]);
+            }
+            if type_name.trim() == "string"
                 && go_expr_type_hint(&normalized_expr, env, signatures)
                     .as_deref()
-                    .is_some_and(|ty| matches!(go_array_element_type(ty).as_deref(), Some("rune" | "int32")))
+                    .is_some_and(|ty| {
+                        matches!(go_array_element_type(ty).as_deref(), Some("rune" | "int32"))
+                    })
             {
                 return go_builtin_call("__go_runes_to_string", vec![normalized_expr]);
             }
@@ -7500,15 +7768,53 @@ fn normalize_go_expr(
             {
                 return go_builtin_call("__go_io_string_to_bytes", vec![normalized_expr]);
             }
+            if type_name.trim() == "__goXMLName" {
+                return go_xml_name_from_go_expr(normalized_expr);
+            }
+            if type_name.trim() == "__goXMLStartElement" {
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(go_xml_token_element_from_go_expr(normalized_expr, "start")),
+                    type_name: type_name.clone(),
+                });
+            }
+            if type_name.trim() == "__goXMLEndElement" {
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(go_xml_token_element_from_go_expr(normalized_expr, "end")),
+                    type_name: type_name.clone(),
+                });
+            }
             go_normalize_typed_composite_expr(normalized_expr, type_name, env)
         }
-        ExprKind::TypeOf(inner) => Expression::new(ExprKind::TypeOf(Box::new(
-            normalize_go_expr(inner, env, signatures, state),
-        ))),
-        ExprKind::IsType { expr, type_name } => Expression::new(ExprKind::IsType {
-            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
-            type_name: type_name.clone(),
-        }),
+        ExprKind::TypeOf(inner) => Expression::new(ExprKind::TypeOf(Box::new(normalize_go_expr(
+            inner, env, signatures, state,
+        )))),
+        ExprKind::IsType { expr, type_name } => {
+            let normalized_expr = normalize_go_expr(expr, env, signatures, state);
+            if type_name.trim() == "__goXMLStartElement" {
+                return Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(go_builtin_call(
+                        "__go_xml_token_kind",
+                        vec![normalized_expr],
+                    )),
+                    right: Box::new(Expression::string("start")),
+                });
+            }
+            if type_name.trim() == "__goXMLEndElement" {
+                return Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(go_builtin_call(
+                        "__go_xml_token_kind",
+                        vec![normalized_expr],
+                    )),
+                    right: Box::new(Expression::string("end")),
+                });
+            }
+            Expression::new(ExprKind::IsType {
+                expr: Box::new(normalized_expr),
+                type_name: type_name.clone(),
+            })
+        }
         ExprKind::Tuple(values) => Expression::new(ExprKind::Tuple(
             values
                 .iter()
@@ -7916,8 +8222,12 @@ fn go_rewrite_fmt_format_call(
         return None;
     };
     let (newfmt, rewrites) = go_rewrite_go_format_literal(fmt);
-    let fix_exp = matches!(call_name, "fmt.Sprintf" | "__go_sprintf") && go_format_has_exp_verb(fmt);
-    let has_complex_arg = args.iter().skip(1).any(|arg| go_expr_is_complex(&arg.value));
+    let fix_exp =
+        matches!(call_name, "fmt.Sprintf" | "__go_sprintf") && go_format_has_exp_verb(fmt);
+    let has_complex_arg = args
+        .iter()
+        .skip(1)
+        .any(|arg| go_expr_is_complex(&arg.value));
     if rewrites.is_empty() && newfmt == *fmt && !fix_exp && !has_complex_arg {
         return None;
     }
@@ -8381,7 +8691,11 @@ fn go_rewrite_time_method_call(
     };
     let receiver_type = go_expr_type_hint(object, env, signatures);
     let is_time_receiver = receiver_type.as_deref().is_some_and(|ty| {
-        let ty = ty.trim().trim_start_matches('*').trim_start_matches('^').trim();
+        let ty = ty
+            .trim()
+            .trim_start_matches('*')
+            .trim_start_matches('^')
+            .trim();
         ty == "__goTime"
     });
     let is_duration_receiver = receiver_type
@@ -8448,13 +8762,13 @@ fn go_rewrite_json_call(
                 vec![value, Expression::null(), indent],
             );
             let json = match &prefix.kind {
-                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => Expression::new(
-                    ExprKind::Binary {
+                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => {
+                    Expression::new(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(prefix),
                         right: Box::new(json),
-                    },
-                ),
+                    })
+                }
                 _ => json,
             };
             Some(go_tuple_with_nil(json))
@@ -8463,7 +8777,8 @@ fn go_rewrite_json_call(
             let input = go_arg_value(args, 0);
             let target = go_arg_value(args, 1);
             let target_place = go_json_unmarshal_target(&target);
-            if go_expr_type_hint(&target_place, env, signatures).as_deref() == Some("__goRawMessage")
+            if go_expr_type_hint(&target_place, env, signatures).as_deref()
+                == Some("__goRawMessage")
             {
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Lambda {
@@ -8534,21 +8849,19 @@ fn go_json_unmarshal_struct_object(
         .member_types
         .values()
         .any(|ty| ty.as_str() == "__goRawMessage");
-    let has_struct_field = info
-        .member_types
-        .values()
-        .any(|ty| {
-            go_struct_lookup_name(ty)
-                .as_ref()
-                .is_some_and(|lookup| env.struct_infos.contains_key(lookup))
-        });
+    let has_struct_field = info.member_types.values().any(|ty| {
+        go_struct_lookup_name(ty)
+            .as_ref()
+            .is_some_and(|lookup| env.struct_infos.contains_key(lookup))
+    });
     if info.embedded_fields.is_empty() && !has_raw_message && has_struct_field {
         return None;
     }
     let mut props = Vec::new();
     for field_name in &info.field_order {
         let tag = info.field_tags.get(field_name).map(String::as_str);
-        let Some((json_name, _omit_empty, string_value)) = go_json_field_name(field_name, tag) else {
+        let Some((json_name, _omit_empty, string_value)) = go_json_field_name(field_name, tag)
+        else {
             continue;
         };
         let field_type = info.member_types.get(field_name).map(String::as_str);
@@ -8562,11 +8875,10 @@ fn go_json_unmarshal_struct_object(
                 index: Box::new(Expression::string(&json_name)),
                 null_safe: false,
             })
-        } else if field_type.is_some_and(|ty| go_json_is_map_like_type(ty, env)) && is_embedded
-        {
+        } else if field_type.is_some_and(|ty| go_json_is_map_like_type(ty, env)) && is_embedded {
             parsed.clone()
-        } else if let Some(inner_type) = field_type
-            .and_then(|ty| go_struct_lookup_name(ty).map(|_| ty.to_string()))
+        } else if let Some(inner_type) =
+            field_type.and_then(|ty| go_struct_lookup_name(ty).map(|_| ty.to_string()))
         {
             if is_embedded {
                 go_json_unmarshal_struct_object(parsed.clone(), &inner_type, env).unwrap_or_else(
@@ -8601,7 +8913,10 @@ fn go_json_unmarshal_struct_object(
             value,
         });
     }
-    Some(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), type_name))
+    Some(go_typed_composite_expr(
+        Expression::new(ExprKind::Object(props)),
+        type_name,
+    ))
 }
 
 fn go_json_is_map_like_type(type_name: &str, env: &GoNormalizeEnv) -> bool {
@@ -8633,10 +8948,7 @@ fn go_json_member_or_zero(
     })
 }
 
-fn go_json_unmarshal_string_tag_value(
-    value: Expression,
-    field_type: Option<&str>,
-) -> Expression {
+fn go_json_unmarshal_string_tag_value(value: Expression, field_type: Option<&str>) -> Expression {
     match field_type.map(str::trim) {
         Some(ty) if go_is_integer_type(ty) => go_builtin_call("__go_to_int", vec![value]),
         Some("float32" | "float64") => go_builtin_call("__go_parse_float", vec![value]),
@@ -8775,9 +9087,92 @@ fn go_rewrite_io_method_call(
 
 fn go_rewrite_xml_member(field: &str) -> Option<Expression> {
     match field {
-        "Header" => Some(Expression::string("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")),
+        "Header" => Some(Expression::string(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        )),
         _ => None,
     }
+}
+
+fn go_xml_name_from_go_expr(expr: Expression) -> Expression {
+    let ExprKind::Object(props) = expr.kind else {
+        return go_builtin_call(
+            "__go_xml_name",
+            vec![
+                Expression::string(""),
+                Expression::string(""),
+                Expression::string(""),
+            ],
+        );
+    };
+
+    let mut local = Expression::string("");
+    let mut namespace = Expression::string("");
+    let mut prefix = Expression::string("");
+
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let key_name = match key.kind {
+            ExprKind::Lit(Literal::Str(s)) => s,
+            ExprKind::Ident(name) => name,
+            _ => continue,
+        };
+        match key_name.as_str() {
+            "Local" | "localName" => local = value,
+            "Space" | "namespaceURI" => namespace = value,
+            "Prefix" | "prefix" => prefix = value,
+            _ => {}
+        }
+    }
+
+    go_builtin_call("__go_xml_name", vec![namespace, local, prefix])
+}
+
+fn go_xml_token_element_from_go_expr(expr: Expression, kind: &str) -> Expression {
+    let tag = go_builtin_call("__go_xml_token_local", vec![expr]);
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("Name"),
+            value: go_builtin_call(
+                "__go_xml_name",
+                vec![Expression::string(""), tag.clone(), Expression::string("")],
+            ),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Kind"),
+            value: Expression::string(kind),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Tag"),
+            value: tag,
+        },
+    ]))
+}
+
+fn go_xml_type_assert_kind_marker(expr: &Expression) -> Option<&'static str> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let is_kind_key = matches!(
+            &key.kind,
+            ExprKind::Lit(Literal::Str(s)) if s == "Kind"
+        );
+        if !is_kind_key {
+            continue;
+        }
+        return match &value.kind {
+            ExprKind::Lit(Literal::Str(s)) if s == "start" => Some("start"),
+            ExprKind::Lit(Literal::Str(s)) if s == "end" => Some("end"),
+            _ => None,
+        };
+    }
+    None
 }
 
 fn go_rewrite_utf8_member(field: &str) -> Option<Expression> {
@@ -8973,10 +9368,31 @@ fn go_rewrite_xml_call(
             "__go_xml_Unescape",
             vec![go_arg_value(args, 0)],
         )),
-        "xml.NewDecoder" => Some(go_builtin_call(
-            "__go_xml_NewDecoder",
+        "xml.CharData" => Some(go_builtin_call(
+            "__go_xml_source_string",
             vec![go_arg_value(args, 0)],
         )),
+        "xml.NewDecoder" => {
+            let input = go_arg_value(args, 0);
+            if let ExprKind::Call { callee, args, .. } = &input.kind {
+                match go_expr_call_name(callee).as_deref() {
+                    Some("__go_strings_NewReader") | Some("strings.NewReader") => {
+                        return Some(go_builtin_call(
+                            "__go_xml_NewDecoderString",
+                            vec![go_arg_value(args, 0)],
+                        ));
+                    }
+                    Some("__go_bytes_NewReader") | Some("bytes.NewReader") => {
+                        return Some(go_builtin_call(
+                            "__go_xml_NewDecoderBytes",
+                            vec![go_arg_value(args, 0)],
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            Some(go_builtin_call("__go_xml_NewDecoder", vec![input]))
+        }
         "xml.NewEncoder" => Some(go_builtin_call(
             "__go_xml_NewEncoder",
             vec![go_arg_value(args, 0)],
@@ -8988,15 +9404,26 @@ fn go_rewrite_xml_call(
         ))),
         "xml.MarshalIndent" => {
             let prefix = go_arg_value(args, 1);
+            let indent = go_arg_value(args, 2);
             let xml = go_xml_marshal_value(go_arg_value(args, 0), env, signatures);
+            let xml = match &indent.kind {
+                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => {
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(Expression::string("\n")),
+                        right: Box::new(xml),
+                    })
+                }
+                _ => xml,
+            };
             let xml = match &prefix.kind {
-                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => Expression::new(
-                    ExprKind::Binary {
+                ExprKind::Lit(Literal::Str(s)) if !s.is_empty() => {
+                    Expression::new(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(prefix),
                         right: Box::new(xml),
-                    },
-                ),
+                    })
+                }
                 _ => xml,
             };
             Some(go_tuple_with_nil(xml))
@@ -9052,25 +9479,36 @@ fn go_xml_struct_string(
     let mut body = Expression::string("");
     for field_name in &info.field_order {
         let tag = info.field_tags.get(field_name).map(String::as_str);
-        let Some((xml_name, is_attr, omit_empty, is_chardata)) =
-            go_xml_field_name(field_name, tag)
+        let Some((xml_name, is_attr, omit_empty, is_chardata)) = go_xml_field_name(field_name, tag)
         else {
             continue;
         };
-        let field_value = object_props
+        let mut field_value = object_props
             .as_ref()
             .and_then(|props| go_object_prop_value(props, field_name))
-            .unwrap_or_else(|| Expression::new(ExprKind::Member {
-                object: Box::new(value.clone()),
-                field: field_name.clone(),
-                null_safe: false,
-            }));
+            .unwrap_or_else(|| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(value.clone()),
+                    field: field_name.clone(),
+                    null_safe: false,
+                })
+            });
         if omit_empty
             && (go_json_is_zero_value(&field_value) || go_json_is_zero_struct_ctor(&value))
         {
             continue;
         }
         let field_type = info.member_types.get(field_name).map(String::as_str);
+        if field_type
+            .map(str::trim)
+            .is_some_and(|ty| ty.starts_with('*'))
+            && !go_json_is_zero_value(&field_value)
+        {
+            field_value = Expression::new(ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr: Box::new(field_value),
+            });
+        }
         if is_attr {
             attrs = go_concat_exprs(vec![
                 attrs,
@@ -9105,14 +9543,19 @@ fn go_xml_struct_string(
             continue;
         }
         let inner = field_type
-            .and_then(|ty| go_xml_struct_string(field_value.clone(), ty, Some(xml_name.clone()), env, signatures))
+            .filter(|ty| ty.trim() != "__goXMLName")
+            .and_then(|ty| {
+                go_xml_struct_string(
+                    field_value.clone(),
+                    ty,
+                    Some(xml_name.clone()),
+                    env,
+                    signatures,
+                )
+            })
             .unwrap_or_else(|| {
                 let text_value = if matches!(field_type, Some("__goXMLName")) {
-                    Expression::new(ExprKind::Member {
-                        object: Box::new(field_value.clone()),
-                        field: "Local".to_string(),
-                        null_safe: false,
-                    })
+                    go_builtin_call("__go_xml_name_local", vec![field_value.clone()])
                 } else {
                     field_value.clone()
                 };
@@ -9190,7 +9633,23 @@ fn go_xml_unmarshal_call(
                 vec![input_ident.clone(), Expression::string(&xml_name)],
             )
         };
-        let value = go_xml_unmarshal_value(raw, field_type, env);
+        let value = if matches!(field_type.map(str::trim), Some("__goXMLName")) {
+            go_xml_name_from_go_expr(Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("Local"),
+                    value: raw,
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("Space"),
+                    value: go_builtin_call(
+                        "__go_xml_attr",
+                        vec![input_ident.clone(), Expression::string("xmlns")],
+                    ),
+                },
+            ])))
+        } else {
+            go_xml_unmarshal_value(raw, field_type, env)
+        };
         body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(target.clone()),
@@ -9226,7 +9685,7 @@ fn go_xml_unmarshal_value(
             left: Box::new(raw),
             right: Box::new(Expression::string("true")),
         }),
-        Some("__goXMLName") => Expression::new(ExprKind::Object(vec![
+        Some("__goXMLName") => go_xml_name_from_go_expr(Expression::new(ExprKind::Object(vec![
             ObjectProperty::KeyValue {
                 key: Expression::string("Local"),
                 value: raw,
@@ -9235,14 +9694,12 @@ fn go_xml_unmarshal_value(
                 key: Expression::string("Space"),
                 value: Expression::string(""),
             },
-        ])),
+        ]))),
         Some(ty) if ty.starts_with('*') => Expression::new(ExprKind::Unary {
             op: UnaryOp::AddrOf,
             expr: Box::new(go_xml_unmarshal_value(raw, Some(&ty[1..]), env)),
         }),
-        Some(ty) if env.struct_infos.contains_key(ty) => {
-            go_zero_value_for_type(ty, env)
-        }
+        Some(ty) if env.struct_infos.contains_key(ty) => go_zero_value_for_type(ty, env),
         _ => raw,
     }
 }
@@ -9335,17 +9792,20 @@ fn go_json_struct_object(
     let mut props = Vec::new();
     for field_name in &info.field_order {
         let tag = info.field_tags.get(field_name).map(String::as_str);
-        let Some((json_name, omit_empty, string_value)) = go_json_field_name(field_name, tag) else {
+        let Some((json_name, omit_empty, string_value)) = go_json_field_name(field_name, tag)
+        else {
             continue;
         };
         let field_value = object_props
             .as_ref()
             .and_then(|props| go_object_prop_value(props, field_name))
-            .unwrap_or_else(|| Expression::new(ExprKind::Member {
-                object: Box::new(value.clone()),
-                field: field_name.clone(),
-                null_safe: false,
-            }));
+            .unwrap_or_else(|| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(value.clone()),
+                    field: field_name.clone(),
+                    null_safe: false,
+                })
+            });
         if lookup == "Data" && matches!(field_name.as_str(), "Count" | "Label") {
             continue;
         }
@@ -9425,6 +9885,7 @@ fn go_json_is_zero_value(value: &Expression) -> bool {
 
 fn go_json_is_zero_struct_ctor(value: &Expression) -> bool {
     match &value.kind {
+        ExprKind::Object(props) => props.is_empty(),
         ExprKind::Call { callee, args, .. } if args.is_empty() => {
             matches!(&callee.as_ref().kind, ExprKind::Ident(name) if name.contains("_ctor_0"))
         }
@@ -9490,10 +9951,7 @@ fn go_rewrite_log_call(call_name: &str, args: &[Argument]) -> Option<Expression>
                     }
                     if call_name == "log.Printf" {
                         let rendered = go_builtin_call("__go_sprintf", values);
-                        return Some(go_builtin_call(
-                            "__go_log_PrintfRendered",
-                            vec![rendered],
-                        ));
+                        return Some(go_builtin_call("__go_log_PrintfRendered", vec![rendered]));
                     }
                     return Some(go_builtin_call(helper, values));
                 }
@@ -9609,7 +10067,10 @@ fn go_rewrite_slog_call(call_name: &str, args: &[Argument]) -> Option<Expression
         )),
         "slog.WithGroup" => Some(go_builtin_call(
             "__go_slog_logger_WithGroup",
-            vec![go_builtin_call("__go_slog_Default", vec![]), go_arg_value(args, 0)],
+            vec![
+                go_builtin_call("__go_slog_Default", vec![]),
+                go_arg_value(args, 0),
+            ],
         )),
         "slog.Log" => Some(go_builtin_call(
             "__go_slog_logger_LogAttrs",
@@ -9662,9 +10123,8 @@ fn go_rewrite_slog_method_call(callee: &Expression, args: &[Argument]) -> Option
             return Some(Expression::string(label));
         }
     }
-    let attrs_from = |start: usize| {
-        go_array_of(args.iter().skip(start).map(|a| a.value.clone()).collect())
-    };
+    let attrs_from =
+        |start: usize| go_array_of(args.iter().skip(start).map(|a| a.value.clone()).collect());
     match field.as_str() {
         "Info" => Some(go_builtin_call(
             "__go_slog_logger_Info",
@@ -9838,51 +10298,57 @@ fn go_big_captures(exprs: &[&Expression]) -> Vec<String> {
 fn go_big_mutate_value(object: Expression, value: Expression) -> Expression {
     if go_big_stable_place(&object) {
         let captures = go_big_captures(&[&object, &value]);
-        return go_big_cast("big.Int", Expression::new(ExprKind::Call {
+        return go_big_cast(
+            "big.Int",
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Lambda {
+                    params: vec![],
+                    body: LambdaBody::Block(vec![
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![go_big_member(object.clone(), "value")],
+                            value,
+                        }),
+                        Statement::new(StmtKind::Return(Some(object))),
+                    ]),
+                    is_async: false,
+                    captures,
+                })),
+                args: vec![],
+                optional: false,
+            }),
+        );
+    }
+    let recv = "__go_big_recv";
+    let captures = go_big_captures(&[&object, &value]);
+    go_big_cast(
+        "big.Int",
+        Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Lambda {
                 params: vec![],
                 body: LambdaBody::Block(vec![
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(recv.to_string()),
+                            type_hint: None,
+                            init: Some(object),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
                     Statement::new(StmtKind::Assign {
-                        targets: vec![go_big_member(object.clone(), "value")],
+                        targets: vec![go_big_member(Expression::ident(recv), "value")],
                         value,
                     }),
-                    Statement::new(StmtKind::Return(Some(object))),
+                    Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
                 ]),
                 is_async: false,
                 captures,
             })),
             args: vec![],
             optional: false,
-        }));
-    }
-    let recv = "__go_big_recv";
-    let captures = go_big_captures(&[&object, &value]);
-    go_big_cast("big.Int", Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Lambda {
-            params: vec![],
-            body: LambdaBody::Block(vec![
-                Statement::new(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(recv.to_string()),
-                        type_hint: None,
-                        init: Some(object),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                }),
-                Statement::new(StmtKind::Assign {
-                    targets: vec![go_big_member(Expression::ident(recv), "value")],
-                    value,
-                }),
-                Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
-            ]),
-            is_async: false,
-            captures,
-        })),
-        args: vec![],
-        optional: false,
-    }))
+        }),
+    )
 }
 
 fn go_big_set_string_result(object: Expression, text: Expression, base: Expression) -> Expression {
@@ -9897,7 +10363,8 @@ fn go_big_set_string_result(object: Expression, text: Expression, base: Expressi
         }
         _ => None,
     };
-    let (parsed, ok) = literal.unwrap_or_else(|| (go_builtin_call("__go_parse_int", vec![text, base]), true));
+    let (parsed, ok) =
+        literal.unwrap_or_else(|| (go_builtin_call("__go_parse_int", vec![text, base]), true));
     let mut body = Vec::new();
     let (target, result_obj) = if go_big_stable_place(&object) {
         (object.clone(), object)
@@ -9970,70 +10437,84 @@ fn go_parse_big_int_literal(text: &str, base: u32) -> Option<i64> {
 fn go_big_quo_rem(object: Expression, a: Expression, b: Expression, rem: Expression) -> Expression {
     if go_big_stable_place(&object) && go_big_stable_place(&rem) {
         let captures = go_big_captures(&[&object, &a, &b, &rem]);
-        return go_big_cast("big.Int", Expression::new(ExprKind::Call {
+        return go_big_cast(
+            "big.Int",
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Lambda {
+                    params: vec![],
+                    body: LambdaBody::Block(vec![
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![go_big_member(object.clone(), "value")],
+                            value: go_big_bin(
+                                BinOp::IDiv,
+                                go_big_value(a.clone()),
+                                go_big_value(b.clone()),
+                            ),
+                        }),
+                        Statement::new(StmtKind::Assign {
+                            targets: vec![go_big_member(rem, "value")],
+                            value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
+                        }),
+                        Statement::new(StmtKind::Return(Some(object))),
+                    ]),
+                    is_async: false,
+                    captures,
+                })),
+                args: vec![],
+                optional: false,
+            }),
+        );
+    }
+    let recv = "__go_big_recv";
+    let r = "__go_big_rem";
+    let captures = go_big_captures(&[&object, &a, &b, &rem]);
+    go_big_cast(
+        "big.Int",
+        Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Lambda {
                 params: vec![],
                 body: LambdaBody::Block(vec![
-                    Statement::new(StmtKind::Assign {
-                        targets: vec![go_big_member(object.clone(), "value")],
-                        value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(recv.to_string()),
+                            type_hint: None,
+                            init: Some(object),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(r.to_string()),
+                            type_hint: None,
+                            init: Some(rem),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
                     }),
                     Statement::new(StmtKind::Assign {
-                        targets: vec![go_big_member(rem, "value")],
+                        targets: vec![go_big_member(Expression::ident(recv), "value")],
+                        value: go_big_bin(
+                            BinOp::IDiv,
+                            go_big_value(a.clone()),
+                            go_big_value(b.clone()),
+                        ),
+                    }),
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![go_big_member(Expression::ident(r), "value")],
                         value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
                     }),
-                    Statement::new(StmtKind::Return(Some(object))),
+                    Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
                 ]),
                 is_async: false,
                 captures,
             })),
             args: vec![],
             optional: false,
-        }));
-    }
-    let recv = "__go_big_recv";
-    let r = "__go_big_rem";
-    let captures = go_big_captures(&[&object, &a, &b, &rem]);
-    go_big_cast("big.Int", Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Lambda {
-            params: vec![],
-            body: LambdaBody::Block(vec![
-                Statement::new(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(recv.to_string()),
-                        type_hint: None,
-                        init: Some(object),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                }),
-                Statement::new(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(r.to_string()),
-                        type_hint: None,
-                        init: Some(rem),
-                        array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                }),
-                Statement::new(StmtKind::Assign {
-                    targets: vec![go_big_member(Expression::ident(recv), "value")],
-                    value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
-                }),
-                Statement::new(StmtKind::Assign {
-                    targets: vec![go_big_member(Expression::ident(r), "value")],
-                    value: go_big_bin(BinOp::Mod, go_big_value(a), go_big_value(b)),
-                }),
-                Statement::new(StmtKind::Return(Some(Expression::ident(recv)))),
-            ]),
-            is_async: false,
-            captures,
-        })),
-        args: vec![],
-        optional: false,
-    }))
+        }),
+    )
 }
 
 fn go_big_gcd_value(a: Expression, b: Expression) -> Expression {
@@ -10135,7 +10616,11 @@ fn go_rewrite_big_expr_statement(expr: &Expression) -> Option<Vec<Statement>> {
             Some(vec![
                 Statement::new(StmtKind::Assign {
                     targets: vec![go_big_member(object.as_ref().clone(), "value")],
-                    value: go_big_bin(BinOp::IDiv, go_big_value(a.clone()), go_big_value(b.clone())),
+                    value: go_big_bin(
+                        BinOp::IDiv,
+                        go_big_value(a.clone()),
+                        go_big_value(b.clone()),
+                    ),
                 }),
                 Statement::new(StmtKind::Assign {
                     targets: vec![go_big_member(rem, "value")],
@@ -10143,23 +10628,23 @@ fn go_rewrite_big_expr_statement(expr: &Expression) -> Option<Vec<Statement>> {
                 }),
             ])
         }
-        "GCD" if go_big_stable_place(object) => {
-            Some(vec![Statement::new(StmtKind::Assign {
-                targets: vec![go_big_member(object.as_ref().clone(), "value")],
-                value: go_big_gcd_value(arg(2), arg(3)),
-            })])
+        "GCD" if go_big_stable_place(object) => Some(vec![Statement::new(StmtKind::Assign {
+            targets: vec![go_big_member(object.as_ref().clone(), "value")],
+            value: go_big_gcd_value(arg(2), arg(3)),
+        })]),
+        "SetString" | "SetBit" | "QuoRem" | "GCD" | "SetBytes" => {
+            go_rewrite_big_int_method(object.as_ref().clone(), field, args)
+                .map(|rewritten| vec![Statement::new(StmtKind::Expr(rewritten))])
         }
-        "SetString" | "SetBit" | "QuoRem" | "GCD" | "SetBytes" => go_rewrite_big_int_method(
-            object.as_ref().clone(),
-            field,
-            args,
-        )
-        .map(|rewritten| vec![Statement::new(StmtKind::Expr(rewritten))]),
         _ => None,
     }
 }
 
-fn go_rewrite_big_int_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_big_int_method(
+    object: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     let arg = |i: usize| go_arg_value(args, i);
     let val = |expr: Expression| go_big_value(expr);
     let obj = |value: Expression| go_big_object("big.Int", value, None);
@@ -10223,7 +10708,11 @@ fn go_rewrite_big_int_method(object: Expression, field: &str, args: &[Argument])
             }))
         }
         "BitLen" => Some(Expression::new(ExprKind::Ternary {
-            cond: Box::new(go_big_bin(BinOp::Eq, val(object.clone()), Expression::int(0))),
+            cond: Box::new(go_big_bin(
+                BinOp::Eq,
+                val(object.clone()),
+                Expression::int(0),
+            )),
             then: Box::new(Expression::int(0)),
             else_: Box::new(go_big_string_length(go_big_number_string(
                 val(object),
@@ -10235,12 +10724,18 @@ fn go_rewrite_big_int_method(object: Expression, field: &str, args: &[Argument])
             go_big_bin(BinOp::Shr, val(object), arg(0)),
             Expression::int(1),
         )),
-        "SetBit" => Some(go_big_mutate_value(object, go_big_bin(
-            BinOp::BitOr,
-            val(arg(0)),
-            go_big_bin(BinOp::Shl, Expression::int(1), arg(1)),
+        "SetBit" => Some(go_big_mutate_value(
+            object,
+            go_big_bin(
+                BinOp::BitOr,
+                val(arg(0)),
+                go_big_bin(BinOp::Shl, Expression::int(1), arg(1)),
+            ),
+        )),
+        "Exp" => Some(obj(go_builtin_call(
+            "math.Pow",
+            vec![val(arg(0)), val(arg(1))],
         ))),
-        "Exp" => Some(obj(go_builtin_call("math.Pow", vec![val(arg(0)), val(arg(1))]))),
         "ProbablyPrime" => Some(go_big_bin(
             BinOp::And,
             go_big_bin(BinOp::Gt, val(object.clone()), Expression::int(1)),
@@ -10269,7 +10764,11 @@ fn go_rewrite_big_int_method(object: Expression, field: &str, args: &[Argument])
     }
 }
 
-fn go_rewrite_big_rat_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_big_rat_method(
+    object: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     let arg = |i: usize| go_arg_value(args, i);
     let make = |n: Expression, d: Expression| go_big_object("big.Rat", n, Some(d));
     let num = |expr: Expression| go_big_value(expr);
@@ -10306,7 +10805,10 @@ fn go_rewrite_big_rat_method(object: Expression, field: &str, args: &[Argument])
             };
             Some(go_builtin_call(
                 "__go_sprintf",
-                vec![Expression::string(&format), go_big_bin(BinOp::Div, num(object.clone()), den(object))],
+                vec![
+                    Expression::string(&format),
+                    go_big_bin(BinOp::Div, num(object.clone()), den(object)),
+                ],
             ))
         }
         "String" => Some(go_big_bin(
@@ -10322,7 +10824,11 @@ fn go_rewrite_big_rat_method(object: Expression, field: &str, args: &[Argument])
     }
 }
 
-fn go_rewrite_big_float_method(object: Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_big_float_method(
+    object: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     let arg = |i: usize| go_arg_value(args, i);
     let val = |expr: Expression| go_big_value(expr);
     let obj = |value: Expression| go_big_object("big.Float", value, None);
@@ -10331,7 +10837,10 @@ fn go_rewrite_big_float_method(object: Expression, field: &str, args: &[Argument
         "Sub" => Some(obj(go_big_bin(BinOp::Sub, val(arg(0)), val(arg(1))))),
         "Mul" => Some(obj(go_big_bin(BinOp::Mul, val(arg(0)), val(arg(1))))),
         "String" => Some(go_big_number_string(val(object), None)),
-        "Float64" => Some(Expression::new(ExprKind::Tuple(vec![val(object), Expression::null()]))),
+        "Float64" => Some(Expression::new(ExprKind::Tuple(vec![
+            val(object),
+            Expression::null(),
+        ]))),
         _ => None,
     }
 }
@@ -10415,33 +10924,38 @@ fn go_rewrite_container_expr_statement(
             });
             Some(vec![
                 Statement::new(StmtKind::Expr(push)),
-                Statement::new(StmtKind::Expr(go_builtin_call("__go_heap_Init", vec![heap]))),
+                Statement::new(StmtKind::Expr(go_builtin_call(
+                    "__go_heap_Init",
+                    vec![heap],
+                ))),
             ])
         }
         Some("heap.Remove") if args.len() >= 2 => {
             let heap = args[0].value.clone();
             let index = args[1].value.clone();
-            let pop = go_rewrite_named_type_method_expr(heap.clone(), "Pop", vec![], env, signatures)
-                .unwrap_or_else(|| {
-                    Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(heap.clone()),
-                            field: "Pop".to_string(),
-                            null_safe: false,
-                        })),
-                        args: vec![],
-                        optional: false,
-                    })
-                });
+            let pop =
+                go_rewrite_named_type_method_expr(heap.clone(), "Pop", vec![], env, signatures)
+                    .unwrap_or_else(|| {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(heap.clone()),
+                                field: "Pop".to_string(),
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        })
+                    });
             Some(vec![
                 Statement::new(StmtKind::Expr(go_builtin_call(
                     "__go_heap_remove_prepare",
                     vec![heap, index],
                 ))),
                 Statement::new(StmtKind::Expr(pop)),
-                Statement::new(StmtKind::Expr(go_builtin_call("__go_heap_Init", vec![
-                    args[0].value.clone(),
-                ]))),
+                Statement::new(StmtKind::Expr(go_builtin_call(
+                    "__go_heap_Init",
+                    vec![args[0].value.clone()],
+                ))),
             ])
         }
         _ => None,
@@ -10636,6 +11150,253 @@ fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression>
     }
 }
 
+fn go_rewrite_gob_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "gob.NewEncoder" | "b.NewEncoder" => Some(go_builtin_call(
+            "__go_gob_NewEncoder",
+            vec![go_arg_value(args, 0)],
+        )),
+        "gob.NewDecoder" | "b.NewDecoder" => Some(go_builtin_call(
+            "__go_gob_NewDecoder",
+            vec![go_arg_value(args, 0)],
+        )),
+        "gob.Register" | "b.Register" => Some(go_builtin_call(
+            "__go_gob_Register",
+            vec![go_arg_value(args, 0)],
+        )),
+        "gob.RegisterName" | "b.RegisterName" => Some(go_builtin_call(
+            "__go_gob_RegisterName",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_gob_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    match (
+        go_named_receiver_type(&receiver_type).as_deref(),
+        field.as_str(),
+    ) {
+        (Some("__goGobEncoder"), "Encode" | "EncodeValue") => {
+            let value = go_arg_value(args, 0);
+            let value = go_gob_encode_value(value.clone(), env, signatures).unwrap_or(value);
+            Some(go_builtin_call(
+                "__go_gob_encode",
+                vec![object.as_ref().clone(), value],
+            ))
+        }
+        (Some("__goGobDecoder"), "Decode" | "DecodeValue") => {
+            if args.is_empty() {
+                return None;
+            }
+            let target = match &go_arg_value(args, 0).kind {
+                ExprKind::RefOf(place) => go_place_expr(place),
+                ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr,
+                } => expr.as_ref().clone(),
+                _ => return None,
+            };
+            let value = go_builtin_call("__go_gob_next", vec![object.as_ref().clone()]);
+            let value = go_expr_type_hint(&target, env, signatures)
+                .and_then(|target_type| {
+                    go_gob_decode_value_for_target(value.clone(), &target_type, env)
+                })
+                .unwrap_or(value);
+            Some(Expression::new(ExprKind::Assign {
+                target: Box::new(target),
+                value: Box::new(value),
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn go_gob_encode_value(
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let type_name = go_expr_type_hint(&value, env, signatures)?;
+    let lookup = go_struct_lookup_name(&type_name)?;
+    let info = env.struct_infos.get(&lookup)?;
+    if info.method_names.contains("GobEncode") && info.member_names.contains("Data") {
+        Some(Expression::new(ExprKind::Member {
+            object: Box::new(value),
+            field: "Data".to_string(),
+            null_safe: false,
+        }))
+    } else {
+        None
+    }
+}
+
+fn go_rewrite_gob_decode_expr_statement(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !matches!(field.as_str(), "Decode" | "DecodeValue") || args.is_empty() {
+        return None;
+    }
+    let decoder = normalize_go_expr(object, env, signatures, state);
+    let decoder_is_constructor =
+        go_expr_call_name(&decoder).as_deref() == Some("__go_gob_NewDecoder");
+    let is_decoder = go_expr_type_hint(&decoder, env, signatures)
+        .and_then(|ty| go_named_receiver_type(&ty))
+        .as_deref()
+        == Some("__goGobDecoder");
+    if !is_decoder && !decoder_is_constructor {
+        return None;
+    }
+    let raw_target = go_arg_value(args, 0);
+    let target = match &raw_target.kind {
+        ExprKind::RefOf(place) => go_place_expr(place),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => expr.as_ref().clone(),
+        _ => return None,
+    };
+    let target = normalize_go_expr(&target, env, signatures, state);
+    let value = go_builtin_call("__go_gob_next", vec![decoder]);
+    let value = go_expr_type_hint(&target, env, signatures)
+        .and_then(|target_type| go_gob_decode_value_for_target(value.clone(), &target_type, env))
+        .unwrap_or(value);
+    Some(vec![Statement::new(StmtKind::Assign {
+        targets: vec![target],
+        value,
+    })])
+}
+
+fn go_gob_decode_value_for_target(
+    value: Expression,
+    target_type: &str,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let lookup = go_struct_lookup_name(target_type)?;
+    let info = env.struct_infos.get(&lookup)?;
+    if info.method_names.contains("GobDecode") && info.member_names.contains("Data") {
+        let mut props = Vec::new();
+        for field_name in &info.field_order {
+            let field_type = info.member_types.get(field_name).map(String::as_str);
+            let field_value = if field_name == "Data" {
+                value.clone()
+            } else {
+                field_type
+                    .map(|ty| go_zero_value_for_type(ty, env))
+                    .unwrap_or_else(Expression::null)
+            };
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(field_name),
+                value: field_value,
+            });
+        }
+        return Some(go_typed_composite_expr(
+            Expression::new(ExprKind::Object(props)),
+            target_type,
+        ));
+    }
+    let mut props = Vec::new();
+    for field_name in &info.field_order {
+        let field_type = info.member_types.get(field_name).map(String::as_str);
+        let field_value = if go_is_exported_name(field_name) {
+            Expression::new(ExprKind::Member {
+                object: Box::new(value.clone()),
+                field: field_name.clone(),
+                null_safe: false,
+            })
+        } else {
+            field_type
+                .map(|ty| go_zero_value_for_type(ty, env))
+                .unwrap_or_else(Expression::null)
+        };
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(field_name),
+            value: field_value,
+        });
+    }
+    Some(go_typed_composite_expr(
+        Expression::new(ExprKind::Object(props)),
+        target_type,
+    ))
+}
+
+fn go_is_exported_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_uppercase())
+}
+
+fn go_unwrap_spawned_gob_expr(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_spawn") {
+        return None;
+    }
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(body),
+        ..
+    } = &go_arg_value(args, 0).kind
+    else {
+        return None;
+    };
+    let [stmt] = body.as_slice() else {
+        return None;
+    };
+    let StmtKind::Expr(inner) = &stmt.kind else {
+        return None;
+    };
+    if go_expr_mentions_gob_surface(inner) {
+        Some(inner.clone())
+    } else {
+        None
+    }
+}
+
+fn go_expr_mentions_gob_surface(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            go_expr_mentions_gob_surface(callee)
+                || args
+                    .iter()
+                    .any(|arg| go_expr_mentions_gob_surface(&arg.value))
+        }
+        ExprKind::Member { object, field, .. } => {
+            matches!(
+                field.as_str(),
+                "NewEncoder"
+                    | "NewDecoder"
+                    | "Register"
+                    | "RegisterName"
+                    | "Encode"
+                    | "EncodeValue"
+                    | "Decode"
+                    | "DecodeValue"
+            ) || go_expr_mentions_gob_surface(object)
+        }
+        ExprKind::Ident(name) => name == "b" || name == "gob",
+        _ => false,
+    }
+}
+
 /// Bind a Go stdlib type name to the runtime backing type its package prelude
 /// defines — Go's equivalent of the `.NET` component types / libc surface. Used
 /// so `url.Values{}` / `var q url.Values` resolve to the prelude's named type
@@ -10656,6 +11417,9 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
         "xml.Encoder" => Some("__goXMLEncoder"),
         "xml.Comment" => Some("[]byte"),
         "xml.Directive" => Some("[]byte"),
+        "gob.Encoder" => Some("__goGobEncoder"),
+        "gob.Decoder" => Some("__goGobDecoder"),
+        "gob.GobEncoder" | "gob.GobDecoder" => Some("any"),
         "slog.Level" => Some("__goLevel"),
         "slog.Attr" => Some("__goAttr"),
         "slog.Logger" => Some("__goSlogLogger"),
@@ -11024,11 +11788,13 @@ fn go_complex_binary_expr(op: BinOp, left: Expression, right: Expression) -> Opt
     let ai = go_complex_imag(left);
     let br = go_complex_real(right.clone());
     let bi = go_complex_imag(right);
-    let bin = |op, l, r| Expression::new(ExprKind::Binary {
-        op,
-        left: Box::new(l),
-        right: Box::new(r),
-    });
+    let bin = |op, l, r| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
     match op {
         BinOp::Add => Some(go_complex_value_expr(
             bin(BinOp::Add, ar, br),
@@ -11134,10 +11900,22 @@ fn go_rewrite_cmplx_call(call_name: &str, args: &[Argument]) -> Option<Expressio
                 }),
             ))
         }
-        "cmplx.Exp" => Some(go_complex_value_expr(Expression::int(1), Expression::int(0))),
-        "cmplx.Log" => Some(go_complex_value_expr(Expression::int(0), Expression::int(0))),
-        "cmplx.Sin" => Some(go_complex_value_expr(Expression::int(0), Expression::int(0))),
-        "cmplx.Cos" => Some(go_complex_value_expr(Expression::int(1), Expression::int(0))),
+        "cmplx.Exp" => Some(go_complex_value_expr(
+            Expression::int(1),
+            Expression::int(0),
+        )),
+        "cmplx.Log" => Some(go_complex_value_expr(
+            Expression::int(0),
+            Expression::int(0),
+        )),
+        "cmplx.Sin" => Some(go_complex_value_expr(
+            Expression::int(0),
+            Expression::int(0),
+        )),
+        "cmplx.Cos" => Some(go_complex_value_expr(
+            Expression::int(1),
+            Expression::int(0),
+        )),
         "cmplx.Sqrt" => {
             let value = z();
             Some(Expression::new(ExprKind::Ternary {
@@ -11146,7 +11924,10 @@ fn go_rewrite_cmplx_call(call_name: &str, args: &[Argument]) -> Option<Expressio
                     left: Box::new(real(value.clone())),
                     right: Box::new(Expression::int(0)),
                 })),
-                then: Box::new(go_complex_value_expr(Expression::int(0), Expression::int(1))),
+                then: Box::new(go_complex_value_expr(
+                    Expression::int(0),
+                    Expression::int(1),
+                )),
                 else_: Box::new(go_complex_value_expr(
                     go_builtin_call("math.Sqrt", vec![real(value)]),
                     Expression::int(0),
@@ -11162,7 +11943,10 @@ fn go_rewrite_cmplx_call(call_name: &str, args: &[Argument]) -> Option<Expressio
                     left: Box::new(real(base.clone())),
                     right: Box::new(Expression::int(0)),
                 })),
-                then: Box::new(go_complex_value_expr(Expression::int(-1), Expression::int(0))),
+                then: Box::new(go_complex_value_expr(
+                    Expression::int(-1),
+                    Expression::int(0),
+                )),
                 else_: Box::new(go_complex_value_expr(
                     go_builtin_call("math.Pow", vec![real(base), exp]),
                     Expression::int(0),
@@ -11192,12 +11976,18 @@ fn go_rewrite_cmplx_call(call_name: &str, args: &[Argument]) -> Option<Expressio
             let value = z();
             Some(Expression::new(ExprKind::Binary {
                 op: BinOp::Or,
-                left: Box::new(go_builtin_call("math.IsInf", vec![real(value.clone()), Expression::int(0)])),
-                right: Box::new(go_builtin_call("math.IsInf", vec![imag(value), Expression::int(0)])),
+                left: Box::new(go_builtin_call(
+                    "math.IsInf",
+                    vec![real(value.clone()), Expression::int(0)],
+                )),
+                right: Box::new(go_builtin_call(
+                    "math.IsInf",
+                    vec![imag(value), Expression::int(0)],
+                )),
             }))
         }
-        "cmplx.Tan" | "cmplx.Asin" | "cmplx.Acos" | "cmplx.Atan" | "cmplx.Sinh"
-        | "cmplx.Cosh" | "cmplx.Tanh" => Some(go_as_complex(arg(0))),
+        "cmplx.Tan" | "cmplx.Asin" | "cmplx.Acos" | "cmplx.Atan" | "cmplx.Sinh" | "cmplx.Cosh"
+        | "cmplx.Tanh" => Some(go_as_complex(arg(0))),
         _ => None,
     }
 }
@@ -11218,9 +12008,11 @@ fn go_rewrite_math_bits_call(call_name: &str, args: &[Argument]) -> Option<Expre
         | "bits.OnesCount64" => {
             let value = arg(0);
             match &value.kind {
-                ExprKind::Binary { op: BinOp::Shl, left, .. }
-                    if matches!(&left.kind, ExprKind::Lit(Literal::Int(1))) =>
-                {
+                ExprKind::Binary {
+                    op: BinOp::Shl,
+                    left,
+                    ..
+                } if matches!(&left.kind, ExprKind::Lit(Literal::Int(1))) => {
                     Some(Expression::int(1))
                 }
                 _ => None,
@@ -11729,10 +12521,41 @@ fn go_expr_type_hint(
             ExprKind::Ident(name) if name == "__go_regex_split_pat_first" => {
                 Some("[]string".to_string())
             }
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__go_utf16_Decode" | "utf16.Decode" | "__go_string_runes"
+                ) =>
+            {
+                Some("[]rune".to_string())
+            }
+            ExprKind::Ident(name)
+                if matches!(name.as_str(), "__go_utf16_Encode" | "utf16.Encode") =>
+            {
+                Some("[]uint16".to_string())
+            }
             ExprKind::Ident(name) if name == "__go_map_has" => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__go_to_int" => Some("int".to_string()),
             ExprKind::Ident(name) if name == "__go_str_from_char_code" => {
                 Some("string".to_string())
+            }
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__go_strings_NewReader" | "__go_bytes_NewReader"
+                ) =>
+            {
+                Some("*__goReader".to_string())
+            }
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__go_xml_NewDecoder"
+                        | "__go_xml_NewDecoderString"
+                        | "__go_xml_NewDecoderBytes"
+                ) =>
+            {
+                Some("*__goXMLDecoder".to_string())
             }
             ExprKind::Ident(name) if name == "__go_type_assert" => args
                 .get(1)
@@ -11742,7 +12565,21 @@ fn go_expr_type_hint(
             }
             ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
-            _ => None,
+            _ => match go_expr_call_name(callee).as_deref() {
+                Some("utf16.Decode") | Some("__go_utf16_Decode") => Some("[]rune".to_string()),
+                Some("utf16.Encode") | Some("__go_utf16_Encode") => Some("[]uint16".to_string()),
+                Some(name)
+                    if matches!(
+                        name,
+                        "__go_xml_NewDecoder"
+                            | "__go_xml_NewDecoderString"
+                            | "__go_xml_NewDecoderBytes"
+                    ) =>
+                {
+                    Some("*__goXMLDecoder".to_string())
+                }
+                _ => None,
+            },
         },
         _ => None,
     }
@@ -12021,9 +12858,28 @@ fn go_decl_binding_type(
         .or_else(|| {
             decl.init
                 .as_ref()
-                .and_then(|expr| go_expr_type_hint(expr, env, signatures))
+                .and_then(go_utf16_call_type_hint)
+                .or_else(|| {
+                    decl.init
+                        .as_ref()
+                        .and_then(|expr| go_expr_type_hint(expr, env, signatures))
+                })
         })
         .map(|type_name| (name.clone(), type_name))
+}
+
+fn go_utf16_call_type_hint(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => match go_expr_call_name(callee).as_deref()? {
+            "__go_utf16_Decode" | "utf16.Decode" => Some("[]rune".to_string()),
+            "__go_utf16_Encode" | "utf16.Encode" => Some("[]uint16".to_string()),
+            _ => None,
+        },
+        ExprKind::Cast { expr, type_name } => {
+            go_utf16_call_type_hint(expr).or_else(|| Some(type_name.clone()))
+        }
+        _ => None,
+    }
 }
 
 fn go_expr_tuple_type_hints(
@@ -12044,18 +12900,25 @@ fn go_expr_tuple_type_hints(
         }
         "__go_io_WriteString" => Some(vec![Some("int".to_string()), Some("error".to_string())]),
         "__go_scanner_Bytes" => Some(vec![Some("[]byte".to_string())]),
-        "__go_utf8_DecodeRune" | "__go_utf8_DecodeRuneInString"
+        "__go_utf8_DecodeRune"
+        | "__go_utf8_DecodeRuneInString"
         | "__go_utf8_DecodeLastRuneInString" => {
             Some(vec![Some("rune".to_string()), Some("int".to_string())])
         }
-        "__go_utf16_EncodeRune" => {
-            Some(vec![Some("rune".to_string()), Some("rune".to_string())])
-        }
+        "__go_utf16_EncodeRune" => Some(vec![Some("rune".to_string()), Some("rune".to_string())]),
         "__go_hex_Decode" | "__go_base64_Decode" | "__go_binary_ReadFull" => {
             Some(vec![Some("int".to_string()), Some("error".to_string())])
         }
         "__go_hex_DecodeString" | "__go_base64_DecodeString" => {
             Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
+        }
+        "__go_xml_Unescape" => Some(vec![Some("string".to_string()), Some("error".to_string())]),
+        "__go_xml_Marshal" | "__go_xml_MarshalIndent" => {
+            Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
+        }
+        "__go_xml_DecodeToken" => Some(vec![Some("any".to_string()), Some("error".to_string())]),
+        name if name.ends_with(".Token") || name.ends_with(".RawToken") => {
+            Some(vec![Some("any".to_string()), Some("error".to_string())])
         }
         "__go_binary_Uvarint" => Some(vec![Some("uint64".to_string()), Some("int".to_string())]),
         "__go_binary_Varint" => Some(vec![Some("int64".to_string()), Some("int".to_string())]),
@@ -12223,6 +13086,14 @@ fn go_normalize_type_conversion(
     if type_name == "string"
         && go_expr_type_hint(&expr, env, signatures)
             .as_deref()
+            .is_some_and(|ty| ty.trim() == "string")
+    {
+        return expr;
+    }
+
+    if type_name == "string"
+        && go_expr_type_hint(&expr, env, signatures)
+            .as_deref()
             .is_some_and(go_is_integer_type)
     {
         return go_builtin_call("__go_str_from_char_code", vec![expr]);
@@ -12231,9 +13102,21 @@ fn go_normalize_type_conversion(
     if type_name == "string"
         && go_expr_type_hint(&expr, env, signatures)
             .as_deref()
-            .is_some_and(|ty| matches!(go_array_element_type(ty).as_deref(), Some("byte" | "uint8")))
+            .is_some_and(|ty| {
+                matches!(go_array_element_type(ty).as_deref(), Some("byte" | "uint8"))
+            })
     {
         return go_builtin_call("__go_io_bytes_to_string", vec![expr]);
+    }
+
+    if type_name == "string"
+        && go_expr_type_hint(&expr, env, signatures)
+            .as_deref()
+            .is_some_and(|ty| {
+                matches!(go_array_element_type(ty).as_deref(), Some("rune" | "int32"))
+            })
+    {
+        return go_builtin_call("__go_runes_to_string", vec![expr]);
     }
 
     if type_name.trim() == "[]rune" {
@@ -13432,6 +14315,24 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut declarations = Vec::new();
     if names.len() == 2 && values.len() == 1 {
         if let Some((expr, type_name)) = go_extract_type_assert_expr(&values[0]) {
+            if names.first().is_some_and(|name| name == "_")
+                && names.get(1).is_some_and(|name| name != "_")
+            {
+                declarations.push(VarDeclarator {
+                    pattern: BindingPattern::Ident(names[1].clone()),
+                    init: Some(Expression::new(ExprKind::IsType {
+                        expr: Box::new(expr),
+                        type_name,
+                    })),
+                    type_hint: None,
+                    array_bounds: None,
+                    with_events: false,
+                });
+                return Ok(StmtKind::VarDecl {
+                    declarations,
+                    kind: VarDeclKind::Let,
+                });
+            }
             let pattern = BindingPattern::Array(
                 names
                     .into_iter()
@@ -14698,17 +15599,11 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                     s.pop();
                 }
                 let parsed = if s.starts_with("0x") || s.starts_with("0X") {
-                    i64::from_str_radix(&s[2..], 16)
-                        .ok()
-                        .map(Expression::int)
+                    i64::from_str_radix(&s[2..], 16).ok().map(Expression::int)
                 } else if s.starts_with("0b") || s.starts_with("0B") {
-                    i64::from_str_radix(&s[2..], 2)
-                        .ok()
-                        .map(Expression::int)
+                    i64::from_str_radix(&s[2..], 2).ok().map(Expression::int)
                 } else if s.starts_with("0o") || s.starts_with("0O") {
-                    i64::from_str_radix(&s[2..], 8)
-                        .ok()
-                        .map(Expression::int)
+                    i64::from_str_radix(&s[2..], 8).ok().map(Expression::int)
                 } else if s.contains('.')
                     || s.contains('e')
                     || s.contains('E')
@@ -15007,6 +15902,14 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
         "float32" | "float64" => Expression::new(ExprKind::Lit(Literal::Float(0.0))),
         "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
         | "uint64" | "uintptr" | "byte" | "rune" => Expression::new(ExprKind::Lit(Literal::Int(0))),
+        "__goxmlname" => go_builtin_call(
+            "__go_xml_name",
+            vec![
+                Expression::string(""),
+                Expression::string(""),
+                Expression::string(""),
+            ],
+        ),
         _ => go_typed_composite_expr(Expression::new(ExprKind::Object(Vec::new())), trimmed),
     }
 }
@@ -15284,10 +16187,33 @@ fn go_type_arg_expr(type_name: String) -> Expression {
 }
 
 fn go_type_assert_expr(expr: Expression, type_name: String) -> Expression {
+    if type_name.trim() == "__goXMLStartElement" {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(go_xml_token_element_from_go_expr(expr, "start")),
+            type_name,
+        });
+    }
+    if type_name.trim() == "__goXMLEndElement" {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(go_xml_token_element_from_go_expr(expr, "end")),
+            type_name,
+        });
+    }
     go_builtin_call("__go_type_assert", vec![expr, go_type_arg_expr(type_name)])
 }
 
 fn go_extract_type_assert_expr(expr: &Expression) -> Option<(Expression, String)> {
+    if let ExprKind::Cast { expr, type_name } = &expr.kind {
+        if matches!(
+            type_name.trim(),
+            "__goXMLStartElement" | "__goXMLEndElement"
+        ) {
+            return Some((
+                go_xml_type_assert_source_expr(expr).unwrap_or_else(|| expr.as_ref().clone()),
+                type_name.clone(),
+            ));
+        }
+    }
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
@@ -15302,9 +16228,62 @@ fn go_extract_type_assert_expr(expr: &Expression) -> Option<(Expression, String)
     ))
 }
 
+fn go_xml_type_assert_source_expr(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let is_tag_key = matches!(
+            &key.kind,
+            ExprKind::Lit(Literal::Str(s)) if s == "Tag"
+        );
+        if !is_tag_key {
+            continue;
+        }
+        let ExprKind::Call { callee, args, .. } = &value.kind else {
+            continue;
+        };
+        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__go_xml_token_local") {
+            return args.first().map(|arg| arg.value.clone());
+        }
+    }
+    None
+}
+
 fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
+    let trimmed_type = type_name.trim();
+    if let Some(mapped) = go_stdlib_type_binding(type_name) {
+        if mapped == "__goXMLStartElement" {
+            return Expression::new(ExprKind::Cast {
+                expr: Box::new(go_xml_token_element_from_go_expr(expr, "start")),
+                type_name: mapped.to_string(),
+            });
+        }
+        if mapped == "__goXMLEndElement" {
+            return Expression::new(ExprKind::Cast {
+                expr: Box::new(go_xml_token_element_from_go_expr(expr, "end")),
+                type_name: mapped.to_string(),
+            });
+        }
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            type_name: mapped.to_string(),
+        });
+    }
+    if trimmed_type.starts_with("__goXML")
+        || matches!(trimmed_type, "__goRawMessage" | "__goLevel" | "__goAttr")
+    {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            type_name: trimmed_type.to_string(),
+        });
+    }
+
     if !matches!(
-        type_name.trim(),
+        trimmed_type,
         "int"
             | "int8"
             | "int16"

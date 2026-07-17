@@ -68,6 +68,15 @@ echo $a->nextSibling->nodeName;
         ["b"]
     };
 
+    dom_node_namespace_name_parts => {
+        r#"<?php
+$doc = new DOMDocument();
+$item = $doc->createElementNS('http://example.com/app', 'app:item');
+echo $item->nodeName . ':' . $item->localName . ':' . $item->namespaceURI . ':' . $item->prefix;
+"#,
+        ["app:item:item:http://example.com/app:app"]
+    };
+
     dom_cdata_section => {
         r#"<?php
 $doc = new DOMDocument();

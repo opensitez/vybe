@@ -556,6 +556,13 @@ __dom_serializeToString = { emit = "host:web:dom-parser:serializeToString",   mi
 __dom_parse           = { emit = "host:web:dom-parser:parse",                 min_args = 1, max_args = 1 }
 __dom_save_xml        = { emit = "common:php.dom_save_xml",                    min_args = 1, max_args = 1 }
 simplexml_load_string = { emit = "common:php.simplexml_load_string",           min_args = 1, max_args = 5 }
+__php_xml_name        = { emit = "common:xml.name",                            min_args = 3, max_args = 3 }
+__php_xml_local       = { emit = "common:xml.local",                           min_args = 1, max_args = 1 }
+__php_xml_namespace   = { emit = "common:xml.namespace",                       min_args = 1, max_args = 1 }
+__php_xml_prefix      = { emit = "common:xml.prefix",                          min_args = 1, max_args = 1 }
+__php_xml_qualified   = { emit = "common:xml.qualified",                       min_args = 1, max_args = 1 }
+__php_xml_equal       = { emit = "common:xml.equal",                           min_args = 2, max_args = 2 }
+__php_xml_node_name   = { emit = "common:xml.node_name",                       min_args = 1, max_args = 1 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
 # PHP's `time()` / `date()` operate on POSIX seconds-epoch. All wrappers
