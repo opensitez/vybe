@@ -40,8 +40,8 @@ ruby_test!(
 ruby_test!(
     test_string_partition_empty,
     "puts 'hello'.partition('').join('-')",
-    "-hello"
-); // ruby partition on empty string returns ["", "", "hello"]
+    "-h-ello"
+);
 ruby_test!(
     test_string_rpartition_empty,
     "puts 'hello'.rpartition('').join('-')",

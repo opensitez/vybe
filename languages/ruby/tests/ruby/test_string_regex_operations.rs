@@ -49,5 +49,5 @@ ruby_test!(
     "puts 'a-b-c'.split(/-/).join(',')",
     "a,b,c"
 );
-ruby_test!(test_regex_gsub, "puts 'abacada'.gsub(/a./, 'X')", "XXa");
+ruby_test!(test_regex_gsub, "puts 'abacada'.gsub(/a./, 'X')", "XXXa");
 ruby_test!(test_regex_sub, "puts 'abacada'.sub(/a./, 'X')", "Xacada");

@@ -15,7 +15,7 @@ ruby_test!(
 ruby_test!(
     test_string_scan_groups,
     "puts 'hello'.scan(/(.)(l)/).map{|g| g.join}.join('-')",
-    "el-ll"
+    "el"
 );
 ruby_test!(
     test_string_scan_block,

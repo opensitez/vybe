@@ -156,6 +156,7 @@ mod test_class_new;
 mod test_class_reflection;
 mod test_comparable_basics;
 mod test_comparable_methods;
+mod test_set_class;
 mod test_complex_advanced;
 mod test_complex_basics;
 mod test_complex_edge;

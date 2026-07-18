@@ -24,7 +24,7 @@ ruby_test!(
 );
 ruby_test!(
     test_select_empty,
-    "begin; IO.select([], [], [], 0).nil?; rescue ArgumentError; puts 'err'; end",
+    "begin; puts IO.select([], [], [], 0).nil?; rescue ArgumentError; puts 'err'; end",
     "true"
 ); // wait, IO.select([],[],[],0) is allowed and returns nil, no ArgumentError
 ruby_test!(

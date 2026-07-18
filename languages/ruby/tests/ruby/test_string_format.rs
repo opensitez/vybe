@@ -28,10 +28,10 @@ ruby_test!(
     "s = ' a '; s.strip!; puts s",
     "a"
 );
-ruby_test!(test_string_format_chop, "puts 'abc\\n'.chop", "abc");
+ruby_test!(test_string_format_chop, "puts \"abc\\n\".chop", "abc");
 ruby_test!(
     test_string_format_chop_bang,
-    "s = 'abc\\n'; s.chop!; puts s",
+    "s = \"abc\\n\"; s.chop!; puts s",
     "abc"
 );
 ruby_test!(test_string_format_chomp, "puts \"abc\\r\\n\".chomp", "abc");

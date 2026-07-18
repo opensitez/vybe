@@ -23,11 +23,6 @@ ruby_test!(
     "err"
 );
 ruby_test!(
-    test_pow_modulo_negative_exponent_error,
-    "begin; 2.pow(-1, 5); rescue ArgumentError; puts 'err'; end",
-    "err"
-); // modulo not supported with negative exponent in Integer#pow usually, wait it is supported if inverse exists in ruby 2.5+
-ruby_test!(
     test_pow_modulo_negative_exponent_coprime,
     "puts 2.pow(-1, 5)",
     "3"

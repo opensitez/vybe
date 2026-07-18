@@ -11,7 +11,7 @@ ruby_test!(test_tr_basic, "puts 'hello'.tr('el', 'ip')", "hippo");
 ruby_test!(
     test_tr_short_replacement,
     "puts 'hello'.tr('el', 'i')",
-    "hiiiio"
+    "hiiio"
 ); // 'l' maps to 'i' (last char of replacement)
 ruby_test!(test_tr_range, "puts 'hello'.tr('a-y', 'b-z')", "ifmmp");
 ruby_test!(test_tr_negation, "puts 'hello'.tr('^aeiou', '*')", "*e**o");

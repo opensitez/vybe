@@ -256,11 +256,13 @@ expression = { ternary_expr ~ inline_rescue? }
 
 inline_rescue = { "rescue" ~ ternary_expr }
 
-ternary_expr = { or_expr ~ ("?" ~ expression ~ ":" ~ expression)? }
+ternary_expr = { low_and_expr ~ ("?" ~ expression ~ ":" ~ expression)? }
 
 // ── Logical ────────────────────────────────────────────────────────────────
-or_expr  = { and_expr ~ ((or_kw | "||") ~ and_expr)* }
-and_expr = { not_expr ~ ((and_kw | "&&") ~ not_expr)* }
+low_and_expr = { low_or_expr ~ (and_kw ~ low_or_expr)* }
+low_or_expr  = { or_expr ~ (or_kw ~ or_expr)* }
+or_expr      = { and_expr ~ ("||" ~ and_expr)* }
+and_expr     = { not_expr ~ ("&&" ~ not_expr)* }
 not_expr = { (not_kw | "!") ~ not_expr | comparison }
 
 // ── Comparison ─────────────────────────────────────────────────────────────
@@ -288,7 +290,7 @@ multiplicative_op = { "**" ~ !"=" | "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"="
 
 // ── Unary ──────────────────────────────────────────────────────────────────
 unary    = { unary_op ~ unary | postfix }
-unary_op = { "-" ~ !"=" | "+" ~ !"=" | "~" }
+unary_op = { "-" ~ !"=" ~ !ASCII_DIGIT | "+" ~ !"=" ~ !ASCII_DIGIT | "~" }
 
 // ── Postfix (call, member, subscript, block) ───────────────────────────────
 postfix = { primary ~ postfix_chain* }
@@ -459,15 +461,15 @@ regex_literal = @{ "/" ~ (!"/" ~ ("\\" ~ ANY | ANY))* ~ "/" ~ ('a'..'z')* }
 
 // ── Numeric literals ───────────────────────────────────────────────────────
 float_literal = @{
-    ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
-    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
+    ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    | ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
 }
 
 integer_literal = @{
-    "0x" ~ (ASCII_HEX_DIGIT | "_")+
-    | "0o" ~ ('0'..'7' | "_")+
-    | "0b" ~ ('0'..'1' | "_")+
-    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")*
+    ("+" | "-")? ~ "0x" ~ (ASCII_HEX_DIGIT | "_")+
+    | ("+" | "-")? ~ "0o" ~ ('0'..'7' | "_")+
+    | ("+" | "-")? ~ "0b" ~ ('0'..'1' | "_")+
+    | ("+" | "-")? ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")*
 }
 
 // ── Symbol ─────────────────────────────────────────────────────────────────
