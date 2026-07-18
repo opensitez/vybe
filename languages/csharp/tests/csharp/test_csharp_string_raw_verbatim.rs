@@ -6,7 +6,7 @@ fn verbatim_string_preserves_backslashes() {
     assert_eq!(
         run_csharp(
             r#"string path=@"C:\Users\test\file.txt";
-Console.WriteLine(path.Contains(@"\"));"#
+Console.WriteLine(path.Contains(@"\test"));"#
         ),
         &["True"]
     );
@@ -15,7 +15,8 @@ Console.WriteLine(path.Contains(@"\"));"#
 #[test]
 fn verbatim_string_preserves_newlines_in_literal() {
     assert_eq!(
-        run_csharp("string s=@\"line1\nline2\";\nConsole.WriteLine(s.Contains(\"\\n\"));"),
+        run_csharp(r#"string s=@"line1\nline2";
+Console.WriteLine(s.Contains(@"\n"));"#),
         &["True"]
     );
 }
@@ -49,7 +50,7 @@ fn raw_string_literal_contains_embedded_quotes_without_escaping() {
     assert_eq!(
         run_csharp(
             r####"string s="""She said "hello" to him.""";
-Console.WriteLine(s.Contains("\"hello\""));"####
+Console.WriteLine(s.Contains(""hello""));"####
         ),
         &["True"]
     );

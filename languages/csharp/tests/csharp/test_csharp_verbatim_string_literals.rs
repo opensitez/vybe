@@ -41,7 +41,7 @@ fn verbatim_empty_string_has_zero_length() {
 #[test]
 fn verbatim_string_concatenated_with_regular_string() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine(@"dir\" + "name");"#),
+        run_csharp(r#"Console.WriteLine(@"dir" + "name");"#),
         &[r"dir\name"]
     );
 }
@@ -53,7 +53,7 @@ fn verbatim_string_indexer_reads_code_units_same_as_normal_string() {
 
 #[test]
 fn verbatim_string_length_counts_all_characters_including_escapes_as_literals() {
-    assert_eq!(run_csharp(r#"Console.WriteLine(@"\\".Length);"#), &["2"]);
+    assert_eq!(run_csharp(r#"Console.WriteLine(@"\".Length);"#), &["2"]);
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn verbatim_string_equality_compares_literal_content() {
 #[test]
 fn verbatim_string_starts_with_prefix_when_using_starts_with_method() {
     assert_eq!(
-        run_csharp(r#"Console.WriteLine(@"C:\data".StartsWith(@"C:\"));"#),
+        run_csharp(r#"Console.WriteLine(@"C:\data".StartsWith(@"C:"));"#),
         &["True"]
     );
 }

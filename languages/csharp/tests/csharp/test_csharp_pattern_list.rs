@@ -211,13 +211,15 @@ csharp_cases! {
         ["True"]
     };
 
-    is_list_pattern_with_when_guard_on_captured_var => {
-        r#"int[] data=new[]{4,8}; if(data is [var a,var b] when a<b) Console.WriteLine("ordered");"#,
+    // `when` after `is` is not valid C# (guards exist only on `case`/`catch`);
+    // the equivalent is `&&`, where the pattern variables are in scope.
+    is_list_pattern_with_guard_on_captured_var => {
+        r#"int[] data=new[]{4,8}; if(data is [var a,var b] && a<b) Console.WriteLine("ordered");"#,
         ["ordered"]
     };
 
-    is_list_pattern_with_when_guard_rejects_wrong_order => {
-        r#"int[] data=new[]{8,4}; if(data is [var a,var b] when a<b) Console.WriteLine("ordered"); else Console.WriteLine("not");"#,
+    is_list_pattern_guard_rejects_wrong_order => {
+        r#"int[] data=new[]{8,4}; if(data is [var a,var b] && a<b) Console.WriteLine("ordered"); else Console.WriteLine("not");"#,
         ["not"]
     };
 

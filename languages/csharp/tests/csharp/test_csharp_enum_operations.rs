@@ -12,6 +12,14 @@ fn enum_value_assigned_and_compared() {
 }
 
 #[test]
+fn enum_explicit_value_tostring_probe() {
+    assert_eq!(
+        run_csharp(r#"enum Num{X=7} Console.WriteLine(Num.X.ToString());"#),
+        &["X"]
+    );
+}
+
+#[test]
 fn enum_tostring_returns_member_name() {
     assert_eq!(
         run_csharp(

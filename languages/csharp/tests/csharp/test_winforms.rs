@@ -1,6 +1,21 @@
 use super::helpers::run_csharp;
 
 #[test]
+fn control_instance_methods_dispatch_via_descriptor() {
+    // Host-target control methods resolve through the component descriptor
+    // (inheritance-walked), so no per-method thunk is emitted.
+    let out = run_csharp(
+        r#"
+        var b = new Button();
+        b.Show();
+        b.Hide();
+        Console.WriteLine("methods-ok");
+    "#,
+    );
+    assert_eq!(out, vec!["methods-ok"]);
+}
+
+#[test]
 fn new_button_has_properties() {
     let out = run_csharp(
         r#"

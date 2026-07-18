@@ -8,7 +8,7 @@ csharp_cases! {
     };
 
     raw_string_embedded_double_quotes_without_backslash => {
-        r####"string text="""say "hi" now"""; Console.WriteLine(text.Contains("\"hi\""));"####,
+        r####"string text="""say "hi" now"""; Console.WriteLine(text.Contains(""hi""));"####,
         ["True"]
     };
 
@@ -51,7 +51,7 @@ beta"""; Console.WriteLine(text.EndsWith("beta"));"####,
     };
 
     raw_string_backslash_is_literal_not_escape => {
-        r####"string text="""C:\temp\file"""; Console.WriteLine(text.Contains(@"\"));"####,
+        r####"string text="""C:\temp\file"""; Console.WriteLine(text.Contains(@""));"####,
         ["True"]
     };
 

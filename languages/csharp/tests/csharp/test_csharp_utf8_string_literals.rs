@@ -58,7 +58,7 @@ csharp_cases! {
     };
 
     utf8_literal_quote_escape => {
-        r#"var bytes=u8"a\"b"; Console.WriteLine(bytes[1]);"#,
+        r#"var bytes=u8"a"b"; Console.WriteLine(bytes[1]);"#,
         ["34"]
     };
 

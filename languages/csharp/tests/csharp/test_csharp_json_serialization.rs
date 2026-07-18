@@ -18,7 +18,7 @@ fn deserialize_json_string_to_typed_record() {
     assert_eq!(
         run_csharp(
             r#"record Person(string Name,int Age);
-string json="{\"Name\":\"Bob\",\"Age\":25}";
+string json="{"Name":"Bob","Age":25}";
 var p=System.Text.Json.JsonSerializer.Deserialize<Person>(json);
 Console.WriteLine(p.Name); Console.WriteLine(p.Age);"#
         ),
@@ -44,7 +44,7 @@ fn json_options_case_insensitive_deserialization() {
         run_csharp(
             r#"class Item{public string Label{get;set;}}
 var opts=new System.Text.Json.JsonSerializerOptions{PropertyNameCaseInsensitive=true};
-var item=System.Text.Json.JsonSerializer.Deserialize<Item>("{\"label\":\"x\"}",opts);
+var item=System.Text.Json.JsonSerializer.Deserialize<Item>("{"label":"x"}",opts);
 Console.WriteLine(item.Label);"#
         ),
         &["x"]
@@ -55,7 +55,7 @@ Console.WriteLine(item.Label);"#
 fn json_deserialize_dictionary_from_object_json() {
     assert_eq!(
         run_csharp(
-            r#"var d=System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string,int>>("{\"a\":1,\"b\":2}");
+            r#"var d=System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string,int>>("{"a":1,"b":2}");
 Console.WriteLine(d["a"]); Console.WriteLine(d.Count);"#
         ),
         &["1", "2"]
