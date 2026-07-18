@@ -43,4 +43,4 @@ ruby_test!(
     "def"
 );
 ruby_test!(test_except_empty_hash, "puts ({}).except(:a).length", "0");
-ruby_test!(test_except_all_keys, "puts ({a: 1}.except(:a).length", "0");
+ruby_test!(test_except_all_keys, "puts ({a: 1}.except(:a).length)", "0");
