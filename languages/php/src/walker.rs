@@ -160,6 +160,8 @@ thread_local! {
     static CLOSURE_BIND_SCOPE: RefCell<Option<String>> = const { RefCell::new(None) };
     static SIMPLE_FIBER_VARS: RefCell<std::collections::HashMap<String, SimpleFiberState>> =
         RefCell::new(std::collections::HashMap::new());
+    static SIMPLE_XML_VARS: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
     static SIMPLE_GETTER_METHODS: RefCell<std::collections::HashMap<String, String>> =
         RefCell::new(std::collections::HashMap::new());
     static FUNCTION_RETURN_TYPES: RefCell<std::collections::HashMap<String, String>> =
@@ -171,6 +173,8 @@ thread_local! {
     static PENDING_CLASS_ATTRIBUTES: RefCell<Vec<(String, Vec<AttributeMeta>)>> =
         const { RefCell::new(Vec::new()) };
     static METHOD_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
+        RefCell::new(std::collections::HashMap::new());
+    static PROPERTY_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
         RefCell::new(std::collections::HashMap::new());
     static CLASS_CONST_ATTRIBUTES: RefCell<std::collections::HashMap<(String, String), Vec<AttributeMeta>>> =
         RefCell::new(std::collections::HashMap::new());
@@ -298,6 +302,19 @@ fn attribute_array_expr(attrs: &[AttributeMeta]) -> Expression {
     ))
 }
 
+fn filter_reflection_attributes(
+    attrs: &mut Vec<AttributeMeta>,
+    filter: Option<String>,
+    include_instanceof: bool,
+) {
+    let Some(filter) = filter else {
+        return;
+    };
+    attrs.retain(|attr| {
+        attr.name == filter || (include_instanceof && class_is_subclass_of(&attr.name, &filter))
+    });
+}
+
 fn class_attrs_for_reflection(class_name: &str) -> Vec<AttributeMeta> {
     CLASS_ATTRIBUTES
         .with(|r| r.borrow().get(class_name).cloned())
@@ -325,7 +342,13 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
             })
             .collect(),
     ));
-    let instance = Expression::ident("__this");
+    let instance_props = attribute_instance_props(attr);
+    let mut instance_object_props = vec![ObjectProperty::KeyValue {
+        key: Expression::string("__type"),
+        value: Expression::string(&attr.name),
+    }];
+    instance_object_props.extend(instance_props.clone());
+    let instance = Expression::new(ExprKind::Object(instance_object_props));
     let get_arguments = Expression::new(ExprKind::Lambda {
         params: vec![mk_param_named("__this")],
         body: LambdaBody::Expr(Box::new(args_array.clone())),
@@ -338,9 +361,19 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
         is_async: false,
         captures: vec![],
     });
+    let get_name = Expression::new(ExprKind::Lambda {
+        params: vec![mk_param_named("__this")],
+        body: LambdaBody::Expr(Box::new(Expression::string(&attr.name))),
+        is_async: false,
+        captures: vec![],
+    });
     let is_instance = Expression::new(ExprKind::Lambda {
         params: vec![mk_param_named("__this"), mk_param_named("__class")],
-        body: LambdaBody::Expr(Box::new(Expression::bool(true))),
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::ident("__class")),
+            right: Box::new(Expression::string(&attr.name)),
+        }))),
         is_async: false,
         captures: vec![],
     });
@@ -376,6 +409,10 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
             value: get_arguments,
         },
         ObjectProperty::KeyValue {
+            key: Expression::string("getname"),
+            value: get_name,
+        },
+        ObjectProperty::KeyValue {
             key: Expression::string("newinstance"),
             value: new_instance,
         },
@@ -388,7 +425,7 @@ fn reflection_attribute_expr(attr: &AttributeMeta) -> Expression {
             value: get_attr,
         },
     ];
-    props.extend(attribute_instance_props(attr));
+    props.extend(instance_props);
     Expression::new(ExprKind::Object(props))
 }
 
@@ -1104,6 +1141,30 @@ fn note_simple_value_var(name: &str, expr: &Expression) {
 
 fn lookup_simple_value_var(name: &str) -> Option<Expression> {
     SIMPLE_VALUE_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
+}
+
+fn expr_is_simplexml_value(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "simplexml_load_string")
+    )
+}
+
+fn note_simple_xml_var(name: &str, expr: &Expression) {
+    let key = name.trim_start_matches('$').to_string();
+    SIMPLE_XML_VARS.with(|v| {
+        let mut vars = v.borrow_mut();
+        if expr_is_simplexml_value(expr) {
+            vars.insert(key);
+        } else {
+            vars.remove(&key);
+        }
+    });
+}
+
+fn is_simple_xml_var(name: &str) -> bool {
+    SIMPLE_XML_VARS.with(|v| v.borrow().contains(name.trim_start_matches('$')))
 }
 
 #[derive(Debug, Clone)]
@@ -3233,6 +3294,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     SIMPLE_ASSERT_CALLBACK.with(|t| *t.borrow_mut() = None);
     CLOSURE_BIND_SCOPE.with(|t| *t.borrow_mut() = None);
     SIMPLE_FIBER_VARS.with(|t| t.borrow_mut().clear());
+    SIMPLE_XML_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_GETTER_METHODS.with(|t| t.borrow_mut().clear());
     FUNCTION_RETURN_TYPES.with(|t| t.borrow_mut().clear());
     SEEN_CLASS_METHODS.with(|t| t.borrow_mut().clear());
@@ -3240,6 +3302,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     TYPE_KINDS.with(|t| t.borrow_mut().clear());
     CLASS_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     METHOD_ATTRIBUTES.with(|t| t.borrow_mut().clear());
+    PROPERTY_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     CLASS_CONST_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     ENUM_CASE_ATTRIBUTES.with(|t| t.borrow_mut().clear());
     PENDING_CLASS_ATTRIBUTES.with(|t| t.borrow_mut().clear());
@@ -4712,9 +4775,17 @@ fn php_dom_xml_name_property_expr(
 ) -> Option<Expression> {
     let name = php_call_helper_expr("__php_xml_node_name", vec![object], span);
     match field {
-        "nodeName" => Some(php_call_helper_expr("__php_xml_qualified", vec![name], span)),
+        "nodeName" => Some(php_call_helper_expr(
+            "__php_xml_qualified",
+            vec![name],
+            span,
+        )),
         "localName" => Some(php_call_helper_expr("__php_xml_local", vec![name], span)),
-        "namespaceURI" => Some(php_call_helper_expr("__php_xml_namespace", vec![name], span)),
+        "namespaceURI" => Some(php_call_helper_expr(
+            "__php_xml_namespace",
+            vec![name],
+            span,
+        )),
         "prefix" => Some(php_call_helper_expr("__php_xml_prefix", vec![name], span)),
         _ => None,
     }
@@ -7087,6 +7158,29 @@ fn class_name_from_arg(e: &Expression) -> Option<String> {
     }
 }
 
+fn is_php_dom_xml_receiver(e: &Expression) -> bool {
+    if lookup_simple_reflection_target(e).is_some() {
+        return false;
+    }
+    if let ExprKind::Ident(name) = &e.kind {
+        if is_simple_xml_var(name) {
+            return true;
+        }
+    }
+    php_object_class_from_expr(e).is_some_and(|class_name| {
+        matches!(
+            class_name.trim_start_matches('\\'),
+            "DOMDocument"
+                | "DOMElement"
+                | "DOMNode"
+                | "DOMDocumentFragment"
+                | "DOMText"
+                | "DOMAttr"
+                | "SimpleXMLElement"
+        )
+    })
+}
+
 /// Public method names of `c` and its ancestors (first-seen order).
 fn class_public_methods(c: &str) -> Vec<String> {
     let mut names = vec![c.to_string()];
@@ -7641,6 +7735,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
             }))
         }
         Rule::property_declaration => {
+            let attrs = collect_leading_attributes(&pair)?;
             let mut name = String::new();
             let mut type_hint: Option<String> = None;
             let mut init: Option<Expression> = None;
@@ -7669,6 +7764,13 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         setter = hook_setter;
                     }
                     _ => {}
+                }
+            }
+            if !attrs.is_empty() {
+                if let Some(class_name) = current_class_name() {
+                    PROPERTY_ATTRIBUTES.with(|r| {
+                        r.borrow_mut().insert((class_name, name.clone()), attrs);
+                    });
                 }
             }
             if getter.is_some() || setter.is_some() {
@@ -10389,6 +10491,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                 note_simple_array_var(name, &rhs);
                 note_simple_string_var(name, &rhs);
                 note_simple_value_var(name, &rhs);
+                note_simple_xml_var(name, &rhs);
                 note_simple_callable_assignment(name, &rhs);
                 if let Some(state) = expr_is_php_fiber_new(&rhs) {
                     note_simple_fiber_var(name, state);
@@ -11817,6 +11920,49 @@ fn apply_postfix(
                                 }
                             }
                         }
+                        (SimpleReflectionTarget::Class(class_name), "getAttributes") => {
+                            let mut attrs = class_attrs_for_reflection(&class_name);
+                            filter_reflection_attributes(
+                                &mut attrs,
+                                args.first().and_then(|arg| php_literal_string(&arg.value)),
+                                args.len() >= 2,
+                            );
+                            return Ok(attribute_array_expr(&attrs));
+                        }
+                        (
+                            SimpleReflectionTarget::Method {
+                                class_name,
+                                method_name,
+                            },
+                            "getAttributes",
+                        ) => {
+                            let mut attrs = METHOD_ATTRIBUTES
+                                .with(|r| r.borrow().get(&(class_name, method_name)).cloned())
+                                .unwrap_or_default();
+                            filter_reflection_attributes(
+                                &mut attrs,
+                                args.first().and_then(|arg| php_literal_string(&arg.value)),
+                                args.len() >= 2,
+                            );
+                            return Ok(attribute_array_expr(&attrs));
+                        }
+                        (SimpleReflectionTarget::Class(class_name), "getParentClass") => {
+                            let parent = CLASS_REGISTRY.with(|r| {
+                                r.borrow()
+                                    .get(&class_name)
+                                    .and_then(|meta| meta.parent.clone())
+                            });
+                            return match parent {
+                                Some(parent_name) => build_reflection_class_call(
+                                    vec![Argument::positional(mk_str(&parent_name))],
+                                    span.clone(),
+                                ),
+                                None => Ok(Expression::with_span(
+                                    ExprKind::Lit(Literal::Null),
+                                    span.clone(),
+                                )),
+                            };
+                        }
                         (SimpleReflectionTarget::Class(class_name), "getCases") => {
                             if type_kind_is(&class_name, "enum") {
                                 let cases = CLASS_REGISTRY.with(|r| {
@@ -12550,24 +12696,30 @@ fn apply_postfix(
             // SimpleXMLElement is represented by the underlying DOM element.
             // Its `asXML()` and `getName()` therefore normalize directly to
             // the same DOM serialization/name surface.
-            if method_name == "asXML" && args.is_empty() {
+            if method_name == "asXML" && args.is_empty() && is_php_dom_xml_receiver(&member_object)
+            {
                 return Ok(mk_dom_call(
                     "__dom_save_xml",
                     vec![Argument::positional(member_object.clone())],
                 ));
             }
-            if method_name == "getName" && args.is_empty() {
-                return Ok(php_dom_xml_name_property_expr(member_object.clone(), "nodeName", span)
-                    .unwrap_or_else(|| {
-                        Expression::with_span(
-                            ExprKind::Member {
-                                object: Box::new(member_object.clone()),
-                                field: "nodeName".to_string(),
-                                null_safe,
-                            },
-                            span.clone(),
-                        )
-                    }));
+            if method_name == "getName"
+                && args.is_empty()
+                && is_php_dom_xml_receiver(&member_object)
+            {
+                return Ok(
+                    php_dom_xml_name_property_expr(member_object.clone(), "nodeName", span)
+                        .unwrap_or_else(|| {
+                            Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(member_object.clone()),
+                                    field: "nodeName".to_string(),
+                                    null_safe,
+                                },
+                                span.clone(),
+                            )
+                        }),
+                );
             }
             // `createElement($name, $text)` — PHP's 2-arg form creates the
             // element and a child text node with `$text`.
@@ -16080,7 +16232,9 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             "ReflectionMethod" => {
                 return build_reflection_method_call(args, span);
             }
-            "ReflectionProperty" => Some("__refl_property"),
+            "ReflectionProperty" => {
+                return build_reflection_property_call(args, span);
+            }
             "ReflectionFunction" => {
                 return build_reflection_function_call(args, span);
             }
@@ -16577,6 +16731,39 @@ fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expre
                 "__refl_method".to_string(),
             ))),
             args: call_args,
+            optional: false,
+        },
+        span,
+    ))
+}
+
+fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Expression, String> {
+    let mut it = args.into_iter();
+    let class_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+    let prop_arg = it.next().map(|a| a.value).unwrap_or_else(|| mk_str(""));
+
+    let class_name = match &class_arg.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let prop_name = match &prop_arg.kind {
+        ExprKind::Lit(Literal::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let attrs = PROPERTY_ATTRIBUTES
+        .with(|r| r.borrow().get(&(class_name, prop_name)).cloned())
+        .unwrap_or_default();
+
+    Ok(Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident(
+                "__refl_property".to_string(),
+            ))),
+            args: vec![
+                Argument::positional(class_arg),
+                Argument::positional(prop_arg),
+                Argument::positional(attribute_array_expr(&attrs)),
+            ],
             optional: false,
         },
         span,

@@ -839,7 +839,7 @@ __spl_new_splobjectstorage     = { emit = "common:php.spl_splobjectstorage",    
 __spl_new_weakmap              = { emit = "common:php.spl_weakmap",              min_args = 0, max_args = 0 }
 __refl_class                   = { emit = "common:php.refl_class",               min_args = 1, max_args = 10 }
 __refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 6 }
-__refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 2 }
+__refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 3 }
 __refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 4 }
 __refl_constant                = { emit = "common:php.refl_constant",            min_args = 3, max_args = 3 }
 __weak_ref_create              = { emit = "common:php.weak_ref_create",          min_args = 1, max_args = 1 }

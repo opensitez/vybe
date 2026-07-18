@@ -61,7 +61,7 @@ materialize_bool_results = true
 "__go_xml_name_equal" = { emit = "common:xml.equal",            min_args = 2, max_args = 2 }
 "__go_xml_node_name"  = { emit = "common:xml.node_name",        min_args = 1, max_args = 1 }
 "__go_reflect_typeof"  = { emit = "common:go.reflect_typeof",   min_args = 1, max_args = 4 }
-"__go_reflect_valueof" = { emit = "common:go.reflect_valueof",  min_args = 1, max_args = 3 }
+"__go_reflect_valueof" = { emit = "common:go.reflect_valueof",  min_args = 1, max_args = 4 }
 "__go_reflect_len"     = { emit = "common:go.reflect_len",      min_args = 1, max_args = 1 }
 "__go_reflect_index"   = { emit = "common:go.reflect_index",    min_args = 2, max_args = 2 }
 "__go_reflect_field_by_name" = { emit = "common:go.reflect_field_by_name", min_args = 2, max_args = 2 }

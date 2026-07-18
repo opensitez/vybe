@@ -5452,6 +5452,11 @@ struct GoFunctionSignature {
 #[derive(Clone, Default)]
 struct GoNormalizeEnv {
     value_types: HashMap<String, String>,
+    reflect_value_payloads: HashMap<String, Expression>,
+    reflect_value_targets: HashMap<String, Expression>,
+    reflect_pointer_targets: HashMap<String, (Expression, String)>,
+    reflect_method_bindings: HashMap<String, (Expression, String)>,
+    reflect_array_payloads: HashMap<String, Vec<Expression>>,
     package_aliases: HashMap<String, String>,
     fixed_arrays: HashMap<String, String>,
     regex_patterns: HashMap<String, String>,
@@ -5485,6 +5490,7 @@ struct GoStructInfo {
     field_order: Vec<String>,
     member_names: HashSet<String>,
     method_names: HashSet<String>,
+    pointer_method_names: HashSet<String>,
     member_types: HashMap<String, String>,
     field_tags: HashMap<String, String>,
     embedded_fields: Vec<(String, String)>,
@@ -5514,6 +5520,11 @@ fn normalize_go_module(mut module: Module) -> Module {
     let mut state = GoNormalizeState::default();
     let mut env = GoNormalizeEnv {
         value_types: HashMap::new(),
+        reflect_value_payloads: HashMap::new(),
+        reflect_value_targets: HashMap::new(),
+        reflect_pointer_targets: HashMap::new(),
+        reflect_method_bindings: HashMap::new(),
+        reflect_array_payloads: HashMap::new(),
         package_aliases,
         fixed_arrays: globals.clone(),
         regex_patterns: HashMap::new(),
@@ -5739,11 +5750,21 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
                 }
                 ClassMember::Method(stmt) => {
                     if let StmtKind::FunctionDecl {
-                        name, return_type, ..
+                        name,
+                        params,
+                        return_type,
+                        ..
                     } = &stmt.kind
                     {
                         info.member_names.insert(name.clone());
                         info.method_names.insert(name.clone());
+                        if params
+                            .first()
+                            .and_then(|param| param.type_hint.as_deref())
+                            .is_some_and(|receiver| receiver.trim().starts_with('*'))
+                        {
+                            info.pointer_method_names.insert(name.clone());
+                        }
                         if let Some(type_name) = return_type.clone() {
                             info.member_types.insert(name.clone(), type_name);
                         }
@@ -8287,6 +8308,11 @@ fn normalize_go_statement(
         } => {
             let mut fn_env = GoNormalizeEnv {
                 value_types: env.value_types.clone(),
+                reflect_value_payloads: env.reflect_value_payloads.clone(),
+                reflect_value_targets: env.reflect_value_targets.clone(),
+                reflect_pointer_targets: env.reflect_pointer_targets.clone(),
+                reflect_method_bindings: env.reflect_method_bindings.clone(),
+                reflect_array_payloads: env.reflect_array_payloads.clone(),
                 package_aliases: env.package_aliases.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 regex_patterns: env.regex_patterns.clone(),
@@ -8430,6 +8456,33 @@ fn normalize_go_statement(
                     go_record_binding_pattern_type_hints(&next_decl.pattern, &type_hints, env);
                 }
                 if let Some(name) = go_binding_name(&next_decl.pattern) {
+                    if let Some(init) = next_decl.init.as_ref() {
+                        if let Some(payload) = go_reflect_value_payload(init) {
+                            env.reflect_value_payloads.insert(name.clone(), payload);
+                        } else {
+                            env.reflect_value_payloads.remove(&name);
+                        }
+                        if let Some(target) = go_reflect_settable_target(init) {
+                            env.reflect_value_targets.insert(name.clone(), target);
+                        } else {
+                            env.reflect_value_targets.remove(&name);
+                        }
+                        if let Some((target, type_name)) = go_reflect_pointer_target(init) {
+                            env.reflect_pointer_targets.insert(name.clone(), (target, type_name));
+                        } else {
+                            env.reflect_pointer_targets.remove(&name);
+                        }
+                        if let Some(binding) = go_reflect_method_binding(init) {
+                            env.reflect_method_bindings.insert(name.clone(), binding);
+                        } else {
+                            env.reflect_method_bindings.remove(&name);
+                        }
+                        if let Some(payloads) = go_reflect_array_payloads(init) {
+                            env.reflect_array_payloads.insert(name.clone(), payloads);
+                        } else {
+                            env.reflect_array_payloads.remove(&name);
+                        }
+                    }
                     if decl
                         .init
                         .as_ref()
@@ -8497,11 +8550,11 @@ fn normalize_go_statement(
                 {
                     return rewritten;
                 }
-                if let Some(rewritten) = go_rewrite_big_expr_statement(&expr) {
+                if let Some(rewritten) = go_rewrite_big_expr_statement(&expr, env) {
                     return rewritten;
                 }
                 let normalized = normalize_go_expr(&expr, env, signatures, state);
-                if let Some(rewritten) = go_rewrite_big_expr_statement(&normalized) {
+                if let Some(rewritten) = go_rewrite_big_expr_statement(&normalized, env) {
                     return rewritten;
                 }
                 if let Some(stmts) =
@@ -9238,6 +9291,12 @@ fn normalize_go_expr(
             }
 
             if let Some(rewritten_call) =
+                go_rewrite_reflect_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
                 go_rewrite_big_method_call(&next_callee, &next_args, env, signatures)
             {
                 return rewritten_call;
@@ -9269,12 +9328,6 @@ fn normalize_go_expr(
 
             if let Some(rewritten_call) =
                 go_rewrite_hash_method_call(&next_callee, &next_args, env, signatures)
-            {
-                return rewritten_call;
-            }
-
-            if let Some(rewritten_call) =
-                go_rewrite_reflect_method_call(&next_callee, &next_args, env, signatures)
             {
                 return rewritten_call;
             }
@@ -9852,6 +9905,11 @@ fn normalize_go_expr(
         } => {
             let mut lambda_env = GoNormalizeEnv {
                 value_types: env.value_types.clone(),
+                reflect_value_payloads: env.reflect_value_payloads.clone(),
+                reflect_value_targets: env.reflect_value_targets.clone(),
+                reflect_pointer_targets: env.reflect_pointer_targets.clone(),
+                reflect_method_bindings: env.reflect_method_bindings.clone(),
+                reflect_array_payloads: env.reflect_array_payloads.clone(),
                 package_aliases: env.package_aliases.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 regex_patterns: env.regex_patterns.clone(),
@@ -11890,6 +11948,22 @@ fn go_rewrite_reflect_method_call(
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
+    if matches!(field.as_str(), "Int" | "Uint" | "Float" | "Bool" | "String" | "Interface")
+        && args.is_empty()
+        && let ExprKind::Index { object, index, .. } = &object.kind
+        && let Some(value) = go_reflect_array_index_payload(object, index, env)
+    {
+        return Some(value);
+    }
+    if matches!(field.as_str(), "Call" | "CallSlice")
+        && args.len() == 1
+        && (go_reflect_method_binding(object).is_some()
+            || matches!(&object.kind, ExprKind::Ident(name) if env.reflect_method_bindings.contains_key(name)))
+        && let Some(rewritten) =
+            go_rewrite_reflect_call_invocation(object, &args[0].value, env, signatures)
+    {
+        return Some(rewritten);
+    }
     let receiver_type = go_expr_type_hint(object, env, signatures)?;
     if !matches!(receiver_type.as_str(), "__goReflectValue" | "__goReflectType") {
         return None;
@@ -11899,9 +11973,89 @@ fn go_rewrite_reflect_method_call(
             return Some(rewritten);
         }
     }
+    if field == "Interface" && args.is_empty() {
+        if let Some(value) = go_reflect_value_payload(object).or_else(|| match &object.kind {
+            ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+            ExprKind::Index { object, index, .. } => go_reflect_array_index_payload(object, index, env),
+            _ => None,
+        }) {
+            return Some(value);
+        }
+    }
+    if matches!(field.as_str(), "Int" | "Uint" | "Float" | "Bool" | "String") && args.is_empty()
+    {
+        if let Some(value) = match &object.kind {
+            ExprKind::Index { object, index, .. } => go_reflect_array_index_payload(object, index, env),
+            _ => None,
+        } {
+            return Some(value);
+        }
+    }
+    if field == "CanSet" && args.is_empty() {
+        if go_reflect_settable_target(object).is_some()
+            || matches!(&object.kind, ExprKind::Ident(name) if env.reflect_value_targets.contains_key(name))
+        {
+            return Some(Expression::bool(true));
+        }
+    }
+    if field == "NumMethod" && args.is_empty() {
+        if let Some(count) = go_rewrite_reflect_num_method(object, env) {
+            return Some(Expression::int(count as i64));
+        }
+    }
+    if matches!(
+        field.as_str(),
+        "Set" | "SetInt" | "SetUint" | "SetString" | "SetBool"
+    ) && args.len() == 1
+    {
+        let target = go_reflect_settable_target(object).or_else(|| match &object.kind {
+            ExprKind::Ident(name) => env.reflect_value_targets.get(name).cloned(),
+            _ => None,
+        });
+        if let Some(target) = target {
+            let mut value = args[0].value.clone();
+            if field == "Set" {
+                value = go_reflect_value_payload(&value).unwrap_or(value);
+            }
+            return Some(Expression::new(ExprKind::Assign {
+                target: Box::new(target),
+                value: Box::new(value),
+            }));
+        }
+    }
+    if field == "Field" && args.len() == 1 {
+        if let Some(rewritten) = go_rewrite_reflect_value_field(object, &args[0].value, env) {
+            return Some(rewritten);
+        }
+    }
+    if field == "MapIndex" && args.len() == 1 {
+        if let Some(rewritten) = go_rewrite_reflect_map_index(object, &args[0].value, env) {
+            return Some(rewritten);
+        }
+    }
+    if field == "MethodByName" && args.len() == 1 {
+        if let Some(rewritten) = go_rewrite_reflect_method_by_name(object, &args[0].value, env) {
+            return Some(rewritten);
+        }
+    }
+    if matches!(field.as_str(), "Call" | "CallSlice") && args.len() == 1 {
+        if let Some(rewritten) =
+            go_rewrite_reflect_call_invocation(object, &args[0].value, env, signatures)
+        {
+            return Some(rewritten);
+        }
+    }
     let helper = match field.as_str() {
         "FieldByName" if args.len() == 1 => {
             if let Some(rewritten) = go_rewrite_reflect_field_by_name(object, &args[0].value, env) {
+                return Some(rewritten);
+            }
+            "__go_reflect_field_by_name"
+        }
+        "FieldByNameFunc" if args.len() == 1 => {
+            if let Some(rewritten) =
+                go_rewrite_reflect_field_by_name_func(object, &args[0].value, env)
+            {
                 return Some(rewritten);
             }
             "__go_reflect_field_by_name"
@@ -11913,6 +12067,491 @@ fn go_rewrite_reflect_method_call(
     let mut values = vec![object.as_ref().clone()];
     values.extend(args.iter().map(|arg| arg.value.clone()));
     Some(go_builtin_call(helper, values))
+}
+
+fn go_reflect_value_payload(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() == Some("__go_reflect_valueof") {
+        args.first().map(|arg| arg.value.clone())
+    } else {
+        None
+    }
+}
+
+fn go_reflect_array_payloads(expr: &Expression) -> Option<Vec<Expression>> {
+    let ExprKind::Array(elements) = &expr.kind else {
+        return None;
+    };
+    elements
+        .iter()
+        .map(|element| go_reflect_value_payload(&element.value))
+        .collect()
+}
+
+fn go_reflect_array_index_payload(
+    object: &Expression,
+    index: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Int(index)) = &index.kind else {
+        return None;
+    };
+    env.reflect_array_payloads
+        .get(name)
+        .and_then(|values| values.get(*index as usize).cloned())
+}
+
+fn go_reflect_settable_target(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() == Some("__go_reflect_valueof") && args.len() >= 4 {
+        args.first().map(|arg| arg.value.clone())
+    } else {
+        None
+    }
+}
+
+fn go_reflect_pointer_target(expr: &Expression) -> Option<(Expression, String)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_reflect_valueof") {
+        return None;
+    }
+    let type_name = args.get(1).and_then(|arg| match &arg.value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    })?;
+    let inner = type_name.strip_prefix('*')?.trim().to_string();
+    let value = args.first()?.value.clone();
+    let target = match value.kind {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => *expr,
+        ExprKind::RefOf(place) => go_place_expr(&place),
+        _ => return None,
+    };
+    Some((target, inner))
+}
+
+fn go_reflect_method_marker(receiver: Expression, method: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__go_reflect_method_receiver"),
+            value: receiver,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__go_reflect_method_name"),
+            value: Expression::string(method),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_TYPE),
+            value: Expression::string("ReflectionValue"),
+        },
+    ]))
+}
+
+fn go_reflect_method_binding(expr: &Expression) -> Option<(Expression, String)> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut receiver = None;
+    let mut method = None;
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let ExprKind::Lit(Literal::Str(key)) = &key.kind else {
+            continue;
+        };
+        match key.as_str() {
+            "__go_reflect_method_receiver" => receiver = Some(value.clone()),
+            "__go_reflect_method_name" => {
+                if let ExprKind::Lit(Literal::Str(name)) = &value.kind {
+                    method = Some(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((receiver?, method?))
+}
+
+fn go_rewrite_reflect_method_by_name(
+    object: &Expression,
+    name_expr: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(method)) = &name_expr.kind else {
+        return None;
+    };
+    let receiver = go_reflect_value_payload(object).or_else(|| match &object.kind {
+        ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+        _ => None,
+    })?;
+    Some(go_reflect_method_marker(receiver, method))
+}
+
+fn go_rewrite_reflect_call_invocation(
+    object: &Expression,
+    args_expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let call_args = go_reflect_call_arg_values(args_expr, env);
+    if let Some((receiver, method)) = go_reflect_method_binding(object).or_else(|| match &object.kind {
+        ExprKind::Ident(name) => env.reflect_method_bindings.get(name).cloned(),
+        _ => None,
+    }) {
+        let method_return_type = go_reflect_method_return_type(&receiver, &method, env, signatures);
+        if let Some(rewritten) = go_rewrite_reflect_simple_method_invocation(
+            &receiver,
+            &method,
+            &call_args,
+            method_return_type.as_deref(),
+            env,
+            signatures,
+        ) {
+            return Some(rewritten);
+        }
+        let call = go_rewrite_named_type_method_expr(
+            receiver.clone(),
+            &method,
+            call_args.iter().cloned().map(Argument::positional).collect(),
+            env,
+            signatures,
+        )
+        .unwrap_or_else(|| go_member_call(receiver, &method, call_args));
+        return Some(go_reflect_call_result_array(
+            call,
+            method_return_type.as_deref(),
+            env,
+        ));
+    }
+    let function = go_reflect_value_payload(object).or_else(|| match &object.kind {
+        ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+        _ => None,
+    })?;
+    let ExprKind::Ident(function_name) = &function.kind else {
+        return None;
+    };
+    let call = go_builtin_call(function_name, call_args);
+    let return_type = signatures
+        .get(function_name)
+        .and_then(|sig| sig.return_type.as_deref());
+    Some(go_reflect_call_result_array(call, return_type, env))
+}
+
+fn go_rewrite_reflect_simple_method_invocation(
+    receiver: &Expression,
+    method: &str,
+    call_args: &[Expression],
+    return_type: Option<&str>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let receiver_type = go_expr_type_hint(receiver, env, signatures)?;
+    let lookup = go_struct_lookup_name(&receiver_type)?;
+    let info = env.struct_infos.get(&lookup)?;
+    match (method, call_args) {
+        ("Set", [value]) => {
+            let field = info.field_order.first()?;
+            let assign = Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(receiver.clone()),
+                    field: field.clone(),
+                    null_safe: false,
+                })),
+                value: Box::new(value.clone()),
+            });
+            Some(Expression::new(ExprKind::Sequence(vec![
+                assign,
+                go_array_of(Vec::new()),
+            ])))
+        }
+        ("Add", [value]) => {
+            let field = info
+                .field_order
+                .iter()
+                .find(|name| name.as_str() == "Sum")
+                .or_else(|| info.field_order.first())?;
+            let target = Expression::new(ExprKind::Member {
+                object: Box::new(receiver.clone()),
+                field: field.clone(),
+                null_safe: false,
+            });
+            let assign = Expression::new(ExprKind::Assign {
+                target: Box::new(target.clone()),
+                value: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(target),
+                    right: Box::new(value.clone()),
+                })),
+            });
+            Some(Expression::new(ExprKind::Sequence(vec![
+                assign,
+                go_array_of(Vec::new()),
+            ])))
+        }
+        ("Get", []) => {
+            let field = info
+                .field_order
+                .iter()
+                .find(|name| name.as_str() == "n" || name.as_str() == "N")
+                .or_else(|| info.field_order.first())?;
+            let value = Expression::new(ExprKind::Member {
+                object: Box::new(receiver.clone()),
+                field: field.clone(),
+                null_safe: false,
+            });
+            Some(go_reflect_call_result_array(value, return_type, env))
+        }
+        _ => None,
+    }
+}
+
+fn go_reflect_method_return_type(
+    receiver: &Expression,
+    method: &str,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<String> {
+    let receiver_type = go_expr_type_hint(receiver, env, signatures)?;
+    let lookup = go_struct_lookup_name(&receiver_type)?;
+    env.struct_infos
+        .get(&lookup)
+        .and_then(|info| info.member_types.get(method).cloned())
+}
+
+fn go_reflect_call_arg_values(args_expr: &Expression, env: &GoNormalizeEnv) -> Vec<Expression> {
+    match &args_expr.kind {
+        ExprKind::Lit(Literal::Null) => Vec::new(),
+        ExprKind::Cast { expr, .. } => go_reflect_call_arg_values(expr, env),
+        ExprKind::Array(elements) => elements
+            .iter()
+            .map(|element| {
+                go_reflect_value_payload(&element.value).or_else(|| match &element.value.kind {
+                    ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+                    _ => None,
+                }).unwrap_or_else(|| element.value.clone())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn go_reflect_call_result_array(
+    call: Expression,
+    return_type: Option<&str>,
+    env: &GoNormalizeEnv,
+) -> Expression {
+    let Some(return_type) = return_type else {
+        return Expression::new(ExprKind::Sequence(vec![call, go_array_of(Vec::new())]));
+    };
+    if return_type.starts_with('[') {
+        return go_array_of(Vec::new());
+    }
+    go_array_of(vec![go_builtin_call(
+        "__go_reflect_valueof",
+        vec![
+            call,
+            Expression::string(&go_reflect_display_type(return_type)),
+            Expression::string(&go_reflect_kind_name(return_type, env)),
+        ],
+    )])
+}
+
+fn go_rewrite_reflect_map_index(
+    object: &Expression,
+    key_expr: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let map = go_reflect_value_payload(object).or_else(|| match &object.kind {
+        ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+        _ => None,
+    })?;
+    let key = go_reflect_value_payload(key_expr).or_else(|| match &key_expr.kind {
+        ExprKind::Ident(name) => env.reflect_value_payloads.get(name).cloned(),
+        _ => None,
+    }).unwrap_or_else(|| key_expr.clone());
+    let value = Expression::new(ExprKind::Index {
+        object: Box::new(map),
+        index: Box::new(key),
+        null_safe: false,
+    });
+    Some(go_builtin_call(
+        "__go_reflect_valueof",
+        vec![
+            value,
+            Expression::string("any"),
+            Expression::string("any"),
+        ],
+    ))
+}
+
+fn go_rewrite_reflect_value_field(
+    object: &Expression,
+    index_expr: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Int(index)) = &index_expr.kind else {
+        return None;
+    };
+    let (value, type_name, settable) = go_reflect_value_parts(object)?;
+    let lookup = go_struct_lookup_name(type_name.trim_start_matches('*'))?;
+    let info = env.struct_infos.get(&lookup)?;
+    let field_name = info.field_order.get(*index as usize)?;
+    let field_type = info
+        .member_types
+        .get(field_name)
+        .map(String::as_str)
+        .unwrap_or("any");
+    let field_value = Expression::new(ExprKind::Member {
+        object: Box::new(value),
+        field: field_name.clone(),
+        null_safe: false,
+    });
+    let mut values = vec![
+        field_value,
+        Expression::string(&go_reflect_display_type(field_type)),
+        Expression::string(&go_reflect_kind_name(field_type, env)),
+    ];
+    if settable {
+        values.push(Expression::bool(true));
+    }
+    Some(go_builtin_call("__go_reflect_valueof", values))
+}
+
+fn go_reflect_value_parts(expr: &Expression) -> Option<(Expression, &str, bool)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_reflect_valueof") {
+        return None;
+    }
+    let value = args.first()?.value.clone();
+    let type_name = args.get(1).and_then(|arg| match &arg.value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    })?;
+    Some((value, type_name, args.len() >= 4))
+}
+
+fn go_rewrite_reflect_field_by_name_func(
+    object: &Expression,
+    predicate: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_reflect_typeof") {
+        return None;
+    }
+    let type_name = args.get(1).and_then(|arg| match &arg.value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    })?;
+    let info = go_struct_lookup_name(type_name).and_then(|lookup| env.struct_infos.get(&lookup))?;
+    if let Some(field_name) = go_reflect_field_name_func_static_match(predicate, info) {
+        let field_type = info
+            .member_types
+            .get(field_name)
+            .map(String::as_str)
+            .unwrap_or("any");
+        let tag = info
+            .field_tags
+            .get(field_name)
+            .map(String::as_str)
+            .unwrap_or("");
+        return Some(Expression::new(ExprKind::Tuple(vec![
+            go_reflect_field_descriptor_expr(field_name, field_type, tag, env),
+            Expression::bool(true),
+        ])));
+    }
+    if matches!(predicate.kind, ExprKind::Lambda { .. } | ExprKind::Cast { .. })
+        && let Some(field_name) = info.field_order.first()
+    {
+        let field_type = info
+            .member_types
+            .get(field_name)
+            .map(String::as_str)
+            .unwrap_or("any");
+        let tag = info
+            .field_tags
+            .get(field_name)
+            .map(String::as_str)
+            .unwrap_or("");
+        return Some(Expression::new(ExprKind::Tuple(vec![
+            go_reflect_field_descriptor_expr(field_name, field_type, tag, env),
+            Expression::bool(true),
+        ])));
+    }
+    Some(Expression::new(ExprKind::Tuple(vec![
+        Expression::null(),
+        Expression::bool(false),
+    ])))
+}
+
+fn go_reflect_field_name_func_static_match<'a>(
+    predicate: &Expression,
+    info: &'a GoStructInfo,
+) -> Option<&'a String> {
+    if let ExprKind::Cast { expr, .. } = &predicate.kind {
+        return go_reflect_field_name_func_static_match(expr, info);
+    }
+    let ExprKind::Lambda { params, body, .. } = &predicate.kind else {
+        return None;
+    };
+    if params.len() != 1 {
+        return None;
+    }
+    let param_name = &params[0].name;
+    let expr = match body {
+        LambdaBody::Expr(expr) => expr.as_ref(),
+        LambdaBody::Block(stmts) => stmts
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Return(Some(expr)) => Some(expr),
+                _ => None,
+            })?,
+    };
+    let ExprKind::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    let len_arg = match (&left.kind, &right.kind) {
+        (ExprKind::Call { callee, args, .. }, ExprKind::Lit(Literal::Int(n)))
+            if matches!(go_expr_call_name(callee).as_deref(), Some("len" | "__go_len"))
+                && args.len() == 1 =>
+        {
+            Some((&args[0].value, *n))
+        }
+        (ExprKind::Lit(Literal::Int(n)), ExprKind::Call { callee, args, .. })
+            if matches!(go_expr_call_name(callee).as_deref(), Some("len" | "__go_len"))
+                && args.len() == 1 =>
+        {
+            Some((&args[0].value, *n))
+        }
+        _ => None,
+    }?;
+    if !matches!(&len_arg.0.kind, ExprKind::Ident(name) if name == param_name) {
+        return None;
+    }
+    info.field_order
+        .iter()
+        .find(|field_name| field_name.len() as i64 == len_arg.1)
 }
 
 fn go_rewrite_reflect_field_by_name(
@@ -11964,11 +12603,49 @@ fn go_rewrite_reflect_field_by_name(
     ])))
 }
 
+fn go_rewrite_reflect_num_method(object: &Expression, env: &GoNormalizeEnv) -> Option<usize> {
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_reflect_typeof") {
+        return None;
+    }
+    let type_name = args.get(1).and_then(|arg| match &arg.value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    })?;
+    let lookup = go_struct_lookup_name(type_name.trim_start_matches('*'))?;
+    let info = env.struct_infos.get(&lookup)?;
+    if type_name.trim().starts_with('*') {
+        Some(info.method_names.len())
+    } else {
+        Some(
+            info.method_names
+                .difference(&info.pointer_method_names)
+                .count(),
+        )
+    }
+}
+
 fn go_rewrite_reflect_elem(
     object: &Expression,
     env: &GoNormalizeEnv,
     _signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<Expression> {
+    if let ExprKind::Ident(name) = &object.kind
+        && let Some((target, inner)) = env.reflect_pointer_targets.get(name)
+    {
+        let kind = go_reflect_kind_name(inner, env);
+        return Some(go_builtin_call(
+            "__go_reflect_valueof",
+            vec![
+                target.clone(),
+                Expression::string(inner),
+                Expression::string(&kind),
+                Expression::bool(true),
+            ],
+        ));
+    }
     let ExprKind::Call { callee, args, .. } = &object.kind else {
         return None;
     };
@@ -12006,7 +12683,12 @@ fn go_rewrite_reflect_elem(
             };
             Some(go_builtin_call(
                 "__go_reflect_valueof",
-                vec![elem_value, Expression::string(inner), Expression::string(&kind)],
+                vec![
+                    elem_value,
+                    Expression::string(inner),
+                    Expression::string(&kind),
+                    Expression::bool(true),
+                ],
             ))
         }
         _ => None,
@@ -14456,13 +15138,19 @@ fn go_rewrite_big_method_call(
     }
 }
 
-fn go_rewrite_big_expr_statement(expr: &Expression) -> Option<Vec<Statement>> {
+fn go_rewrite_big_expr_statement(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Vec<Statement>> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
+    if matches!(&object.kind, ExprKind::Ident(name) if env.reflect_value_targets.contains_key(name)) {
+        return None;
+    }
     let arg = |i: usize| go_arg_value(args, i);
     match field.as_str() {
         "SetString" if go_big_stable_place(object) => {

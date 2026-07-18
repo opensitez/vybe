@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::collections;
 use vybe_emitter::instructions::{core_wasm, host};
+use vybe_emitter::{collections, reflection};
 
 fn key(chunk: &mut Chunk, name: &str) -> u16 {
     chunk.add_constant(Value::String(Arc::from(name)))
@@ -48,6 +48,17 @@ fn obj_new(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:object", "new", 0, line);
 }
 
+fn stamp_runtime_type(
+    chunk: &mut Chunk,
+    type_name: &str,
+    kind: reflection::ReflectKind,
+    line: u32,
+) {
+    set_string(chunk, reflection::FIELD_TYPE, type_name, line);
+    set_string(chunk, reflection::FIELD_TYPE_NAME, type_name, line);
+    set_string(chunk, reflection::FIELD_KIND, kind.as_str(), line);
+}
+
 fn date_get(chunks: &mut [Chunk], current: usize, ms_slot: u16, getter: &'static str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     host::emit(&mut chunks[current], "ecma:date", getter, 1, line);
@@ -57,7 +68,7 @@ fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     let ms = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, ms, line);
     obj_new(chunk, line);
-    set_string(chunk, "__type", "Duration", line);
+    stamp_runtime_type(chunk, "Duration", reflection::ReflectKind::Object, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     set_field(chunk, "inMilliseconds", line);
@@ -121,7 +132,7 @@ pub fn emit_duration_abs(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_slot_is_type(chunk: &mut Chunk, slot: u16, type_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, "__type", line);
+    get_field(chunk, reflection::FIELD_TYPE, line);
     chunk.emit_string_const(type_name, line);
     chunk.emit_op(Op::EQ, line);
 }
@@ -268,7 +279,12 @@ fn wrap_datetime_ms(chunks: &mut [Chunk], current: usize, is_utc: bool, line: u3
     let dow = ms + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms, line);
     obj_new(&mut chunks[current], line);
-    set_string(&mut chunks[current], "__type", "DateTime", line);
+    stamp_runtime_type(
+        &mut chunks[current],
+        "DateTime",
+        reflection::ReflectKind::Object,
+        line,
+    );
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ms, line);
     set_field(&mut chunks[current], "millisecondsSinceEpoch", line);
@@ -369,7 +385,7 @@ pub fn emit_dart_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver, line);
-    get_field(&mut chunks[current], "__type", line);
+    get_field(&mut chunks[current], reflection::FIELD_TYPE, line);
     chunks[current].emit_string_const("DateTime", line);
     chunks[current].emit_op(Op::EQ, line);
     chunks[current].emit_if(line);
@@ -503,7 +519,12 @@ fn wrap_url(chunks: &mut [Chunk], current: usize, line: u32) {
     let url = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, url, line);
     obj_new(&mut chunks[current], line);
-    set_string(&mut chunks[current], "__type", "Uri", line);
+    stamp_runtime_type(
+        &mut chunks[current],
+        "Uri",
+        reflection::ReflectKind::Object,
+        line,
+    );
     set_bool(&mut chunks[current], "__dart_uri_marker", true, line);
     core_wasm::dup(&mut chunks[current], line);
     get_url_prop(&mut chunks[current], url, "protocol", line);

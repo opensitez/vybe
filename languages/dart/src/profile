@@ -68,6 +68,7 @@ print               = { emit = "common:dart.print",              min_args = 1, m
 StringBuffer        = { emit = "common:dart.sb_new",             min_args = 0, max_args = 0 }
 RegExp              = { emit = "common:dart.regexp_new",         min_args = 1, max_args = 4 }
 Map                 = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
+SplayTreeMap        = { emit = "common:dart.sorted_map_new",     min_args = 0, max_args = 0 }
 Queue               = { emit = "common:dart.stream_empty",       min_args = 0, max_args = 0 }
 Expando             = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
 MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, max_args = 2 }
@@ -82,6 +83,7 @@ MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, m
 "Set.of"            = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
 "Set.unmodifiable"  = { emit = "common:dart.set_unmodifiable",   min_args = 1, max_args = 1 }
 "Set.identity"      = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
+SplayTreeSet        = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
 "Queue.from"        = { emit = "common:dart.list_from",          min_args = 1, max_args = 1 }
 Exception           = { emit = "common:dart.exception",          min_args = 0, max_args = 1 }
 FormatException     = { emit = "common:dart.format_exception",   min_args = 0, max_args = 1 }
@@ -102,6 +104,10 @@ __dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, m
 __dart_for_in_iterable = { emit = "common:dart.for_in_iterable", min_args = 1, max_args = 1 }
 __dart_eq           = { emit = "common:dart.eq",                 min_args = 2, max_args = 2 }
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
+__dart_object_hash_code = { emit = "common:dart.object_hash_code", min_args = 1, max_args = 1 }
+__dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
+__dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
+__dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
 Duration            = { emit = "common:dart.duration_new",       min_args = 0, max_args = 1 }
 DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, max_args = 6 }
@@ -250,6 +256,7 @@ isInfinite    = { emit = "common:dart.num_is_infinite", min_args = 0, max_args =
 sign          = { emit = "common:dart.num_sign",       min_args = 0, max_args = 0 }
 negate        = { emit = "common:dart.duration_negate", min_args = 0, max_args = 0 }
 add           = { emit = "common:dart.add_general",    min_args = 1, max_args = 2 }
+__dart_sorted_add = { emit = "common:dart.sorted_set_add", min_args = 1, max_args = 1 }
 subtract      = { emit = "common:dart.datetime_subtract", min_args = 1, max_args = 1 }
 difference    = { emit = "common:dart.difference",     min_args = 1, max_args = 1 }
 isBefore      = { emit = "common:dart.datetime_is_before", min_args = 1, max_args = 1 }

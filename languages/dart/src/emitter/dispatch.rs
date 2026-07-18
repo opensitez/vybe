@@ -11,15 +11,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.is_not_empty" => {
             crate::emitter::string_adapter::emit_dart_is_not_empty(chunks, current, line)
         }
-        "dart.is_even" => {
-            crate::emitter::string_adapter::emit_dart_is_even(chunks, current, line)
-        }
-        "dart.is_odd" => {
-            crate::emitter::string_adapter::emit_dart_is_odd(chunks, current, line)
-        }
-        "dart.sb_new" => {
-            crate::emitter::string_adapter::emit_dart_sb_new(chunks, current, line)
-        }
+        "dart.is_even" => crate::emitter::string_adapter::emit_dart_is_even(chunks, current, line),
+        "dart.is_odd" => crate::emitter::string_adapter::emit_dart_is_odd(chunks, current, line),
+        "dart.sb_new" => crate::emitter::string_adapter::emit_dart_sb_new(chunks, current, line),
         "dart.sb_write" => {
             crate::emitter::string_adapter::emit_dart_sb_write(chunks, current, line)
         }
@@ -66,7 +60,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_dart_argument_error(chunks, current, argc, line)
         }
         "dart.unimplemented_error" => {
-            crate::emitter::string_adapter::emit_dart_unimplemented_error(chunks, current, argc, line)
+            crate::emitter::string_adapter::emit_dart_unimplemented_error(
+                chunks, current, argc, line,
+            )
         }
         "dart.stack_trace" => {
             crate::emitter::string_adapter::emit_dart_stack_trace(chunks, current, line)
@@ -74,71 +70,154 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.index_get" => {
             crate::emitter::string_adapter::emit_dart_index_get(chunks, current, line)
         }
-        "dart.eq" => {
-            crate::emitter::string_adapter::emit_dart_eq(chunks, current, line)
-        }
+        "dart.eq" => crate::emitter::string_adapter::emit_dart_eq(chunks, current, line),
         "dart.identical" => {
             crate::emitter::string_adapter::emit_dart_identical(chunks, current, line)
         }
         "dart.hash_code" => {
             crate::emitter::string_adapter::emit_dart_hash_code(chunks, current, line)
         }
-        "dart.duration_new" => crate::emitter::core_adapter::emit_duration_new(chunks, current, argc, line),
-        "dart.duration_zero" => crate::emitter::core_adapter::emit_duration_zero(chunks, current, line),
+        "dart.object_hash_code" => {
+            crate::emitter::string_adapter::emit_dart_object_hash_code(chunks, current, line)
+        }
+        "dart.runtime_type" => {
+            crate::emitter::reflection_adapter::emit_dart_runtime_type(chunks, current, line)
+        }
+        "dart.type_to_string" => {
+            crate::emitter::reflection_adapter::emit_dart_type_to_string(chunks, current, line)
+        }
+        "dart.is_list_of_int" => {
+            crate::emitter::reflection_adapter::emit_dart_is_list_of_int(chunks, current, line)
+        }
+        "dart.duration_new" => {
+            crate::emitter::core_adapter::emit_duration_new(chunks, current, argc, line)
+        }
+        "dart.duration_zero" => {
+            crate::emitter::core_adapter::emit_duration_zero(chunks, current, line)
+        }
         "dart.abs" => crate::emitter::core_adapter::emit_dart_abs(chunks, current, line),
         "dart.num_floor" => crate::emitter::core_adapter::emit_num_floor(chunks, current, line),
         "dart.num_ceil" => crate::emitter::core_adapter::emit_num_ceil(chunks, current, line),
         "dart.num_round" => crate::emitter::core_adapter::emit_num_round(chunks, current, line),
-        "dart.num_truncate" => crate::emitter::core_adapter::emit_num_truncate(chunks, current, line),
-        "dart.num_to_double" => crate::emitter::core_adapter::emit_num_to_double(chunks, current, line),
-        "dart.num_remainder" => crate::emitter::core_adapter::emit_num_remainder(chunks, current, line),
-        "dart.num_is_negative" => crate::emitter::core_adapter::emit_num_is_negative(chunks, current, line),
-        "dart.num_is_infinite" => crate::emitter::core_adapter::emit_num_is_infinite(chunks, current, line),
+        "dart.num_truncate" => {
+            crate::emitter::core_adapter::emit_num_truncate(chunks, current, line)
+        }
+        "dart.num_to_double" => {
+            crate::emitter::core_adapter::emit_num_to_double(chunks, current, line)
+        }
+        "dart.num_remainder" => {
+            crate::emitter::core_adapter::emit_num_remainder(chunks, current, line)
+        }
+        "dart.num_is_negative" => {
+            crate::emitter::core_adapter::emit_num_is_negative(chunks, current, line)
+        }
+        "dart.num_is_infinite" => {
+            crate::emitter::core_adapter::emit_num_is_infinite(chunks, current, line)
+        }
         "dart.num_sign" => crate::emitter::core_adapter::emit_num_sign(chunks, current, line),
-        "dart.duration_negate" => crate::emitter::core_adapter::emit_duration_negate(chunks, current, line),
-        "dart.datetime_new" => crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, false, line),
-        "dart.datetime_utc" => crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, true, line),
-        "dart.add_general" => crate::emitter::string_adapter::emit_dart_add_general(chunks, current, argc, line),
-        "dart.index_set" => crate::emitter::string_adapter::emit_dart_index_set(chunks, current, line),
-        "dart.difference" => crate::emitter::string_adapter::emit_dart_difference(chunks, current, line),
-        "dart.datetime_add" => crate::emitter::core_adapter::emit_datetime_add(chunks, current, line),
-        "dart.datetime_subtract" => crate::emitter::core_adapter::emit_datetime_subtract(chunks, current, line),
-        "dart.datetime_difference" => crate::emitter::core_adapter::emit_datetime_difference(chunks, current, line),
-        "dart.datetime_is_before" => crate::emitter::core_adapter::emit_datetime_is_before(chunks, current, line),
-        "dart.datetime_is_after" => crate::emitter::core_adapter::emit_datetime_is_after(chunks, current, line),
-        "dart.datetime_same_moment" => crate::emitter::core_adapter::emit_datetime_same_moment(chunks, current, line),
+        "dart.duration_negate" => {
+            crate::emitter::core_adapter::emit_duration_negate(chunks, current, line)
+        }
+        "dart.datetime_new" => {
+            crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, false, line)
+        }
+        "dart.datetime_utc" => {
+            crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, true, line)
+        }
+        "dart.add_general" => {
+            crate::emitter::string_adapter::emit_dart_add_general(chunks, current, argc, line)
+        }
+        "dart.index_set" => {
+            crate::emitter::string_adapter::emit_dart_index_set(chunks, current, line)
+        }
+        "dart.difference" => {
+            crate::emitter::string_adapter::emit_dart_difference(chunks, current, line)
+        }
+        "dart.datetime_add" => {
+            crate::emitter::core_adapter::emit_datetime_add(chunks, current, line)
+        }
+        "dart.datetime_subtract" => {
+            crate::emitter::core_adapter::emit_datetime_subtract(chunks, current, line)
+        }
+        "dart.datetime_difference" => {
+            crate::emitter::core_adapter::emit_datetime_difference(chunks, current, line)
+        }
+        "dart.datetime_is_before" => {
+            crate::emitter::core_adapter::emit_datetime_is_before(chunks, current, line)
+        }
+        "dart.datetime_is_after" => {
+            crate::emitter::core_adapter::emit_datetime_is_after(chunks, current, line)
+        }
+        "dart.datetime_same_moment" => {
+            crate::emitter::core_adapter::emit_datetime_same_moment(chunks, current, line)
+        }
         "dart.compare_to" => crate::emitter::core_adapter::emit_compare_to(chunks, current, line),
         "dart.uri_parse" => crate::emitter::core_adapter::emit_uri_parse(chunks, current, line),
-        "dart.uri_http" => crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, false, line),
-        "dart.uri_https" => crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, true, line),
+        "dart.uri_http" => {
+            crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, false, line)
+        }
+        "dart.uri_https" => {
+            crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, true, line)
+        }
         "dart.uri_file" => crate::emitter::core_adapter::emit_uri_file(chunks, current, line),
-        "dart.uri_normalize_path" => crate::emitter::core_adapter::emit_uri_normalize_path(chunks, current, line),
+        "dart.uri_normalize_path" => {
+            crate::emitter::core_adapter::emit_uri_normalize_path(chunks, current, line)
+        }
         "dart.uri_replace" => crate::emitter::core_adapter::emit_uri_replace(chunks, current, line),
         "dart.uri_resolve" => crate::emitter::core_adapter::emit_uri_resolve(chunks, current, line),
-        "dart.uri_resolve_uri" => crate::emitter::core_adapter::emit_uri_resolve_uri(chunks, current, line),
+        "dart.uri_resolve_uri" => {
+            crate::emitter::core_adapter::emit_uri_resolve_uri(chunks, current, line)
+        }
         "dart.list_filled" => crate::emitter::core_adapter::emit_list_filled(chunks, current, line),
-        "dart.list_generate" => crate::emitter::string_adapter::emit_dart_list_generate(chunks, current, argc, line),
-        "dart.list_from" => crate::emitter::string_adapter::emit_dart_list_from(chunks, current, argc, line),
+        "dart.list_generate" => {
+            crate::emitter::string_adapter::emit_dart_list_generate(chunks, current, argc, line)
+        }
+        "dart.list_from" => {
+            crate::emitter::string_adapter::emit_dart_list_from(chunks, current, argc, line)
+        }
         "dart.list_unmodifiable" => {
             crate::emitter::string_adapter::emit_dart_list_unmodifiable(chunks, current, line)
         }
         "dart.map_new" => crate::emitter::string_adapter::emit_dart_map_new(chunks, current, line),
+        "dart.sorted_map_new" => {
+            crate::emitter::string_adapter::emit_dart_sorted_map_new(chunks, current, line)
+        }
         "dart.set_new" => crate::emitter::string_adapter::emit_dart_set_new(chunks, current, line),
-        "dart.set_from" => crate::emitter::string_adapter::emit_dart_set_from(chunks, current, line),
+        // SplayTreeSet.add — dedupe + insert + keep ascending via the shared
+        // sorted core (same engine as Java TreeSet / .NET SortedSet). The
+        // tagged-array set backing is unchanged; only `.add` sorts.
+        "dart.sorted_set_add" => {
+            vybe_emitter::sorted_collection::emit_sorted_add(chunks, current, line)
+        }
+        "dart.set_from" => {
+            crate::emitter::string_adapter::emit_dart_set_from(chunks, current, line)
+        }
         "dart.set_unmodifiable" => {
             crate::emitter::string_adapter::emit_dart_set_unmodifiable(chunks, current, line)
         }
-        "dart.map_entry" => crate::emitter::string_adapter::emit_dart_map_entry(chunks, current, line),
-        "dart.map_from" => crate::emitter::string_adapter::emit_dart_map_from(chunks, current, line),
+        "dart.map_entry" => {
+            crate::emitter::string_adapter::emit_dart_map_entry(chunks, current, line)
+        }
+        "dart.map_from" => {
+            crate::emitter::string_adapter::emit_dart_map_from(chunks, current, line)
+        }
         "dart.map_unmodifiable" => {
             crate::emitter::string_adapter::emit_dart_map_unmodifiable(chunks, current, line)
         }
         "dart.map_unmodifiable_entries" => {
-            crate::emitter::string_adapter::emit_dart_map_unmodifiable_entries(chunks, current, line)
+            crate::emitter::string_adapter::emit_dart_map_unmodifiable_entries(
+                chunks, current, line,
+            )
         }
-        "dart.map_from_entries" => crate::emitter::string_adapter::emit_dart_map_from_entries(chunks, current, line),
-        "dart.map_from_iterables" => crate::emitter::string_adapter::emit_dart_map_from_iterables(chunks, current, line),
-        "dart.identity" => crate::emitter::string_adapter::emit_dart_identity(chunks, current, line),
+        "dart.map_from_entries" => {
+            crate::emitter::string_adapter::emit_dart_map_from_entries(chunks, current, line)
+        }
+        "dart.map_from_iterables" => {
+            crate::emitter::string_adapter::emit_dart_map_from_iterables(chunks, current, line)
+        }
+        "dart.identity" => {
+            crate::emitter::string_adapter::emit_dart_identity(chunks, current, line)
+        }
         "dart.string_from_char_codes" => {
             crate::emitter::string_adapter::emit_dart_string_from_char_codes(chunks, current, line)
         }
@@ -163,9 +242,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.list_single_or_null" => {
             crate::emitter::string_adapter::emit_dart_list_single(chunks, current, true, line)
         }
-        "dart.length" => {
-            crate::emitter::string_adapter::emit_dart_length(chunks, current, line)
-        }
+        "dart.length" => crate::emitter::string_adapter::emit_dart_length(chunks, current, line),
         "dart.map_keys" => {
             crate::emitter::string_adapter::emit_dart_map_keys(chunks, current, line)
         }
@@ -178,9 +255,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.map_contains_value" => {
             crate::emitter::string_adapter::emit_dart_map_contains_value(chunks, current, line)
         }
-        "dart.add_all" => {
-            crate::emitter::string_adapter::emit_dart_add_all(chunks, current, line)
-        }
+        "dart.add_all" => crate::emitter::string_adapter::emit_dart_add_all(chunks, current, line),
         "dart.index_of" => {
             crate::emitter::string_adapter::emit_dart_index_of(chunks, current, argc, false, line)
         }
@@ -220,15 +295,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.list_reversed" => {
             crate::emitter::string_adapter::emit_dart_list_reversed(chunks, current, line)
         }
-        "dart.remove" => {
-            crate::emitter::string_adapter::emit_dart_remove(chunks, current, line)
-        }
-        "dart.clear" => {
-            crate::emitter::string_adapter::emit_dart_clear(chunks, current, line)
-        }
-        "dart.lookup" => {
-            crate::emitter::string_adapter::emit_dart_lookup(chunks, current, line)
-        }
+        "dart.remove" => crate::emitter::string_adapter::emit_dart_remove(chunks, current, line),
+        "dart.clear" => crate::emitter::string_adapter::emit_dart_clear(chunks, current, line),
+        "dart.lookup" => crate::emitter::string_adapter::emit_dart_lookup(chunks, current, line),
         "dart.remove_where" => {
             crate::emitter::string_adapter::emit_dart_remove_where(chunks, current, line)
         }
@@ -329,10 +398,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_dart_stopwatch_elapsed(chunks, current, line)
         }
         "dart.stopwatch_elapsed_milliseconds" => {
-            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_milliseconds(chunks, current, line)
+            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_milliseconds(
+                chunks, current, line,
+            )
         }
         "dart.stopwatch_elapsed_microseconds" => {
-            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_microseconds(chunks, current, line)
+            crate::emitter::string_adapter::emit_dart_stopwatch_elapsed_microseconds(
+                chunks, current, line,
+            )
         }
         "dart.future_call0" => {
             crate::emitter::string_adapter::emit_dart_future_call0(chunks, current, line)

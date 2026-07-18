@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::reflection;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
@@ -38,7 +39,7 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
-    vybe_emitter::reflection::emit_get_property_in_chunk(&mut c, line);
+    reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
     chunks.push(c);
@@ -54,7 +55,7 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // value
-    vybe_emitter::reflection::emit_set_property_in_chunk(&mut c, line);
+    reflection::emit_set_property_in_chunk(&mut c, line);
     c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
@@ -71,7 +72,7 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, method_k, line);
-    vybe_emitter::reflection::emit_get_property_in_chunk(&mut c, line);
+    reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
     c.emit_op_u8(Op::CALL_REF, 2, line);
@@ -176,9 +177,7 @@ fn finish(
     binds: &[(&str, usize)],
     line: u32,
 ) {
-    vybe_emitter::reflection::emit_new_reflection_object(
-        chunk, this_slot, kind, fields, binds, line,
-    );
+    reflection::emit_new_reflection_object(chunk, this_slot, kind, fields, binds, line);
 }
 
 /// `new ReflectionClass($name, $is_abstract, $parent, $interfaces, $methods, $fields)`.
@@ -268,18 +267,14 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
     // Mini ReflectionMethod for getConstructor()->getParameters().
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_ref_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_ref_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_params_slot, line);
-    let params_k = sconst(chunk, "__params");
-    chunk.emit_op_u16(Op::STRUCT_SET, params_k, line);
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_ref_slot, line);
-    chunk.emit_op_u16(Op::REF_FUNC, get_params as u16, line);
-    chunk.emit(0, line);
-    let getparams_k = sconst(chunk, "getparameters");
-    chunk.emit_op_u16(Op::STRUCT_SET, getparams_k, line);
+    reflection::emit_new_reflection_object(
+        chunk,
+        ctor_ref_slot,
+        "ReflectionMethod",
+        &[("__params", ctor_params_slot)],
+        &[("getparameters", get_params)],
+        line,
+    );
     chunk.emit_op(Op::DROP, line);
 
     finish(
@@ -325,20 +320,14 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     {
         // Build mini ReflectionClass for parent
         let parent_ref_slot = chunk.alloc_scratch(1);
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, parent_ref_slot, line);
-        // parent_ref.name = parent_name
-        chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-        let name_k = sconst(chunk, "name");
-        chunk.emit_op_u16(Op::STRUCT_SET, name_k, line);
-        chunk.emit_op(Op::DROP, line);
-        // parent_ref.getname = getname fn
-        chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, getname as u16, line);
-        chunk.emit(0, line);
-        let getname_k = sconst(chunk, "getname");
-        chunk.emit_op_u16(Op::STRUCT_SET, getname_k, line);
+        reflection::emit_new_reflection_object(
+            chunk,
+            parent_ref_slot,
+            "ReflectionClass",
+            &[("name", parent_slot)],
+            &[("getname", getname)],
+            line,
+        );
         chunk.emit_op(Op::DROP, line);
         // this.__parent_ref = parent_ref
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -450,25 +439,38 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 }
 
 /// `new ReflectionProperty($class, $prop)`.
-pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let getname = build_field_getter(chunks, "__refl_prop_name", "prop", line);
     let getvalue = build_reflect_get(chunks, "__refl_getvalue", "prop", line);
     let setvalue = build_reflect_set(chunks, "__refl_setvalue", "prop", line);
+    let get_attrs = build_get_attributes(chunks, line);
     let chunk = &mut chunks[current];
+    let attrs_slot = chunk.alloc_scratch(1);
     let prop_slot = chunk.alloc_scratch(1);
     let class_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
+    if argc >= 3 {
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+    } else {
+        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, prop_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, class_slot, line);
     finish(
         chunk,
         this_slot,
         "ReflectionProperty",
-        &[("prop", prop_slot), ("class", class_slot)],
+        &[
+            ("prop", prop_slot),
+            ("class", class_slot),
+            ("__attributes", attrs_slot),
+        ],
         &[
             ("getname", getname),
             ("getvalue", getvalue),
             ("setvalue", setvalue),
+            ("getattributes", get_attrs),
         ],
         line,
     );
