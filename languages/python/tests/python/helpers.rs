@@ -122,7 +122,23 @@ pub fn compile_ok(src: &str) {
         .expect("Python compile failed");
 }
 
-/// Shorthand: `print(expr)` then return the single logged line.
+/// Display the value of a final expression (REPL-style `_` echo).
+///
+/// Single-expression form — `run_print("1 + 2")` → `print(1 + 2)`.
+///
+/// Multi-statement form — when the source spans several lines, the leading
+/// lines run as ordinary statements and only the LAST line is the expression
+/// to display: `run_print("x = f()\nx.append(2)\nx")` runs the setup and prints
+/// `x`. (A newline *inside* a string/bytes literal, written `\\n` in the Rust
+/// source, is not a real line break and keeps the single-expression form.)
 pub fn run_print(expr: &str) -> String {
-    run_python_one(&format!("print({expr})\n"))
+    let trimmed = expr.strip_suffix('\n').unwrap_or(expr);
+    match trimmed.rfind('\n') {
+        Some(split) => {
+            let (stmts, last) = trimmed.split_at(split);
+            let last = &last[1..]; // drop the separating newline
+            run_python_one(&format!("{stmts}\nprint({last})\n"))
+        }
+        None => run_python_one(&format!("print({trimmed})\n")),
+    }
 }

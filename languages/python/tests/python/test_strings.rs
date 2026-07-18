@@ -182,12 +182,12 @@ fn str_replace_runtime() {
 
 #[test]
 fn str_startswith() {
-    assert_eq!(run_python_one("print('hello'.startswith('he'))\n"), "true");
+    assert_eq!(run_python_one("print('hello'.startswith('he'))\n"), "True");
 }
 
 #[test]
 fn str_endswith() {
-    assert_eq!(run_python_one("print('hello'.endswith('lo'))\n"), "true");
+    assert_eq!(run_python_one("print('hello'.endswith('lo'))\n"), "True");
 }
 
 #[test]

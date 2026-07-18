@@ -44,6 +44,16 @@ class_multiple_inheritance = true
 # callers destructure straight off the stack instead of materialising
 # a heap tuple. See compiler/mod.rs `collect_multi_return_functions`.
 multi_value_tuple_returns = true
+# Reading a method off an instance yields a fresh bound-method object (distinct
+# per instance, own receiver) — CPython descriptor semantics: `C().f is C().f`
+# is False. General object-model behavior gated on this property (JS/C#/Java
+# bind at call and leave it false).
+methods_bind_on_access = true
+# Default argument expressions evaluate ONCE at definition time and the same
+# object is reused on every call that omits the arg (the mutable-default
+# "trap": `def f(a=[]); f() is f()` is True). General semantic gated on this
+# property (JS/C# re-evaluate the default per call and leave it false).
+default_args_evaluated_once = true
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md). Walker-level normalisation
 # of Python's dunder methods to canonical cross-language names.
@@ -68,6 +78,9 @@ __pytruediv__   = { emit = "common:python.pytruediv",        min_args = 2, max_a
 __pyfloordiv__  = { emit = "common:python.pyfloordiv",       min_args = 2, max_args = 2 }
 __pymod__       = { emit = "common:python.pymod",            min_args = 2, max_args = 2 }
 __pypow__       = { emit = "common:python.pypow",            min_args = 2, max_args = 2 }
+__py_fmt_fixed  = { emit = "common:python.fmt_fixed",        min_args = 2, max_args = 2 }
+__py_fmt_sci    = { emit = "common:python.fmt_sci",          min_args = 2, max_args = 2 }
+__py_fmt_group  = { emit = "common:python.fmt_group",        min_args = 1, max_args = 1 }
 __py_obj_entries__     = { emit = "host:ecma:object:entries",    min_args = 1, max_args = 1 }
 __py_map_from_entries__ = { emit = "host:ecma:map:fromEntries",  min_args = 1, max_args = 1 }
 # `eval`/`exec` → universal compiler-as-a-service. The walker injects the
@@ -84,6 +97,10 @@ __py_float_repr__ = { emit = "common:python.float_repr",     min_args = 1, max_a
 # Set literals are normalized to `.has()` upstream; this covers the rest and
 # routes around the buggy shared `BinOp::In` array-classification for objects.
 __py_contains__ = { emit = "common:python.contains",         min_args = 2, max_args = 2 }
+# `a is b` / `a is not b` — object identity (reference eq for objects, value
+# identity for interned primitives), NOT value equality.
+__py_is__       = { emit = "common:python.is_identity",       min_args = 2, max_args = 2 }
+__py_is_not__   = { emit = "common:python.is_not_identity",   min_args = 2, max_args = 2 }
 # bytes constructor — build a real Uint8Array (ObjectKind::TypedArray) from an
 # array of octets. The VM indexes/iterates it natively; display is detected at
 # runtime via arraybuffer.isView. `.encode()` and `bytes(...)` route here too.
@@ -173,8 +190,25 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 # `Math.gcd` in JS), so they are lowered to plain-Python AST in the walker
 # (range/reduce; gcd via a loop), never routed to a fake `ecma:math:*` host fn.
 "math.isnan"    = { emit = "host:ecma:number:isNaN",       min_args = 1, max_args = 1 }
-"math.isinf"    = { emit = "common:python.isinf",                  min_args = 1, max_args = 1 }
+"math.isinf"    = { emit = "common:python.math_isinf",     min_args = 1, max_args = 1 }
+"math.remainder" = { emit = "common:python.math_remainder", min_args = 2, max_args = 2 }
+"math.isclose"  = { emit = "common:python.math_isclose",   min_args = 2, max_args = 4 }
+"math.fsum"     = { emit = "common:python.math_fsum",      min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
+"math.factorial" = { emit = "common:python.math_factorial", min_args = 1, max_args = 1 }
+"math.gcd"      = { emit = "common:python.math_gcd",       min_args = 2, max_args = 2 }
+"math.lcm"      = { emit = "common:python.math_lcm",       min_args = 2, max_args = 2 }
+"math.comb"     = { emit = "common:python.math_comb",      min_args = 2, max_args = 2 }
+"math.perm"     = { emit = "common:python.math_perm",      min_args = 2, max_args = 2 }
+"math.prod"     = { emit = "common:python.math_prod",      min_args = 1, max_args = 2 }
+"math.degrees"  = { emit = "common:python.math_degrees",   min_args = 1, max_args = 1 }
+"math.radians"  = { emit = "common:python.math_radians",   min_args = 1, max_args = 1 }
+"math.copysign" = { emit = "common:python.math_copysign",  min_args = 2, max_args = 2 }
+"math.fmod"     = { emit = "common:python.math_fmod",      min_args = 2, max_args = 2 }
+"math.ldexp"    = { emit = "common:python.math_ldexp",     min_args = 2, max_args = 2 }
+"math.dist"     = { emit = "common:python.math_dist",      min_args = 2, max_args = 2 }
+"math.modf"     = { emit = "common:python.math_modf",      min_args = 1, max_args = 1 }
+"math.frexp"    = { emit = "common:python.math_frexp",     min_args = 1, max_args = 1 }
 
 # ── Time module ──────────────────────────────────────────────────────────────
 # struct_time is a named tuple (indexable + tm_* fields) built via the shared
@@ -447,7 +481,8 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 map       = "__array_map"
 filter    = "__array_filter"
 forEach   = "__array_forEach"
-find      = "__array_find"
+# Python lists have no `.find()` — route `.find()` to the string value method
+# (common:strings.index_of); a JS-style array HOF `find` would wrongly shadow it.
 findIndex = "__array_findIndex"
 includes  = "__array_includes"
 reduce    = "__array_reduce"
@@ -460,20 +495,21 @@ every     = "__array_every"
 # String instance methods
 upper           = { emit = "common:strings.to_upper",         min_args = 0, max_args = 0 }
 lower           = { emit = "common:strings.to_lower",         min_args = 0, max_args = 0 }
-strip           = { emit = "common:strings.trim",             min_args = 0, max_args = 1 }
+strip           = { emit = "common:python.str_strip",         min_args = 0, max_args = 1 }
 lstrip          = { emit = "common:str_trim_start",           min_args = 0, max_args = 1 }
 rstrip          = { emit = "common:str_trim_end",             min_args = 0, max_args = 1 }
-split           = { emit = "common:strings.split",            min_args = 0, max_args = 2 }
-rsplit          = { emit = "common:strings.split",            min_args = 0, max_args = 2 }
+split           = { emit = "common:python.str_split",         min_args = 0, max_args = 2 }
+rsplit          = { emit = "common:python.str_rsplit",        min_args = 0, max_args = 2 }
+splitlines      = { emit = "common:python.str_splitlines",    min_args = 0, max_args = 1 }
 join            = { emit = "common:collections.join",          min_args = 1, max_args = 1 }
-replace         = { emit = "common:strings.replace",          min_args = 2, max_args = 3 }
+replace         = { emit = "common:python.str_replace", min_args = 2, max_args = 3 }
 find            = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
 rfind           = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
 index           = { emit = "common:python.index",             min_args = 1, max_args = 3 }
 rindex          = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
-count           = { emit = "intrinsic:count",          min_args = 1, max_args = 3 }
-startswith      = { emit = "common:str_starts_with",          min_args = 1, max_args = 3 }
-endswith        = { emit = "common:str_ends_with",            min_args = 1, max_args = 3 }
+count           = { emit = "common:python.str_count",        min_args = 1, max_args = 3 }
+startswith      = { emit = "common:python.str_startswith",    min_args = 1, max_args = 3 }
+endswith        = { emit = "common:python.str_endswith",      min_args = 1, max_args = 3 }
 capitalize      = { emit = "intrinsic:capitalize",     min_args = 0, max_args = 0 }
 title           = { emit = "host:ecma:string:title",          min_args = 0, max_args = 0 }
 swapcase        = { emit = "host:ecma:string:swapcase",       min_args = 0, max_args = 0 }
@@ -481,6 +517,12 @@ center          = { emit = "intrinsic:center",         min_args = 1, max_args = 
 ljust           = { emit = "common:str_pad_end",              min_args = 1, max_args = 2 }
 rjust           = { emit = "common:str_pad_start",            min_args = 1, max_args = 2 }
 zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
+casefold        = { emit = "common:python.str_casefold",     min_args = 0, max_args = 0 }
+removeprefix    = { emit = "common:python.str_removeprefix",  min_args = 1, max_args = 1 }
+removesuffix    = { emit = "common:python.str_removesuffix",  min_args = 1, max_args = 1 }
+partition       = { emit = "intrinsic:partition",      min_args = 1, max_args = 1 }
+rpartition      = { emit = "intrinsic:rpartition",     min_args = 1, max_args = 1 }
+expandtabs      = { emit = "common:python.str_expandtabs",    min_args = 0, max_args = 1 }
 encode          = { emit = "common:python.bytes",       min_args = 0, max_args = 1 }
 decode          = { emit = "common:python.bytes_decode", min_args = 0, max_args = 2 }
 isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }
@@ -584,6 +626,15 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 "float.nan"     = "NaN"
 "True"          = true
 "False"         = false
+# logging levels (CPython values)
+"logging.NOTSET"   = 0
+"logging.DEBUG"    = 10
+"logging.INFO"     = 20
+"logging.WARNING"  = 30
+"logging.WARN"     = 30
+"logging.ERROR"    = 40
+"logging.CRITICAL" = 50
+"logging.FATAL"    = 50
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape
@@ -666,3 +717,15 @@ module = "ecma:math"
 kind = "namespace"
 alias = "time"
 module = "wasi:clocks/wall-clock"
+
+# Return types of string-producing builtins, so the type-directed `+` path
+# treats `'lit' + str(self.attr)` as string concatenation (not numeric add).
+[builtin_return_types]
+str = "str"
+repr = "str"
+chr = "str"
+hex = "str"
+oct = "str"
+bin = "str"
+input = "str"
+format = "str"

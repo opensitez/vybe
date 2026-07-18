@@ -71,6 +71,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let keys = c.alloc_scratch(1);
     let key = c.alloc_scratch(1);
     let fields = c.alloc_scratch(1);
+    let esc = c.alloc_scratch(1);
 
     // ── None ────────────────────────────────────────────────────────────
     lget(&mut c, value, line);
@@ -100,19 +101,59 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
-    // ── string → 'quoted' (repr form; nested strings are quoted) ─────────
+    // ── string → 'quoted' (repr form: control chars escaped, Python quoting) ──
     lget(&mut c, value, line);
     {
         let idx = c.add_import("wasm:js-string", "test");
         c.emit_call(idx, 1, line);
     }
     c.emit_if(line);
-    str_const(&mut c, "'", line);
-    lget(&mut c, value, line);
-    concat(&mut c, line);
-    str_const(&mut c, "'", line);
-    concat(&mut c, line);
-    c.emit_op(Op::RETURN, line);
+    {
+        let replace_all = c.add_import("ecma:string", "replaceAll");
+        let includes = c.add_import("ecma:string", "includes");
+
+        // esc = value with `\` escaped first, then the control chars — Python
+        // repr renders `\n`/`\r`/`\t`/`\\` literally, not as raw bytes.
+        lget(&mut c, value, line);
+        for (search, repl) in [("\\", "\\\\"), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")] {
+            str_const(&mut c, search, line);
+            str_const(&mut c, repl, line);
+            c.emit_call(replace_all, 3, line);
+        }
+        lset(&mut c, esc, line);
+
+        // Python quote choice: `'…'` normally, but `"…"` when the string holds a
+        // single quote and no double quote (so no `\'` escaping is needed).
+        lget(&mut c, esc, line);
+        str_const(&mut c, "'", line);
+        c.emit_call(includes, 2, line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        lget(&mut c, esc, line);
+        str_const(&mut c, "\"", line);
+        c.emit_call(includes, 2, line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        c.emit_op(Op::I32_EQZ, line); // no double quote
+        c.emit_op(Op::I32_AND, line); // has ' AND no "
+        c.emit_if_value(line);
+        // "…" — double-quoted, single quotes left bare
+        str_const(&mut c, "\"", line);
+        lget(&mut c, esc, line);
+        concat(&mut c, line);
+        str_const(&mut c, "\"", line);
+        concat(&mut c, line);
+        c.emit_else(line);
+        // '…' — single-quoted, escape any embedded single quote
+        str_const(&mut c, "'", line);
+        lget(&mut c, esc, line);
+        str_const(&mut c, "'", line);
+        str_const(&mut c, "\\'", line);
+        c.emit_call(replace_all, 3, line);
+        concat(&mut c, line);
+        str_const(&mut c, "'", line);
+        concat(&mut c, line);
+        c.emit_end(line);
+        c.emit_op(Op::RETURN, line);
+    }
     c.emit_end(line);
 
     // ── number → its string form ────────────────────────────────────────

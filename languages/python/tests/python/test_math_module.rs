@@ -217,7 +217,10 @@ fn math_ldexp() {
 fn math_isclose_true() {
     assert_eq!(
         run_python_one("import math\nprint(math.isclose(0.1 + 0.2, 0.3))\n"),
-        "False"
+        // Real Python: the diff (~5.5e-17) is far below the default relative
+        // tolerance (1e-9 * 0.3 ≈ 3e-10), so this is True (cf. the identical
+        // case in test_math_extended::math_isclose_true).
+        "True"
     );
 }
 

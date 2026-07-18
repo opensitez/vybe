@@ -627,6 +627,20 @@ pub fn emit_bytes_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
 /// Python `*` operator: array repeat, string repeat, or numeric multiply.
 /// Stack: [a, b] → [result]
+/// Emit `seq * count` sequence repetition: `newWithLength(count).fill(seq).flat(1)`.
+/// Stack effect: pushes the repeated array (reads slots, leaves result on stack).
+fn emit_array_repeat_slots(chunk: &mut Chunk, seq_slot: u16, count_slot: u16, line: u32) {
+    let new_arr = chunk.add_import("ecma:array", "newWithLength");
+    let fill = chunk.add_import("ecma:array", "fill");
+    let flat = chunk.add_import("ecma:array", "flat");
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_call(new_arr, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seq_slot, line);
+    chunk.emit_call(fill, 2, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_call(flat, 2, line);
+}
+
 pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let is_array = chunk.add_import("ecma:array", "isArray");
@@ -637,22 +651,18 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
 
-    // if isArray(a): array repeat via newWithLength(n).fill(arr).flat(1)
+    // Sequence repetition is commutative in Python: `seq * n` == `n * seq`. The
+    // sequence may be either operand, so probe both sides before the numeric
+    // fallback (`3 * 'ab'` and `'ab' * 3` both → 'ababab').
+
+    // isArray(a): array repeat via newWithLength(n).fill(arr).flat(1)
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(is_array, 1, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    let new_arr = chunk.add_import("ecma:array", "newWithLength");
-    chunk.emit_call(new_arr, 1, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    let fill = chunk.add_import("ecma:array", "fill");
-    chunk.emit_call(fill, 2, line);
-    chunk.emit_f64_const(1.0, line);
-    let flat = chunk.add_import("ecma:array", "flat");
-    chunk.emit_call(flat, 2, line);
+    emit_array_repeat_slots(chunk, a_slot, b_slot, line);
     chunk.emit_else(line);
 
-    // if string(a): string repeat
+    // string(a): a.repeat(b)
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(test_str, 1, line);
     chunk.emit_if_value(line);
@@ -661,10 +671,28 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(str_repeat, 2, line);
     chunk.emit_else(line);
 
+    // reversed — string(b): b.repeat(a)  (`3 * 'ab'`)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(test_str, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(str_repeat, 2, line);
+    chunk.emit_else(line);
+
+    // reversed — isArray(b): array repeat (`3 * [1, 2]`)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_if_value(line);
+    emit_array_repeat_slots(chunk, b_slot, a_slot, line);
+    chunk.emit_else(line);
+
     // `timedelta * n`, else user `__mul__` on an object, else numeric multiply
     emit_datetime_binop_or(chunk, a_slot, b_slot, DtOp::Mul, "__mul__", emit_f64_mul, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
+    chunk.emit_end(line); // isArray(b)
+    chunk.emit_end(line); // string(b)
+    chunk.emit_end(line); // string(a)
+    chunk.emit_end(line); // isArray(a)
 }
 
 /// Numeric `*` fallback (`[a, b] → [a*b]`), for `emit_object_binop_or`.
@@ -889,6 +917,233 @@ pub fn emit_pypow(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_arith_dunder(&mut chunks[current], "__pow__", emit_py_pow, line);
 }
 
+// ── Python format-spec numeric primitives ───────────────────────────────────
+//
+// Python's format mini-language is its own sprintf dialect, NOT C printf, so
+// its numeric conversions compose the ECMA number primitives directly (their
+// details match CPython where it matters — `toFixed`/`toExponential` use Rust
+// formatting, i.e. round-half-to-even like Python, and render Infinity/NaN per
+// spec). The walker parses the static spec and routes each numeric type here.
+
+/// `__py_fmt_fixed(value, precision)` → fixed-point string via `toFixed`.
+/// Backs `:.Nf` where the printf path is unreliable and `.N%` (as
+/// `fixed(value*100, N) + "%"`). Stack: `[value, precision]` → `[string]`.
+pub fn emit_py_fmt_fixed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = chunks[current].add_import("ecma:number", "toFixed");
+    chunks[current].emit_call(idx, 2, line);
+}
+
+/// `__py_fmt_sci(value, precision)` → lowercase scientific string. ECMA
+/// `toExponential` emits a 1-digit exponent (`1.5e+3`); Python pads it to at
+/// least two digits (`1.5e+03`), so split at `e` and `padStart` the exponent
+/// digits. `:E` is this uppercased by the caller. Stack: `[value, precision]`
+/// → `[string]`.
+pub fn emit_py_fmt_sci(chunks: &mut [Chunk], current: usize, line: u32) {
+    let c = &mut chunks[current];
+    let prec = c.alloc_scratch(1);
+    let val = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, prec, line);
+    c.emit_op_u16(Op::LOCAL_SET, val, line);
+
+    // s = toExponential(val, prec)
+    let s = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, val, line);
+    c.emit_op_u16(Op::LOCAL_GET, prec, line);
+    let toexp = c.add_import("ecma:number", "toExponential");
+    c.emit_call(toexp, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, s, line);
+
+    // parts = s.split("e") → [mantissa, "+3"]
+    let parts = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_string_const("e", line);
+    let split = c.add_import("ecma:string", "split");
+    c.emit_call(split, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, parts, line);
+
+    let aget = c.add_import("ecma:array", "get");
+    let exppart = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, parts, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_call(aget, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, exppart, line);
+
+    // expSign = exppart.charAt(0)
+    let expsign = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, exppart, line);
+    c.emit_f64_const(0.0, line);
+    let charat = c.add_import("ecma:string", "charAt");
+    c.emit_call(charat, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, expsign, line);
+
+    // padded = exppart.slice(1).padStart(2, "0")
+    let padded = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, exppart, line);
+    c.emit_f64_const(1.0, line);
+    let slice = c.add_import("ecma:string", "slice");
+    c.emit_call(slice, 2, line);
+    c.emit_f64_const(2.0, line);
+    c.emit_string_const("0", line);
+    let padstart = c.add_import("ecma:string", "padStart");
+    c.emit_call(padstart, 3, line);
+    c.emit_op_u16(Op::LOCAL_SET, padded, line);
+
+    // result = mantissa + "e" + expSign + padded
+    c.emit_op_u16(Op::LOCAL_GET, parts, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_call(aget, 2, line);
+    c.emit_string_const("e", line);
+    c.emit_op_u16(Op::LOCAL_GET, expsign, line);
+    c.emit_op_u16(Op::LOCAL_GET, padded, line);
+    vybe_emitter::strings::emit_concat(c, 4, line);
+}
+
+/// `__py_fmt_group(str_value)` → insert `,` thousands separators into the
+/// integer part of an already-formatted numeric string, preserving any sign and
+/// fractional part (`"-1234.5"` → `"-1,234.5"`). Pure string surgery — printf
+/// has no grouping. Stack: `[string]` → `[string]`.
+pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
+    let c = &mut chunks[current];
+    let s = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, s, line);
+
+    let length = c.add_import("wasm:js-string", "length");
+    let charat = c.add_import("ecma:string", "charAt");
+    let indexof = c.add_import("ecma:string", "indexOf");
+    let slice = c.add_import("ecma:string", "slice");
+
+    // dot = s.indexOf(".")  (−1 if none)
+    let dot = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_string_const(".", line);
+    c.emit_call(indexof, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, dot, line);
+
+    // intEnd = dot < 0 ? s.length : dot   (dot < 0 → no fractional part)
+    let int_end = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, dot, line);
+    let tof64 = c.add_import("wasm:js-number", "toF64");
+    c.emit_call(tof64, 1, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_if_value(line);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_call(length, 1, line);
+    c.emit_else(line);
+    c.emit_op_u16(Op::LOCAL_GET, dot, line);
+    c.emit_call(tof64, 1, line);
+    c.emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_SET, int_end, line);
+
+    // frac = s.slice(intEnd)  (includes the ".", or "" )
+    let frac = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_op_u16(Op::LOCAL_GET, int_end, line);
+    c.emit_call(slice, 2, line);
+    c.emit_op_u16(Op::LOCAL_SET, frac, line);
+
+    // start = (s[0] is '+' or '-') ? 1 : 0  ; sign = s.slice(0, start)
+    let start = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_f64_const(0.0, line);
+    c.emit_call(charat, 2, line);
+    let sign_is = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, sign_is, line);
+    // A leading '+'/'-' is a sign: "+-".includes(firstChar) AND firstChar != ""
+    // (includes("") is vacuously true, so guard on a non-empty char).
+    c.emit_string_const("+-", line);
+    c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
+    let includes = c.add_import("ecma:string", "includes");
+    c.emit_call(includes, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(c, line);
+    c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
+    c.emit_call(length, 1, line); // 1 if a real char, 0 if empty ("" not a sign)
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if_value(line);
+    c.emit_i32_const(1, line);
+    c.emit_else(line);
+    c.emit_i32_const(0, line);
+    c.emit_end(line);
+    c.emit_op_u16(Op::LOCAL_SET, start, line);
+
+    // digits = s.slice(start, intEnd)  ; sign = s.slice(0, start)
+    let sign = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_GET, start, line);
+    c.emit_call(slice, 3, line);
+    c.emit_op_u16(Op::LOCAL_SET, sign, line);
+
+    let digits = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, s, line);
+    c.emit_op_u16(Op::LOCAL_GET, start, line);
+    c.emit_op_u16(Op::LOCAL_GET, int_end, line);
+    c.emit_call(slice, 3, line);
+    c.emit_op_u16(Op::LOCAL_SET, digits, line);
+
+    // n = digits.length ; out = "" ; i = 0
+    let n = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_GET, digits, line);
+    c.emit_call(length, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, n, line);
+    let out = c.alloc_scratch(1);
+    c.emit_string_const("", line);
+    c.emit_op_u16(Op::LOCAL_SET, out, line);
+    let i = c.alloc_scratch(1);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+
+    // for i in 0..n: if i>0 and (n-i)%3==0: out += ","  ; out += digits.charAt(i)
+    let block = c.emit_block(line);
+    let (loop_p, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+    // comma?  i>0 && (n-i)%3==0
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::I32_GT_S, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op(Op::I32_SUB, line);
+    c.emit_i32_const(3, line);
+    c.emit_op(Op::I32_REM_S, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::I32_EQ, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, out, line);
+    c.emit_string_const(",", line);
+    vybe_emitter::strings::emit_str_concat(c, line);
+    c.emit_op_u16(Op::LOCAL_SET, out, line);
+    c.emit_end(line);
+    // out += digits.charAt(i)
+    c.emit_op_u16(Op::LOCAL_GET, out, line);
+    c.emit_op_u16(Op::LOCAL_GET, digits, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_call(charat, 2, line);
+    vybe_emitter::strings::emit_str_concat(c, line);
+    c.emit_op_u16(Op::LOCAL_SET, out, line);
+    // i++
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(loop_p);
+    c.emit_end(line);
+    c.patch_block(block);
+
+    // result = sign + out + frac
+    c.emit_op_u16(Op::LOCAL_GET, sign, line);
+    c.emit_op_u16(Op::LOCAL_GET, out, line);
+    c.emit_op_u16(Op::LOCAL_GET, frac, line);
+    vybe_emitter::strings::emit_concat(c, 3, line);
+}
+
 /// Shared body for the pure-arithmetic dunders: stash `[a, b]`, then dispatch to
 /// `dunder` on an object left operand or run `fallback`.
 fn emit_arith_dunder(chunk: &mut Chunk, dunder: &str, fallback: fn(&mut Chunk, u32), line: u32) {
@@ -1006,6 +1261,20 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     // `isinstance(obj, "Class")` → shared `classes::emit_instanceof`.
     if name == "python.instanceof" {
         vybe_emitter::classes::emit_instanceof(chunks, current, line);
+        return true;
+    }
+    // `a is b` → object identity: reference equality for objects, value
+    // identity for interned primitives (`emit_js_strict_eq` does exactly this —
+    // REF_EQ on the object/cross-type branch, typed value compare otherwise).
+    if name == "python.is_identity" {
+        vybe_emitter::ops::emit_js_strict_eq(&mut chunks[current], line);
+        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        return true;
+    }
+    if name == "python.is_not_identity" {
+        vybe_emitter::ops::emit_js_strict_eq(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
     // `callable(x)` → `typeof(x) == "function"` as a real Bool.

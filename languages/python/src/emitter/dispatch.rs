@@ -5,6 +5,63 @@ use vybe_bytecode::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        "python.enumerate" => {
+            crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
+        }
+        "python.math_factorial" => {
+            crate::emitter::math_adapter::emit_factorial(chunks, current, argc, line)
+        }
+        "python.math_gcd" => {
+            crate::emitter::math_adapter::emit_gcd(chunks, current, argc, line)
+        }
+        "python.math_lcm" => {
+            crate::emitter::math_adapter::emit_lcm(chunks, current, argc, line)
+        }
+        "python.math_comb" => {
+            crate::emitter::math_adapter::emit_comb(chunks, current, argc, line)
+        }
+        "python.math_perm" => {
+            crate::emitter::math_adapter::emit_perm(chunks, current, argc, line)
+        }
+        "python.math_prod" => {
+            crate::emitter::math_adapter::emit_prod(chunks, current, argc, line)
+        }
+        "python.math_degrees" => {
+            crate::emitter::math_adapter::emit_degrees(chunks, current, argc, line)
+        }
+        "python.math_radians" => {
+            crate::emitter::math_adapter::emit_radians(chunks, current, argc, line)
+        }
+        "python.math_copysign" => {
+            crate::emitter::math_adapter::emit_copysign(chunks, current, argc, line)
+        }
+        "python.math_fmod" => {
+            crate::emitter::math_adapter::emit_fmod(chunks, current, argc, line)
+        }
+        "python.math_ldexp" => {
+            crate::emitter::math_adapter::emit_ldexp(chunks, current, argc, line)
+        }
+        "python.math_dist" => {
+            crate::emitter::math_adapter::emit_dist(chunks, current, argc, line)
+        }
+        "python.math_modf" => {
+            crate::emitter::math_adapter::emit_modf(chunks, current, argc, line)
+        }
+        "python.math_frexp" => {
+            crate::emitter::math_adapter::emit_frexp(chunks, current, argc, line)
+        }
+        "python.math_isinf" => {
+            crate::emitter::math_adapter::emit_isinf(chunks, current, argc, line)
+        }
+        "python.math_remainder" => {
+            crate::emitter::math_adapter::emit_remainder(chunks, current, argc, line)
+        }
+        "python.math_isclose" => {
+            crate::emitter::math_adapter::emit_isclose(chunks, current, argc, line)
+        }
+        "python.math_fsum" => {
+            crate::emitter::math_adapter::emit_fsum(chunks, current, argc, line)
+        }
         "python.extend" => {
             crate::emitter::collections_adapter::emit_extend(chunks, current, line)
         }
@@ -373,6 +430,42 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.length" => {
             crate::emitter::collections_adapter::emit_length(chunks, current, line)
         }
+        "python.str_casefold" => {
+            crate::emitter::string_adapter::emit_casefold(chunks, current, argc, line)
+        }
+        "python.str_removeprefix" => {
+            crate::emitter::string_adapter::emit_removeprefix(chunks, current, argc, line)
+        }
+        "python.str_removesuffix" => {
+            crate::emitter::string_adapter::emit_removesuffix(chunks, current, argc, line)
+        }
+        "python.str_replace" => {
+            crate::emitter::string_adapter::emit_replace(chunks, current, argc, line)
+        }
+        "python.str_startswith" => {
+            crate::emitter::string_adapter::emit_startswith(chunks, current, argc, line)
+        }
+        "python.str_endswith" => {
+            crate::emitter::string_adapter::emit_endswith(chunks, current, argc, line)
+        }
+        "python.str_count" => {
+            crate::emitter::string_adapter::emit_count(chunks, current, argc, line)
+        }
+        "python.str_split" => {
+            crate::emitter::string_adapter::emit_split(chunks, current, argc, line)
+        }
+        "python.str_rsplit" => {
+            crate::emitter::string_adapter::emit_rsplit(chunks, current, argc, line)
+        }
+        "python.str_splitlines" => {
+            crate::emitter::string_adapter::emit_splitlines(chunks, current, argc, line)
+        }
+        "python.str_strip" => {
+            crate::emitter::string_adapter::emit_strip(chunks, current, argc, line)
+        }
+        "python.str_expandtabs" => {
+            crate::emitter::string_adapter::emit_expandtabs(chunks, current, argc, line)
+        }
         "python.str" => {
             crate::emitter::runtime_adapter::emit_str(chunks, current, argc, line)
         }
@@ -421,6 +514,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.pymod" => {
             crate::emitter::runtime_adapter::emit_pymod(chunks, current, line)
+        }
+        "python.fmt_fixed" => {
+            crate::emitter::runtime_adapter::emit_py_fmt_fixed(chunks, current, line)
+        }
+        "python.fmt_sci" => {
+            crate::emitter::runtime_adapter::emit_py_fmt_sci(chunks, current, line)
+        }
+        "python.fmt_group" => {
+            crate::emitter::runtime_adapter::emit_py_fmt_group(chunks, current, line)
         }
         "python.pypow" => {
             crate::emitter::runtime_adapter::emit_pypow(chunks, current, line)

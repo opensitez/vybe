@@ -35,6 +35,8 @@ fn fstring_format_spec_binary() {
     assert_eq!(run_python_one("print(f'{5:b}')\n"), "101");
 }
 
+
+
 #[test]
 fn fstring_format_spec_percent_style() {
     assert_eq!(run_python_one("print(f'{0.5:.0%}')\n"), "50%");
@@ -42,7 +44,7 @@ fn fstring_format_spec_percent_style() {
 
 #[test]
 fn fstring_escape_braces_doubled() {
-    assert_eq!(run_python_one("print(f'{{literal}} {1}')\n"), "literal 1");
+    assert_eq!(run_python_one("print(f'{{literal}} {1}')\n"), "{literal} 1");
 }
 
 #[test]

@@ -81,52 +81,52 @@ fn str_count_overlapping_not_counted() {
 
 #[test]
 fn str_startswith_matching_prefix() {
-    assert_eq!(run_print("'python'.startswith('py')"), "true");
+    assert_eq!(run_print("'python'.startswith('py')"), "True");
 }
 
 #[test]
 fn str_startswith_non_matching_prefix() {
-    assert_eq!(run_print("'python'.startswith('ja')"), "false");
+    assert_eq!(run_print("'python'.startswith('ja')"), "False");
 }
 
 #[test]
 fn str_startswith_with_start_offset() {
-    assert_eq!(run_print("'banana'.startswith('na', 2)"), "true");
+    assert_eq!(run_print("'banana'.startswith('na', 2)"), "True");
 }
 
 #[test]
 fn str_endswith_matching_suffix() {
-    assert_eq!(run_print("'filename.txt'.endswith('.txt')"), "true");
+    assert_eq!(run_print("'filename.txt'.endswith('.txt')"), "True");
 }
 
 #[test]
 fn str_endswith_non_matching_suffix() {
-    assert_eq!(run_print("'filename.txt'.endswith('.py')"), "false");
+    assert_eq!(run_print("'filename.txt'.endswith('.py')"), "False");
 }
 
 #[test]
 fn str_endswith_with_end_bound() {
-    assert_eq!(run_print("'banana'.endswith('an', 0, 3)"), "true");
+    assert_eq!(run_print("'banana'.endswith('an', 0, 3)"), "True");
 }
 
 #[test]
 fn str_isalpha_all_letters() {
-    assert_eq!(run_print("'Alpha'.isalpha()"), "true");
+    assert_eq!(run_print("'Alpha'.isalpha()"), "True");
 }
 
 #[test]
 fn str_isalpha_with_digit_returns_false() {
-    assert_eq!(run_print("'a1'.isalpha()"), "false");
+    assert_eq!(run_print("'a1'.isalpha()"), "False");
 }
 
 #[test]
 fn str_isdigit_all_decimal_digits() {
-    assert_eq!(run_print("'9042'.isdigit()"), "true");
+    assert_eq!(run_print("'9042'.isdigit()"), "True");
 }
 
 #[test]
 fn str_isdigit_with_letter_returns_false() {
-    assert_eq!(run_print("'9a'.isdigit()"), "false");
+    assert_eq!(run_print("'9a'.isdigit()"), "False");
 }
 
 #[test]

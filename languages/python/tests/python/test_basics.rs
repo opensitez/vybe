@@ -104,7 +104,7 @@ fn print_number() {
 
 #[test]
 fn print_bool() {
-    assert_eq!(run_python_one("print(True)\n"), "true");
+    assert_eq!(run_python_one("print(True)\n"), "True");
 }
 
 #[test]
@@ -128,8 +128,8 @@ fn arithmetic_runtime() {
 
 #[test]
 fn comparison_runtime() {
-    assert_eq!(run_python_one("print(5 > 3)\n"), "true");
-    assert_eq!(run_python_one("print(5 < 3)\n"), "false");
+    assert_eq!(run_python_one("print(5 > 3)\n"), "True");
+    assert_eq!(run_python_one("print(5 < 3)\n"), "False");
 }
 
 #[test]

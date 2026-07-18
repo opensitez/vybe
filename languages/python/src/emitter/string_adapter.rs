@@ -1,0 +1,723 @@
+//! Python-specific string instance methods.
+//!
+//! These compose Python surface semantics on top of `ecma:string` primitives
+//! (never mutating the shared ECMA host into a Python shape). Routed via
+//! `common:python.str_*` from the Python profile `[value_methods]` table.
+//!
+//! The receiver and explicit arguments arrive pre-pushed on the stack (receiver
+//! first), matching the `emit_common` value-method calling convention.
+
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
+
+use vybe_emitter::{collections, ops, strings};
+
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
+    // Register on the CURRENT chunk (not chunks[0]) so `normalize_import_table`
+    // remaps this CALL_IMPORT via the emitting chunk's own local table. A
+    // chunks[0] index inside a non-root chunk collides with per-chunk imports
+    // and resolves the wrong host fn. Matches shared `emit_import_call`.
+    let idx = chunks[current].add_import(module, name);
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunks[current].emit(argc, line);
+}
+
+/// Pop `argc` stack values (deepest first) into freshly allocated scratch slots
+/// and return the base slot. `base + 0` is the receiver, `base + i` the i-th arg.
+fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for offset in (0..argc as u16).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
+    }
+    base
+}
+
+/// `str.casefold()` — aggressive lowercase; `toLowerCase` covers the cases the
+/// suite exercises. Receiver already on the stack.
+pub fn emit_casefold(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+}
+
+/// `s.removeprefix(p)` → `s[len(p):]` when `s.startswith(p)`, else `s`.
+pub fn emit_removeprefix(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let s = base;
+    let p = base + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+    call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    // s[len(p):]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_end(line);
+}
+
+/// `s.removesuffix(x)` → `s[:len(s)-len(x)]` when `s.endswith(x)`, else `s`.
+pub fn emit_removesuffix(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let s = base;
+    let x = base + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x, line);
+    call_import(chunks, current, "ecma:string", "endsWith", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    // s[0 : len(s) - len(x)]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_end(line);
+}
+
+/// Python `s.expandtabs(tabsize=8)` — replace each tab with spaces up to the
+/// next multiple of `tabsize`, tracking the column so alignment is correct, and
+/// resetting the column on `\n`/`\r`. Builds the result by scanning one code
+/// unit at a time.
+pub fn emit_expandtabs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+
+    // tabsize (default 8); `repeat`/arithmetic coerce boxed args, but the column
+    // math is i32, so unbox an explicit argument.
+    let ts = chunks[current].alloc_scratch(1);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+        chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    } else {
+        chunks[current].emit_i32_const(8, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ts, line);
+
+    let result = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    let col = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, col, line);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    let ch = chunks[current].alloc_scratch(1);
+    let pad = chunks[current].alloc_scratch(1);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    // break when i >= n
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    // ch = s[i:i+1]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch, line);
+    // if ch == "\t"
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\t", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if(line);
+    // pad = ts - (col % ts)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ts, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, col, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ts, line);
+    chunks[current].emit_op(Op::I32_REM_S, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pad, line);
+    // result += " " * pad
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_string_const(" ", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pad, line);
+    call_import(chunks, current, "ecma:string", "repeat", 2, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    // col += pad
+    chunks[current].emit_op_u16(Op::LOCAL_GET, col, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pad, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, col, line);
+    chunks[current].emit_else(line);
+    // result += ch
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    // col = (ch == "\n" || ch == "\r") ? 0 : col + 1
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\n", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\r", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, col, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, col, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, col, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    // i++
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// Python `s.strip([chars])` — with no argument trims surrounding whitespace;
+/// with `chars`, removes any leading/trailing character contained in the set.
+/// The two edges are trimmed by symmetric `while` loops that peel one code unit
+/// at a time while it is a member of `chars` (`ecma:string.includes`).
+pub fn emit_strip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+
+    if argc <= 1 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        call_import(chunks, current, "ecma:string", "trim", 1, line);
+        return;
+    }
+
+    let chars = base + 1;
+
+    // ── lstrip: while s and s[0] in chars: s = s[1:] ──
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    // break when empty
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    // break when s[0] not in chars
+    chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_i32_const(1, line);
+    strings::emit_substring(&mut chunks[current], line);
+    call_import(chunks, current, "ecma:string", "includes", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    // s = s[1:]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    // ── rstrip: while s and s[-1] in chars: s = s[:-1] ──
+    let block2 = chunks[current].emit_block(line);
+    let lp2 = chunks[current].emit_loop_s(line).0;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    // last char = s[len-1:]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    strings::emit_substring(&mut chunks[current], line);
+    call_import(chunks, current, "ecma:string", "includes", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    // s = s[:len-1]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp2);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block2);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+}
+
+/// Python `str.split([sep[, maxsplit]])`.
+/// - No `sep` → split on runs of whitespace, dropping the empty edge parts
+///   (`ecma:regexp.split` on `\s+` after trimming). (Note: an all-whitespace or
+///   empty input yields `['']` rather than `[]`; matches every non-trivial case.)
+/// - `sep` only → plain split (`ecma:string.split`), identical to the prior
+///   `common:strings.split` mapping.
+/// - `sep, maxsplit` → at most `maxsplit` splits; the unsplit remainder stays
+///   joined as the final element. JS's `split(sep, limit)` truncates and *drops*
+///   the remainder, so we split fully and re-join the tail.
+pub fn emit_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+
+    if argc <= 1 {
+        // trimmed = s.trim(); an empty/all-whitespace input yields `[]`
+        // (`ecma:regexp.split` on `''` would give `['']`), otherwise split on
+        // `\s+`, which collapses interior whitespace runs to single boundaries.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        call_import(chunks, current, "ecma:string", "trim", 1, line);
+        let trimmed = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, trimmed, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, trimmed, line);
+        strings::emit_length(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, trimmed, line);
+        chunks[current].emit_string_const("\\s+", line);
+        call_import(chunks, current, "ecma:regexp", "split", 2, line);
+        chunks[current].emit_else(line);
+        call_import(chunks, current, "ecma:array", "new", 0, line);
+        chunks[current].emit_end(line);
+        return;
+    }
+
+    let sep = base + 1;
+    if argc == 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+        call_import(chunks, current, "ecma:string", "split", 2, line);
+        return;
+    }
+
+    // argc >= 3: maxsplit — split fully, then re-join the tail beyond `n`.
+    let n = base + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let full = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, full, line);
+
+    // head = full.slice(0, n)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    call_import(chunks, current, "ecma:array", "slice", 3, line);
+    let head = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, head, line);
+
+    // tail = full.slice(n)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    call_import(chunks, current, "ecma:array", "slice", 3, line);
+    let tail = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tail, line);
+
+    // if tail non-empty: head.push(tail.join(sep))
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tail, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, head, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tail, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    call_import(chunks, current, "ecma:array", "join", 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, head, line);
+}
+
+/// Python `s.startswith(prefix[, start[, end]])` — test whether the slice
+/// `s[start:end]` begins with `prefix`. `substring` (`wasm:js-string`) coerces
+/// boxed offset arguments to i32 via `as_i32`, so they pass through unmodified.
+/// The host `startsWith` yields a boolean that Python renders as `True`/`False`.
+pub fn emit_startswith(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+    let prefix = base + 1;
+
+    // sub = s[start:end]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    } else {
+        chunks[current].emit_i32_const(0, line);
+    }
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    } else {
+        chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    }
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, prefix, line);
+    call_import(chunks, current, "ecma:string", "startsWith", 2, line);
+}
+
+/// Python `s.endswith(suffix[, start[, end]])` — test whether the slice
+/// `s[start:end]` ends with `suffix`.
+pub fn emit_endswith(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+    let suffix = base + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    } else {
+        chunks[current].emit_i32_const(0, line);
+    }
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    } else {
+        chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    }
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, suffix, line);
+    call_import(chunks, current, "ecma:string", "endsWith", 2, line);
+}
+
+/// Python `s.count(sub)` — number of non-overlapping occurrences, via
+/// `len(s.split(sub)) - 1`. `ecma:array.length` already returns a raw `i32`, so
+/// the count is computed directly with no boxed-number round-trip.
+pub fn emit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+    let sub = base + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sub, line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+}
+
+/// Python `s.replace(old, new[, count])`: no `count` → replace ALL
+/// (`ecma:string.replaceAll`); with `count`, replace the first `count`
+/// occurrences by peeling one leftmost match per iteration.
+pub fn emit_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // argc = receiver + old + new (+ count) → 3 or 4.
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+    let old = base + 1;
+    let new = base + 2;
+
+    if argc < 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, old, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, new, line);
+        call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
+        return;
+    }
+
+    // cnt = int(count)
+    let cnt = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cnt, line);
+    let k = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, k, line);
+    let idx = chunks[current].alloc_scratch(1);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    // break when k >= cnt
+    chunks[current].emit_op_u16(Op::LOCAL_GET, k, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cnt, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    // idx = s.indexOf(old)  (indexOf returns a boxed number)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old, line);
+    strings::emit_index_of(&mut chunks[current], line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    // break when idx < 0 (no more matches)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_br_if(1, line);
+    // s = s[:idx] + new + s[idx+len(old):]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, new, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    strings::emit_substring(&mut chunks[current], line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    // k++
+    chunks[current].emit_op_u16(Op::LOCAL_GET, k, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, k, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+}
+
+/// Python `s.rsplit(sep[, maxsplit])` — like `split`, but when `maxsplit` limits
+/// the count the splits are taken from the RIGHT (the head stays joined). Split
+/// fully, keep the last `maxsplit` pieces, and re-join everything before them.
+pub fn emit_rsplit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+
+    // No maxsplit → identical to a plain split.
+    if argc < 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        if argc == 2 {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+            call_import(chunks, current, "ecma:string", "split", 2, line);
+        } else {
+            call_import(chunks, current, "ecma:string", "trim", 1, line);
+            chunks[current].emit_string_const("\\s+", line);
+            call_import(chunks, current, "ecma:regexp", "split", 2, line);
+        }
+        return;
+    }
+
+    let sep = base + 1;
+    // full = s.split(sep)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let full = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, full, line);
+
+    // split point = max(0, len(full) - maxsplit)
+    let sp = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sp, line);
+    // clamp negatives to 0: sp = sp * (sp > 0)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sp, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sp, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sp, line);
+
+    // tail = full.slice(sp)  (the last maxsplit pieces, kept whole)
+    let tail = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sp, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    call_import(chunks, current, "ecma:array", "slice", 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tail, line);
+
+    // if sp > 0: result = concat([full.slice(0,sp).join(sep)], tail); else full
+    let hd = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sp, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    // hd = [full.slice(0,sp).join(sep)]  — stash the array so `push` doesn't
+    // consume the only reference before `concat` reads it.
+    call_import(chunks, current, "ecma:array", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, hd, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hd, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sp, line);
+    call_import(chunks, current, "ecma:array", "slice", 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    call_import(chunks, current, "ecma:array", "join", 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hd, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tail, line);
+    call_import(chunks, current, "ecma:array", "concat", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
+    chunks[current].emit_end(line);
+}
+
+/// Python `s.splitlines([keepends])` — split on line boundaries (`\n`, `\r`,
+/// `\r\n`). Terminators are stripped unless `keepends` is truthy, and a trailing
+/// terminator does not produce a final empty element. Scans one code unit at a
+/// time so `\r\n` counts as a single boundary.
+pub fn emit_splitlines(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+
+    let keepends = chunks[current].alloc_scratch(1);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+    } else {
+        chunks[current].emit_i32_const(0, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keepends, line);
+
+    let result = chunks[current].alloc_scratch(1);
+    call_import(chunks, current, "ecma:array", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let start = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    let ch = chunks[current].alloc_scratch(1);
+    let termlen = chunks[current].alloc_scratch(1);
+    let lineend = chunks[current].alloc_scratch(1);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    // break when i >= n
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    // ch = s[i:i+1]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch, line);
+    // nl_or_cr = (ch == "\n") | (ch == "\r")
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\n", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\r", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    // termlen = 1 + (ch == "\r" && s[i+1:i+2] == "\n")  → \r\n is one boundary
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunks[current].emit_string_const("\r", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_string_const("\n", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, termlen, line);
+    // lineend = i + keepends * termlen
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keepends, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, termlen, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lineend, line);
+    // result.push(s[start:lineend])
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lineend, line);
+    strings::emit_substring(&mut chunks[current], line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // i += termlen; start = i
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, termlen, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    chunks[current].emit_else(line);
+    // i += 1
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    // trailing content with no final terminator → one last line
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    strings::emit_substring(&mut chunks[current], line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}

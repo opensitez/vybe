@@ -181,6 +181,78 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
+    // Define the `Ellipsis` singleton (bound to `...`) as a real object so it is
+    // distinct from `None`, is its own singleton (`... is ...`), and reprs as
+    // `Ellipsis` with `type(...).__name__ == "ellipsis"`.
+    if source_uses_ellipsis(source) {
+        let mut prelude = parse_python_prelude(ELLIPSIS_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // Define the `slice` type when `slice(...)` is constructed, so each call
+    // yields a fresh object (`slice(1) is slice(1)` → False).
+    if source_uses_slice_ctor(source) {
+        let mut prelude = parse_python_prelude(SLICE_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // Pure-Python `logging` module surface (getLogger/Logger + handler/formatter
+    // classes). Constants come from [namespace_constants].
+    if source.contains("import logging") {
+        let mut prelude = parse_python_prelude(LOGGING_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // Pure-Python `warnings` module: warning classes + a recording
+    // `catch_warnings` context manager; the filters are no-ops.
+    if source.contains("import warnings") {
+        let mut prelude = parse_python_prelude(WARNINGS_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // Pure-Python `traceback` module (best-effort formatting; content needing the
+    // live exception is a header stub since `sys.exc_info()` isn't populated).
+    if source.contains("import traceback") {
+        let mut prelude = parse_python_prelude(TRACEBACK_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `contextlib` context-manager helpers as global names (covers
+    // `from contextlib import nullcontext/closing/suppress`).
+    if source.contains("contextlib") {
+        let mut prelude = parse_python_prelude(CONTEXTLIB_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `io.StringIO` — an in-memory text stream (pure Python, no host I/O), so
+    // `print(..., file=buf)` and manual read/write/seek work against a buffer.
+    if source.contains("import io") {
+        let mut prelude = parse_python_prelude(IO_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `fnmatch` — shell-style filename matching (pure Python, self-contained
+    // iterative `*`/`?` matcher; no `re` dependency).
+    if source.contains("import fnmatch") {
+        let mut prelude = parse_python_prelude(FNMATCH_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `configparser` — INI parsing (pure Python; sections stored as nested
+    // dicts so no string data lives in a `self.attr` slice/concat).
+    if source.contains("import configparser") {
+        let mut prelude = parse_python_prelude(CONFIGPARSER_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
 
     Ok(Module {
         name: "main".into(),
@@ -237,6 +309,571 @@ fn parse_python_prelude(src: &str) -> Vec<Statement> {
 /// Python source for `__vybe_bytes_repr(int_array) -> "b'…'"`. Escape fragments
 /// are built from `chr(92)` (backslash) rather than backslash string literals,
 /// which the Python string-escape lowering mishandles.
+/// Does the source reference `...` or `Ellipsis`? Gates the singleton prelude
+/// (a false positive just adds an unused class + binding).
+fn source_uses_ellipsis(source: &str) -> bool {
+    source.contains("...") || source.contains("Ellipsis")
+}
+
+/// Does the source call the `slice()` constructor (as opposed to `.slice(` method
+/// calls or `islice`)? Requires `slice(` whose preceding char is not part of an
+/// identifier and not a `.` member access. A false positive only adds an unused
+/// class definition.
+fn source_uses_slice_ctor(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while let Some(pos) = source[i..].find("slice(") {
+        let at = i + pos;
+        let prev_ok = at == 0
+            || !matches!(bytes[at - 1], b'.' | b'_')
+                && !bytes[at - 1].is_ascii_alphanumeric();
+        if prev_ok {
+            return true;
+        }
+        i = at + 5;
+    }
+    false
+}
+
+/// The `Ellipsis` singleton — a real object (so `... is None` is False and
+/// `type(...).__name__` is `"ellipsis"`), bound once at module scope.
+const ELLIPSIS_PRELUDE: &str = r#"
+class ellipsis:
+    def __repr__(self):
+        return "Ellipsis"
+Ellipsis = ellipsis()
+"#;
+
+/// The `slice` type — a real object per construction, so `slice(1) is slice(1)`
+/// is False and `.start`/`.stop`/`.step` are readable. `slice(stop)`,
+/// `slice(start, stop)`, and `slice(start, stop, step)` follow CPython's arity
+/// rules.
+const SLICE_PRELUDE: &str = r#"
+__slice_unset = object()
+class slice:
+    def __init__(self, start, stop=__slice_unset, step=None):
+        if stop is __slice_unset:
+            self.start = None
+            self.stop = start
+            self.step = None
+        else:
+            self.start = start
+            self.stop = stop
+            self.step = step
+    def __repr__(self):
+        a = repr(self.start)
+        b = repr(self.stop)
+        c = repr(self.step)
+        return "slice(" + a + ", " + b + ", " + c + ")"
+"#;
+
+/// Pure-Python `logging` module. `import logging` re-binds `logging` to this
+/// object (the import is a recognized no-op for stdlib names). Level constants
+/// resolve via [namespace_constants].
+const LOGGING_PRELUDE: &str = r#"
+class LogRecord:
+    def __init__(self, *a, **k):
+        pass
+class Formatter:
+    def __init__(self, *a, **k):
+        pass
+    def format(self, record):
+        return ""
+class Filter:
+    def __init__(self, *a, **k):
+        pass
+class Handler:
+    def __init__(self, *a, **k):
+        self.level = 0
+    def setLevel(self, l):
+        self.level = l
+    def setFormatter(self, f):
+        pass
+class StreamHandler(Handler):
+    pass
+class FileHandler(Handler):
+    pass
+class __PyLogger:
+    def __init__(self, name):
+        self.name = name
+        self.level = 0
+        self.handlers = []
+    def setLevel(self, l):
+        self.level = l
+    def debug(self, *a, **k):
+        pass
+    def info(self, *a, **k):
+        pass
+    def warning(self, *a, **k):
+        pass
+    def error(self, *a, **k):
+        pass
+    def critical(self, *a, **k):
+        pass
+    def exception(self, *a, **k):
+        pass
+    def log(self, *a, **k):
+        pass
+    def isEnabledFor(self, l):
+        return True
+    def hasHandlers(self):
+        return len(self.handlers) > 0
+    def addHandler(self, h):
+        self.handlers.append(h)
+class __LoggingModule:
+    def __init__(self):
+        self.LogRecord = LogRecord
+        self.Formatter = Formatter
+        self.Filter = Filter
+        self.Handler = Handler
+        self.StreamHandler = StreamHandler
+        self.FileHandler = FileHandler
+        self.NOTSET = 0
+        self.DEBUG = 10
+        self.INFO = 20
+        self.WARNING = 30
+        self.WARN = 30
+        self.ERROR = 40
+        self.CRITICAL = 50
+        self.FATAL = 50
+        self.lastResort = StreamHandler()
+        self.root = __PyLogger("root")
+    def getLogger(self, name="root"):
+        return __PyLogger(name)
+    def basicConfig(self, *a, **k):
+        pass
+    def getLevelName(self, level):
+        names = {0: "NOTSET", 10: "DEBUG", 20: "INFO", 30: "WARNING", 40: "ERROR", 50: "CRITICAL"}
+        if level in names:
+            return names[level]
+        return "Level " + str(level)
+    def addLevelName(self, level, name):
+        pass
+    def debug(self, *a, **k):
+        pass
+    def info(self, *a, **k):
+        pass
+    def warning(self, *a, **k):
+        pass
+    def error(self, *a, **k):
+        pass
+    def critical(self, *a, **k):
+        pass
+    def log(self, *a, **k):
+        pass
+logging = __LoggingModule()
+"#;
+
+/// Pure-Python `warnings` module.
+const WARNINGS_PRELUDE: &str = r#"
+class Warning(Exception):
+    pass
+class UserWarning(Warning):
+    pass
+class DeprecationWarning(Warning):
+    pass
+class PendingDeprecationWarning(Warning):
+    pass
+class SyntaxWarning(Warning):
+    pass
+class RuntimeWarning(Warning):
+    pass
+class FutureWarning(Warning):
+    pass
+class ImportWarning(Warning):
+    pass
+class UnicodeWarning(Warning):
+    pass
+class BytesWarning(Warning):
+    pass
+class ResourceWarning(Warning):
+    pass
+class __WarningRecord:
+    def __init__(self, message, category):
+        self.message = message
+        self.category = category
+class __CatchWarnings:
+    def __init__(self, mod, record):
+        self.mod = mod
+        self.record = record
+        self.entries = []
+    def __enter__(self):
+        if self.record:
+            self.mod.recording = self.entries
+            return self.entries
+        return None
+    def __exit__(self, *a):
+        self.mod.recording = None
+        return False
+class __WarningsModule:
+    def __init__(self):
+        self.recording = None
+    def warn(self, message, category=None, *a, **k):
+        if self.recording is not None:
+            cat = category
+            if cat is None:
+                cat = UserWarning
+            self.recording.append(__WarningRecord(message, cat))
+    def warn_explicit(self, *a, **k):
+        pass
+    def showwarning(self, *a, **k):
+        pass
+    def formatwarning(self, *a, **k):
+        return ""
+    def _filters_mutated(self, *a, **k):
+        pass
+    def filterwarnings(self, *a, **k):
+        pass
+    def simplefilter(self, *a, **k):
+        pass
+    def resetwarnings(self):
+        pass
+    def catch_warnings(self, record=False):
+        return __CatchWarnings(self, record)
+warnings = __WarningsModule()"#;
+
+/// Pure-Python `traceback` module. Formatting returns plausible non-empty output;
+/// content that needs the live exception (`format_exc` → the exception type name)
+/// is a best-effort header since `sys.exc_info()` isn't fully populated.
+const TRACEBACK_PRELUDE: &str = r#"
+class FrameSummary:
+    def __init__(self, *a, **k):
+        pass
+class StackSummary(list):
+    pass
+class TracebackException:
+    def __init__(self, *a, **k):
+        pass
+    def format(self, *a, **k):
+        return ["Traceback (most recent call last):\n"]
+class __TracebackModule:
+    def __init__(self):
+        self.FrameSummary = FrameSummary
+        self.StackSummary = StackSummary
+        self.TracebackException = TracebackException
+    def format_exc(self, *a, **k):
+        return "Traceback (most recent call last):\n"
+    def format_exception(self, *a, **k):
+        return ["Traceback (most recent call last):\n"]
+    def format_exception_only(self, *a, **k):
+        return ["\n"]
+    def format_tb(self, *a, **k):
+        return ["  File \"<unknown>\"\n"]
+    def format_stack(self, *a, **k):
+        return ["  File \"<unknown>\"\n"]
+    def extract_tb(self, *a, **k):
+        return StackSummary()
+    def extract_stack(self, *a, **k):
+        return StackSummary()
+    def print_exc(self, *a, **k):
+        f = k.get("file", None)
+        if f is not None:
+            f.write("Traceback (most recent call last):\n")
+    def print_tb(self, *a, **k):
+        pass
+    def print_stack(self, *a, **k):
+        pass
+    def print_exception(self, *a, **k):
+        pass
+    def clear_frames(self, *a, **k):
+        pass
+    def walk_tb(self, *a, **k):
+        return iter([])
+    def walk_stack(self, *a, **k):
+        return iter([])
+traceback = __TracebackModule()
+"#;
+
+/// `contextlib` helpers. Defined as globals so `from contextlib import X` binds
+/// them, and also collected on a `contextlib` module object.
+const CONTEXTLIB_PRELUDE: &str = r#"
+class __NullContext:
+    def __init__(self, enter_result=None):
+        self.enter_result = enter_result
+    def __enter__(self):
+        return self.enter_result
+    def __exit__(self, *a):
+        return False
+def nullcontext(enter_result=None):
+    return __NullContext(enter_result)
+class __Closing:
+    def __init__(self, thing):
+        self.thing = thing
+    def __enter__(self):
+        return self.thing
+    def __exit__(self, *a):
+        __c = getattr(self.thing, "close")
+        __c()
+        return False
+def closing(thing):
+    return __Closing(thing)
+class __Suppress:
+    def __init__(self, *exc):
+        self.exc = exc
+    def __enter__(self):
+        return None
+    def __exit__(self, exc_type, *a):
+        if exc_type is None:
+            return False
+        for e in self.exc:
+            if issubclass(exc_type, e):
+                return True
+        return False
+def suppress(*exc):
+    return __Suppress(*exc)
+class __GenCM:
+    def __init__(self, gen):
+        self.gen = gen
+    def __enter__(self):
+        return next(self.gen)
+    def __exit__(self, *a):
+        try:
+            next(self.gen)
+        except StopIteration:
+            pass
+        return False
+def contextmanager(func):
+    def __cm_helper(*a, **k):
+        return __GenCM(func(*a, **k))
+    return __cm_helper
+class __RedirectStdout:
+    def __init__(self, target):
+        self.target = target
+    def __enter__(self):
+        return self.target
+    def __exit__(self, *a):
+        return False
+def redirect_stdout(target):
+    return __RedirectStdout(target)
+def redirect_stderr(target):
+    return __RedirectStdout(target)
+class __ContextlibModule:
+    def __init__(self):
+        self.nullcontext = nullcontext
+        self.closing = closing
+        self.suppress = suppress
+        self.contextmanager = contextmanager
+        self.redirect_stdout = redirect_stdout
+        self.redirect_stderr = redirect_stderr
+contextlib = __ContextlibModule()
+"#;
+
+/// `io.StringIO` — an in-memory text buffer implemented in pure Python (string
+/// buffer + cursor). No host I/O; `print(file=buf)` writes here via `.write`.
+const IO_PRELUDE: &str = r#"
+class StringIO:
+    def __init__(self, initial=''):
+        self._parts = []
+        self._pos = 0
+        self.closed = False
+        if isinstance(initial, str) and initial != '':
+            self._parts.append(initial)
+    def write(self, s):
+        self._parts.append(s)
+        self._pos = self._pos + len(s)
+        return len(s)
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+    def read(self, size=-1):
+        data = ''.join(self._parts)
+        pos = self._pos
+        if size is None or size < 0:
+            result = data[pos:]
+        else:
+            result = data[pos:pos + size]
+        self._pos = pos + len(result)
+        return result
+    def readline(self):
+        data = ''.join(self._parts)
+        pos = self._pos
+        rest = data[pos:]
+        if rest == '':
+            return ''
+        idx = rest.find(chr(10))
+        if idx < 0:
+            result = rest
+        else:
+            result = rest[:idx + 1]
+        self._pos = pos + len(result)
+        return result
+    def readlines(self):
+        data = ''.join(self._parts)
+        pos = self._pos
+        rest = data[pos:]
+        self._pos = len(data)
+        result = []
+        if rest == '':
+            return result
+        parts = rest.split(chr(10))
+        n = len(parts)
+        i = 0
+        while i < n:
+            p = parts[i]
+            if i < n - 1:
+                result.append(p + chr(10))
+            elif p != '':
+                result.append(p)
+            i += 1
+        return result
+    def getvalue(self):
+        return ''.join(self._parts)
+    def seek(self, pos, whence=0):
+        if whence == 1:
+            self._pos = self._pos + pos
+        elif whence == 2:
+            self._pos = len(''.join(self._parts)) + pos
+        else:
+            self._pos = pos
+        return self._pos
+    def tell(self):
+        return self._pos
+    def truncate(self, size=None):
+        end = size
+        if end is None:
+            end = self._pos
+        data = ''.join(self._parts)
+        self._parts = [data[:end]]
+        return end
+    def __iter__(self):
+        return iter(self.readlines())
+    def readable(self):
+        return True
+    def writable(self):
+        return True
+    def seekable(self):
+        return True
+    def flush(self):
+        pass
+    def close(self):
+        self.closed = True
+    def detach(self):
+        return None
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        self.close()
+        return False
+class BytesIO:
+    def __init__(self, initial=b''):
+        self._parts = []
+        self._pos = 0
+        self.closed = False
+        if isinstance(initial, bytes) and len(initial) != 0:
+            self._parts.append(initial)
+            self._pos = len(initial)
+    def write(self, b):
+        self._parts.append(b)
+        self._pos += len(b)
+        return len(b)
+    def read(self, size=-1):
+        data = b''.join(self._parts)
+        pos = self._pos
+        if size is None or size < 0:
+            result = data[pos:]
+        else:
+            result = data[pos:pos + size]
+        self._pos = pos + len(result)
+        return result
+    def read1(self, size=-1):
+        return self.read(size)
+    def getvalue(self):
+        return b''.join(self._parts)
+    def getbuffer(self):
+        return b''.join(self._parts)
+    def seek(self, pos, whence=0):
+        if whence == 1:
+            self._pos = self._pos + pos
+        elif whence == 2:
+            self._pos = len(b''.join(self._parts)) + pos
+        else:
+            self._pos = pos
+        return self._pos
+    def tell(self):
+        return self._pos
+    def readable(self):
+        return True
+    def writable(self):
+        return True
+    def seekable(self):
+        return True
+    def flush(self):
+        pass
+    def close(self):
+        self.closed = True
+    def __iter__(self):
+        return iter(b''.join(self._parts))
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        self.close()
+        return False
+class __IOModule:
+    def __init__(self):
+        self.StringIO = StringIO
+        self.BytesIO = BytesIO
+io = __IOModule()
+"#;
+
+/// `fnmatch` — shell-style pattern matching. Self-contained iterative matcher
+/// (`*`, `?`) over local strings; `translate` builds a regex-shaped string.
+const FNMATCH_PRELUDE: &str = r#"
+def __fn_match(name, pat):
+    ni = 0
+    pi = 0
+    nlen = len(name)
+    plen = len(pat)
+    star_pi = -1
+    star_ni = 0
+    while ni < nlen:
+        if pi < plen and (pat[pi] == name[ni] or pat[pi] == '?'):
+            ni = ni + 1
+            pi = pi + 1
+        elif pi < plen and pat[pi] == '*':
+            star_pi = pi
+            star_ni = ni
+            pi = pi + 1
+        elif star_pi >= 0:
+            pi = star_pi + 1
+            star_ni = star_ni + 1
+            ni = star_ni
+        else:
+            return False
+    while pi < plen and pat[pi] == '*':
+        pi = pi + 1
+    return pi == plen
+def __fn_translate(pat):
+    res = ''
+    i = 0
+    n = len(pat)
+    while i < n:
+        c = pat[i]
+        if c == '*':
+            res = res + '.*'
+        elif c == '?':
+            res = res + '.'
+        elif c == '.' or c == '\\' or c == '+' or c == '(' or c == ')' or c == '|' or c == '^' or c == '$' or c == '{' or c == '}':
+            res = res + '\\' + c
+        else:
+            res = res + c
+        i = i + 1
+    return '(?s:' + res + ')\\Z'
+class __FnmatchModule:
+    def fnmatch(self, name, pat):
+        return __fn_match(name.lower(), pat.lower())
+    def fnmatchcase(self, name, pat):
+        return __fn_match(name, pat)
+    def filter(self, names, pat):
+        result = []
+        for nm in names:
+            if __fn_match(nm.lower(), pat.lower()):
+                result.append(nm)
+        return result
+    def translate(self, pat):
+        return __fn_translate(pat)
+fnmatch = __FnmatchModule()
+"#;
+
 const BYTES_REPR_PRELUDE: &str = r#"
 def __vybe_bytes_repr(a):
     bs = chr(92)
@@ -332,6 +969,16 @@ fn walk_stmt_into(
             // this implementation already has; bind nothing, error nothing.
             if let ImportKind::Named { path, names, level } = &import.kind {
                 if path == "__future__" {
+                    return Ok(());
+                }
+                // `contextlib` names are defined globally by the injected prelude
+                // (CONTEXTLIB_PRELUDE), so `from contextlib import X` is a no-op —
+                // rebinding through the empty module surface would shadow them.
+                if path == "contextlib" {
+                    return Ok(());
+                }
+                // `io` (StringIO/BytesIO) is provided by IO_PRELUDE as globals.
+                if path == "io" {
                     return Ok(());
                 }
                 let root = path.split('.').next().unwrap_or(path).to_string();
@@ -1741,16 +2388,24 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
         body: vec![
             assign(&hit, Expression::bool(true)),
             with_stmt(StmtKind::If {
+                // PEP-343: `__exit__(exc_type, exc_value, traceback)`. Pass the
+                // exception TYPE (not the instance) as the first arg so
+                // `issubclass(exc_type, …)` works (e.g. contextlib.suppress).
                 cond: with_not(with_call(
                     with_member(&mgr, "__exit__"),
                     vec![
-                        with_arg(Expression::ident(&exc)),
+                        with_arg(with_call(
+                            Expression::ident("type"),
+                            vec![with_arg(Expression::ident(&exc))],
+                        )),
                         with_arg(Expression::ident(&exc)),
                         with_arg(Expression::null()),
                     ],
                 )),
+                // `__exit__` returned falsy → re-raise the caught exception. A
+                // bare `raise` re-raises `null` here, so raise `exc` explicitly.
                 then_body: vec![with_stmt(StmtKind::Throw {
-                    expr: None,
+                    expr: Some(Expression::ident(&exc)),
                     cause: None,
                 })],
                 elifs: vec![],
@@ -2431,7 +3086,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::true_kw => Ok(ExprKind::Lit(Literal::Bool(true))),
         Rule::false_kw => Ok(ExprKind::Lit(Literal::Bool(false))),
         Rule::none_kw => Ok(ExprKind::Lit(Literal::Null)),
-        Rule::ellipsis_lit => Ok(ExprKind::Lit(Literal::Ellipsis)),
+        // `...` binds to the module-level `Ellipsis` singleton (see
+        // ELLIPSIS_PRELUDE) so it is a real, self-identical object.
+        Rule::ellipsis_lit => Ok(ExprKind::Ident("Ellipsis".into())),
         Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
 
         // ── Expression wrappers (unwrap single child) ───────────────────
@@ -2633,6 +3290,41 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         } else {
                             contains
                         };
+                    } else if matches!(op, BinOp::Is | BinOp::IsNot) {
+                        // `int is float` (e.g. `1 is 1.0`) is always False: they are
+                        // distinct Python types. Both literals compile to `Value::F64`
+                        // (the int/float distinction isn't preserved at runtime), so
+                        // this must be folded statically from the literal kinds.
+                        let li = matches!(left.kind, ExprKind::Lit(Literal::Int(_)));
+                        let lf = matches!(left.kind, ExprKind::Lit(Literal::Float(_)));
+                        let ri = matches!(right.kind, ExprKind::Lit(Literal::Int(_)));
+                        let rf = matches!(right.kind, ExprKind::Lit(Literal::Float(_)));
+                        if (li && rf) || (lf && ri) {
+                            left = Expression::new(ExprKind::Lit(Literal::Bool(
+                                op == BinOp::IsNot,
+                            )));
+                        } else {
+                            // `a is b` — object identity, NOT value equality. Route to
+                            // the Python adapter (`emit_js_strict_eq`: reference
+                            // identity for objects, value identity for interned
+                            // primitives). The shared `BinOp::Is` is VB/C# reference
+                            // semantics and stays untouched.
+                            let helper = if op == BinOp::Is {
+                                "__py_is__"
+                            } else {
+                                "__py_is_not__"
+                            };
+                            left = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Ident(
+                                    helper.into(),
+                                ))),
+                                args: vec![
+                                    Argument::positional(left.clone()),
+                                    Argument::positional(right),
+                                ],
+                                optional: false,
+                            });
+                        }
                     } else if matches!(
                         op,
                         BinOp::Eq
@@ -4481,8 +5173,15 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 ]));
                                 continue;
                             }
-                            if field == "count" && args.len() == 1 {
-                                // arr.count(x) → arr.filter(e => e === x).length
+                            if field == "count"
+                                && args.len() == 1
+                                && !matches!(&object.kind, ExprKind::Lit(Literal::Str(_)))
+                            {
+                                // arr.count(x) → arr.filter(e => e === x).length.
+                                // String-literal receivers are excluded: `str.count`
+                                // counts non-overlapping substrings (a multi-char
+                                // needle isn't a per-element match), so those fall
+                                // through to the `python.str_count` value method.
                                 let needle = args.into_iter().next().unwrap().value;
                                 let param = Param {
                                     name: "__e".into(),
@@ -4595,6 +5294,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         if let ExprKind::Ident(name) = &expr.kind {
                             match name.as_str() {
                                 "print" => {
+                                    // `print(..., file=f)` to a real stream/file
+                                    // object redirects to `f.write(...)`.
+                                    if let Some(redirect) = python_print_file_desugar(&args) {
+                                        expr = redirect;
+                                        continue;
+                                    }
                                     // Reshape to the emitter convention
                                     // [sep, end, items…]; sep/end kwargs are
                                     // pulled out of the positional list.
@@ -5126,6 +5831,15 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             // Imported modules keep the Member node — the
                             // desugar pass rebuilds `mod.__dict__` as a real
                             // dict from the namespace object's entries.
+                        } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "io")
+                            && matches!(field.as_str(), "StringIO" | "BytesIO")
+                        {
+                            // `io.StringIO` / `io.BytesIO` are the IO_PRELUDE
+                            // global classes. Keep them as bare identifiers so
+                            // `io.StringIO(...)` constructs directly — as a
+                            // method call it would pass the `io` module as the
+                            // constructor's first argument.
+                            expr = Expression::new(ExprKind::Ident(field));
                         } else {
                             expr = Expression::new(ExprKind::Member {
                                 object: Box::new(expr),
@@ -5378,6 +6092,69 @@ fn apply_float_var_repr(stmts: &mut [Statement], floats: &mut HashMap<String, bo
             _ => {}
         }
     }
+}
+
+/// `print(*items, sep=s, end=e, file=f)` with a real `file` target writes
+/// `sep.join(map(str, items)) + end` to `f.write(...)` — a stream-backed write
+/// (StringIO buffer, `open()` handle, …), never `wasi:logging`. `file=None` or
+/// `file=sys.stdout` is the default stdout path, so this returns `None` and the
+/// caller emits the normal stream-to-stdout `print`.
+fn python_print_file_desugar(args: &[Argument]) -> Option<Expression> {
+    let file = args.iter().find(|a| a.name.as_deref() == Some("file"))?;
+    // `None` and `sys.stdout` are just the default sink — not a redirect.
+    if matches!(file.value.kind, ExprKind::Lit(Literal::Null)) {
+        return None;
+    }
+    if let ExprKind::Member { object, field, .. } = &file.value.kind {
+        if field == "stdout" && matches!(&object.kind, ExprKind::Ident(n) if n == "sys") {
+            return None;
+        }
+    }
+
+    let kwarg = |name: &str, default: &str| {
+        args.iter()
+            .find(|a| a.name.as_deref() == Some(name))
+            .map(|a| a.value.clone())
+            .unwrap_or_else(|| Expression::string(default))
+    };
+    let sep = kwarg("sep", " ");
+    let end = kwarg("end", "\n");
+    let items: Vec<Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| a.value.clone())
+        .collect();
+
+    let concat = |a: Expression, b: Expression| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("__pyadd__".into()))),
+            args: vec![Argument::positional(a), Argument::positional(b)],
+            optional: false,
+        })
+    };
+    // sep.join(str(x) for x in items) + end, built as a left-folded concat.
+    let mut acc: Option<Expression> = None;
+    for item in items {
+        let piece = call_builtin1("str", item);
+        acc = Some(match acc {
+            None => piece,
+            Some(prev) => concat(concat(prev, sep.clone()), piece),
+        });
+    }
+    let formatted = match acc {
+        Some(a) => concat(a, end),
+        None => end,
+    };
+
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(file.value.clone()),
+            field: "write".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(formatted)],
+        optional: false,
+    }))
 }
 
 fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
@@ -5772,7 +6549,26 @@ fn walk_comp_clause(pair: Pair<Rule>) -> Result<ComprehensionGen, String> {
         match p.as_rule() {
             Rule::async_kw => is_async = true,
             Rule::target_list => {
-                target = Expression::new(ExprKind::Ident(p.as_str().trim().to_string()));
+                // `for a, b in …` unpacks each element; represent multi-name
+                // targets as a tuple so the comprehension compiler destructures
+                // them (a bare `Ident("a, b")` would bind the whole pair to one
+                // variable named "a, b").
+                let raw = p.as_str().trim().to_string();
+                let names: Vec<String> = raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                target = if names.len() > 1 {
+                    Expression::new(ExprKind::Tuple(
+                        names
+                            .into_iter()
+                            .map(|n| Expression::new(ExprKind::Ident(n)))
+                            .collect(),
+                    ))
+                } else {
+                    Expression::new(ExprKind::Ident(raw))
+                };
             }
             Rule::in_kw => {}
             Rule::comp_if => {
@@ -5983,8 +6779,12 @@ fn expand_format_field(
 
     if let Some(spec) = spec {
         if !spec.is_empty() {
+            // Native Python formatting first (handles what printf can't, e.g.
+            // `^` centre); otherwise fall back to the `fmt % value` printf path.
+            if let Some(native) = expand_python_format_spec(converted.clone(), spec) {
+                return Some(native);
+            }
             let fmt = format_spec_to_printf(spec)?;
-            // Reuse the `%` path: `fmt % value` via the `__pymod__` helper.
             return Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident("__pymod__".into()))),
                 args: vec![
@@ -6169,13 +6969,197 @@ fn format_spec_to_printf(spec: &str) -> Option<String> {
     Some(out)
 }
 
+/// Native Python format for spec shapes C-printf can't express — Python's format
+/// mini-language is its own sprintf dialect, not C printf, so it composes Python
+/// string methods and dedicated emitter primitives (`__py_fmt_*`, built on the
+/// ECMA number ops) directly rather than translating to `%…`.
+///
+/// Owns: alignment `[[fill]align]width` (incl. `^` centre, which printf can't
+/// express), scientific `e`/`E`, percent `%`, and thousands grouping `,`/`_`.
+/// Returns `None` for any shape it doesn't yet own (plain `d`/`f`/`x`/`o`/`b`/`g`
+/// without a grouping/percent/scientific twist), so the caller falls back to
+/// `format_spec_to_printf`.
+fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression> {
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+
+    // [[fill]align]
+    let (mut fill, mut align) = (' ', None);
+    if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
+        fill = chars[0];
+        align = Some(chars[1]);
+        i = 2;
+    } else if chars.first().is_some_and(|c| matches!(c, '<' | '>' | '^' | '=')) {
+        align = Some(chars[0]);
+        i = 1;
+    }
+    if align == Some('=') {
+        return None; // sign-aware padding: not owned natively yet
+    }
+    // sign
+    let sign = if chars.get(i).is_some_and(|c| matches!(c, '+' | '-' | ' ')) {
+        let s = chars[i];
+        i += 1;
+        Some(s)
+    } else {
+        None
+    };
+    if chars.get(i) == Some(&'#') {
+        return None; // alternate form → printf
+    }
+    let zero = chars.get(i) == Some(&'0');
+    if zero {
+        i += 1;
+    }
+    // width
+    let mut width_s = String::new();
+    while chars.get(i).is_some_and(|c| c.is_ascii_digit()) {
+        width_s.push(chars[i]);
+        i += 1;
+    }
+    let width: Option<i64> = if width_s.is_empty() { None } else { width_s.parse().ok() };
+    // grouping
+    let grouping = if chars.get(i).is_some_and(|c| matches!(c, ',' | '_')) {
+        let g = chars[i];
+        i += 1;
+        Some(g)
+    } else {
+        None
+    };
+    // precision
+    let mut precision: Option<i64> = None;
+    if chars.get(i) == Some(&'.') {
+        i += 1;
+        let mut p = String::new();
+        while chars.get(i).is_some_and(|c| c.is_ascii_digit()) {
+            p.push(chars[i]);
+            i += 1;
+        }
+        precision = p.parse().ok();
+    }
+    // type
+    let ty = chars.get(i).copied();
+    if ty.is_some() {
+        i += 1;
+    }
+    if i != chars.len() {
+        return None; // trailing junk
+    }
+
+    let int_lit = |n: i64| Expression::new(ExprKind::Lit(Literal::Int(n)));
+    let str_lit = |s: &str| Expression::new(ExprKind::Lit(Literal::Str(s.to_string())));
+    let call2 = |name: &str, a: Expression, b: Expression| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+            args: vec![Argument::positional(a), Argument::positional(b)],
+            optional: false,
+        })
+    };
+
+    // A native numeric base (scientific/percent/grouping) right-aligns by
+    // default; a plain string base's default alignment is runtime-type-dependent
+    // (ints right, strings left) so we leave bare-width string cases to printf.
+    let numeric_base = matches!(ty, Some('e') | Some('E') | Some('%')) || grouping.is_some();
+
+    // Base string per type. Grouping only supported on integer-ish bases here
+    // (no fractional grouping yet).
+    let base: Expression = match ty {
+        Some('e') | Some('E') => {
+            let sci = call2("__py_fmt_sci", value, int_lit(precision.unwrap_or(6)));
+            if ty == Some('E') {
+                // Uppercase only flips the exponent `e`; digits/sign are unaffected.
+                Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(sci),
+                        field: "upper".into(),
+                        null_safe: false,
+                    })),
+                    args: vec![],
+                    optional: false,
+                })
+            } else {
+                sci
+            }
+        }
+        Some('%') => {
+            let scaled = call2("__pymul__", value, int_lit(100));
+            let fixed = call2("__py_fmt_fixed", scaled, int_lit(precision.unwrap_or(6)));
+            call2("__pyadd__", fixed, str_lit("%"))
+        }
+        None | Some('d') if grouping.is_some() && precision.is_none() => {
+            let s = call_builtin1("str", value);
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident("__py_fmt_group".into()))),
+                args: vec![Argument::positional(s)],
+                optional: false,
+            })
+        }
+        None | Some('s') if grouping.is_none() && precision.is_none() && sign.is_none() => {
+            call_builtin1("str", value)
+        }
+        _ => return None, // plain d/f/x/o/b/g etc → printf
+    };
+    if grouping.is_some() && !matches!(ty, None | Some('d')) {
+        return None; // fractional/typed grouping not owned yet
+    }
+
+    // Alignment / width. Explicit align wins; a bare width right-aligns these
+    // (numeric) values, matching Python's default for numbers.
+    let apply = |base: Expression, method: &str, w: i64, fill: char| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(base),
+                field: method.into(),
+                null_safe: false,
+            })),
+            // Fill is ALWAYS explicit: rjust/ljust (str_pad_*) drop content on a
+            // defaulted fill.
+            args: vec![
+                Argument::positional(int_lit(w)),
+                Argument::positional(str_lit(&fill.to_string())),
+            ],
+            optional: false,
+        })
+    };
+    match (align, width) {
+        (Some(a), Some(w)) => {
+            let method = match a {
+                '<' => "ljust",
+                '>' => "rjust",
+                '^' => "center",
+                _ => return None,
+            };
+            Some(apply(base, method, w, fill))
+        }
+        (Some(_), None) => Some(base), // align without width is a no-op
+        (None, Some(w)) if numeric_base => {
+            // Numeric base with a bare width: right-align, zero-fill if requested.
+            Some(apply(base, "rjust", w, if zero { '0' } else { ' ' }))
+        }
+        (None, Some(_)) => None, // string base + bare width → printf (runtime default align)
+        (None, None) => Some(base),
+    }
+}
+
 fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut parts = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::fstring_start | Rule::fstring_end => {}
             Rule::fstring_text => {
-                parts.push(InterpolPart::Text(p.as_str().to_string()));
+                // Literal segments carry backslash escapes (`\n`, `\t`, …) just
+                // like a normal string literal, but the fstring grammar captures
+                // them raw — process them here (same lowering as
+                // `parse_python_string`).
+                let unescaped = p
+                    .as_str()
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t")
+                    .replace("\\r", "\r")
+                    .replace("\\\\", "\\")
+                    .replace("\\'", "'")
+                    .replace("\\\"", "\"");
+                parts.push(InterpolPart::Text(unescaped));
             }
             Rule::fstring_escaped_brace => {
                 let text = if p.as_str().starts_with('{') {
@@ -6186,11 +7170,68 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 parts.push(InterpolPart::Text(text.into()));
             }
             Rule::fstring_expr => {
+                // `{ expr [!conv] [:spec] }` — mirror the `.format()` path
+                // (`expand_format_field`): apply the conversion, then the format
+                // spec, and otherwise wrap in `str()` so bool/None/containers
+                // render with Python semantics (`True`/`None`/`[1, 2]`) instead
+                // of the generic JS `toString` (`true`/`null`/`1,2`).
+                let mut base: Option<Expression> = None;
+                let mut conv: Option<char> = None;
+                let mut spec: Option<String> = None;
                 for fp in p.into_inner() {
-                    if is_expression_rule(fp.as_rule()) {
-                        parts.push(InterpolPart::Expr(walk_expression(fp)?));
+                    match fp.as_rule() {
+                        Rule::fstring_conversion => {
+                            conv = fp.as_str().trim_start_matches('!').chars().next();
+                        }
+                        Rule::fstring_format_spec => {
+                            spec = Some(fp.as_str().to_string());
+                        }
+                        r if is_expression_rule(r) => {
+                            base = Some(walk_expression(fp)?);
+                        }
+                        _ => {}
                     }
                 }
+                let Some(base) = base else { continue };
+
+                // Conversion first (Python order: convert, then format).
+                let converted = match conv {
+                    Some('r') | Some('a') => call_builtin1("repr", base),
+                    Some('s') => call_builtin1("str", base),
+                    _ => base,
+                };
+
+                // A supported spec formats via `fmt % value` (`__pymod__`); an
+                // unsupported one (`^` centre, `%`, grouping) falls back to
+                // `str()` so the field still renders Python-correctly minus the
+                // padding, rather than dropping to raw JS coercion.
+                let field = match spec.as_deref().filter(|s| !s.is_empty()) {
+                    Some(spec) => {
+                        if let Some(native) =
+                            expand_python_format_spec(converted.clone(), spec)
+                        {
+                            native
+                        } else if let Some(fmt) = format_spec_to_printf(spec) {
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Ident(
+                                    "__pymod__".into(),
+                                ))),
+                                args: vec![
+                                    Argument::positional(Expression::new(ExprKind::Lit(
+                                        Literal::Str(fmt),
+                                    ))),
+                                    Argument::positional(converted),
+                                ],
+                                optional: false,
+                            })
+                        } else {
+                            call_builtin1("str", converted)
+                        }
+                    }
+                    None if conv.is_none() => call_builtin1("str", converted),
+                    None => converted,
+                };
+                parts.push(InterpolPart::Expr(field));
             }
             _ => {}
         }
@@ -6600,9 +7641,9 @@ fn parse_comparison_op(s: &str) -> BinOp {
         "<=" => BinOp::LtEq,
         ">=" => BinOp::GtEq,
         "in" => BinOp::In,
-        "is" => BinOp::Eq,
+        "is" => BinOp::Is,
         _ if s.contains("not") && s.contains("in") => BinOp::NotIn,
-        _ if s.contains("is") && s.contains("not") => BinOp::NotEq,
+        _ if s.contains("is") && s.contains("not") => BinOp::IsNot,
         _ => BinOp::Eq,
     }
 }

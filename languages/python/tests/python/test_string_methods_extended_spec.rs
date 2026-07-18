@@ -31,20 +31,20 @@ compile_case!(
     str_splitlines_keepends_compile,
     "lines = 'a\\nb\\n'.splitlines(True)\n"
 );
-runtime_case!(str_isalpha_runtime, "print('Hello'.isalpha())\n", "true");
-runtime_case!(str_isalnum_runtime, "print('A1'.isalnum())\n", "true");
-runtime_case!(str_isupper_runtime, "print('ABC'.isupper())\n", "true");
-runtime_case!(str_islower_runtime, "print('abc'.islower())\n", "true");
-runtime_case!(str_isspace_runtime, "print('   '.isspace())\n", "true");
+runtime_case!(str_isalpha_runtime, "print('Hello'.isalpha())\n", "True");
+runtime_case!(str_isalnum_runtime, "print('A1'.isalnum())\n", "True");
+runtime_case!(str_isupper_runtime, "print('ABC'.isupper())\n", "True");
+runtime_case!(str_islower_runtime, "print('abc'.islower())\n", "True");
+runtime_case!(str_isspace_runtime, "print('   '.isspace())\n", "True");
 runtime_case!(
     str_isprintable_runtime,
     "print('hello'.isprintable())\n",
-    "true"
+    "True"
 );
 runtime_case!(
     str_isidentifier_runtime,
     "print('snake_case'.isidentifier())\n",
-    "true"
+    "True"
 );
 compile_case!(str_istitle_compile, "ok = 'Hello World'.istitle()\n");
 compile_case!(str_isdecimal_compile, "ok = '123'.isdecimal()\n");

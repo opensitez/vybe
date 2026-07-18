@@ -5,6 +5,7 @@ fn function_return_literal() {
     assert_eq!(run_python_one("def f():\n return 42\nprint(f())\n"), "42");
 }
 
+
 #[test]
 fn function_return_expression() {
     assert_eq!(
@@ -103,6 +104,14 @@ fn function_varargs_sum() {
     assert_eq!(
         run_python_one("def total(*args):\n return sum(args)\nprint(total(1, 2, 3))\n"),
         "6"
+    );
+}
+
+#[test]
+fn function_len_on_collection_argument() {
+    assert_eq!(
+        run_python_one("def f(a):\n return len(a)\nprint(f([1, 2, 3]))\n"),
+        "3"
     );
 }
 

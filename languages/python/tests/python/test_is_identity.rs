@@ -265,7 +265,9 @@ fn is_cell_in_closure() {
         run_python_one(
             "def outer():\n x = []\n def inner():\n  return x\n a = inner()\n b = inner()\n print(a is b)\nprint(outer())\n"
         ),
-        "True"
+        // `print(a is b)` → True (same captured cell), then `print(outer())`
+        // prints outer's implicit None return.
+        "True\nNone"
     );
 }
 
@@ -289,3 +291,5 @@ fn is_subclass_not_is_instance() {
         "False True"
     );
 }
+
+
