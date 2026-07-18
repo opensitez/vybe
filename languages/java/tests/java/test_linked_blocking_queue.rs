@@ -406,7 +406,7 @@ fn linked_blocking_queue_bounded_put_blocks_until_space() {
         static boolean putCompleted = false;
     "#;
     let out = run_in_main(
-        "q.put(1); Thread consumer = new Thread(() -> { try { q.take(); putCompleted = true; q.put(2); } catch (InterruptedException e) {} }); consumer.start(); Thread.sleep(5); q.put(2); consumer.join(); System.out.println(putCompleted); System.out.println(q.size());",
+        "q.put(1); Thread consumer = new Thread(() -> { try { q.take(); putCompleted = true; } catch (InterruptedException e) {} }); consumer.start(); Thread.sleep(5); q.put(2); consumer.join(); System.out.println(putCompleted); System.out.println(q.size());",
         types,
     );
     assert_eq!(out, vec!["true", "1"]);
