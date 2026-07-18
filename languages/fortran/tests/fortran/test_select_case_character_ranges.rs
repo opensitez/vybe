@@ -1,0 +1,161 @@
+use super::helpers::run_prints;
+
+#[test]
+fn select_case_character_ranges_single_range() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_single_range
+    character(len=1) :: c
+    c = 'f'
+    select case (c)
+    case ('a':'m')
+        print *, 'low'
+    case ('n':'z')
+        print *, 'high'
+    end select
+end program select_case_character_ranges_single_range
+"#,
+    );
+    assert_eq!(out, vec!["low"]);
+}
+
+#[test]
+fn select_case_character_ranges_ascii_boundary() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_ascii_boundary
+    character(len=1) :: c
+    c = 'z'
+    select case (c)
+    case ('a':'m')
+        print *, 'A'
+    case ('n':'z')
+        print *, 'Z'
+    case default
+        print *, 'D'
+    end select
+end program select_case_character_ranges_ascii_boundary
+"#,
+    );
+    assert_eq!(out, vec!["Z"]);
+}
+
+#[test]
+fn select_case_character_ranges_multiple_ranges_on_one_case() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_multiple_ranges_on_one_case
+    character(len=1) :: c
+    c = 'k'
+    select case (c)
+    case ('a':'c', 'k':'m')
+        print *, 'ok'
+    case default
+        print *, 'no'
+    end select
+end program select_case_character_ranges_multiple_ranges_on_one_case
+"#,
+    );
+    assert_eq!(out, vec!["ok"]);
+}
+
+#[test]
+fn select_case_character_ranges_empty_string_case() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_empty_string_case
+    character(len=3) :: c
+    c = ''
+    select case (c)
+    case ('')
+        print *, 'empty'
+    case default
+        print *, 'non-empty'
+    end select
+end program select_case_character_ranges_empty_string_case
+"#,
+    );
+    assert_eq!(out, vec!["empty"]);
+}
+
+#[test]
+fn select_case_character_ranges_trimmed_length_case() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_trimmed_length_case
+    character(len=6) :: c
+    c = 'abc   '
+    select case (trim(c))
+    case ('abc')
+        print *, 'trimmed'
+    case default
+        print *, 'raw'
+    end select
+end program select_case_character_ranges_trimmed_length_case
+"#,
+    );
+    assert_eq!(out, vec!["trimmed"]);
+}
+
+#[test]
+fn select_case_character_ranges_numeric_text_tokens() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_numeric_text_tokens
+    character(len=4) :: c
+    c = 'v2x'
+    select case (c)
+    case ('a':'m')
+        print *, 'alpha'
+    case ('v1':'v9')
+        print *, 'version'
+    case default
+        print *, 'other'
+    end select
+end program select_case_character_ranges_numeric_text_tokens
+"#,
+    );
+    assert_eq!(out, vec!["version"]);
+}
+
+#[test]
+fn select_case_character_ranges_word_ranges() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_word_ranges
+    character(len=5) :: c
+    c = 'beta '
+    select case (trim(c))
+    case ('alpha')
+        print *, 'first'
+    case ('beta', 'gamma')
+        print *, 'second'
+    case ('delta')
+        print *, 'third'
+    case default
+        print *, 'else'
+    end select
+end program select_case_character_ranges_word_ranges
+"#,
+    );
+    assert_eq!(out, vec!["second"]);
+}
+
+#[test]
+fn select_case_character_ranges_pure_default_branch() {
+    let out = run_prints(
+        r#"
+program select_case_character_ranges_pure_default_branch
+    character(len=3) :: c
+    c = 'xyz'
+    select case (c)
+    case ('a':'f')
+        print *, 'small'
+    case default
+        print *, 'default'
+    end select
+end program select_case_character_ranges_pure_default_branch
+"#,
+    );
+    assert_eq!(out, vec!["default"]);
+}
