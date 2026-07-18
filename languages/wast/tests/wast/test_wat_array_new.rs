@@ -45,6 +45,24 @@ wat_exec! {
 )
 "#, "20" },
 
+    // A fixed GC array is stamped with its rtt, so an out-of-bounds access
+    // traps per WASM spec (unlike a lenient dynamic array).
+    test_array_new_fixed_get_oob => { r#"
+(type $Arr (array i32))
+(func (export "_start") (local $a (ref null $Arr))
+  i32.const 10
+  i32.const 20
+  i32.const 30
+  array.new_fixed $Arr 3
+  local.set $a
+
+  local.get $a
+  i32.const 9
+  array.get $Arr
+  call $log
+)
+"#, "trap" },
+
     test_array_new_data => { r#"
 (type $Arr (array (mut i8)))
 (data $d "data")

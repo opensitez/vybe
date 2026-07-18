@@ -1,5 +1,5 @@
 /// Tests for module components: type sections, imports, exports, memories, tables, and start functions.
-use super::helpers::{compile_ok, parse_err, parse_ok};
+use super::helpers::{parse_err, parse_ok};
 
 // ── Type Signatures ───────────────────────────────────────────────────────────
 
@@ -144,7 +144,10 @@ fn elem_active_segment() {
 #[test]
 fn elem_passive_segment() {
     parse_ok("(module (func $f) (elem funcref (ref.func $f)))");
-    parse_ok("(module (func $f) (elem $e passive funcref (ref.func $f)))");
+    // Passive mode is IMPLICIT in the text format — there is no `passive` keyword
+    // (WASM 3.0 §6.4: only `declare`/active carry a marker). A named passive elem
+    // is just `(elem $id funcref …)` with no table/offset/declare.
+    parse_ok("(module (func $f) (elem $e funcref (ref.func $f)))");
 }
 
 #[test]

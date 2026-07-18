@@ -1,5 +1,5 @@
 /// Tests for lexical analysis, tokenization, and S-Expression syntax.
-use super::helpers::{compile_ok, parse_err, parse_ok};
+use super::helpers::{parse_err, parse_ok};
 
 // ── Integers & Bases ──────────────────────────────────────────────────────────
 
@@ -166,13 +166,19 @@ fn id_basic() {
 
 #[test]
 fn id_special_chars() {
-    parse_ok("(module (func $func-name!@#%^&*()_+{}|:<>?-=[]\\;',./))");
+    // The WAT idchar set includes this symbol subset (WASM 3.0 §6.1 `Tidchar`).
+    parse_ok("(module (func $func-name!#&*+./:<>?@='))");
+    // But `( ) { } [ ] ; ,` are NOT idchars, so an identifier containing them
+    // is invalid (the id ends at the first non-idchar and the rest is garbage).
+    parse_err("(module (func $func-name!@#%^&*()_+{}|:<>?-=[]\\;',./))");
 }
 
 #[test]
 fn id_utf8() {
-    parse_ok("(module (func $функция))");
-    parse_ok("(module (func $函数))");
+    // Core-WAT identifiers are ASCII idchars only (WASM 3.0 §6.1 `Tidchar`);
+    // non-ASCII codepoints are not valid identifier characters.
+    parse_err("(module (func $функция))");
+    parse_err("(module (func $函数))");
 }
 
 #[test]
@@ -189,8 +195,10 @@ fn id_invalid_identifiers() {
 
 #[test]
 fn sexpr_empty() {
-    parse_ok("()");
-    parse_ok("((()))");
+    // `()` and `((()))` are not valid modules or commands — an empty paren
+    // group matches no top-level production, so parsing rejects them.
+    parse_err("()");
+    parse_err("((()))");
 }
 
 #[test]

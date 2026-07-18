@@ -143,11 +143,11 @@ fn assert_return_ref_func() {
 fn assert_return_ref_extern() {
     compile_ok(
         r#"
-(module 
+(module
   (func (export "f") (param externref) (result externref) local.get 0)
 )
-(assert_return (invoke "f") (ref.extern 1))
-"#, // using ref.extern for externref tests if supported by parse
+(assert_return (invoke "f" (ref.extern 1)) (ref.extern 1))
+"#, // externref round-trip: pass a host externref and get it back
     );
 }
 

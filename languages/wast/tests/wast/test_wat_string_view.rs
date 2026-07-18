@@ -7,19 +7,15 @@ wat_exec! {
 (func (export "_start")
   i32.const 0
   i32.const 11
-  string.new_utf8
-  
+  string.new_utf8        ;; "hello world"
+  string.as_wtf8
   i32.const 0
   i32.const 5
-  string.measure_utf8 ;; we need length 5
-  ;; wait, string slice doesn't take length, but string.slice.wtf8 etc do
-  ;; well, let's use string.view_wtf8.slice
-  ;; we will just use string.eq on the result to avoid another tool
-  drop
-  i32.const 42
+  stringview_wtf8.slice  ;; "hello"
+  string.measure_utf8    ;; length 5
   call $log
 )
-"#, "42" },
+"#, "5" },
     test_string_view_utf8 => { r#"
 (memory 1)
 (data (i32.const 0) "hello")

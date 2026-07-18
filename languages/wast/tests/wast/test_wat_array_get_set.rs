@@ -1,6 +1,21 @@
 use crate::wat_exec;
 
 wat_exec! {
+    // array.new_default of a `(ref null $t)` element type fills typed nulls, so
+    // accessing through a defaulted ref element traps per spec.
+    test_array_new_default_ref_elem_traps => { r#"
+(type $Inner (struct (field i32)))
+(type $A (array (ref null $Inner)))
+(func (export "_start")
+  i32.const 2
+  array.new_default $A
+  i32.const 0
+  array.get $A
+  struct.get $Inner 0
+  call $log
+)
+"#, "trap" },
+
     test_array_get => { r#"
 (type $Arr (array i32))
 (func (export "_start") (local $a (ref null $Arr))

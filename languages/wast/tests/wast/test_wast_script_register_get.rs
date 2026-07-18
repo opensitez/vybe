@@ -2,13 +2,19 @@ use super::helpers::{compile_ok, parse_ok};
 
 #[test]
 fn register_anonymous_module() {
+    // `(register "lib")` with no id registers the most recent (anonymous) module
+    // under "lib"; the spec-valid way to reach it is a subsequent `(import …)`.
+    // (`(invoke "lib" "f")` is not valid WAST — invoke takes an id then export.)
     compile_ok(
         r#"
-(module (func (export "f") (result i32) i32.const 42))
+(module (func (export "answer") (result i32) i32.const 42))
 (register "lib")
-(assert_return (invoke "lib" "f") (i32.const 42))
+(module
+  (import "lib" "answer" (func $a (result i32)))
+  (func (export "use") (result i32) call $a call $a i32.add))
+(assert_return (invoke "use") (i32.const 84))
 "#,
-    ); // invoke "lib" "f" is technically not valid syntax, valid is invoke $lib "f" or just using import "lib" "f". Let's test imports
+    );
 }
 
 #[test]

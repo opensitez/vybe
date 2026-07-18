@@ -32,6 +32,12 @@ dynamic_add      = true
 # into a funcref (REF_FUNC) instead of invoking it. Enables call_ref /
 # call_indirect / ref.eq on real funcrefs.
 function_references = true
+# WASM multi-value: a `(result t1 t2 …)` function leaves N values on the stack.
+# The walker emits a uniform tuple `return` (callee sets result_arity = N and
+# pushes the elements unpacked) and a `[t0..tN] = call(…)` destructure on the
+# caller side; the shared compiler's multi-value ABI consumes the raw N stack
+# values directly (no heap-tuple alloc).
+multi_value_tuple_returns = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS
@@ -56,6 +62,15 @@ logf  = { emit = "host:wasi:logging/logging:log",   min_args = 1, max_args = 255
 log_i64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
 log_f32 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
 log_f64 = { emit = "host:wasi:logging/logging:log", min_args = 1, max_args = 255 }
+
+# ── String comparison: js-string-builtins host import ────────────────────────
+# `string.compare` is NOT a stringref instruction (the stringref proposal has
+# only `string.eq`/`string.is_usv_sequence`, and stringref was never merged into
+# WASM 3.0 — its string story is the js-string-builtins host imports). WASM 3.0
+# exposes ordering via the `wasm:js-string` `compare` import (returns -1/0/1 per
+# the JS `<` operator). The walker lowers `string.compare` → `string_compare`;
+# route that to the real host import (already registered in vybe_host).
+string_compare = { emit = "host:wasm:js-string:compare", min_args = 2, max_args = 2 }
 
 # ── vybe:gui imports ──────────────────────────────────────────────────────────
 # WAT modules import these by local name; the profile resolves them to the

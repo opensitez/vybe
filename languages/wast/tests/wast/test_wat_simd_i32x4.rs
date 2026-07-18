@@ -132,4 +132,18 @@ wat_exec! {
         v128.const f64x2 3.9 0 i32x4.trunc_sat_f64x2_s_zero i32x4.extract_lane 0 call $log)"#, "3" },
     test_i32x4_trunc_sat_f64x2_u_zero => { r#"(func (export "_start")
         v128.const f64x2 3.9 0 i32x4.trunc_sat_f64x2_u_zero i32x4.extract_lane 0 call $log)"#, "3" },
+
+    // ── Spec edge cases: trunc_sat NaN→0, high-lane zeroing, signed dot ───────
+    // Every `trunc_sat` maps NaN to 0 (not the saturation bound).
+    test_i32x4_trunc_sat_f32x4_s_nan_is_zero => { r#"(func (export "_start")
+        v128.const f32x4 nan 0 0 0 i32x4.trunc_sat_f32x4_s i32x4.extract_lane 0 call $log)"#, "0" },
+    test_i32x4_trunc_sat_f32x4_s_neg_clamps => { r#"(func (export "_start")
+        v128.const f32x4 -3e10 0 0 0 i32x4.trunc_sat_f32x4_s i32x4.extract_lane 0 call $log)"#, "-2147483648" },
+    // The `_zero` variants zero the upper two i32 lanes (from the absent f64 lanes).
+    test_i32x4_trunc_sat_f64x2_s_zero_upper_lane_is_zero => { r#"(func (export "_start")
+        v128.const f64x2 3.9 7.9 i32x4.trunc_sat_f64x2_s_zero i32x4.extract_lane 2 call $log)"#, "0" },
+    // dot with a negative operand: (-2)*4 + 3*5 = -8 + 15 = 7.
+    test_i32x4_dot_i16x8_s_signed => { r#"(func (export "_start")
+        v128.const i16x8 -2 3 0 0 0 0 0 0 v128.const i16x8 4 5 0 0 0 0 0 0
+        i32x4.dot_i16x8_s i32x4.extract_lane 0 call $log)"#, "7" },
 }

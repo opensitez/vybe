@@ -110,7 +110,7 @@ fn test_float_rounding_nearest() {
     call $log))
 "#,
     );
-    assert_eq!(out, "2");
+    assert_eq!(out, "2.0"); // f32 nearest(1.5)=2.0; f32 prints with trailing .0
 }
 
 #[test]

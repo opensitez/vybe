@@ -51,7 +51,10 @@ integer = @{
     ("+" | "-")? ~ (
         "0x" ~ hex_digit+
       | dec_digit+
-    )
+    // A number token must not be immediately followed by an identifier char:
+    // WASM has no binary/octal prefixes, so `0b1010`/`0o777` are NOT `0` then
+    // `b1010` — they are malformed number tokens and must be rejected.
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 float = @{
@@ -63,11 +66,17 @@ float = @{
       | "inf"
       // A hex float MUST carry a "." or a "p" exponent; without one, "0x0F" is a
       // hex integer, not a float (the `integer` rule must win).
+      // Hex floats REQUIRE a `p`/`P` binary exponent (spec `Thexfloat`), so
+      // `0x1.5` (no exponent) is invalid — a value without `p` is a hex integer.
       | "0x" ~ hex_digit+ ~ (
-            "." ~ hex_digit* ~ (("p" | "P") ~ ("+" | "-")? ~ dec_digit+)?
+            "." ~ hex_digit* ~ ("p" | "P") ~ ("+" | "-")? ~ dec_digit+
           | ("p" | "P") ~ ("+" | "-")? ~ dec_digit+
         )
-      | dec_digit+ ~ "." ~ dec_digit* ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
+      // A decimal float with a `.` needs fractional digits OR an exponent
+      // (spec: the mantissa's dot must be followed by a `frac`, or an exponent
+      // must be present): `1.5`, `1.5e3`, `1.e5` are valid; bare `1.` is not.
+      | dec_digit+ ~ "." ~ dec_digit+ ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
+      | dec_digit+ ~ "." ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
       | dec_digit+ ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
     )
 }
@@ -88,10 +97,16 @@ string = @{ "\"" ~ string_char* ~ "\"" }
 // Numeric / packed value types
 num_type = @{ "i32" | "i64" | "f32" | "f64" }
 vec_type = @{ "v128" }
-// Reference types (MVP + reference-types proposal)
-ref_type = @{ "funcref" | "externref" }
+// Reference types (MVP + reference-types + GC abbreviations). Longer tokens
+// first so PEG's ordered choice never stops at a prefix (e.g. `nullexternref`
+// before `nullref`). Each is a `(ref null <heaptype>)` shorthand per WASM 3.0.
+ref_type = @{
+    "nullexternref" | "nullfuncref" | "nullexnref" | "nullref"
+  | "funcref" | "externref" | "anyref" | "eqref" | "i31ref"
+  | "structref" | "arrayref" | "exnref" | "stringref"
+}
 // All value types
-val_type = @{ "i32" | "i64" | "f32" | "f64" | "v128" | "funcref" | "externref" }
+val_type = @{ "i32" | "i64" | "f32" | "f64" | "v128" | ref_type }
 
 // ── Indices ───────────────────────────────────────────────────────────────────
 
@@ -148,6 +163,7 @@ plain_instr = { instr_name ~ instr_arg* }
 instr_name = @{
     // ── Control ──────────────────────────────────────────────────────────
     "block" | "loop" | "if" | "else" | "end"
+  | "br_on_cast_fail" | "br_on_cast" | "br_on_non_null" | "br_on_null"
   | "br_table" | "br_if" | "br"
   | "return_call_indirect" | "return_call_ref" | "return_call"
   | "call_indirect" | "call_ref" | "call"
@@ -285,7 +301,7 @@ mem_arg = @{ ("offset=" ~ integer) | ("align=" ~ integer) }
 // Block type annotation (inside block/loop/if)
 block_type = {
     "(" ~ "type"   ~ index ~ ")"
-  | "(" ~ "result" ~ val_type+ ~ ")"
+  | "(" ~ "result" ~ any_val_type+ ~ ")"
   | "(" ~ "param"  ~ id? ~ val_type+ ~ ")"
 }
 
@@ -355,7 +371,10 @@ memory_field = {
     "(" ~ "memory" ~ id? ~ export_inline* ~ import_inline? ~ mem_type ~ ")"
 }
 
-mem_type = { integer ~ integer? }
+// Optional address-type keyword (`i64` = memory64 proposal, `i32` = default),
+// then the min (and optional max) page limits. The keyword is a bare literal so
+// it doesn't appear as a captured pair — the walker still reads just the limits.
+mem_type = { ("i64" | "i32")? ~ integer ~ integer? }
 
 // ── Global ────────────────────────────────────────────────────────────────────
 
@@ -364,8 +383,8 @@ global_field = {
 }
 
 global_type = {
-    "(" ~ "mut" ~ val_type ~ ")"
-  | val_type
+    "(" ~ "mut" ~ any_val_type ~ ")"
+  | any_val_type
 }
 
 // ── Tag (exceptions proposal) ─────────────────────────────────────────────────
@@ -519,8 +538,16 @@ module_or_binary = {
 
 // ── Top-level WAST program ────────────────────────────────────────────────────
 
+// Top-level embedded modules: `(module binary "…")` (raw bytes) and
+// `(module quote "…")` (deferred text). Must precede `module` since the plain
+// module rule can't consume the `binary`/`quote` keyword.
+module_binary_cmd = { "(" ~ "module" ~ id? ~ "binary" ~ string+ ~ ")" }
+module_quote_cmd  = { "(" ~ "module" ~ id? ~ "quote"  ~ string+ ~ ")" }
+
 script_cmd = {
-    module
+    module_binary_cmd
+  | module_quote_cmd
+  | module
   | assert_return
   | assert_instantiation_trap
   | assert_trap

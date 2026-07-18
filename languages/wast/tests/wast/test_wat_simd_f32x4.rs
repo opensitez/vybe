@@ -59,7 +59,7 @@ wat_exec! {
     test_f32x4_convert_i32x4_s => { r#"(func (export "_start")
         v128.const i32x4 -5 0 0 0 f32x4.convert_i32x4_s f32x4.extract_lane 0 call $log_f32)"#, "-5.0" },
     test_f32x4_convert_i32x4_u => { r#"(func (export "_start")
-        v128.const i32x4 -1 0 0 0 f32x4.convert_i32x4_u f32x4.extract_lane 0 call $log_f32)"#, "4294967296.0" },
+        v128.const i32x4 -1 0 0 0 f32x4.convert_i32x4_u f32x4.extract_lane 0 call $log_f32)"#, "4294967300.0" }, // u32 max -> 2^32 f32 (shortest round-trip)
     test_f32x4_demote_f64x2_zero => { r#"(func (export "_start")
         v128.const f64x2 3.5 0 f32x4.demote_f64x2_zero f32x4.extract_lane 0 call $log_f32)"#, "3.5" },
 
@@ -73,4 +73,28 @@ wat_exec! {
     test_f32x4_le => { r#"(func (export "_start")
         v128.const f32x4 2.0 0 0 0 v128.const f32x4 2.0 0 0 0
         f32x4.le i32x4.extract_lane 0 call $log)"#, "-1" },
+
+    // ── Spec edge cases: NaN propagation for min/max/pmin/pmax ────────────────
+    // `min`/`max` return NaN when EITHER operand is NaN (canonical WASM rule).
+    test_f32x4_min_nan_left_propagates => { r#"(func (export "_start")
+        v128.const f32x4 nan 0 0 0 v128.const f32x4 5.0 0 0 0
+        f32x4.min f32x4.extract_lane 0 call $log_f32)"#, "nan" },
+    test_f32x4_min_nan_right_propagates => { r#"(func (export "_start")
+        v128.const f32x4 5.0 0 0 0 v128.const f32x4 nan 0 0 0
+        f32x4.min f32x4.extract_lane 0 call $log_f32)"#, "nan" },
+    test_f32x4_max_nan_propagates => { r#"(func (export "_start")
+        v128.const f32x4 5.0 0 0 0 v128.const f32x4 nan 0 0 0
+        f32x4.max f32x4.extract_lane 0 call $log_f32)"#, "nan" },
+    // `pmin(a,b) = b<a ? b : a` — a NaN in `a` makes `b<a` false → returns a=NaN;
+    // a NaN in `b` also makes `b<a` false → returns a (the non-NaN). This
+    // asymmetry is the whole point of pmin/pmax vs min/max.
+    test_f32x4_pmin_nan_first_returns_nan => { r#"(func (export "_start")
+        v128.const f32x4 nan 0 0 0 v128.const f32x4 5.0 0 0 0
+        f32x4.pmin f32x4.extract_lane 0 call $log_f32)"#, "nan" },
+    test_f32x4_pmin_nan_second_returns_first => { r#"(func (export "_start")
+        v128.const f32x4 5.0 0 0 0 v128.const f32x4 nan 0 0 0
+        f32x4.pmin f32x4.extract_lane 0 call $log_f32)"#, "5.0" },
+    test_f32x4_pmax_nan_second_returns_first => { r#"(func (export "_start")
+        v128.const f32x4 5.0 0 0 0 v128.const f32x4 nan 0 0 0
+        f32x4.pmax f32x4.extract_lane 0 call $log_f32)"#, "5.0" },
 }

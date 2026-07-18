@@ -170,8 +170,8 @@ fn assert_return_nan_arithmetic() {
 fn assert_return_ref_null() {
     parse_ok(
         r#"
-(module (func (export "f") (result funcref) ref.null funcref))
-(assert_return (invoke "f") (ref.null funcref))
+(module (func (export "f") (result funcref) ref.null func))
+(assert_return (invoke "f") (ref.null func))
 "#,
     );
 }
@@ -375,3 +375,4 @@ fn compile_register_and_invoke() {
 "#,
     );
 }
+

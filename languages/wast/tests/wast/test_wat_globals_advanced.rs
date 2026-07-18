@@ -1,6 +1,28 @@
 use crate::wat_exec;
 
 wat_exec! {
+    // A global initialized with `(ref.null $t)` holds a WASM GC typed null, so
+    // struct.get on it traps per spec (not a lenient read).
+    test_global_ref_null_traps => { r#"
+(type $S (struct (field i32)))
+(global $g (mut (ref null $S)) (ref.null $S))
+(func (export "_start")
+  global.get $g
+  struct.get $S 0
+  call $log
+)
+"#, "trap" },
+
+    // ref.is_null on a ref.null-initialized global is 1.
+    test_global_ref_null_is_null => { r#"
+(type $S (struct (field i32)))
+(global $g (mut (ref null $S)) (ref.null $S))
+(func (export "_start")
+  (ref.is_null (global.get $g))
+  call $log
+)
+"#, "1" },
+
     test_global_local_mut => { r#"
 (global $g (mut i32) (i32.const 10))
 (func (export "_start")

@@ -72,10 +72,11 @@ wat_exec! {
     i32.add
   end)
 (func (export "_start") (result i32)
-  i32.const 300
+  i32.const 20000
   call $sum
 )
-"#, "trap" },
+"#, "trap" }, // non-tail recursion grows the frame stack; > MAX_FRAMES → overflow
+              // trap (unlike return_call tail recursion, which reuses the frame)
 
     test_return_call_deep_tail_recursion => { r#"
 (func $sum (param $n i32) (param $acc i32) (result i32)

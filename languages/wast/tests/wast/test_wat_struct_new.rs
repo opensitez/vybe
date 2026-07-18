@@ -12,6 +12,19 @@ wat_exec! {
 )
 "#, "0" },
 
+    // struct.new_default with a `(ref null $t)` field defaults that field to a
+    // typed null, so accessing through it traps per spec.
+    test_struct_new_default_ref_field_traps => { r#"
+(type $Inner (struct (field i32)))
+(type $Outer (struct (field (ref null $Inner))))
+(func (export "_start")
+  struct.new_default $Outer
+  struct.get $Outer 0
+  struct.get $Inner 0
+  call $log
+)
+"#, "trap" },
+
     test_struct_new_with_args => { r#"
 (type $Point (struct (field i32) (field i32)))
 (func (export "_start") (local $p (ref null $Point))
