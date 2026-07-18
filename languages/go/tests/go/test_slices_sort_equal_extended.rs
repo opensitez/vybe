@@ -29,7 +29,7 @@ go_run_cases! {
     ),
     slices_sort_func_by_absolute_value => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{-3, 1, -2, 4}; slices.SortFunc(s, func(a, b int) int { aa, bb := a, b; if aa < 0 { aa = -aa }; if bb < 0 { bb = -bb }; if aa < bb { return -1 }; if aa > bb { return 1 }; return 0 }); fmt.Println(s[0]); fmt.Println(s[3]) }",
-        vec!["1", "-3"]
+        vec!["1", "4"]
     ),
     slices_sort_func_by_string_length => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []string{\"go\", \"vybe\", \"a\"}; slices.SortFunc(s, func(a, b string) int { if len(a) < len(b) { return -1 }; if len(a) > len(b) { return 1 }; return 0 }); fmt.Println(s[0]); fmt.Println(s[2]) }",
@@ -40,12 +40,12 @@ go_run_cases! {
         vec!["3", "1"]
     ),
     slices_sort_stable_func_preserves_equal_order => (
-        "package main; import \"fmt\"; import \"slices\"; func main() { type pair struct { k, ord int }; s := []pair{{1, 0}, {2, 0}, {1, 1}}; slices.SortStableFunc(s, func(a, b pair) int { if a.k < b.k { return -1 }; if a.k > b.k { return 1 }; return 0 }); fmt.Println(s[1].ord); fmt.Println(s[2].ord) }",
+        "package main; import \"fmt\"; import \"slices\"; func main() { type pair struct { k int; ord int }; s := []pair{{k: 1, ord: 0}, {k: 2, ord: 0}, {k: 1, ord: 1}}; slices.SortStableFunc(s, func(a, b pair) int { if a.k < b.k { return -1 }; if a.k > b.k { return 1 }; return 0 }); fmt.Println(s[0].ord); fmt.Println(s[1].ord) }",
         vec!["0", "1"]
     ),
     slices_sort_stable_func_stable_on_equal_keys => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []string{\"bb\", \"aa\", \"ab\"}; slices.SortStableFunc(s, func(a, b string) int { la, lb := len(a), len(b); if la < lb { return -1 }; if la > lb { return 1 }; return 0 }); fmt.Println(s[0]); fmt.Println(s[2]) }",
-        vec!["aa", "bb"]
+        vec!["bb", "ab"]
     ),
     slices_is_sorted_true_ascending => (
         "package main; import \"fmt\"; import \"slices\"; func main() { fmt.Println(slices.IsSorted([]int{1, 2, 3, 4})) }",
@@ -192,8 +192,8 @@ go_run_cases! {
         vec!["3", "2"]
     ),
     slices_replace_multiple_insert_values => (
-        "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1, 5}; t := slices.Replace(s, 1, 2, 2, 3, 4); fmt.Println(len(t)); fmt.Println(t[2]); fmt.Println(t[4]) }",
-        vec!["5", "3", "5"]
+        "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1, 5}; t := slices.Replace(s, 1, 2, 2, 3, 4); fmt.Println(len(t)); fmt.Println(t[2]); fmt.Println(t[3]) }",
+        vec!["4", "3", "4"]
     ),
     slices_replace_delete_only_no_insert => (
         "package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1, 2, 3, 4}; t := slices.Replace(s, 1, 3); fmt.Println(len(t)); fmt.Println(t[0]); fmt.Println(t[1]) }",

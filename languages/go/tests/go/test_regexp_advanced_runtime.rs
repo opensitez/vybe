@@ -15,19 +15,19 @@ go_run_cases! {
         vec!["true", "0"]
     ),
     regexp_find_all_submatch_word_triple => (
-        "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`(\\w)(\\w)(\\w)`); m := re.FindAllStringSubmatch(\"go!\", -1); fmt.Println(len(m[0])); fmt.Println(m[0][3]) }",
+        "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`(\\w)(\\w)(\\w)`); m := re.FindAllStringSubmatch(\"goo!\", -1); fmt.Println(len(m[0])); fmt.Println(m[0][3]) }",
         vec!["4", "o"]
     ),
     regexp_find_all_submatch_email_parts => (
         "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`([\\w.]+)@([\\w.]+)`); m := re.FindAllStringSubmatch(\"a@b.com c@d.org\", -1); fmt.Println(m[0][1]); fmt.Println(m[1][2]) }",
-        vec!["a", "org"]
+        vec!["a", "d.org"]
     ),
     regexp_find_all_submatch_date_iso => (
         "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`(\\d{4})-(\\d{2})-(\\d{2})`); m := re.FindAllStringSubmatch(\"2024-06-30\", -1); fmt.Println(m[0][1]); fmt.Println(m[0][3]) }",
         vec!["2024", "30"]
     ),
     regexp_find_all_submatch_hex_color => (
-        "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})`); m := re.FindAllStringSubmatch(\"#aabbcc\", -1); fmt.Println(m[0][1]); fmt.Println(m[0][4]) }",
+        "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})`); m := re.FindAllStringSubmatch(\"#aabbcc\", -1); fmt.Println(m[0][1]); fmt.Println(m[0][3]) }",
         vec!["aa", "cc"]
     ),
     regexp_find_all_submatch_alternation => (
@@ -120,7 +120,7 @@ go_run_cases! {
     ),
     regexp_literal_prefix_fixed_text => (
         "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`prefix(\\d+)`); p, lit := re.LiteralPrefix(); fmt.Println(p); fmt.Println(lit) }",
-        vec!["prefix", "true"]
+        vec!["prefix", "false"]
     ),
     regexp_literal_prefix_no_literal => (
         "package main; import \"fmt\"; import \"regexp\"; func main() { re := regexp.MustCompile(`^\\d+`); p, lit := re.LiteralPrefix(); fmt.Println(p); fmt.Println(lit) }",

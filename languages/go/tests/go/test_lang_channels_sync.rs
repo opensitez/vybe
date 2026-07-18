@@ -3,7 +3,7 @@
 go_run_cases! {
     chan_make_unbuffered_zero_cap => ("package main; import \"fmt\"; func main() { ch := make(chan int); fmt.Println(cap(ch)) }", vec!["0"]),
     chan_buffered_send_recv => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 9; fmt.Println(<-ch) }", vec!["9"]),
-    chan_close_then_zero_value => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 1; close(ch); v, ok := <-ch; fmt.Println(v, ok) }", vec!["1 false"]),
+    chan_close_then_zero_value => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 1; close(ch); v, ok := <-ch; fmt.Println(v, ok) }", vec!["1 true"]),
     chan_range_after_close => ("package main; import \"fmt\"; func main() { ch := make(chan int, 2); ch <- 1; ch <- 2; close(ch); n := 0; for range ch { n++ }; fmt.Println(n) }", vec!["2"]),
     select_receive_ready => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 5; select { case v := <-ch: fmt.Println(v) } }", vec!["5"]),
     select_default_nonblocking => ("package main; import \"fmt\"; func main() { ch := make(chan int); select { case <-ch: fmt.Println(\"recv\"); default: fmt.Println(\"def\") } }", vec!["def"]),

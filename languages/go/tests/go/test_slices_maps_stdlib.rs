@@ -22,7 +22,7 @@ go_run_cases! {
     slices_insert_multiple_values => ("package main; import \"fmt\"; import \"slices\"; func main() { s := []int{1,4}; s = slices.Insert(s, 1, 2, 3); fmt.Println(len(s)); fmt.Println(s[1]); fmt.Println(s[2]) }", vec!["4", "2", "3"]),
     slices_insert_into_nil_slice => ("package main; import \"fmt\"; import \"slices\"; func main() { var s []int; s = slices.Insert(s, 0, 5, 6); fmt.Println(len(s)); fmt.Println(s[1]) }", vec!["2", "6"]),
     slices_grow_expands_capacity => ("package main; import \"fmt\"; import \"slices\"; func main() { s := make([]int, 2, 2); s[0], s[1] = 1, 2; s = slices.Grow(s, 3); fmt.Println(len(s)); fmt.Println(cap(s) >= 5); fmt.Println(s[0]) }", vec!["2", "true", "1"]),
-    slices_grow_zero_len_slice => ("package main; import \"fmt\"; import \"slices\"; func main() { s := make([]int, 0, 1); s = slices.Grow(s, 2); fmt.Println(len(s)); fmt.Println(cap(s) >= 3) }", vec!["0", "true"]),
+    slices_grow_zero_len_slice => ("package main; import \"fmt\"; import \"slices\"; func main() { s := make([]int, 0, 1); s = slices.Grow(s, 2); fmt.Println(len(s)); fmt.Println(cap(s) >= 2) }", vec!["0", "true"]),
     maps_clone_mutation_isolated => ("package main; import \"fmt\"; import \"maps\"; func main() { orig := map[string]int{\"a\": 1}; cp := maps.Clone(orig); cp[\"a\"] = 9; fmt.Println(orig[\"a\"]); fmt.Println(cp[\"a\"]) }", vec!["1", "9"]),
     maps_clone_empty_map => ("package main; import \"fmt\"; import \"maps\"; func main() { cp := maps.Clone(map[string]int{}); fmt.Println(len(cp)) }", vec!["0"]),
     maps_clone_nil_map => ("package main; import \"fmt\"; import \"maps\"; func main() { var m map[string]int; cp := maps.Clone(m); fmt.Println(cp == nil); fmt.Println(len(cp)) }", vec!["true", "0"]),

@@ -5,7 +5,7 @@ go_run_cases! {
     sort_slice_stable_strings => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []string{\"b\",\"a\",\"a\"}; sort.SliceStable(s, func(i,j int) bool { return s[i] < s[j] }); fmt.Println(s) }", vec!["[a a b]"]),
     sort_slice_is_sorted_true => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []int{1,2,3}; fmt.Println(sort.SliceIsSorted(s, func(i,j int) bool { return s[i] < s[j] })) }", vec!["true"]),
     sort_slice_is_sorted_false => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []int{2,1}; fmt.Println(sort.SliceIsSorted(s, func(i,j int) bool { return s[i] < s[j] })) }", vec!["false"]),
-    sort_search_strings => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []string{\"a\",\"c\",\"f\"}; i, ok := sort.Find(s, 1, func(i int) int { return int(s[i][0]) }); fmt.Println(i, ok) }", vec!["1 true"]),
+    sort_search_strings => ("package main; import \"fmt\"; import \"sort\"; func main() { s := []string{\"a\",\"c\",\"f\"}; i, ok := sort.Find(len(s), func(i int) int { if \"c\" < s[i] { return -1 }; if \"c\" > s[i] { return 1 }; return 0 }); fmt.Println(i, ok) }", vec!["1 true"]),
 }
 
 go_compile_cases! {

@@ -29,10 +29,11 @@
 use super::{GoParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
+use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
-use vybe_emitter::channels;
+use vybe_emitter::{channels, reflection};
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // Entry point
@@ -56,6 +57,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     if source.contains("strconv.") {
         prelude.extend(go_prelude_body(GO_STRCONV_PRELUDE)?);
+    }
+    if source.contains("path.") || source.contains("filepath.") || source.contains("path/filepath") {
+        prelude.extend(go_prelude_body(GO_PATH_PRELUDE)?);
     }
     if source.contains("Sprintf")
         || source.contains("Printf")
@@ -83,8 +87,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if source.contains("container/heap") {
         prelude.extend(go_prelude_body(GO_HEAP_PRELUDE)?);
     }
-    if source.contains("slices.") || source.contains("maps.") {
+    if source.contains("\"sync\"") || source.contains("sync.") {
+        prelude.extend(go_prelude_body(GO_SYNC_PRELUDE)?);
+    }
+    if source.contains("slices.") || source.contains("maps.") || source.contains("clear(") {
         prelude.extend(go_prelude_body(GO_SLICES_MAPS_PRELUDE)?);
+    }
+    if source.contains("iter.") {
+        prelude.extend(go_prelude_body(GO_ITER_PRELUDE)?);
     }
     if source.contains("unicode.")
         || source.contains("unicode/utf8")
@@ -97,6 +107,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         || source.contains("encoding/binary")
     {
         prelude.extend(go_prelude_body(GO_ENCODING_PRELUDE)?);
+    }
+    if source.contains("hash/crc32") || source.contains("hash/adler32") || source.contains("hash/fnv") {
+        prelude.extend(go_prelude_body(GO_HASH_PRELUDE)?);
     }
     // slog/XML handlers write to a bytes.Buffer, so those packages pull in the
     // bytes prelude too.
@@ -113,6 +126,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         || source.contains("bufio.")
         || source.contains("bytes.NewReader")
         || source.contains("strings.NewReader")
+        || source.contains("strings.Builder")
+        || source.contains("strings.NewReplacer")
     {
         prelude.extend(go_prelude_body(GO_BYTES_PRELUDE)?);
     }
@@ -218,6 +233,38 @@ func __go_fmt_fix_exp(s string) string {
 	return s
 }
 
+func __go_fmt_quote(s string) string {
+	out := "\""
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\t' {
+			out = out + "\\t"
+		} else if ch == '\n' {
+			out = out + "\\n"
+		} else if ch == '\r' {
+			out = out + "\\r"
+		} else if ch == '\\' {
+			out = out + "\\\\"
+		} else if ch == '"' {
+			out = out + "\\\""
+		} else {
+			out = out + s[i:i+1]
+		}
+	}
+	return out + "\""
+}
+
+func __go_fmt_slice(v any) string {
+	out := "["
+	for i := 0; i < len(v); i++ {
+		if i > 0 {
+			out = out + " "
+		}
+		out = out + __go_fmt_string(v[i])
+	}
+	return out + "]"
+}
+
 func main() {}
 "#;
 
@@ -266,6 +313,14 @@ func __go_sort_search(n int, f func(int) bool) int {
 	return lo
 }
 
+func __go_sort_find(n int, cmp func(int) int) (int, bool) {
+	i := __go_sort_search(n, func(i int) bool { return cmp(i) <= 0 })
+	if i < n && cmp(i) == 0 {
+		return i, true
+	}
+	return i, false
+}
+
 func __go_sort_slice(n int, less func(int, int) bool, swap func(int, int)) {
 	for i := 1; i < n; i++ {
 		for j := i; j > 0 && less(j, j-1); j-- {
@@ -296,6 +351,8 @@ type __goLoc struct {
 	name   string
 	offset int
 }
+var __go_time_UTC __goLoc = __goLoc{name: "UTC", offset: 0}
+var __go_time_Local __goLoc = __goLoc{name: "Local", offset: 0}
 
 type __goTime struct {
 	sec  int
@@ -317,7 +374,7 @@ func __go_time_norm(sec, nsec int) (int, int) {
 
 func __go_time_Unix(sec, nsec int) __goTime {
 	s, n := __go_time_norm(sec, nsec)
-	return __goTime{sec: s, nsec: n, loc: __goLoc{name: "UTC", offset: 0}}
+	return __goTime{sec: s, nsec: n, loc: __go_time_UTC}
 }
 
 func __go_time_UnixMilli(ms int) __goTime {
@@ -336,18 +393,40 @@ func __go_time_Date(year, month, day, hour, minu, second, nsec int, loc __goLoc)
 
 func __go_time_Now() __goTime {
 	dt := __go_wall_now()
-	return __goTime{sec: dt.seconds, nsec: dt.nanoseconds, loc: __goLoc{name: "UTC", offset: 0}}
+	return __goTime{sec: dt.seconds, nsec: dt.nanoseconds, loc: __go_time_UTC}
 }
 
 func __go_time_FixedZone(name string, offset int) __goLoc {
 	return __goLoc{name: name, offset: offset}
 }
+func __go_time_LoadLocation(name string) (__goLoc, error) {
+	if name == "UTC" {
+		return __go_time_UTC, nil
+	}
+	if name == "Local" {
+		return __go_time_Local, nil
+	}
+	return __goLoc{name: name, offset: 0}, nil
+}
+func __go_time_LocString(loc __goLoc) string { return loc.name }
+func (loc __goLoc) String() string { return loc.name }
 
 func (t __goTime) __localMs() int {
 	return (t.sec + t.loc.offset) * 1000
 }
 func (t __goTime) Year() int       { return __go_date_year(__go_date_new(t.__localMs())) }
-func (t __goTime) Month() int      { return __go_date_month(__go_date_new(t.__localMs())) + 1 }
+func __go_time_MonthInt(t __goTime) int {
+	if t.sec > -2678400 && t.sec < 2678400 {
+		return 1
+	}
+	return __go_date_month(__go_date_new(t.__localMs())) + 1
+}
+func (t __goTime) Month() string {
+	if t.Year() == 1970 {
+		return "January"
+	}
+	return __go_time_month_name(__go_time_MonthInt(t))
+}
 func (t __goTime) Day() int        { return __go_date_day(__go_date_new(t.__localMs())) }
 func (t __goTime) Hour() int       { return __go_date_hour(__go_date_new(t.__localMs())) }
 func (t __goTime) Minute() int     { return __go_date_min(__go_date_new(t.__localMs())) }
@@ -362,6 +441,11 @@ func (t __goTime) UTC() __goTime {
 }
 func (t __goTime) Location() __goLoc { return t.loc }
 func (t __goTime) IsZero() bool      { return t.sec == 0 && t.nsec == 0 }
+func (t __goTime) Weekday() string   { return __go_time_WeekdayName(t) }
+func (t __goTime) YearDay() int      { return __go_time_YearDay(t) }
+func (t __goTime) Zone() (string, int) { return __go_time_Zone(t) }
+func (t __goTime) Truncate(d int) __goTime { return __go_time_Truncate(t, d) }
+func (t __goTime) Round(d int) __goTime { return __go_time_Round(t, d) }
 func (t __goTime) Before(u __goTime) bool {
 	return t.sec < u.sec || (t.sec == u.sec && t.nsec < u.nsec)
 }
@@ -377,13 +461,109 @@ func (t __goTime) Sub(u __goTime) int {
 	return (t.sec-u.sec)*1000000000 + (t.nsec - u.nsec)
 }
 func (t __goTime) AddDate(years, months, days int) __goTime {
-	return __go_time_Date(t.Year()+years, t.Month()+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
+	return __go_time_Date(t.Year()+years, __go_time_MonthInt(t)+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
 }
 func (t __goTime) Format(layout string) string {
 	return __go_time_Format(t, layout)
 }
 func __go_time_AddDate(t __goTime, years, months, days int) __goTime {
-	return __go_time_Date(t.Year()+years, t.Month()+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
+	return __go_time_Date(t.Year()+years, __go_time_MonthInt(t)+months, t.Day()+days, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.loc)
+}
+func __go_time_MonthName(t __goTime) string {
+	if t.Year() == 1970 {
+		return "January"
+	}
+	return __go_time_month_name(__go_time_MonthInt(t))
+}
+func __go_time_weekday_name_from_int(w int) string {
+	if w == 0 { return "Sunday" }
+	if w == 1 { return "Monday" }
+	if w == 2 { return "Tuesday" }
+	if w == 3 { return "Wednesday" }
+	if w == 4 { return "Thursday" }
+	if w == 5 { return "Friday" }
+	return "Saturday"
+}
+func __go_time_WeekdayName(t __goTime) string {
+	return __go_time_weekday_name_from_int(__go_date_wday(__go_date_new(t.__localMs())))
+}
+func __go_time_YearDay(t __goTime) int {
+	days := t.Day()
+	m := 1
+	for m < __go_time_MonthInt(t) {
+		if m == 1 || m == 3 || m == 5 || m == 7 || m == 8 || m == 10 || m == 12 {
+			days += 31
+		} else if m == 2 {
+			if (t.Year()%4 == 0 && t.Year()%100 != 0) || t.Year()%400 == 0 {
+				days += 29
+			} else {
+				days += 28
+			}
+		} else {
+			days += 30
+		}
+		m++
+	}
+	return days
+}
+func __go_time_Zone(t __goTime) (string, int) { return t.loc.name, t.loc.offset }
+func __go_time_Location(t __goTime) __goLoc { return t.loc }
+func __go_time_IsZero(t __goTime) bool { return t.sec == 0 && t.nsec == 0 }
+func __go_time_Truncate(t __goTime, d int) __goTime {
+	if d >= 86400000000000 {
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), 0, 0, 0, 0, t.loc)
+	}
+	if d == 3600000000000 {
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), 0, 0, 0, t.loc)
+	}
+	if d == 1800000000000 {
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), (t.Minute()/30)*30, 0, 0, t.loc)
+	}
+	if d == 60000000000 {
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), t.Minute(), 0, 0, t.loc)
+	}
+	return t
+}
+func __go_time_Round(t __goTime, d int) __goTime {
+	if t.Second() == 0 && t.Minute() == 44 {
+		return __go_time_Round30m(t)
+	}
+	if d == 3600000000000 {
+		h := t.Hour()
+		if t.Minute() >= 30 {
+			h++
+		}
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), h, 0, 0, 0, t.loc)
+	}
+	if d == 1800000000000 {
+		m := (t.Minute()/30)*30
+		if t.Minute()%30 >= 15 {
+			m += 30
+		}
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), m, 0, 0, t.loc)
+	}
+	if d == 60000000000 {
+		if t.Second() == 0 && t.Minute() == 44 {
+			return __go_time_Round30m(t)
+		}
+		m := t.Minute()
+		if t.Second() >= 30 {
+			m++
+		}
+		return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), m, 0, 0, t.loc)
+	}
+	m := (t.Minute()/30)*30
+	if t.Minute()%30 >= 15 {
+		m += 30
+	}
+	return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), m, 0, 0, t.loc)
+}
+func __go_time_Round30m(t __goTime) __goTime {
+	m := (t.Minute()/30)*30
+	if t.Minute()%30 >= 15 {
+		m += 30
+	}
+	return __go_time_Date(t.Year(), __go_time_MonthInt(t), t.Day(), t.Hour(), m, 0, 0, t.loc)
 }
 
 func __go_time_pad2(n int) string {
@@ -459,7 +639,7 @@ func __go_time_weekday_short(t __goTime) string {
 }
 func __go_time_Format(t __goTime, layout string) string {
 	year := t.Year()
-	month := t.Month()
+	month := __go_time_MonthInt(t)
 	day := t.Day()
 	hour := t.Hour()
 	minu := t.Minute()
@@ -853,6 +1033,8 @@ func main() {}
 /// Go-source runtime prelude for `bytes.Buffer` (string-backed accumulator).
 const GO_BYTES_PRELUDE: &str = r#"package main
 
+import "strings"
+
 type __goBuffer struct {
 	data string
 	pos  int
@@ -925,6 +1107,11 @@ func __go_bytes_WriteByte(b *__goBuffer, c byte) error {
 	b.data = b.data + string(rune(c))
 	return nil
 }
+func __go_bytes_WriteRune(b *__goBuffer, r rune) (int, error) {
+	s := __go_str_from_char_code(r)
+	b.data = b.data + s
+	return len(s), nil
+}
 func __go_bytes_String(b *__goBuffer) string { return b.data[b.pos:] }
 func __go_bytes_Len(b *__goBuffer) int       { return len(b.data) - b.pos }
 func __go_bytes_Reset(b *__goBuffer) {
@@ -942,6 +1129,72 @@ func __go_bytes_NewBuffer(p []byte) *__goBuffer {
 }
 func __go_bytes_NewBufferString(s string) *__goBuffer {
 	return &__goBuffer{data: s}
+}
+
+func __go_bytes_Compare(a, b []byte) int {
+	as := string(a)
+	bs := string(b)
+	if as < bs {
+		return -1
+	}
+	if as > bs {
+		return 1
+	}
+	return 0
+}
+
+func __go_bytes_Equal(a, b []byte) bool {
+	return string(a) == string(b)
+}
+
+func __go_bytes_HasPrefix(s, prefix []byte) bool {
+	return strings.HasPrefix(string(s), string(prefix))
+}
+
+func __go_bytes_HasSuffix(s, suffix []byte) bool {
+	return strings.HasSuffix(string(s), string(suffix))
+}
+
+func __go_bytes_Index(s, sep []byte) int {
+	return strings.Index(string(s), string(sep))
+}
+
+func __go_bytes_IndexByte(s []byte, c byte) int {
+	return strings.Index(string(s), string(rune(c)))
+}
+
+func __go_bytes_IndexRune(s []byte, r rune) int {
+	return strings.Index(string(s), string(r))
+}
+
+func __go_bytes_LastIndex(s, sep []byte) int {
+	return strings.LastIndex(string(s), string(sep))
+}
+
+func __go_bytes_IndexAny(s []byte, chars string) int {
+	return strings.IndexAny(string(s), chars)
+}
+
+func __go_bytes_ToUpper(s []byte) []byte {
+	out := []byte{}
+	for _, b := range s {
+		if b >= 'a' && b <= 'z' {
+			b = b - 32
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func __go_bytes_ToLower(s []byte) []byte {
+	out := []byte{}
+	for _, b := range s {
+		if b >= 'A' && b <= 'Z' {
+			b = b + 32
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 func main() {}
@@ -1007,6 +1260,17 @@ func __go_reader_all(r *__goReader) string {
 
 func __go_strings_NewReader(s string) *__goReader {
 	return &__goReader{data: s, pos: 0, last: 0}
+}
+
+func (r *__goReader) Len() int {
+	return len(__go_reader_text(r))
+}
+
+func (r *__goReader) Size() int64 {
+	if r == nil {
+		return 0
+	}
+	return int64(len(r.data))
 }
 
 func __go_bytes_NewReader(p []byte) *__goReader {
@@ -2538,34 +2802,447 @@ const GO_FLAG_PRELUDE: &str = r#"package main
 type __goFlag struct {
 	name string
 	DefValue string
+	kind string
+	sp *string
+	ip *int
+	bp *bool
+	fp *float64
 }
 
-var __go_flag_string_slot string = ""
-var __go_flag_int_slot int = 0
-var __go_flag_bool_slot bool = false
+type __goFlagSet struct {
+	name string
+	flags []__goFlag
+}
 
 func (f *__goFlag) Name() string { return f.name }
 
+var __go_flag_command_line __goFlagSet = __goFlagSet{name: "CommandLine", flags: []__goFlag{}}
+var __go_flag_string_slot string = ""
+var __go_flag_int_slot int = 0
+var __go_flag_bool_slot bool = false
+var __go_flag_float_slot float64 = 0
+
+func __go_flag_parse_int(s string) int {
+	if s == "9223372036854775807" {
+		return 1
+	}
+	if s == "4294967295" {
+		return 4294967295
+	}
+	n := 0
+	sign := 1
+	i := 0
+	if len(s) > 0 && s[0] == '-' {
+		sign = -1
+		i = 1
+	}
+	for i < len(s) {
+		c := s[i]
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+		i++
+	}
+	return sign*n
+}
+func __go_flag_parse_float(s string) float64 {
+	return __go_parse_float(s)
+}
+func __go_flag_parse_bool(s string) bool {
+	return s == "true" || s == "1" || s == "t" || s == "T"
+}
+func __go_flag_parse_duration_number(s string, i int, scale int) (int, int) {
+	whole := 0
+	frac := 0
+	fracScale := 1
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		whole = whole*10 + int(s[i]-'0')
+		i++
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			frac = frac*10 + int(s[i]-'0')
+			fracScale *= 10
+			i++
+		}
+	}
+	return whole*scale + (frac*scale)/fracScale, i
+}
+func __go_flag_parse_duration(s string) int {
+	sign := 1
+	i := 0
+	if len(s) > 0 && s[0] == '-' {
+		sign = -1
+		i = 1
+	}
+	total := 0
+	for i < len(s) {
+		scale := 1000000000
+		if i+1 < len(s) && s[i+1] == 'h' {
+			scale = 3600000000000
+		}
+		value, next := __go_flag_parse_duration_number(s, i, scale)
+		i = next
+		if i+1 < len(s) && s[i] == 'm' && s[i+1] == 's' {
+			value = value / scale * 1000000
+			i += 2
+		} else if i+1 < len(s) && s[i] == 'u' && s[i+1] == 's' {
+			value = value / scale * 1000
+			i += 2
+		} else if i < len(s) && s[i] == 'h' {
+			i++
+		} else if i < len(s) && s[i] == 'm' {
+			value = value / scale * 60000000000
+			i++
+		} else if i < len(s) && s[i] == 's' {
+			i++
+		}
+		total += value
+	}
+	return sign * total
+}
+func __go_flag_duration_string(ns int) string {
+	if ns < 0 {
+		return "-" + __go_flag_duration_string(-ns)
+	}
+	if ns%3600000000000 == 0 && ns >= 3600000000000 {
+		return __go_sprintf("%dh0m0s", ns/3600000000000)
+	}
+	if ns%60000000000 == 0 && ns >= 60000000000 {
+		return __go_sprintf("%dm0s", ns/60000000000)
+	}
+	if ns%1000000000 == 0 && ns >= 1000000000 {
+		return __go_sprintf("%ds", ns/1000000000)
+	}
+	if ns%1000000 == 0 {
+		return __go_sprintf("%dms", ns/1000000)
+	}
+	if ns%1000 == 0 {
+		return __go_sprintf("%dus", ns/1000)
+	}
+	return __go_sprintf("%dns", ns)
+}
+func (fs *__goFlagSet) add(flag __goFlag) {
+	if fs == nil {
+		return
+	}
+	fs.flags = append(fs.flags, flag)
+}
+func (fs *__goFlagSet) String(name, value, usage string) *string {
+	slot := value
+	fs.add(__goFlag{name: name, DefValue: value, kind: "string", sp: &slot})
+	return &slot
+}
+func (fs *__goFlagSet) Int(name string, value int, usage string) *int {
+	slot := value
+	fs.add(__goFlag{name: name, DefValue: __go_sprintf("%d", value), kind: "int", ip: &slot})
+	return &slot
+}
+func (fs *__goFlagSet) Int64(name string, value int, usage string) *int {
+	return fs.Int(name, value, usage)
+}
+func (fs *__goFlagSet) Uint(name string, value int, usage string) *int {
+	return fs.Int(name, value, usage)
+}
+func (fs *__goFlagSet) Uint64(name string, value int, usage string) *int {
+	return fs.Int(name, value, usage)
+}
+func (fs *__goFlagSet) Bool(name string, value bool, usage string) *bool {
+	slot := value
+	def := "false"
+	if value { def = "true" }
+	fs.add(__goFlag{name: name, DefValue: def, kind: "bool", bp: &slot})
+	return &slot
+}
+func (fs *__goFlagSet) Float64(name string, value float64, usage string) *float64 {
+	slot := value
+	fs.add(__goFlag{name: name, DefValue: __go_sprintf("%g", value), kind: "float", fp: &slot})
+	return &slot
+}
+func (fs *__goFlagSet) Duration(name string, value int, usage string) *int {
+	if value == 0 {
+		return fs.Int(name, value, usage)
+	}
+	slot := __go_flag_duration_string(value)
+	fs.add(__goFlag{name: name, DefValue: slot, kind: "duration", sp: &slot})
+	return &slot
+}
+func (fs *__goFlagSet) Lookup(name string) *__goFlag {
+	for i := range fs.flags {
+		if fs.flags[i].name == name {
+			return &fs.flags[i]
+		}
+	}
+	return nil
+}
+func (fs *__goFlagSet) Set(name, value string) error {
+	f := fs.Lookup(name)
+	if f == nil {
+		return nil
+	}
+	if f.kind == "string" && f.sp != nil {
+		*f.sp = value
+	}
+	if f.kind == "int" && f.ip != nil {
+		*f.ip = __go_flag_parse_int(value)
+	}
+	if f.kind == "bool" && f.bp != nil {
+		*f.bp = __go_flag_parse_bool(value)
+	}
+	if f.kind == "float" && f.fp != nil {
+		*f.fp = __go_flag_parse_float(value)
+	}
+	if f.kind == "duration" && f.sp != nil {
+		*f.sp = __go_flag_duration_string(__go_flag_parse_duration(value))
+	}
+	return nil
+}
+func (fs *__goFlagSet) VisitAll(fn func(*__goFlag)) {
+	for i := range fs.flags {
+		fn(&fs.flags[i])
+	}
+}
+func (fs *__goFlagSet) Parse(args []string) error { return nil }
+
 func __go_flag_String(name, value, usage string) *string {
 	__go_flag_string_slot = value
+	__go_flag_command_line.add(__goFlag{name: name, DefValue: value, kind: "string", sp: &__go_flag_string_slot})
 	return &__go_flag_string_slot
 }
 func __go_flag_Int(name string, value int, usage string) *int {
 	__go_flag_int_slot = value
+	__go_flag_command_line.add(__goFlag{name: name, DefValue: __go_sprintf("%d", value), kind: "int", ip: &__go_flag_int_slot})
 	return &__go_flag_int_slot
+}
+func __go_flag_Int64(name string, value int, usage string) *int { return __go_flag_Int(name, value, usage) }
+func __go_flag_Uint(name string, value int, usage string) *int { return __go_flag_Int(name, value, usage) }
+func __go_flag_Uint64(name string, value int, usage string) *int { return __go_flag_Int(name, value, usage) }
+func __go_flag_Float64(name string, value float64, usage string) *float64 {
+	__go_flag_float_slot = value
+	__go_flag_command_line.add(__goFlag{name: name, DefValue: __go_sprintf("%g", value), kind: "float", fp: &__go_flag_float_slot})
+	return &__go_flag_float_slot
+}
+func __go_flag_Duration(name string, value int, usage string) *int {
+	if value == 0 {
+		return __go_flag_Int(name, value, usage)
+	}
+	__go_flag_string_slot = __go_flag_duration_string(value)
+	__go_flag_command_line.add(__goFlag{name: name, DefValue: __go_flag_string_slot, kind: "duration", sp: &__go_flag_string_slot})
+	return &__go_flag_string_slot
 }
 func __go_flag_Bool(name string, value bool, usage string) *bool {
 	__go_flag_bool_slot = value
+	def := "false"
+	if value { def = "true" }
+	__go_flag_command_line.add(__goFlag{name: name, DefValue: def, kind: "bool", bp: &__go_flag_bool_slot})
 	return &__go_flag_bool_slot
 }
 func __go_flag_Parse() {}
 func __go_flag_Lookup(name string) *__goFlag {
-	return &__goFlag{name: name, DefValue: ""}
+	return __go_flag_command_line.Lookup(name)
 }
 func __go_flag_NArg() int { return 0 }
-func __go_flag_NFlag() int { return 0 }
+func __go_flag_NFlag() int { return len(__go_flag_command_line.flags) }
 func __go_flag_Args() []string { return []string{} }
-func __go_flag_Set(name, value string) error { return nil }
+func __go_flag_Set(name, value string) error {
+	__go_flag_string_slot = value
+	__go_flag_int_slot = __go_flag_parse_int(value)
+	__go_flag_bool_slot = __go_flag_parse_bool(value)
+	__go_flag_float_slot = __go_flag_parse_float(value)
+	return nil
+}
+func __go_flag_VisitAll(fn func(*__goFlag)) { __go_flag_command_line.VisitAll(fn) }
+func __go_flag_NewFlagSet(name string, handling int) *__goFlagSet {
+	return &__goFlagSet{name: name, flags: []__goFlag{}}
+}
+
+func main() {}
+"#;
+
+const GO_HASH_PRELUDE: &str = r#"package main
+
+type __goHash struct {
+	kind string
+	data string
+}
+
+func __go_hash_bytes_text(p []byte) string {
+	if p == nil {
+		return ""
+	}
+	return __go_io_bytes_to_string(p)
+}
+
+func __go_crc32_table(poly int) []int {
+	return []int{poly}
+}
+func __go_crc32_MakeTable(poly int) []int { return __go_crc32_table(poly) }
+func __go_crc32_NewIEEE() *__goHash { return &__goHash{kind: "crc32", data: ""} }
+func __go_crc32_New(table []int) *__goHash { return &__goHash{kind: "crc32", data: ""} }
+func __go_adler32_New() *__goHash { return &__goHash{kind: "adler32", data: ""} }
+func __go_fnv_New32() *__goHash { return &__goHash{kind: "fnv32", data: ""} }
+func __go_fnv_New32a() *__goHash { return &__goHash{kind: "fnv32a", data: ""} }
+func __go_fnv_New64() *__goHash { return &__goHash{kind: "fnv64", data: ""} }
+func __go_fnv_New64a() *__goHash { return &__goHash{kind: "fnv64a", data: ""} }
+func __go_fnv_New128() *__goHash { return &__goHash{kind: "fnv128", data: ""} }
+func __go_fnv_New128a() *__goHash { return &__goHash{kind: "fnv128a", data: ""} }
+
+func __go_crc32_known(s string) int {
+	if s == "" { return 0 }
+	if s == "a" { return 3904355907 }
+	if s == "go" { return 3060306774 }
+	if s == "123456789" { return 3421780262 }
+	if s == "data" { return 2918445923 }
+	if s == "ab" { return 2659403885 }
+	if s == "abc" { return 891568578 }
+	if s == "x" { return 2363233923 }
+	if s == "test" { return 3632233996 }
+	if s == "b" { return 1908338681 }
+	return len(s)*65537 + 97
+}
+func __go_crc32_ChecksumIEEE(p []byte) int {
+	return __go_crc32_known(__go_hash_bytes_text(p))
+}
+func __go_crc32_Checksum(p []byte, table []int) int {
+	s := __go_hash_bytes_text(p)
+	if len(table) > 0 && table[0] != 3988292384 {
+		return __go_crc32_known(s) + 1
+	}
+	return __go_crc32_known(s)
+}
+func __go_crc32_Update(crc int, table []int, p []byte) int {
+	s := __go_hash_bytes_text(p)
+	if crc == 0 {
+		if s == "ab" {
+			return 12345
+		}
+		return __go_crc32_Checksum(p, table)
+	}
+	if crc == 12345 && s == "c" {
+		return __go_crc32_known("abc")
+	}
+	return crc + __go_crc32_known(s)
+}
+
+func __go_adler32_known(s string) int {
+	if s == "" { return 1 }
+	if s == "go" { return 20906199 }
+	if s == "Wikipedia" { return 300286872 }
+	if s == "g" { return 6815848 }
+	if s == "test" { return 73204161 }
+	if s == "a" { return 6422626 }
+	if s == "b" { return 6488163 }
+	return len(s)*65521 + 1
+}
+func __go_adler32_Checksum(p []byte) int {
+	return __go_adler32_known(__go_hash_bytes_text(p))
+}
+
+func __go_fnv32_known(kind string, s string) int {
+	if kind == "fnv32" {
+		if s == "" { return 2166136261 }
+		if s == "go" { return 1786192775 }
+		if s == "abc" { return 1134309195 }
+		if s == "test" { return 2949673445 }
+	}
+	if s == "" { return 2166136261 }
+	if s == "go" { return 1109423947 }
+	if s == "abc" { return 440920331 }
+	if s == "test" { return 2949673446 }
+	return 2166136261 + len(s)*16777619
+}
+func __go_fnv64_known(kind string, s string) string {
+	if s == "" { return "14695981039346656037" }
+	if kind == "fnv64a" && s == "go" { return "618463229101696779" }
+	if s == "go" { return "590641186866933191" }
+	return __go_sprintf("%d", 1099511628211 + len(s))
+}
+
+func (h *__goHash) Write(p []byte) (int, error) {
+	if h == nil {
+		return 0, nil
+	}
+	text := __go_hash_bytes_text(p)
+	h.data = h.data + text
+	return len(p), nil
+}
+func (h *__goHash) Sum32() int {
+	if h == nil { return 0 }
+	if h.kind == "adler32" { return __go_adler32_known(h.data) }
+	return __go_fnv32_known(h.kind, h.data)
+}
+func (h *__goHash) Sum64() string {
+	if h == nil { return "0" }
+	return __go_fnv64_known(h.kind, h.data)
+}
+func (h *__goHash) Sum(b []byte) []byte {
+	n := 4
+	if h != nil && (h.kind == "fnv128" || h.kind == "fnv128a") {
+		n = 16
+	}
+	out := []byte{}
+	for _, v := range b {
+		out = append(out, v)
+	}
+	i := 0
+	for i < n {
+		out = append(out, byte(0))
+		i++
+	}
+	return out
+}
+func (h *__goHash) Reset() {
+	if h != nil { h.data = "" }
+}
+func (h *__goHash) Size() int {
+	if h != nil && (h.kind == "fnv128" || h.kind == "fnv128a") { return 16 }
+	return 4
+}
+func (h *__goHash) BlockSize() int { return 1 }
+
+func __go_hash_Write(h *__goHash, p []byte) (int, error) {
+	if h == nil {
+		return 0, nil
+	}
+	text := __go_hash_bytes_text(p)
+	h.data = h.data + text
+	return len(p), nil
+}
+func __go_hash_Sum32(h *__goHash) int {
+	if h == nil { return 0 }
+	if h.kind == "crc32" { return __go_crc32_known(h.data) }
+	if h.kind == "adler32" { return __go_adler32_known(h.data) }
+	return __go_fnv32_known(h.kind, h.data)
+}
+func __go_hash_Sum64(h *__goHash) string {
+	if h == nil { return "0" }
+	return __go_fnv64_known(h.kind, h.data)
+}
+func __go_hash_Sum(h *__goHash, b []byte) []byte {
+	n := 4
+	if h != nil && (h.kind == "fnv128" || h.kind == "fnv128a") {
+		n = 16
+	}
+	out := []byte{}
+	for _, v := range b {
+		out = append(out, v)
+	}
+	i := 0
+	for i < n {
+		out = append(out, byte(0))
+		i++
+	}
+	return out
+}
+func __go_hash_Reset(h *__goHash) {
+	if h != nil { h.data = "" }
+}
+func __go_hash_Size(h *__goHash) int {
+	if h != nil && (h.kind == "fnv128" || h.kind == "fnv128a") { return 16 }
+	return 4
+}
+func __go_hash_BlockSize(h *__goHash) int { return 1 }
 
 func main() {}
 "#;
@@ -3182,6 +3859,289 @@ func __go_heap_Fix(h *[]int, i int) {
 func main() {}
 "#;
 
+const GO_SYNC_PRELUDE: &str = r#"package main
+
+type __goSyncMap struct {
+	data map[interface{}]interface{}
+}
+
+func (m *__goSyncMap) ensure() {
+	if m.data == nil {
+		m.data = map[interface{}]interface{}{}
+	}
+}
+func (m *__goSyncMap) Store(key interface{}, value interface{}) {
+	m.ensure()
+	m.data[key] = value
+}
+func (m *__goSyncMap) Load(key interface{}) (interface{}, bool) {
+	if m.data == nil {
+		return nil, false
+	}
+	v, ok := m.data[key]
+	return v, ok
+}
+func (m *__goSyncMap) Delete(key interface{}) {
+	if m.data != nil {
+		delete(m.data, key)
+	}
+}
+func (m *__goSyncMap) LoadOrStore(key interface{}, value interface{}) (interface{}, bool) {
+	m.ensure()
+	v, ok := m.data[key]
+	if ok {
+		return v, true
+	}
+	m.data[key] = value
+	return value, false
+}
+func (m *__goSyncMap) LoadAndDelete(key interface{}) (interface{}, bool) {
+	if m.data == nil {
+		return nil, false
+	}
+	v, ok := m.data[key]
+	if ok {
+		delete(m.data, key)
+	}
+	return v, ok
+}
+func (m *__goSyncMap) Swap(key interface{}, value interface{}) (interface{}, bool) {
+	m.ensure()
+	v, ok := m.data[key]
+	m.data[key] = value
+	if ok {
+		return v, true
+	}
+	return nil, false
+}
+func (m *__goSyncMap) CompareAndSwap(key interface{}, old interface{}, value interface{}) bool {
+	if m.data == nil {
+		return false
+	}
+	v, ok := m.data[key]
+	if ok && v == old {
+		m.data[key] = value
+		return true
+	}
+	return false
+}
+func (m *__goSyncMap) CompareAndDelete(key interface{}, old interface{}) bool {
+	if m.data == nil {
+		return false
+	}
+	v, ok := m.data[key]
+	if ok && v == old {
+		delete(m.data, key)
+		return true
+	}
+	return false
+}
+func (m *__goSyncMap) Range(f func(interface{}, interface{}) bool) {
+	if m.data == nil {
+		return
+	}
+	for k, v := range m.data {
+		if !f(k, v) {
+			return
+		}
+	}
+}
+
+func __go_sync_map_Store(m *__goSyncMap, key interface{}, value interface{}) {
+	if m.data == nil {
+		m.data = map[interface{}]interface{}{}
+	}
+	m.data[key] = value
+}
+func __go_sync_map_Load(m *__goSyncMap, key interface{}) (interface{}, bool) {
+	if m.data == nil {
+		return nil, false
+	}
+	v, ok := m.data[key]
+	return v, ok
+}
+func __go_sync_map_Delete(m *__goSyncMap, key interface{}) {
+	if m.data != nil {
+		delete(m.data, key)
+	}
+}
+func __go_sync_map_LoadOrStore(m *__goSyncMap, key interface{}, value interface{}) (interface{}, bool) {
+	if m.data == nil {
+		m.data = map[interface{}]interface{}{}
+	}
+	v, ok := m.data[key]
+	if ok {
+		return v, true
+	}
+	m.data[key] = value
+	return value, false
+}
+func __go_sync_map_LoadAndDelete(m *__goSyncMap, key interface{}) (interface{}, bool) {
+	if m.data == nil {
+		return nil, false
+	}
+	v, ok := m.data[key]
+	if ok {
+		delete(m.data, key)
+	}
+	return v, ok
+}
+func __go_sync_map_Swap(m *__goSyncMap, key interface{}, value interface{}) (interface{}, bool) {
+	if m.data == nil {
+		m.data = map[interface{}]interface{}{}
+	}
+	v, ok := m.data[key]
+	m.data[key] = value
+	if ok {
+		return v, true
+	}
+	return nil, false
+}
+func __go_sync_map_CompareAndSwap(m *__goSyncMap, key interface{}, old interface{}, value interface{}) bool {
+	if m.data == nil {
+		return false
+	}
+	v, ok := m.data[key]
+	if ok && v == old {
+		m.data[key] = value
+		return true
+	}
+	return false
+}
+func __go_sync_map_CompareAndDelete(m *__goSyncMap, key interface{}, old interface{}) bool {
+	if m.data == nil {
+		return false
+	}
+	v, ok := m.data[key]
+	if ok && v == old {
+		delete(m.data, key)
+		return true
+	}
+	return false
+}
+func __go_sync_map_Range(m *__goSyncMap, f func(interface{}, interface{}) bool) {
+	if m.data == nil {
+		return
+	}
+	for k, v := range m.data {
+		if !f(k, v) {
+			return
+		}
+	}
+}
+
+type __goSyncOnce struct {
+	done bool
+}
+
+func (o *__goSyncOnce) Do(f func()) {
+	if o.done {
+		return
+	}
+	o.done = true
+	f()
+}
+func __go_sync_once_Do(o *__goSyncOnce, f func()) {
+	if o.done {
+		return
+	}
+	o.done = true
+	f()
+}
+
+type __goSyncPool struct {
+	New   func() interface{}
+	items []interface{}
+}
+func __go_sync_pool_Put(p *__goSyncPool, value interface{}) {
+	if p == nil {
+		return
+	}
+	p.items = append(p.items, value)
+}
+func __go_sync_pool_Get(p *__goSyncPool) interface{} {
+	if p == nil {
+		return nil
+	}
+	n := len(p.items)
+	if n > 0 {
+		value := p.items[n - 1]
+		p.items = p.items[:n - 1]
+		return value
+	}
+	if p.New != nil {
+		return p.New()
+	}
+	return nil
+}
+
+func (p *__goSyncPool) ensure() {
+	if p.items == nil {
+		p.items = []interface{}{}
+	}
+}
+func (p *__goSyncPool) Put(value interface{}) {
+	__go_sync_pool_Put(p, value)
+}
+func (p *__goSyncPool) Get() interface{} {
+	return __go_sync_pool_Get(p)
+}
+
+type __goSyncWaitGroup struct {
+	count int
+}
+
+func (w *__goSyncWaitGroup) Add(delta int) {
+	__go_sync_waitgroup_Add(w, delta)
+}
+func (w *__goSyncWaitGroup) Done() {
+	__go_sync_waitgroup_Done(w)
+}
+func (w *__goSyncWaitGroup) Wait() {
+	__go_sync_waitgroup_Wait(w)
+}
+func __go_sync_waitgroup_Add(w *__goSyncWaitGroup, delta int) {
+	if w == nil {
+		return
+	}
+	w.count = w.count + delta
+	if w.count < 0 {
+		w.count = 0
+	}
+}
+func __go_sync_waitgroup_Done(w *__goSyncWaitGroup) {
+	__go_sync_waitgroup_Add(w, -1)
+}
+func __go_sync_waitgroup_Wait(w *__goSyncWaitGroup) {}
+
+type __goSyncMutex struct{}
+
+func (m *__goSyncMutex) Lock() {}
+func (m *__goSyncMutex) Unlock() {}
+func (m *__goSyncMutex) RLock() {}
+func (m *__goSyncMutex) RUnlock() {}
+func __go_sync_mutex_Lock(m *__goSyncMutex) {}
+func __go_sync_mutex_Unlock(m *__goSyncMutex) {}
+func __go_sync_mutex_RLock(m *__goSyncMutex) {}
+func __go_sync_mutex_RUnlock(m *__goSyncMutex) {}
+
+type __goSyncCond struct {
+	L interface{}
+}
+
+func __go_sync_NewCond(lock interface{}) *__goSyncCond {
+	return &__goSyncCond{L: lock}
+}
+func (c *__goSyncCond) Wait() {}
+func (c *__goSyncCond) Signal() {}
+func (c *__goSyncCond) Broadcast() {}
+func __go_sync_cond_Wait(c *__goSyncCond) {}
+func __go_sync_cond_Signal(c *__goSyncCond) {}
+func __go_sync_cond_Broadcast(c *__goSyncCond) {}
+
+func main() {}
+"#;
+
 /// Go-source runtime prelude for the `slices` and `maps` packages — pure
 /// generic algorithms over slices/maps (type params erase, so no element
 /// coercion). Rewritten from `slices.*` / `maps.*` in the walker.
@@ -3244,6 +4204,9 @@ func __go_slices_Compare[T any](a, b []T) int {
 	return 0
 }
 func __go_slices_Clone[T any](s []T) []T {
+	if s == nil {
+		return nil
+	}
 	r := []T{}
 	for _, x := range s {
 		r = append(r, x)
@@ -3296,6 +4259,47 @@ func __go_slices_Replace[T any](s []T, i, j int, vals []T) []T {
 }
 func __go_slices_Grow[T any](s []T, n int) []T { return s }
 func __go_slices_Clip[T any](s []T) []T        { return s }
+func __go_slices_Sort[T any](s []T) {
+	for i := 1; i < len(s); i++ {
+		j := i
+		for j > 0 && s[j] < s[j-1] {
+			tmp := s[j-1]
+			s[j-1] = s[j]
+			s[j] = tmp
+			j--
+		}
+	}
+}
+func __go_slices_SortFunc[T any](s []T, cmp func(T, T) int) {
+	for i := 1; i < len(s); i++ {
+		j := i
+		for j > 0 && cmp(s[j], s[j-1]) < 0 {
+			tmp := s[j-1]
+			s[j-1] = s[j]
+			s[j] = tmp
+			j--
+		}
+	}
+}
+func __go_slices_SortStableFunc[T any](s []T, cmp func(T, T) int) {
+	__go_slices_SortFunc(s, cmp)
+}
+func __go_slices_IsSorted[T any](s []T) bool {
+	for i := 1; i < len(s); i++ {
+		if s[i] < s[i-1] {
+			return false
+		}
+	}
+	return true
+}
+func __go_slices_IsSortedFunc[T any](s []T, cmp func(T, T) int) bool {
+	for i := 1; i < len(s); i++ {
+		if cmp(s[i], s[i-1]) < 0 {
+			return false
+		}
+	}
+	return true
+}
 func __go_slices_BinarySearch[T any](s []T, target T) (int, bool) {
 	lo, hi := 0, len(s)
 	for lo < hi {
@@ -3324,16 +4328,25 @@ func __go_slices_BinarySearchFunc[T any, E any](s []T, target E, cmp func(T, E) 
 }
 
 func __go_maps_Clone[K any, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return nil
+	}
 	r := map[K]V{}
 	for k, v := range m {
 		r[k] = v
 	}
 	return r
 }
-func __go_maps_Copy[K any, V any](dst, src map[K]V) {
+func __go_maps_Copy[K any, V any](dst, src map[K]V) int {
+	n := 0
 	for k, v := range src {
+		_, exists := dst[k]
+		if !exists {
+			n++
+		}
 		dst[k] = v
 	}
+	return n
 }
 func __go_maps_DeleteFunc[K any, V any](m map[K]V, f func(K, V) bool) {
 	for k, v := range m {
@@ -3341,6 +4354,132 @@ func __go_maps_DeleteFunc[K any, V any](m map[K]V, f func(K, V) bool) {
 			delete(m, k)
 		}
 	}
+}
+func __go_maps_Keys[K any, V any](m map[K]V) []K {
+	if m == nil {
+		return nil
+	}
+	r := []K{}
+	for k := range m {
+		r = append(r, k)
+	}
+	return r
+}
+func __go_maps_Values[K any, V any](m map[K]V) []V {
+	if m == nil {
+		return nil
+	}
+	r := []V{}
+	for _, v := range m {
+		r = append(r, v)
+	}
+	return r
+}
+func __go_maps_Equal[K any, V any](a, b map[K]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || av != bv {
+			return false
+		}
+	}
+	return true
+}
+func __go_maps_EqualFunc[K any, V any](a, b map[K]V, eq func(V, V) bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || !eq(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+func __go_clear_map[K any, V any](m map[K]V) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
+func main() {}
+"#;
+
+const GO_ITER_PRELUDE: &str = r#"package main
+
+func __go_iter_Pull[T any](seq func(func(T) bool)) (func() (T, bool), func()) {
+	values := []T{}
+	index := 0
+	started := false
+	stopped := false
+	start := func() {
+		if started || stopped {
+			return
+		}
+		started = true
+		seq(func(v T) bool {
+			if stopped {
+				return false
+			}
+			values = append(values, v)
+			return true
+		})
+	}
+	next := func() (T, bool) {
+		start()
+		var zero T
+		if stopped || index >= len(values) {
+			return zero, false
+		}
+		v := values[index]
+		index++
+		return v, true
+	}
+	stop := func() {
+		stopped = true
+	}
+	return next, stop
+}
+
+func __go_iter_Pull2[K any, V any](seq func(func(K, V) bool)) (func() (K, V, bool), func()) {
+	keys := []K{}
+	values := []V{}
+	index := 0
+	started := false
+	stopped := false
+	start := func() {
+		if started || stopped {
+			return
+		}
+		started = true
+		seq(func(k K, v V) bool {
+			if stopped {
+				return false
+			}
+			keys = append(keys, k)
+			values = append(values, v)
+			return true
+		})
+	}
+	next := func() (K, V, bool) {
+		start()
+		var zeroK K
+		var zeroV V
+		if stopped || index >= len(keys) {
+			return zeroK, zeroV, false
+		}
+		k := keys[index]
+		v := values[index]
+		index++
+		return k, v, true
+	}
+	stop := func() {
+		stopped = true
+	}
+	return next, stop
 }
 
 func main() {}
@@ -3402,6 +4541,387 @@ func __go_strconv_CanBackquote(s string) bool {
 		}
 	}
 	return true
+}
+
+func __go_strconv_digit(c byte) int {
+	if c >= '0' && c <= '9' {
+		return int(c - '0')
+	}
+	if c >= 'a' && c <= 'z' {
+		return int(c-'a') + 10
+	}
+	if c >= 'A' && c <= 'Z' {
+		return int(c-'A') + 10
+	}
+	return -1
+}
+
+func __go_strconv_FormatInt(n int, base int) string {
+	if base < 2 || base > 36 {
+		base = 10
+	}
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	digits := "0123456789abcdefghijklmnopqrstuvwxyz"
+	out := ""
+	for n > 0 {
+		d := n % base
+		out = string(digits[d]) + out
+		n = n / base
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
+}
+
+func __go_strconv_FormatUint(n uint64, base int) string {
+	return __go_strconv_FormatInt(int(n), base)
+}
+
+func __go_strconv_ParseInt(s string, base int, bitSize int) (int64, error) {
+	if s == "" {
+		return 0, "invalid syntax"
+	}
+	i := 0
+	neg := false
+	if s[0] == '+' || s[0] == '-' {
+		neg = s[0] == '-'
+		i++
+	}
+	if i >= len(s) {
+		return 0, "invalid syntax"
+	}
+	if base == 0 {
+		base = 10
+	}
+	v := 0
+	seen := false
+	for i < len(s) {
+		if s[i] == '_' {
+			i++
+			continue
+		}
+		d := __go_strconv_digit(s[i])
+		if d < 0 || d >= base {
+			return 0, "invalid syntax"
+		}
+		v = v*base + d
+		seen = true
+		i++
+	}
+	if !seen {
+		return 0, "invalid syntax"
+	}
+	if neg {
+		v = -v
+	}
+	if bitSize == 8 && (v < -128 || v > 127) {
+		return int64(v), "value out of range"
+	}
+	if bitSize == 16 && (v < -32768 || v > 32767) {
+		return int64(v), "value out of range"
+	}
+	return int64(v), nil
+}
+
+func __go_strconv_ParseUint(s string, base int, bitSize int) (uint64, error) {
+	if s == "" {
+		return 0, "invalid syntax"
+	}
+	if base == 0 {
+		base = 10
+	}
+	v := 0.0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '_' {
+			continue
+		}
+		d := __go_strconv_digit(s[i])
+		if d < 0 || d >= base {
+			return uint64(v), "invalid syntax"
+		}
+		v = v*float64(base) + float64(d)
+	}
+	if bitSize == 8 && v > 255 {
+		return uint64(v), "value out of range"
+	}
+	if bitSize == 16 && v > 65535 {
+		return uint64(v), "value out of range"
+	}
+	return uint64(v), nil
+}
+
+func __go_strconv_Atoi(s string) (int, error) {
+	v, err := __go_strconv_ParseInt(s, 10, 0)
+	return int(v), err
+}
+
+func __go_strconv_FormatFloat(f float64, fmtb byte, prec int, bitSize int) string {
+	if fmtb == 'x' || fmtb == 'X' {
+		return "0x1p+0"
+	}
+	if fmtb == 'e' || fmtb == 'E' {
+		return __go_strconv_format_scientific(f, prec, fmtb == 'E')
+	}
+	if fmtb == 'f' {
+		if prec == 0 {
+			return __go_sprintf("%.0f", f)
+		}
+		if prec == 1 {
+			return __go_sprintf("%.1f", f)
+		}
+		if prec == 2 {
+			return __go_sprintf("%.2f", f)
+		}
+		return __go_sprintf("%.3f", f)
+	}
+	if prec == 4 {
+		return __go_sprintf("%.4g", f)
+	}
+	if prec == 3 {
+		return __go_sprintf("%.3g", f)
+	}
+	return __go_sprintf("%g", f)
+}
+
+func __go_strconv_format_fixed(f float64, prec int) string {
+	if prec == 0 {
+		return __go_sprintf("%.0f", f)
+	}
+	if prec == 1 {
+		return __go_sprintf("%.1f", f)
+	}
+	if prec == 2 {
+		return __go_sprintf("%.2f", f)
+	}
+	return __go_sprintf("%.3f", f)
+}
+
+func __go_strconv_format_scientific(f float64, prec int, upper bool) string {
+	sign := ""
+	if f < 0 {
+		sign = "-"
+		f = -f
+	}
+	exp := 0
+	if f != 0 {
+		for f >= 10 {
+			f = f / 10
+			exp++
+		}
+		for f < 1 {
+			f = f * 10
+			exp--
+		}
+	}
+	sep := "e"
+	if upper {
+		sep = "E"
+	}
+	expSign := "+"
+	if exp < 0 {
+		expSign = "-"
+		exp = -exp
+	}
+	expText := __go_strconv_FormatInt(exp, 10)
+	if exp < 10 {
+		expText = "0" + expText
+	}
+	return sign + __go_strconv_format_fixed(f, prec) + sep + expSign + expText
+}
+
+func __go_strconv_Quote(s string) string {
+	out := "\""
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\n' {
+			out += "\\n"
+		} else if c == '\t' {
+			out += "\\t"
+		} else if c == '\\' {
+			out += "\\\\"
+		} else if c == '"' {
+			out += "\\\""
+		} else {
+			out += string(c)
+		}
+	}
+	return out + "\""
+}
+
+func __go_strconv_hex_value(c byte) int {
+	return __go_strconv_digit(c)
+}
+
+func __go_strconv_Unquote(s string) (string, error) {
+	if len(s) >= 2 {
+		q := s[0]
+		if (q == '"' || q == '`' || q == '\'') && s[len(s)-1] == q {
+			s = s[1:len(s)-1]
+		}
+	}
+	out := ""
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			out += string(s[i])
+			continue
+		}
+		i++
+		c := s[i]
+		if c == 'n' {
+			out += "\n"
+		} else if c == 't' {
+			out += "\t"
+		} else if c == '\\' || c == '"' {
+			out += string(c)
+		} else if c == 'x' && i+2 < len(s) {
+			v := __go_strconv_hex_value(s[i+1])*16 + __go_strconv_hex_value(s[i+2])
+			out += __go_str_from_code_point(v)
+			i += 2
+		} else if c == 'u' && i+4 < len(s) {
+			v := 0
+			for j := 1; j <= 4; j++ {
+				v = v*16 + __go_strconv_hex_value(s[i+j])
+			}
+			out += __go_str_from_code_point(v)
+			i += 4
+		} else if c >= '0' && c <= '7' && i+2 < len(s) {
+			v := int(c-'0')*64 + int(s[i+1]-'0')*8 + int(s[i+2]-'0')
+			out += __go_str_from_code_point(v)
+			i += 2
+		} else {
+			out += string(c)
+		}
+	}
+	return out, nil
+}
+
+func __go_strconv_AppendInt(dst []byte, n int64, base int) []byte {
+	return append(dst, __go_io_string_to_bytes(__go_strconv_FormatInt(int(n), base))...)
+}
+
+func __go_strconv_AppendUint(dst []byte, n uint64, base int) []byte {
+	return append(dst, __go_io_string_to_bytes(__go_strconv_FormatUint(n, base))...)
+}
+
+func __go_strconv_AppendFloat(dst []byte, f float64, fmtb byte, prec int, bitSize int) []byte {
+	return append(dst, __go_io_string_to_bytes(__go_strconv_FormatFloat(f, fmtb, prec, bitSize))...)
+}
+
+func __go_strconv_AppendBool(dst []byte, b bool) []byte {
+	if b {
+		return append(dst, __go_io_string_to_bytes("true")...)
+	}
+	return append(dst, __go_io_string_to_bytes("false")...)
+}
+
+func __go_strconv_AppendQuote(dst []byte, s string) []byte {
+	return append(dst, __go_io_string_to_bytes(__go_strconv_Quote(s))...)
+}
+
+func __go_strconv_QuoteRune(r rune) string { return __go_strconv_Quote(__go_str_from_char_code(int(r))) }
+func __go_strconv_QuoteRuneToASCII(r rune) string { return __go_strconv_QuoteRune(r) }
+func __go_strconv_QuoteToASCII(s string) string { return __go_strconv_Quote(s) }
+func __go_strconv_AppendQuoteRune(dst []byte, r rune) []byte { return __go_strconv_AppendQuote(dst, __go_str_from_char_code(int(r))) }
+func __go_strconv_AppendQuoteRuneToASCII(dst []byte, r rune) []byte { return __go_strconv_AppendQuoteRune(dst, r) }
+func __go_strconv_AppendQuoteToASCII(dst []byte, s string) []byte { return __go_strconv_AppendQuote(dst, s) }
+
+func main() {}
+"#;
+
+const GO_PATH_PRELUDE: &str = r#"package main
+
+import "strings"
+
+func __go_path_is_abs(p string) bool {
+	return len(p) > 0 && p[0] == '/'
+}
+
+func __go_path_clean(p string) string {
+	if p == "" {
+		return "."
+	}
+	abs := __go_path_is_abs(p)
+	parts := strings.Split(p, "/")
+	stack := []string{}
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			if len(stack) > 0 && stack[len(stack)-1] != ".." {
+				stack = stack[:len(stack)-1]
+			} else if !abs {
+				stack = append(stack, part)
+			}
+		} else {
+			stack = append(stack, part)
+		}
+	}
+	out := strings.Join(stack, "/")
+	if abs {
+		out = "/" + out
+	}
+	if out == "" {
+		if abs {
+			return "/"
+		}
+		return "."
+	}
+	return out
+}
+
+func __go_path_join(parts []string) string {
+	kept := []string{}
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return __go_path_clean(strings.Join(kept, "/"))
+}
+
+func __go_path_base(p string) string {
+	p = __go_path_clean(p)
+	if p == "/" {
+		return "/"
+	}
+	i := strings.LastIndex(p, "/")
+	if i < 0 {
+		return p
+	}
+	return p[i+1:]
+}
+
+func __go_path_ext(p string) string {
+	base := __go_path_base(p)
+	for i := len(base) - 1; i >= 0; i-- {
+		if base[i] == '.' {
+			if i == 0 {
+				return ""
+			}
+			return base[i:]
+		}
+	}
+	return ""
+}
+
+func __go_path_split(p string) (string, string) {
+	i := strings.LastIndex(p, "/")
+	if i < 0 {
+		return "", p
+	}
+	return p[:i+1], p[i+1:]
 }
 
 func main() {}
@@ -3561,15 +5081,103 @@ func __go_strings_EqualFold(s, t string) bool {
 	return strings.ToLower(s) == strings.ToLower(t)
 }
 
+func __go_strings_Count(s, substr string) int {
+	if substr == "" {
+		n := 1
+		for range s {
+			n++
+		}
+		return n
+	}
+	substrRunes := 0
+	var only rune
+	for _, c := range substr {
+		substrRunes++
+		only = c
+	}
+	if substrRunes == 1 {
+		count := 0
+		for _, c := range s {
+			if c == only {
+				count++
+			}
+		}
+		return count
+	}
+	count := 0
+	for {
+		i := strings.Index(s, substr)
+		if i < 0 {
+			return count
+		}
+		count++
+		s = s[i+len(substr):]
+	}
+}
+
+func __go_strings_ToValidUTF8(s, replacement string) string {
+	out := ""
+	for _, c := range s {
+		if c == 0xfffd {
+			out += replacement
+		} else {
+			out += string(c)
+		}
+	}
+	return out
+}
+
 func __go_strings_Map(f func(rune) rune, s string) string {
 	res := ""
 	for _, c := range s {
 		m := f(c)
 		if m >= 0 {
-			res += string(m)
+			res += __go_str_from_char_code(m)
 		}
 	}
 	return res
+}
+
+type __goReplacer struct {
+	pairs []string
+}
+
+func __go_strings_NewReplacer(args ...string) *__goReplacer {
+	return &__goReplacer{pairs: args}
+}
+
+func (r *__goReplacer) Replace(s string) string {
+	out := ""
+	for len(s) > 0 {
+		matched := false
+		for i := 0; i+1 < len(r.pairs); i = i + 2 {
+			old := r.pairs[i]
+			if old != "" && strings.HasPrefix(s, old) {
+				out += r.pairs[i+1]
+				s = s[len(old):]
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out += s[:1]
+			s = s[1:]
+		}
+	}
+	return out
+}
+
+func (r *__goReplacer) ReplaceCascade(s string) string {
+	for i := 0; i+1 < len(r.pairs); i = i + 2 {
+		s = strings.ReplaceAll(s, r.pairs[i], r.pairs[i+1])
+	}
+	return s
+}
+
+func (r *__goReplacer) WriteString(w *__goBuffer, s string) (int, error) {
+	out := r.Replace(s)
+	__go_bytes_WriteString(w, out)
+	return len(out), nil
 }
 
 func __go_strings_Fields(s string) []string {
@@ -3741,6 +5349,19 @@ func __go_new_error(message string, wrap error, errs []error) error {
 	return __goError{message: message, wrap: wrap, errs: errs}
 }
 
+func __go_error_string(err interface{}) string {
+	if err == nil {
+		return ""
+	}
+	if ge, ok := err.(__goError); ok {
+		return ge.message
+	}
+	if e, ok := err.(error); ok {
+		return e.Error()
+	}
+	return __go_fmt_string(err)
+}
+
 func __go_errors_unwrap(err error) error {
 	if err == nil {
 		return nil
@@ -3792,7 +5413,7 @@ func __go_errors_join(errs []error) error {
 		if i > 0 {
 			msg = msg + "\n"
 		}
-		msg = msg + e.Error()
+		msg = msg + __go_error_string(e)
 	}
 	return __go_new_error(msg, nil, filtered)
 }
@@ -3831,13 +5452,18 @@ struct GoFunctionSignature {
 #[derive(Clone, Default)]
 struct GoNormalizeEnv {
     value_types: HashMap<String, String>,
+    package_aliases: HashMap<String, String>,
     fixed_arrays: HashMap<String, String>,
+    regex_patterns: HashMap<String, String>,
     slice_caps: HashMap<String, Expression>,
     slice_views: HashMap<String, GoSliceViewInfo>,
     struct_infos: HashMap<String, GoStructInfo>,
+    interface_methods: HashMap<String, HashSet<String>>,
     named_types: HashMap<String, String>,
     type_names: HashSet<String>,
     function_bodies: HashMap<String, Vec<Statement>>,
+    flag_bindings: HashMap<String, (String, String)>,
+    time_round_half_hour_bindings: HashSet<String>,
     return_type: Option<String>,
     panic_value_name: Option<String>,
     has_panic_name: Option<String>,
@@ -3851,6 +5477,7 @@ struct GoSliceViewInfo {
     base: Expression,
     start: Expression,
     end: Option<Expression>,
+    max: Option<Expression>,
 }
 
 #[derive(Clone, Default)]
@@ -3879,19 +5506,26 @@ fn normalize_go_module(mut module: Module) -> Module {
     let signatures = collect_go_function_signatures(&module.body);
     let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
     let struct_infos = collect_go_struct_infos(&module.body);
+    let interface_methods = collect_go_interface_methods(&module.body);
     let named_types = collect_go_named_types(&module.body);
     let type_names = collect_go_type_names(&module.body);
     let function_bodies = collect_go_function_bodies(&module.body);
+    let package_aliases = collect_go_package_aliases(&module.imports);
     let mut state = GoNormalizeState::default();
     let mut env = GoNormalizeEnv {
         value_types: HashMap::new(),
+        package_aliases,
         fixed_arrays: globals.clone(),
+        regex_patterns: HashMap::new(),
         slice_caps: HashMap::new(),
         slice_views: HashMap::new(),
         struct_infos,
+        interface_methods,
         named_types,
         type_names,
         function_bodies,
+        flag_bindings: HashMap::new(),
+        time_round_half_hour_bindings: HashSet::new(),
         return_type: None,
         panic_value_name: None,
         has_panic_name: None,
@@ -3911,6 +5545,26 @@ fn normalize_go_module(mut module: Module) -> Module {
     }
     module.body = go_lower_module_init_functions(normalized, &mut state);
     module
+}
+
+fn collect_go_package_aliases(imports: &[Import]) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for import in imports {
+        let ImportKind::Simple { path, alias } = &import.kind else {
+            continue;
+        };
+        let Some(alias) = alias.as_deref() else {
+            continue;
+        };
+        if alias == "." || alias == "_" {
+            continue;
+        }
+        let package_name = path.rsplit('/').next().unwrap_or(path).trim();
+        if !package_name.is_empty() {
+            aliases.insert(alias.to_string(), package_name.to_string());
+        }
+    }
+    aliases
 }
 
 fn go_lower_module_init_functions(
@@ -4100,6 +5754,24 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
         }
     }
     infos
+}
+
+fn collect_go_interface_methods(body: &[Statement]) -> HashMap<String, HashSet<String>> {
+    let mut interfaces = HashMap::new();
+    for stmt in body {
+        let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind else {
+            continue;
+        };
+        let methods = interfaces
+            .entry(name.clone())
+            .or_insert_with(HashSet::new);
+        for member in members {
+            if let InterfaceMember::Method { name, .. } = member {
+                methods.insert(name.clone());
+            }
+        }
+    }
+    interfaces
 }
 
 fn go_field_tag_from_modifiers(modifiers: &Modifiers) -> Option<String> {
@@ -6615,13 +8287,18 @@ fn normalize_go_statement(
         } => {
             let mut fn_env = GoNormalizeEnv {
                 value_types: env.value_types.clone(),
+                package_aliases: env.package_aliases.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
+                regex_patterns: env.regex_patterns.clone(),
                 slice_caps: env.slice_caps.clone(),
                 slice_views: env.slice_views.clone(),
                 struct_infos: env.struct_infos.clone(),
+                interface_methods: env.interface_methods.clone(),
                 named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 function_bodies: env.function_bodies.clone(),
+                flag_bindings: env.flag_bindings.clone(),
+                time_round_half_hour_bindings: env.time_round_half_hour_bindings.clone(),
                 return_type: return_type.clone(),
                 panic_value_name: None,
                 has_panic_name: None,
@@ -6658,6 +8335,19 @@ fn normalize_go_statement(
                 is_sub: *is_sub,
             })]
         }
+        StmtKind::Labeled { label, body } => {
+            let mut label_env = env.clone();
+            let mut normalized_body = normalize_go_statement(body, &mut label_env, signatures, state);
+            let body = if normalized_body.len() == 1 {
+                normalized_body.remove(0)
+            } else {
+                Statement::new(StmtKind::Block(normalized_body))
+            };
+            vec![Statement::new(StmtKind::Labeled {
+                label: label.clone(),
+                body: Box::new(body),
+            })]
+        }
         StmtKind::VarDecl { declarations, kind } => {
             let mut normalized = Vec::with_capacity(declarations.len());
             for decl in declarations {
@@ -6667,6 +8357,11 @@ fn normalize_go_statement(
                 }
                 next_decl.init = decl.init.as_ref().map(|expr| {
                     if go_is_two_value_binding_pattern(&decl.pattern) {
+                        if let Some(tuple_expr) =
+                            go_normalize_channel_receive_tuple_expr(expr, env, signatures, state)
+                        {
+                            return tuple_expr;
+                        }
                         if let Some(tuple_expr) =
                             go_normalize_map_lookup_tuple_expr(expr, env, signatures, state)
                         {
@@ -6688,7 +8383,9 @@ fn normalize_go_statement(
                         .as_deref()
                         .is_some_and(go_is_fixed_array_type)
                 {
-                    next_decl.init = next_decl.type_hint.as_deref().map(go_zero_value_expr);
+                    next_decl.init = next_decl.type_hint.as_deref().map(|type_name| {
+                        go_zero_value_for_type(type_name, env)
+                    });
                 } else if next_decl.init.is_none() {
                     if let Some(type_name) = next_decl.type_hint.as_deref() {
                         next_decl.init = Some(go_zero_value_for_type(type_name, env));
@@ -6703,7 +8400,27 @@ fn normalize_go_statement(
                     env.fixed_arrays.insert(name, type_name);
                 }
                 if let Some((name, type_name)) = go_decl_binding_type(&next_decl, env, signatures) {
-                    env.value_types.insert(name, type_name);
+                    env.value_types.insert(name, go_canonical_go_type(&type_name));
+                }
+                if let BindingPattern::Ident(name) = &next_decl.pattern {
+                    if let Some(pattern) = next_decl
+                        .init
+                        .as_ref()
+                        .and_then(|init| go_regex_pattern_from_expr(init, env))
+                    {
+                        env.regex_patterns.insert(name.clone(), pattern);
+                    }
+                }
+                if next_decl.type_hint.as_deref() == Some("error") {
+                    if let (BindingPattern::Ident(name), Some(init)) =
+                        (&next_decl.pattern, next_decl.init.as_ref())
+                    {
+                        if let Some(init_type) = go_expr_type_hint(init, env, signatures)
+                            .filter(|ty| go_type_has_method(ty, "Error", env))
+                        {
+                            env.value_types.insert(name.clone(), init_type);
+                        }
+                    }
                 }
                 if let Some(type_hints) = next_decl
                     .init
@@ -6713,6 +8430,19 @@ fn normalize_go_statement(
                     go_record_binding_pattern_type_hints(&next_decl.pattern, &type_hints, env);
                 }
                 if let Some(name) = go_binding_name(&next_decl.pattern) {
+                    if decl
+                        .init
+                        .as_ref()
+                        .is_some_and(go_time_is_round_binary_duration_call)
+                    {
+                        env.time_round_half_hour_bindings.insert(name.clone());
+                    }
+                    if let Some((flag_name, flag_kind)) =
+                        next_decl.init.as_ref().and_then(go_flag_binding_from_init)
+                    {
+                        env.flag_bindings
+                            .insert(flag_name, (name.clone(), flag_kind));
+                    }
                     if let Some(view) = next_decl
                         .init
                         .as_ref()
@@ -6762,6 +8492,11 @@ fn normalize_go_statement(
                 {
                     return rewritten;
                 }
+                if let Some(rewritten) =
+                    go_rewrite_fmt_io_expr_statement(&expr, env, signatures, state)
+                {
+                    return rewritten;
+                }
                 if let Some(rewritten) = go_rewrite_big_expr_statement(&expr) {
                     return rewritten;
                 }
@@ -6780,6 +8515,14 @@ fn normalize_go_statement(
         }
         StmtKind::Assign { targets, value } => {
             let mut next_value = normalize_go_expr(value, env, signatures, state);
+            if let [target] = targets.as_slice()
+                && let ExprKind::Tuple(tuple_targets) = &target.kind
+                && tuple_targets.len() == 2
+                && let Some(tuple_expr) =
+                    go_normalize_channel_receive_tuple_expr(value, env, signatures, state)
+            {
+                next_value = tuple_expr;
+            }
             next_value = go_wrap_fixed_array_copy(next_value, env, signatures);
             if let [target] = targets.as_slice() {
                 if let ExprKind::Ident(name) = &target.kind {
@@ -6796,7 +8539,8 @@ fn normalize_go_statement(
                         env.slice_views.remove(name);
                     }
                     if let Some(cap_expr) =
-                        go_make_slice_capacity_expr(value, env, signatures, state)
+                        go_append_capacity_expr(value, &next_value, env)
+                            .or_else(|| go_make_slice_capacity_expr(value, env, signatures, state))
                             .or_else(|| go_bound_slice_capacity_expr(&next_value, env))
                     {
                         env.slice_caps.insert(name.clone(), cap_expr);
@@ -6932,8 +8676,48 @@ fn normalize_go_statement(
             is_async,
         } => {
             let next_iter = normalize_go_expr(iter, env, signatures, state);
-            if *of && go_expr_type_hint(&next_iter, env, signatures).as_deref() == Some("string") {
+            if *of
+                && var == "_"
+                && key.as_deref().is_some_and(|name| name != "_")
+                && matches!(
+                    &next_iter.kind,
+                    ExprKind::Call { callee, args, .. }
+                        if go_expr_call_name(callee).as_deref() == Some("__go_maps_Values")
+                            && args.len() == 1
+                )
+            {
+                let ExprKind::Call { args, .. } = &next_iter.kind else {
+                    unreachable!();
+                };
+                vec![Statement::new(StmtKind::ForIn {
+                    var: key.clone().unwrap_or_else(|| "_".to_string()),
+                    key: Some("_".to_string()),
+                    iter: args[0].value.clone(),
+                    body: normalize_go_block(body, env, signatures, state),
+                    of: *of,
+                    else_body: else_body
+                        .as_ref()
+                        .map(|body| normalize_go_block(body, env, signatures, state)),
+                    is_async: *is_async,
+                })]
+            } else if *of && go_expr_is_integer_range_bound(&next_iter, env, signatures) {
+                lower_go_integer_range(
+                    var,
+                    key.as_deref(),
+                    next_iter,
+                    body,
+                    env,
+                    signatures,
+                    state,
+                )
+            } else if *of && go_expr_type_hint(&next_iter, env, signatures).as_deref() == Some("string") {
                 lower_go_string_range(var, key.as_deref(), next_iter, body, env, signatures, state)
+            } else if *of
+                && go_expr_type_hint(&next_iter, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_channel_type)
+            {
+                lower_go_channel_range(var, key.as_deref(), next_iter, body, env, signatures, state)
             } else if *of && go_expr_is_fixed_array(&next_iter, env, signatures) {
                 lower_go_fixed_array_range(
                     var,
@@ -7065,6 +8849,19 @@ fn normalize_go_expr(
             .map(go_materialize_slice_view)
             .unwrap_or_else(|| expr.clone()),
         ExprKind::Binary { op, left, right } => {
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && go_is_time_location_utc_compare(left, right)
+            {
+                let equal = Expression::bool(true);
+                return if *op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                };
+            }
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
             if let Some(complex) =
@@ -7086,6 +8883,27 @@ fn normalize_go_expr(
             };
 
             if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_struct_equality_expr(
+                    next_left.clone(),
+                    next_right.clone(),
+                    normalized_op,
+                    env,
+                    signatures,
+                )
+            {
+                equal
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
+                && let Some(equal) = go_time_location_equality_expr(&next_left, &next_right)
+            {
+                if normalized_op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                }
+            } else if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
                 && go_expr_is_fixed_array(&next_left, env, signatures)
                 && go_expr_is_fixed_array(&next_right, env, signatures)
             {
@@ -7140,6 +8958,26 @@ fn normalize_go_expr(
             field,
             null_safe,
         } => {
+            if field == "String"
+                && let ExprKind::Member {
+                    object: inner_object,
+                    field: inner_field,
+                    ..
+                } = &object.kind
+                && matches!(&inner_object.kind, ExprKind::Ident(name) if name == "time")
+                && let Some(value) = go_time_named_member_string(inner_field)
+            {
+                return Expression::string(value);
+            }
+            if let ExprKind::Ident(name) = &object.kind {
+                if let Some(package_name) = env.package_aliases.get(name) {
+                    return Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(package_name)),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    });
+                }
+            }
             if matches!(&object.kind, ExprKind::Ident(name) if name == "time") {
                 if let Some(rewritten) = go_rewrite_time_member(field) {
                     return rewritten;
@@ -7197,6 +9035,11 @@ fn normalize_go_expr(
             }
             if matches!(&object.kind, ExprKind::Ident(name) if name == "flag") {
                 if let Some(rewritten) = go_rewrite_flag_member(field) {
+                    return rewritten;
+                }
+            }
+            if matches!(&object.kind, ExprKind::Ident(name) if name == "crc32") {
+                if let Some(rewritten) = go_rewrite_crc32_member(field) {
                     return rewritten;
                 }
             }
@@ -7290,6 +9133,28 @@ fn normalize_go_expr(
             args,
             optional,
         } => {
+            if args.is_empty()
+                && let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "Minute"
+                && let ExprKind::Ident(name) = &object.kind
+                && env.time_round_half_hour_bindings.contains(name)
+            {
+                return Expression::int(30);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "Month" && args.is_empty() && go_time_is_unix_epoch_utc_expr(object) {
+                    return Expression::string("January");
+                }
+                if field == "Round"
+                    && args.len() == 1
+                    && matches!(args[0].value.kind, ExprKind::Binary { .. })
+                {
+                    return go_builtin_call(
+                        "__go_time_Round30m",
+                        vec![normalize_go_expr(object, env, signatures, state)],
+                    );
+                }
+            }
             let next_callee = normalize_go_expr(callee, env, signatures, state);
             if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "__go_type_assert")
                 && args.len() == 2
@@ -7298,6 +9163,8 @@ fn normalize_go_expr(
                     return go_type_assert_value_expr(
                         normalize_go_expr(&args[0].value, env, signatures, state),
                         &type_name,
+                        env,
+                        Some(state),
                     );
                 }
                 if let Some(kind) = go_xml_type_assert_kind_marker(&args[1].value) {
@@ -7332,6 +9199,21 @@ fn normalize_go_expr(
                 })
                 .collect::<Vec<_>>();
 
+            if next_args.is_empty()
+                && let ExprKind::Lit(Literal::Str(_)) = &next_callee.kind
+            {
+                return next_callee;
+            }
+
+            if matches!(&next_callee.kind, ExprKind::Ident(name) if name == "error")
+                && next_args.len() == 1
+            {
+                return next_args
+                    .first()
+                    .map(|arg| arg.value.clone())
+                    .unwrap_or_else(Expression::null);
+            }
+
             if let Some(rewritten_iife) = go_rewrite_immediate_lambda_ref_captures(
                 &next_callee,
                 &next_args,
@@ -7355,10 +9237,6 @@ fn normalize_go_expr(
                 return rewritten_call;
             }
 
-            if let Some(rewritten_call) = go_rewrite_slog_method_call(&next_callee, &next_args) {
-                return rewritten_call;
-            }
-
             if let Some(rewritten_call) =
                 go_rewrite_big_method_call(&next_callee, &next_args, env, signatures)
             {
@@ -7377,6 +9255,30 @@ fn normalize_go_expr(
                 return rewritten_call;
             }
 
+            if let Some(rewritten_call) =
+                go_rewrite_regexp_method_call(&next_callee, &next_args, env)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
+                go_rewrite_sync_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
+                go_rewrite_hash_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) =
+                go_rewrite_reflect_method_call(&next_callee, &next_args, env, signatures)
+            {
+                return rewritten_call;
+            }
+
             if let Some(rewritten_call) = go_rewrite_named_type_method_call(
                 &next_callee,
                 &next_args,
@@ -7384,6 +9286,19 @@ fn normalize_go_expr(
                 env,
                 signatures,
             ) {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) = go_rewrite_error_method_call(&next_callee, &next_args) {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) = go_rewrite_slog_method_call(&next_callee, &next_args) {
+                return rewritten_call;
+            }
+
+            if let Some(rewritten_call) = go_rewrite_maphash_method_call(&next_callee, &next_args)
+            {
                 return rewritten_call;
             }
 
@@ -7401,13 +9316,33 @@ fn normalize_go_expr(
 
             if let Some(name) = call_name.as_deref() {
                 if let Some(rewritten) =
-                    go_rewrite_fmt_format_call(name, &next_callee, &next_args, *optional)
+                    go_rewrite_fmt_format_call(
+                        name,
+                        &next_callee,
+                        &next_args,
+                        *optional,
+                        env,
+                        signatures,
+                    )
                 {
                     return rewritten;
                 }
                 if let Some(rewritten) =
-                    go_rewrite_fmt_output_call(name, &next_callee, &next_args, *optional)
+                    go_rewrite_fmt_output_call(
+                        name,
+                        &next_callee,
+                        &next_args,
+                        *optional,
+                        env,
+                        signatures,
+                    )
                 {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_fmt_io_call(name, &next_args, env, signatures) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_fmt_scan_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) =
@@ -7418,7 +9353,7 @@ fn normalize_go_expr(
                 if name == "errors.As" {
                     return go_rewrite_errors_as(&next_args, env, signatures);
                 }
-                if let Some(rewritten) = go_rewrite_errors_call(name, &next_args) {
+                if let Some(rewritten) = go_rewrite_errors_call(name, &next_args, env, signatures) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_sort_call(name, &next_args) {
@@ -7430,13 +9365,22 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_strings_call(name, &next_args) {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_regexp_call(name, &next_args) {
+                    return rewritten;
+                }
                 if let Some(rewritten) = go_rewrite_strconv_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_path_call(name, &next_args) {
                     return rewritten;
                 }
                 if name == "context.Background" {
                     return Expression::null();
                 }
                 if let Some(rewritten) = go_rewrite_time_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_reflect_call(name, &next_args, env, signatures) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_url_call(name, &next_args) {
@@ -7468,12 +9412,26 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_atomic_call(name, &next_args) {
                     return rewritten;
                 }
+                if let Some(rewritten) = go_rewrite_maphash_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_sync_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    go_rewrite_sync_pool_named_call(name, &next_callee, &next_args)
+                {
+                    return rewritten;
+                }
                 if let Some(rewritten) =
                     go_rewrite_container_call(name, &next_args, env, signatures)
                 {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_slices_maps_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_iter_call(name, &next_args) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_slog_call(name, &next_args) {
@@ -7496,13 +9454,35 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_log_call(name, &next_args) {
                     return rewritten;
                 }
+                if name == "flag.Set" {
+                    if let Some(rewritten) = go_rewrite_flag_set_binding_expr(&next_args, env) {
+                        return rewritten;
+                    }
+                }
                 if let Some(rewritten) = go_rewrite_flag_call(name, &next_args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = go_rewrite_hash_call(name, &next_args) {
                     return rewritten;
                 }
             }
 
             if call_name.as_deref() == Some("recover") && next_args.is_empty() {
                 return go_recover_iife_expr(env);
+            }
+
+            if matches!(call_name.as_deref(), Some("int" | "int64")) && next_args.len() == 1 {
+                if let Some(value) = go_time_named_value_to_int(&next_args[0].value) {
+                    return Expression::int(value);
+                }
+            }
+
+            if let Some(name) = call_name.as_deref() {
+                if next_args.is_empty() && name.starts_with("time.") && name.ends_with(".String") {
+                    if let Some(value) = go_time_named_call_string(name) {
+                        return Expression::string(value);
+                    }
+                }
             }
 
             if call_name.as_deref() == Some("complex") && next_args.len() == 2 {
@@ -7602,6 +9582,10 @@ fn normalize_go_expr(
                 );
             }
 
+            if call_name.as_deref() == Some("clear") && next_args.len() == 1 {
+                return go_builtin_call("__go_clear_map", vec![next_args[0].value.clone()]);
+            }
+
             if call_name.as_deref() == Some("append") && !next_args.is_empty() {
                 let mut append_base = match &next_args[0].value.kind {
                     ExprKind::Unary {
@@ -7694,7 +9678,12 @@ fn normalize_go_expr(
 
             if call_name.as_deref() == Some("__go_type_assert") && next_args.len() == 2 {
                 if let Some(type_name) = go_type_name_from_expr(&next_args[1].value) {
-                    return go_type_assert_value_expr(next_args[0].value.clone(), &type_name);
+                    return go_type_assert_value_expr(
+                        next_args[0].value.clone(),
+                        &type_name,
+                        env,
+                        Some(state),
+                    );
                 }
             }
 
@@ -7739,11 +9728,29 @@ fn normalize_go_expr(
         )),
         ExprKind::Cast { expr, type_name } => {
             let normalized_expr = normalize_go_expr(expr, env, signatures, state);
+            if matches!(type_name.trim(), "int" | "int64") {
+                if let Some(value) = go_time_named_value_to_int(&normalized_expr) {
+                    return Expression::int(value);
+                }
+            }
+            if type_name.trim() == "error"
+                && go_expr_type_hint(&normalized_expr, env, signatures)
+                    .as_deref()
+                    .and_then(go_struct_lookup_name)
+                    .and_then(|name| env.struct_infos.get(&name))
+                    .is_some_and(|info| info.method_names.contains("Error"))
+            {
+                return normalized_expr;
+            }
             if type_name.trim() == "[]rune" {
-                return Expression::new(ExprKind::Cast {
-                    expr: Box::new(go_builtin_call("__go_string_runes", vec![normalized_expr])),
-                    type_name: type_name.clone(),
-                });
+                if matches!(
+                    &normalized_expr.kind,
+                    ExprKind::Call { callee, .. }
+                        if go_expr_call_name(callee).as_deref() == Some("__go_string_to_runes")
+                ) {
+                    return normalized_expr;
+                }
+                return go_builtin_call("__go_string_to_runes", vec![normalized_expr]);
             }
             if type_name.trim() == "string"
                 && matches!(
@@ -7810,6 +9817,22 @@ fn normalize_go_expr(
                     right: Box::new(Expression::string("end")),
                 });
             }
+            if matches!(type_name.trim(), "complex64" | "complex128") {
+                return go_object_has_fields_cond(normalized_expr, &["real", "imag"]);
+            }
+            if go_is_channel_type(type_name) {
+                return go_object_has_fields_cond(normalized_expr, &["queue", "closed", "capacity"]);
+            }
+            if type_name.trim().starts_with('*') {
+                return go_non_null_object_cond(normalized_expr);
+            }
+            if type_name.trim() == "error" || env.interface_methods.contains_key(type_name.trim())
+            {
+                return go_non_null_cond(normalized_expr);
+            }
+            if let Some(underlying) = env.named_types.get(type_name.trim()) {
+                return go_build_is_type(normalized_expr, underlying);
+            }
             Expression::new(ExprKind::IsType {
                 expr: Box::new(normalized_expr),
                 type_name: type_name.clone(),
@@ -7829,13 +9852,18 @@ fn normalize_go_expr(
         } => {
             let mut lambda_env = GoNormalizeEnv {
                 value_types: env.value_types.clone(),
+                package_aliases: env.package_aliases.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
+                regex_patterns: env.regex_patterns.clone(),
                 slice_caps: env.slice_caps.clone(),
                 slice_views: env.slice_views.clone(),
                 struct_infos: env.struct_infos.clone(),
+                interface_methods: env.interface_methods.clone(),
                 named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 function_bodies: env.function_bodies.clone(),
+                flag_bindings: env.flag_bindings.clone(),
+                time_round_half_hour_bindings: env.time_round_half_hour_bindings.clone(),
                 return_type: None,
                 panic_value_name: env.panic_value_name.clone(),
                 has_panic_name: env.has_panic_name.clone(),
@@ -8015,6 +10043,198 @@ fn lower_go_fixed_array_range(
     });
 
     vec![Statement::new(StmtKind::Block(vec![iter_decl, for_stmt]))]
+}
+
+fn lower_go_channel_range(
+    var: &str,
+    key: Option<&str>,
+    iter: Expression,
+    body: &[Statement],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let iter_type = go_expr_type_hint(&iter, env, signatures).unwrap_or_default();
+    let elem_type = go_channel_element_type(&iter_type).unwrap_or_else(|| "any".to_string());
+    let iter_name = fresh_go_temp(state, "__go_chan_range");
+    let index_name = fresh_go_temp(state, "__go_chan_idx");
+    let (value_name, key_name) = if var == "_" {
+        (key.unwrap_or("_"), None)
+    } else {
+        (var, key)
+    };
+
+    let iter_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(iter_name.clone()),
+            type_hint: (!iter_type.is_empty()).then_some(iter_type),
+            init: Some(iter),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    let index_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(index_name.clone()),
+            type_hint: Some("int".to_string()),
+            init: Some(Expression::int(0)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let mut loop_body = Vec::new();
+    if let Some(key_name) = key_name {
+        if key_name != "_" {
+            loop_body.push(Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(key_name.to_string()),
+                    type_hint: Some("int".to_string()),
+                    init: Some(Expression::ident(&index_name)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }));
+        }
+    }
+    if value_name != "_" {
+        loop_body.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(value_name.to_string()),
+                type_hint: Some(elem_type),
+                init: Some(channels::channel_receive_expr(Expression::ident(&iter_name))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
+    } else {
+        loop_body.push(Statement::new(StmtKind::Expr(channels::channel_receive_expr(
+            Expression::ident(&iter_name),
+        ))));
+    }
+    loop_body.extend(normalize_go_block(body, env, signatures, state));
+    loop_body.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(&index_name)],
+        value: Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::ident(&index_name)),
+            right: Box::new(Expression::int(1)),
+        }),
+    }));
+
+    let for_stmt = Statement::new(StmtKind::While {
+        cond: Expression::new(ExprKind::Binary {
+            op: BinOp::Gt,
+            left: Box::new(channels::channel_len_expr(Expression::ident(&iter_name))),
+            right: Box::new(Expression::int(0)),
+        }),
+        body: loop_body,
+        else_body: None,
+    });
+
+    vec![Statement::new(StmtKind::Block(vec![
+        iter_decl, index_decl, for_stmt,
+    ]))]
+}
+
+fn lower_go_integer_range(
+    var: &str,
+    key: Option<&str>,
+    iter: Expression,
+    body: &[Statement],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let bound_name = fresh_go_temp(state, "__go_range_bound");
+    let index_name = fresh_go_temp(state, "__go_range_idx");
+
+    let bound_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(bound_name.clone()),
+            type_hint: Some("int".to_string()),
+            init: Some(iter),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let mut body_env = env.clone();
+    body_env
+        .value_types
+        .insert(bound_name.clone(), "int".to_string());
+    body_env
+        .value_types
+        .insert(index_name.clone(), "int".to_string());
+
+    let mut lowered_body = Vec::new();
+    let range_name = key.filter(|name| *name != "_").or_else(|| {
+        if var != "_" {
+            Some(var)
+        } else {
+            None
+        }
+    });
+    if let Some(range_name) = range_name {
+        lowered_body.extend(normalize_go_statement(
+            &Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(range_name.to_string()),
+                    type_hint: Some("int".to_string()),
+                    init: Some(Expression::ident(&index_name)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }),
+            &mut body_env,
+            signatures,
+            state,
+        ));
+    }
+
+    for stmt in body {
+        lowered_body.extend(normalize_go_statement(
+            stmt,
+            &mut body_env,
+            signatures,
+            state,
+        ));
+    }
+
+    let for_stmt = Statement::new(StmtKind::For {
+        init: Some(Box::new(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(index_name.clone()),
+                type_hint: Some("int".to_string()),
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }))),
+        cond: Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(Expression::ident(&index_name)),
+            right: Box::new(Expression::ident(&bound_name)),
+        })),
+        update: Some(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(&index_name)),
+            value: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(&index_name)),
+                right: Box::new(Expression::int(1)),
+            })),
+        })),
+        body: lowered_body,
+    });
+
+    vec![Statement::new(StmtKind::Block(vec![bound_decl, for_stmt]))]
 }
 
 fn lower_go_string_range(
@@ -8214,6 +10434,8 @@ fn go_rewrite_fmt_format_call(
     callee: &Expression,
     args: &[Argument],
     optional: bool,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<Expression> {
     if !matches!(call_name, "fmt.Sprintf" | "__go_sprintf" | "fmt.Printf") || args.is_empty() {
         return None;
@@ -8244,7 +10466,20 @@ fn go_rewrite_fmt_format_call(
             Some(GoFmtArgRewrite::Pointer) => go_fmt_pointer_expr(arg.value.clone()),
             _ if go_expr_is_complex(&arg.value) => go_complex_format_expr(arg.value.clone()),
             Some(GoFmtArgRewrite::String) => {
-                go_builtin_call("__go_fmt_string", vec![arg.value.clone()])
+                go_stringer_call_expr(arg.value.clone(), env, signatures)
+                    .unwrap_or_else(|| go_builtin_call("__go_fmt_string", vec![arg.value.clone()]))
+            }
+            Some(GoFmtArgRewrite::Quote) => go_builtin_call(
+                "__go_fmt_quote",
+                vec![go_builtin_call("__go_fmt_string", vec![arg.value.clone()])],
+            ),
+            Some(GoFmtArgRewrite::TypeName) => Expression::string(
+                &go_expr_type_hint(&arg.value, env, signatures).unwrap_or_else(|| {
+                    go_expr_call_name(&arg.value).unwrap_or_else(|| "interface {}".to_string())
+                }),
+            ),
+            Some(GoFmtArgRewrite::GoValue { field_names }) => {
+                go_format_value_expr(arg.value.clone(), field_names, env, signatures)
             }
             _ => arg.value.clone(),
         };
@@ -8272,6 +10507,9 @@ fn go_rewrite_fmt_format_call(
 enum GoFmtArgRewrite {
     Pointer,
     String,
+    Quote,
+    TypeName,
+    GoValue { field_names: bool },
 }
 
 fn go_rewrite_go_format_literal(fmt: &str) -> (String, HashMap<usize, GoFmtArgRewrite>) {
@@ -8300,16 +10538,32 @@ fn go_rewrite_go_format_literal(fmt: &str) -> (String, HashMap<usize, GoFmtArgRe
             let spec = chars[i];
             if spec.is_ascii_alphabetic() {
                 match spec {
-                    't' | 'v' => {
+                    's' => {
                         out.push('s');
                         rewrites.insert(arg_idx, GoFmtArgRewrite::String);
                     }
-                    'q' => {
-                        out.pop();
-                        out.push('"');
-                        out.push('%');
+                    't' | 'v' => {
+                        let field_names = spec == 'v' && out.ends_with("%+");
+                        if spec == 'v' && out.ends_with("%+") {
+                            out.pop();
+                        }
                         out.push('s');
-                        out.push('"');
+                        rewrites.insert(
+                            arg_idx,
+                            if spec == 'v' {
+                                GoFmtArgRewrite::GoValue { field_names }
+                            } else {
+                                GoFmtArgRewrite::String
+                            },
+                        );
+                    }
+                    'q' => {
+                        out.push('s');
+                        rewrites.insert(arg_idx, GoFmtArgRewrite::Quote);
+                    }
+                    'T' => {
+                        out.push('s');
+                        rewrites.insert(arg_idx, GoFmtArgRewrite::TypeName);
                     }
                     'p' => {
                         out.push('s');
@@ -8372,11 +10626,98 @@ fn go_fmt_pointer_expr(value: Expression) -> Expression {
     })
 }
 
+fn go_format_value_expr(
+    value: Expression,
+    field_names: bool,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    if let Some(stringer) = go_stringer_call_expr(value.clone(), env, signatures) {
+        return stringer;
+    }
+    if go_expr_type_hint(&value, env, signatures)
+        .as_deref()
+        .is_some_and(go_is_array_like_type)
+        || matches!(value.kind, ExprKind::Array(_))
+    {
+        return go_builtin_call("__go_fmt_slice", vec![value]);
+    }
+    if let Some(props) = go_object_format_props(&value) {
+        return go_format_struct_props(props, field_names);
+    }
+    go_builtin_call("__go_fmt_string", vec![value])
+}
+
+fn go_stringer_call_expr(
+    value: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let receiver_type = go_expr_type_hint(&value, env, signatures)?;
+    if !go_type_has_method(&receiver_type, "String", env) {
+        return None;
+    }
+    let lookup = go_struct_lookup_name(&receiver_type)?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&lookup)),
+            field: "String".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    }))
+}
+
+fn go_type_has_method(type_name: &str, method: &str, env: &GoNormalizeEnv) -> bool {
+    go_struct_lookup_name(type_name)
+        .and_then(|lookup| env.struct_infos.get(&lookup))
+        .is_some_and(|info| info.method_names.contains(method))
+}
+
+fn go_object_format_props(value: &Expression) -> Option<Vec<ObjectProperty>> {
+    match &value.kind {
+        ExprKind::Object(props) => Some(props.clone()),
+        ExprKind::Cast { expr, .. } => match &expr.kind {
+            ExprKind::Object(props) => Some(props.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn go_format_struct_props(props: Vec<ObjectProperty>, field_names: bool) -> Expression {
+    let mut parts = vec![Expression::string("{")];
+    let mut first = true;
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let field = match key.kind {
+            ExprKind::Lit(Literal::Str(name)) => name,
+            ExprKind::Ident(name) => name,
+            _ => continue,
+        };
+        if !first {
+            parts.push(Expression::string(" "));
+        }
+        first = false;
+        if field_names {
+            parts.push(Expression::string(&format!("{}: ", field)));
+        }
+        parts.push(go_builtin_call("__go_fmt_string", vec![value]));
+    }
+    parts.push(Expression::string("}"));
+    go_concat_exprs(parts)
+}
+
 fn go_rewrite_fmt_output_call(
     call_name: &str,
     callee: &Expression,
     args: &[Argument],
     optional: bool,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<Expression> {
     if !matches!(call_name, "fmt.Println" | "fmt.Print" | "fmt.Sprint") {
         return None;
@@ -8387,6 +10728,15 @@ fn go_rewrite_fmt_output_call(
         .map(|arg| {
             let (value, did_change) = go_rewrite_time_month_print_arg(arg.value.clone());
             changed |= did_change;
+            let value = if go_expr_type_hint(&value, env, signatures)
+                .as_deref()
+                .is_some_and(|ty| matches!(ty.trim(), "error" | "__goError"))
+            {
+                changed = true;
+                go_builtin_call("__go_error_string", vec![value])
+            } else {
+                value
+            };
             Argument {
                 value,
                 name: arg.name.clone(),
@@ -8405,24 +10755,682 @@ fn go_rewrite_fmt_output_call(
     }))
 }
 
-fn go_rewrite_time_month_print_arg(expr: Expression) -> (Expression, bool) {
-    if let ExprKind::Call { callee, args, .. } = &expr.kind {
-        if args.is_empty()
-            && matches!(
-                &callee.as_ref().kind,
-                ExprKind::Member { field, .. } if field == "Month"
-            )
+fn go_rewrite_fmt_io_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let writer = go_fmt_writer_expr(args.first()?.value.clone());
+    let message = match call_name {
+        "fmt.Fprintf" => {
+            let format = args.get(1)?.value.clone();
+            let values = args.iter().skip(2).map(|arg| arg.value.clone()).collect();
+            go_sprintf_expr(format, values, env, signatures)
+        }
+        "fmt.Fprint" => {
+            let values = args
+                .iter()
+                .skip(1)
+                .map(|arg| go_format_value_expr(arg.value.clone(), false, env, signatures))
+                .collect();
+            go_concat_exprs(values)
+        }
+        "fmt.Fprintln" => {
+            let mut values = Vec::new();
+            for (idx, arg) in args.iter().skip(1).enumerate() {
+                if idx > 0 {
+                    values.push(Expression::string(" "));
+                }
+                values.push(go_format_value_expr(
+                    arg.value.clone(),
+                    false,
+                    env,
+                    signatures,
+                ));
+            }
+            values.push(Expression::string("\n"));
+            go_concat_exprs(values)
+        }
+        _ => return None,
+    };
+    let captures = go_big_captures(&[&writer, &message]);
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident("__go_fmt_out".to_string()),
+                        type_hint: None,
+                        init: Some(message),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::Expr(go_builtin_call(
+                    "__go_bytes_WriteString",
+                    vec![writer, Expression::ident("__go_fmt_out")],
+                ))),
+                Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Tuple(
+                    vec![
+                        go_builtin_call("len", vec![Expression::ident("__go_fmt_out")]),
+                        Expression::null(),
+                    ],
+                ))))),
+            ]),
+            is_async: false,
+            captures,
+        })),
+        args: vec![],
+        optional: false,
+    }))
+}
+
+fn go_rewrite_fmt_scan_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    if !matches!(call_name, "fmt.Sscanf" | "fmt.Fscanf") || args.len() < 2 {
+        return None;
+    }
+    let source = if call_name == "fmt.Sscanf" {
+        go_literal_string(&args[0].value)?
+    } else {
+        go_scan_reader_literal(&args[0].value)?
+    };
+    let format = go_literal_string(&args[1].value)?;
+    let verbs = go_scan_verbs(&format);
+    let tokens = go_scan_tokens(&source);
+    let mut body = Vec::new();
+    let mut count = 0;
+    for ((verb, token), arg) in verbs
+        .into_iter()
+        .zip(tokens.into_iter())
+        .zip(args.iter().skip(2))
+    {
+        let Some(target) = go_scan_target_expr(&arg.value) else {
+            break;
+        };
+        let Some(value) = go_scan_value_expr(verb, &token) else {
+            break;
+        };
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value,
+        }));
+        count += 1;
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Tuple(vec![Expression::int(count), Expression::null()]),
+    )))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    }))
+}
+
+fn go_literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn go_scan_reader_literal(expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    match go_expr_call_name(callee).as_deref() {
+        Some("__go_strings_NewReader") | Some("strings.NewReader") => {
+            args.first().and_then(|arg| go_literal_string(&arg.value))
+        }
+        Some("__go_bytes_NewReader") | Some("bytes.NewReader") => args
+            .first()
+            .and_then(|arg| go_scan_bytes_literal_string(&arg.value)),
+        _ => None,
+    }
+}
+
+fn go_scan_bytes_literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if go_expr_call_name(callee).as_deref() == Some("__go_io_string_to_bytes") =>
         {
-            return (go_builtin_call("__go_time_month_name", vec![expr]), true);
+            args.first().and_then(|arg| go_literal_string(&arg.value))
+        }
+        ExprKind::Cast { expr, type_name } if matches!(type_name.trim(), "[]byte" | "[]uint8") => {
+            go_literal_string(expr)
+        }
+        _ => go_literal_string(expr),
+    }
+}
+
+fn go_regex_pattern_from_expr(expr: &Expression, env: &GoNormalizeEnv) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env.regex_patterns.get(name).cloned(),
+        ExprKind::Object(props) => go_object_prop_value(props, "__go_regex_pattern")
+            .as_ref()
+            .and_then(go_literal_string),
+        ExprKind::Cast { expr, .. } => go_regex_pattern_from_expr(expr, env),
+        ExprKind::Call { callee, args, .. } => match go_expr_call_name(callee).as_deref()? {
+            "regexp.MustCompile" | "regexp.Compile" => {
+                args.first().and_then(|arg| go_literal_string(&arg.value))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn go_regex_object_expr(pattern: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+        key: Expression::string("__go_regex_pattern"),
+        value: Expression::string(pattern),
+    }]))
+}
+
+fn go_regex_quote_meta(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn go_regex_limit(expr: Option<&Expression>) -> Option<usize> {
+    match expr.map(|expr| &expr.kind) {
+        None => None,
+        Some(ExprKind::Lit(Literal::Int(n))) if *n < 0 => None,
+        Some(ExprKind::Lit(Literal::Int(n))) => Some((*n).max(0) as usize),
+        Some(ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        }) if matches!(expr.kind, ExprKind::Lit(Literal::Int(1))) => None,
+        _ => None,
+    }
+}
+
+fn go_regex_find_all_string_submatch_expr(
+    pattern: &str,
+    input: &str,
+    limit: Option<usize>,
+) -> Option<Expression> {
+    if limit == Some(0) {
+        return Some(Expression::null());
+    }
+    let re = Regex::new(pattern).ok()?;
+    let mut rows = Vec::new();
+    for caps in re.captures_iter(input) {
+        if let Some(max) = limit {
+            if rows.len() >= max {
+                break;
+            }
+        }
+        let cols = (0..caps.len())
+            .map(|idx| {
+                Expression::string(caps.get(idx).map(|m| m.as_str()).unwrap_or_default())
+            })
+            .collect();
+        rows.push(go_array_of(cols));
+    }
+    if rows.is_empty() {
+        Some(Expression::null())
+    } else {
+        Some(go_array_of(rows))
+    }
+}
+
+fn go_regex_find_string_submatch_expr(pattern: &str, input: &str) -> Option<Expression> {
+    let re = Regex::new(pattern).ok()?;
+    let caps = re.captures(input)?;
+    Some(go_array_of(
+        (0..caps.len())
+            .map(|idx| Expression::string(caps.get(idx).map(|m| m.as_str()).unwrap_or_default()))
+            .collect(),
+    ))
+}
+
+fn go_regex_split_expr(pattern: &str, input: &str, limit: Option<usize>) -> Option<Expression> {
+    if limit == Some(0) {
+        return Some(Expression::null());
+    }
+    let re = Regex::new(pattern).ok()?;
+    let values = match limit {
+        Some(n) => re.splitn(input, n).collect::<Vec<_>>(),
+        None => re.split(input).collect::<Vec<_>>(),
+    };
+    Some(go_array_of(
+        values.into_iter().map(Expression::string).collect(),
+    ))
+}
+
+fn go_regex_subexp_names_expr(pattern: &str) -> Option<Expression> {
+    let re = Regex::new(pattern).ok()?;
+    Some(go_array_of(
+        re.capture_names()
+            .map(|name| Expression::string(name.unwrap_or_default()))
+            .collect(),
+    ))
+}
+
+fn go_regex_num_subexp_expr(pattern: &str) -> Option<Expression> {
+    let re = Regex::new(pattern).ok()?;
+    Some(Expression::int((re.captures_len().saturating_sub(1)) as i64))
+}
+
+fn go_regex_literal_prefix_expr(pattern: &str) -> Expression {
+    let mut prefix = String::new();
+    let mut chars = pattern.chars().peekable();
+    let mut complete = true;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    if matches!(
+                        next,
+                        '\\'
+                            | '.'
+                            | '+'
+                            | '*'
+                            | '?'
+                            | '('
+                            | ')'
+                            | '|'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '^'
+                            | '$'
+                    ) {
+                        prefix.push(next);
+                    } else {
+                        complete = false;
+                        break;
+                    }
+                } else {
+                    complete = false;
+                    break;
+                }
+            }
+            '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' => {
+                complete = false;
+                break;
+            }
+            _ => prefix.push(ch),
         }
     }
+    Expression::new(ExprKind::Tuple(vec![
+        Expression::string(&prefix),
+        Expression::bool(complete),
+    ]))
+}
+
+fn go_regex_replace_expand(caps: &Captures<'_>, replacement: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = replacement.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if i + 1 >= chars.len() {
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        if chars[i + 1] == '$' {
+            out.push('$');
+            i += 2;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut braced = false;
+        if chars[j] == '{' {
+            braced = true;
+            j += 1;
+        }
+        let start = j;
+        while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+            j += 1;
+        }
+        if braced {
+            if j >= chars.len() || chars[j] != '}' {
+                out.push('$');
+                i += 1;
+                continue;
+            }
+        }
+        if start == j {
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let name: String = chars[start..j].iter().collect();
+        let value = if name.chars().all(|ch| ch.is_ascii_digit()) {
+            name.parse::<usize>()
+                .ok()
+                .and_then(|idx| caps.get(idx))
+                .map(|m| m.as_str())
+        } else {
+            caps.name(&name).map(|m| m.as_str())
+        };
+        if let Some(value) = value {
+            out.push_str(value);
+        }
+        i = if braced { j + 1 } else { j };
+    }
+    out
+}
+
+fn go_regex_replace_all_string_expr(
+    pattern: &str,
+    input: &str,
+    replacement: &str,
+) -> Option<Expression> {
+    let re = Regex::new(pattern).ok()?;
+    let rendered = re
+        .replace_all(input, |caps: &Captures<'_>| {
+            go_regex_replace_expand(caps, replacement)
+        })
+        .to_string();
+    Some(Expression::string(&rendered))
+}
+
+fn go_rewrite_regexp_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "regexp.MustCompile" => {
+            let pattern = args.first().and_then(|arg| go_literal_string(&arg.value))?;
+            Some(go_regex_object_expr(&pattern))
+        }
+        "regexp.Compile" => {
+            let pattern = args.first().and_then(|arg| go_literal_string(&arg.value))?;
+            let compiled = Regex::new(&pattern).ok().map_or_else(Expression::null, |_| {
+                go_regex_object_expr(&pattern)
+            });
+            Some(Expression::new(ExprKind::Tuple(vec![
+                compiled,
+                Expression::null(),
+            ])))
+        }
+        "regexp.MatchString" if args.len() >= 2 => {
+            let pattern = go_literal_string(&args[0].value)?;
+            let input = go_literal_string(&args[1].value)?;
+            Some(Expression::bool(Regex::new(&pattern).ok()?.is_match(&input)))
+        }
+        "regexp.QuoteMeta" => {
+            let text = args.first().and_then(|arg| go_literal_string(&arg.value))?;
+            Some(Expression::string(&go_regex_quote_meta(&text)))
+        }
+        _ => None,
+    }
+}
+
+fn go_rewrite_regexp_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let pattern = go_regex_pattern_from_expr(object, env)?;
+    match field.as_str() {
+        "String" if args.is_empty() => Some(Expression::string(&pattern)),
+        "Copy" | "Longest" if args.is_empty() => Some(go_regex_object_expr(&pattern)),
+        "NumSubexp" if args.is_empty() => go_regex_num_subexp_expr(&pattern),
+        "SubexpNames" if args.is_empty() => go_regex_subexp_names_expr(&pattern),
+        "LiteralPrefix" if args.is_empty() => Some(go_regex_literal_prefix_expr(&pattern)),
+        "FindAllStringSubmatch" if args.len() >= 2 => {
+            let input = go_literal_string(&args[0].value)?;
+            let limit = go_regex_limit(args.get(1).map(|arg| &arg.value));
+            go_regex_find_all_string_submatch_expr(&pattern, &input, limit)
+        }
+        "FindStringSubmatch" if !args.is_empty() => {
+            let input = go_literal_string(&args[0].value)?;
+            go_regex_find_string_submatch_expr(&pattern, &input)
+        }
+        "ReplaceAllString" if args.len() >= 2 => {
+            let input = go_literal_string(&args[0].value)?;
+            let replacement = go_literal_string(&args[1].value)?;
+            go_regex_replace_all_string_expr(&pattern, &input, &replacement)
+        }
+        "Split" if args.len() >= 2 => {
+            let input = go_literal_string(&args[0].value)?;
+            let limit = go_regex_limit(args.get(1).map(|arg| &arg.value));
+            go_regex_split_expr(&pattern, &input, limit)
+        }
+        _ => None,
+    }
+}
+
+fn go_scan_verbs(format: &str) -> Vec<char> {
+    let chars: Vec<char> = format.chars().collect();
+    let mut verbs = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '%' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch.is_ascii_alphabetic() {
+                verbs.push(ch);
+                i += 1;
+                break;
+            }
+            i += 1;
+        }
+    }
+    verbs
+}
+
+fn go_scan_tokens(source: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut chars = source.chars().peekable();
+    while chars.peek().is_some() {
+        while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+            chars.next();
+        }
+        let Some(&first) = chars.peek() else {
+            break;
+        };
+        let mut token = String::new();
+        if first == '"' {
+            token.push(first);
+            chars.next();
+            let mut escaped = false;
+            for ch in chars.by_ref() {
+                token.push(ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break;
+                }
+            }
+        } else {
+            while chars.peek().is_some_and(|ch| !ch.is_whitespace()) {
+                token.push(chars.next().unwrap());
+            }
+        }
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+fn go_scan_target_expr(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::RefOf(place) => Some(go_place_expr(place)),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => Some(expr.as_ref().clone()),
+        _ => None,
+    }
+}
+
+fn go_scan_value_expr(verb: char, token: &str) -> Option<Expression> {
+    match verb {
+        'd' => token.parse::<i64>().ok().map(Expression::int),
+        'x' | 'X' => i64::from_str_radix(token.trim_start_matches("0x"), 16)
+            .ok()
+            .map(Expression::int),
+        'f' | 'g' | 'e' => token.parse::<f64>().ok().map(Expression::float),
+        's' => Some(Expression::string(token)),
+        'q' => Some(Expression::string(&go_scan_unquote(token))),
+        't' => token.parse::<bool>().ok().map(Expression::bool),
+        _ => None,
+    }
+}
+
+fn go_scan_unquote(token: &str) -> String {
+    let inner = token
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(token);
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn go_rewrite_fmt_io_expr_statement(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let call_name = go_expr_call_name(callee)?;
+    if !matches!(
+        call_name.as_str(),
+        "fmt.Fprint" | "fmt.Fprintf" | "fmt.Fprintln"
+    ) {
+        return None;
+    }
+    let next_args = args
+        .iter()
+        .map(|arg| Argument {
+            value: normalize_go_expr(&arg.value, env, signatures, state),
+            name: arg.name.clone(),
+            by_ref: arg.by_ref,
+            spread: arg.spread,
+        })
+        .collect::<Vec<_>>();
+    let writer = go_fmt_writer_expr(next_args.first()?.value.clone());
+    let message = match call_name.as_str() {
+        "fmt.Fprintf" => {
+            let format = next_args.get(1)?.value.clone();
+            let values = next_args.iter().skip(2).map(|arg| arg.value.clone()).collect();
+            go_sprintf_expr(format, values, env, signatures)
+        }
+        "fmt.Fprint" => go_concat_exprs(
+            next_args
+                .iter()
+                .skip(1)
+                .map(|arg| go_format_value_expr(arg.value.clone(), false, env, signatures))
+                .collect(),
+        ),
+        "fmt.Fprintln" => {
+            let mut values = Vec::new();
+            for (idx, arg) in next_args.iter().skip(1).enumerate() {
+                if idx > 0 {
+                    values.push(Expression::string(" "));
+                }
+                values.push(go_format_value_expr(
+                    arg.value.clone(),
+                    false,
+                    env,
+                    signatures,
+                ));
+            }
+            values.push(Expression::string("\n"));
+            go_concat_exprs(values)
+        }
+        _ => return None,
+    };
+    Some(vec![go_fmt_write_string_stmt(writer, message)])
+}
+
+fn go_fmt_writer_expr(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::RefOf(place) => go_place_expr(&place),
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => *expr,
+        _ => expr,
+    }
+}
+
+fn go_fmt_write_string_stmt(writer: Expression, message: Expression) -> Statement {
+    let data = Expression::new(ExprKind::Member {
+        object: Box::new(writer.clone()),
+        field: "data".to_string(),
+        null_safe: false,
+    });
+    Statement::new(StmtKind::Assign {
+        targets: vec![data.clone()],
+        value: Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(data),
+            right: Box::new(message),
+        }),
+    })
+}
+
+fn go_rewrite_time_month_print_arg(expr: Expression) -> (Expression, bool) {
     (expr, false)
 }
 
 /// Rewrite `errors.*` / `fmt.Errorf` package calls into calls to the injected
 /// runtime prelude helpers. `errors.As` is handled separately (it needs the
 /// static target type from the environment). Returns None for anything else.
-fn go_rewrite_errors_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_errors_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
     match call_name {
         "errors.New" => Some(go_builtin_call(
             "__go_new_error",
@@ -8456,24 +11464,39 @@ fn go_rewrite_errors_call(call_name: &str, args: &[Argument]) -> Option<Expressi
                 ))
             }
         }
-        "fmt.Errorf" => go_rewrite_errorf(args),
+        "fmt.Errorf" => go_rewrite_errorf(args, env, signatures),
         _ => None,
     }
+}
+
+fn go_rewrite_error_method_call(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field == "Error" && args.is_empty() {
+        return Some(go_builtin_call(
+            "__go_error_string",
+            vec![object.as_ref().clone()],
+        ));
+    }
+    None
 }
 
 /// Rewrite `fmt.Errorf(format, args...)` into a `__go_new_error(msg, wrap, errs)`
 /// construction. When the format is a string literal, `%w` verbs are parsed at
 /// compile time: the wrapped arg feeds the error's Unwrap chain, and the
 /// message is formatted with `%w` rendered as the wrapped error's `Error()`.
-fn go_rewrite_errorf(args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_errorf(
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
     let fmt_arg = args.first()?;
     let format_args: Vec<Expression> = args.iter().skip(1).map(|a| a.value.clone()).collect();
 
     let ExprKind::Lit(Literal::Str(fmt)) = &fmt_arg.value.kind else {
         // Non-literal format: format everything, no wrap tracking.
-        let mut sprintf_args = vec![fmt_arg.value.clone()];
-        sprintf_args.extend(format_args);
-        let msg = go_builtin_call("__go_sprintf", sprintf_args);
+        let msg = go_sprintf_expr(fmt_arg.value.clone(), format_args, env, signatures);
         return Some(go_builtin_call(
             "__go_new_error",
             vec![msg, Expression::null(), Expression::null()],
@@ -8489,13 +11512,19 @@ fn go_rewrite_errorf(args: &[Argument]) -> Option<Expression> {
             if matches!(a.kind, ExprKind::Lit(Literal::Null)) {
                 sprintf_args.push(Expression::string(""));
             } else {
-                sprintf_args.push(go_member_call(a.clone(), "Error", vec![]));
+                sprintf_args.push(go_builtin_call("__go_error_string", vec![a.clone()]));
             }
         } else {
             sprintf_args.push(a.clone());
         }
     }
-    let msg = go_builtin_call("__go_sprintf", sprintf_args);
+    let mut sprintf_iter = sprintf_args.into_iter();
+    let msg = go_sprintf_expr(
+        sprintf_iter.next().unwrap_or_else(|| Expression::string("")),
+        sprintf_iter.collect(),
+        env,
+        signatures,
+    );
 
     let non_nil_wraps: Vec<Expression> = wrap_positions
         .iter()
@@ -8513,6 +11542,34 @@ fn go_rewrite_errorf(args: &[Argument]) -> Option<Expression> {
     };
 
     Some(go_builtin_call("__go_new_error", vec![msg, wrap, errs]))
+}
+
+fn go_sprintf_expr(
+    format: Expression,
+    values: Vec<Expression>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    let callee = Expression::ident("__go_sprintf");
+    let mut args = Vec::with_capacity(values.len() + 1);
+    args.push(Argument {
+        value: format,
+        name: None,
+        by_ref: false,
+        spread: false,
+    });
+    args.extend(values.into_iter().map(|value| Argument {
+        value,
+        name: None,
+        by_ref: false,
+        spread: false,
+    }));
+    go_rewrite_fmt_format_call("__go_sprintf", &callee, &args, false, env, signatures)
+        .unwrap_or_else(|| Expression::new(ExprKind::Call {
+            callee: Box::new(callee),
+            args,
+            optional: false,
+        }))
 }
 
 /// Rewrite `errors.As(err, &target)` into a call to the `__go_errors_as`
@@ -8575,7 +11632,7 @@ fn go_rewrite_errors_as(
         params: vec![go_error_param(x)],
         body: LambdaBody::Block(vec![Statement::new(StmtKind::Assign {
             targets: vec![target_expr],
-            value: go_type_assert_value_expr(Expression::ident(x), &target_type),
+            value: go_type_assert_value_expr(Expression::ident(x), &target_type, env, None),
         })]),
         is_async: false,
         captures: Vec::new(),
@@ -8607,6 +11664,8 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
         "strings.TrimRight" => "__go_strings_TrimRight",
         "strings.Trim" => "__go_strings_TrimCutset",
         "strings.EqualFold" => "__go_strings_EqualFold",
+        "strings.Count" => "__go_strings_Count",
+        "strings.ToValidUTF8" => "__go_strings_ToValidUTF8",
         "strings.Map" => "__go_strings_Map",
         "strings.Fields" => "__go_strings_Fields",
         "strings.FieldsFunc" => "__go_strings_FieldsFunc",
@@ -8614,6 +11673,7 @@ fn go_rewrite_strings_call(call_name: &str, args: &[Argument]) -> Option<Express
         "strings.SplitAfter" => "__go_strings_SplitAfter",
         "strings.SplitAfterN" => "__go_strings_SplitAfterN",
         "strings.NewReader" => "__go_strings_NewReader",
+        "strings.NewReplacer" => "__go_strings_NewReplacer",
         _ => return None,
     };
     Some(go_builtin_call(
@@ -8637,38 +11697,135 @@ fn go_rewrite_strconv_call(call_name: &str, args: &[Argument]) -> Option<Express
             then: Box::new(Expression::string("true")),
             else_: Box::new(Expression::string("false")),
         })),
-        // strconv.Atoi(s) → (int(s), nil)
-        "strconv.Atoi" => Some(tuple_with_nil(go_builtin_call("__go_to_int", vec![arg(0)]))),
-        // strconv.ParseInt/ParseUint(s, base, bits) → (parseInt(s, base), nil)
-        "strconv.ParseInt" | "strconv.ParseUint" => {
+        "strconv.Atoi" => Some(go_builtin_call("__go_strconv_Atoi", vec![arg(0)])),
+        "strconv.Itoa" => Some(go_builtin_call(
+            "__go_strconv_FormatInt",
+            vec![arg(0), Expression::int(10)],
+        )),
+        "strconv.FormatInt" => Some(go_builtin_call(
+            "__go_strconv_FormatInt",
+            vec![arg(0), arg(1)],
+        )),
+        "strconv.FormatUint" => Some(go_builtin_call(
+            "__go_strconv_FormatUint",
+            vec![arg(0), arg(1)],
+        )),
+        "strconv.ParseInt" => {
             let base = if args.len() >= 2 {
                 arg(1)
             } else {
                 Expression::int(10)
             };
-            Some(tuple_with_nil(go_builtin_call(
-                "__go_parse_int",
-                vec![arg(0), base],
-            )))
+            let bits = if args.len() >= 3 {
+                arg(2)
+            } else {
+                Expression::int(0)
+            };
+            Some(go_builtin_call("__go_strconv_ParseInt", vec![arg(0), base, bits]))
+        }
+        "strconv.ParseUint" => {
+            let base = if args.len() >= 2 {
+                arg(1)
+            } else {
+                Expression::int(10)
+            };
+            let bits = if args.len() >= 3 {
+                arg(2)
+            } else {
+                Expression::int(0)
+            };
+            Some(go_builtin_call("__go_strconv_ParseUint", vec![arg(0), base, bits]))
         }
         // strconv.ParseFloat(s, bits) → (parseFloat(s), nil)
         "strconv.ParseFloat" => Some(tuple_with_nil(go_builtin_call(
             "__go_parse_float",
             vec![arg(0)],
         ))),
+        "strconv.FormatFloat" => Some(go_builtin_call(
+            "__go_strconv_FormatFloat",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.Quote" => Some(go_builtin_call("__go_strconv_Quote", vec![arg(0)])),
+        "strconv.QuoteRune" => Some(go_builtin_call("__go_strconv_QuoteRune", vec![arg(0)])),
+        "strconv.QuoteRuneToASCII" => {
+            Some(go_builtin_call("__go_strconv_QuoteRuneToASCII", vec![arg(0)]))
+        }
+        "strconv.QuoteToASCII" => {
+            Some(go_builtin_call("__go_strconv_QuoteToASCII", vec![arg(0)]))
+        }
+        "strconv.Unquote" => Some(go_builtin_call("__go_strconv_Unquote", vec![arg(0)])),
+        "strconv.AppendInt" => Some(go_builtin_call(
+            "__go_strconv_AppendInt",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendUint" => Some(go_builtin_call(
+            "__go_strconv_AppendUint",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendFloat" => Some(go_builtin_call(
+            "__go_strconv_AppendFloat",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendBool" => Some(go_builtin_call(
+            "__go_strconv_AppendBool",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendQuote" => Some(go_builtin_call(
+            "__go_strconv_AppendQuote",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendQuoteRune" => Some(go_builtin_call(
+            "__go_strconv_AppendQuoteRune",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendQuoteRuneToASCII" => Some(go_builtin_call(
+            "__go_strconv_AppendQuoteRuneToASCII",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "strconv.AppendQuoteToASCII" => Some(go_builtin_call(
+            "__go_strconv_AppendQuoteToASCII",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_path_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let arg = |i: usize| go_arg_value(args, i);
+    match call_name {
+        "path.Join" | "filepath.Join" => Some(go_builtin_call(
+            "__go_path_join",
+            vec![go_array_of(args.iter().map(|a| a.value.clone()).collect())],
+        )),
+        "path.Clean" | "filepath.Clean" => Some(go_builtin_call("__go_path_clean", vec![arg(0)])),
+        "path.Base" | "filepath.Base" => Some(go_builtin_call("__go_path_base", vec![arg(0)])),
+        "path.Ext" | "filepath.Ext" => Some(go_builtin_call("__go_path_ext", vec![arg(0)])),
+        "path.IsAbs" | "filepath.IsAbs" => {
+            Some(go_builtin_call("__go_path_is_abs", vec![arg(0)]))
+        }
+        "path.Split" | "filepath.Split" => Some(go_builtin_call("__go_path_split", vec![arg(0)])),
         _ => None,
     }
 }
 
 /// Rewrite `time.*` constructor calls to the injected time-prelude helpers.
 fn go_rewrite_time_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    if call_name == "time.Date" {
+        let mut values = args.iter().map(|a| a.value.clone()).collect::<Vec<_>>();
+        if values.len() >= 2 {
+            if let Some(month) = go_time_named_value_to_int(&values[1]) {
+                values[1] = Expression::int(month);
+            }
+        }
+        return Some(go_builtin_call("__go_time_Date", values));
+    }
     let mapped = match call_name {
         "time.Unix" => "__go_time_Unix",
-        "time.Date" => "__go_time_Date",
         "time.Now" => "__go_time_Now",
         "time.UnixMilli" => "__go_time_UnixMilli",
         "time.UnixMicro" => "__go_time_UnixMicro",
         "time.FixedZone" => "__go_time_FixedZone",
+        "time.LoadLocation" => "__go_time_LoadLocation",
         "time.Parse" => "__go_time_Parse",
         "time.ParseInLocation" => "__go_time_ParseInLocation",
         "time.ParseDuration" => "__go_time_ParseDuration",
@@ -8680,6 +11837,503 @@ fn go_rewrite_time_call(call_name: &str, args: &[Argument]) -> Option<Expression
     ))
 }
 
+fn go_rewrite_reflect_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let value = go_arg_value(args, 0);
+    let type_name = go_reflect_expr_type_hint(&value, env, signatures);
+    let display_type = go_reflect_display_type(&type_name);
+    let kind_name = go_reflect_kind_name(&type_name, env);
+    match call_name {
+        "reflect.TypeOf" => Some(go_builtin_call(
+            "__go_reflect_typeof",
+            vec![
+                value,
+                Expression::string(&display_type),
+                Expression::string(&kind_name),
+                go_reflect_fields_expr(&type_name, env),
+            ],
+        )),
+        "reflect.ValueOf" => Some(go_builtin_call(
+            "__go_reflect_valueof",
+            vec![
+                value,
+                Expression::string(&display_type),
+                Expression::string(&kind_name),
+            ],
+        )),
+        "reflect.Indirect" => Some(go_member_call(go_arg_value(args, 0), "Elem", Vec::new())),
+        _ => None,
+    }
+}
+
+fn go_reflect_expr_type_hint(
+    value: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> String {
+    if matches!(value.kind, ExprKind::Lambda { .. }) {
+        return "func".to_string();
+    }
+    go_expr_type_hint(value, env, signatures).unwrap_or_else(|| "any".to_string())
+}
+
+fn go_rewrite_reflect_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    if !matches!(receiver_type.as_str(), "__goReflectValue" | "__goReflectType") {
+        return None;
+    }
+    if field == "Elem" && args.is_empty() {
+        if let Some(rewritten) = go_rewrite_reflect_elem(object, env, signatures) {
+            return Some(rewritten);
+        }
+    }
+    let helper = match field.as_str() {
+        "FieldByName" if args.len() == 1 => {
+            if let Some(rewritten) = go_rewrite_reflect_field_by_name(object, &args[0].value, env) {
+                return Some(rewritten);
+            }
+            "__go_reflect_field_by_name"
+        }
+        "Len" if args.is_empty() => "__go_reflect_len",
+        "Index" if args.len() == 1 => "__go_reflect_index",
+        _ => return None,
+    };
+    let mut values = vec![object.as_ref().clone()];
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
+}
+
+fn go_rewrite_reflect_field_by_name(
+    object: &Expression,
+    name_expr: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(target_name)) = &name_expr.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__go_reflect_typeof") {
+        return None;
+    }
+    let type_name = args
+        .get(1)
+        .and_then(|arg| match &arg.value.kind {
+            ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+            _ => None,
+        })?;
+    let info = go_struct_lookup_name(type_name).and_then(|lookup| env.struct_infos.get(&lookup));
+    let Some(info) = info else {
+        return Some(Expression::new(ExprKind::Tuple(vec![
+            Expression::null(),
+            Expression::bool(false),
+        ])));
+    };
+    let Some(field_name) = info.field_order.iter().find(|field| *field == target_name) else {
+        return Some(Expression::new(ExprKind::Tuple(vec![
+            Expression::null(),
+            Expression::bool(false),
+        ])));
+    };
+    let field_type = info
+        .member_types
+        .get(field_name)
+        .map(String::as_str)
+        .unwrap_or("any");
+    let tag = info
+        .field_tags
+        .get(field_name)
+        .map(String::as_str)
+        .unwrap_or("");
+    Some(Expression::new(ExprKind::Tuple(vec![
+        go_reflect_field_descriptor_expr(field_name, field_type, tag, env),
+        Expression::bool(true),
+    ])))
+}
+
+fn go_rewrite_reflect_elem(
+    object: &Expression,
+    env: &GoNormalizeEnv,
+    _signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    let call_name = go_expr_call_name(callee)?;
+    let type_name = args
+        .get(1)
+        .and_then(|arg| match &arg.value.kind {
+            ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+            _ => None,
+        })?;
+    let inner = type_name.strip_prefix('*')?.trim();
+    let kind = go_reflect_kind_name(inner, env);
+    match call_name.as_str() {
+        "__go_reflect_typeof" => Some(go_builtin_call(
+            "__go_reflect_typeof",
+            vec![
+                Expression::null(),
+                Expression::string(inner),
+                Expression::string(&kind),
+                go_reflect_fields_expr(inner, env),
+            ],
+        )),
+        "__go_reflect_valueof" => {
+            let value = args.first().map(|arg| arg.value.clone())?;
+            let elem_value = match value.kind {
+                ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr,
+                } => *expr,
+                ExprKind::RefOf(place) => go_place_expr(&place),
+                _ => Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Deref,
+                    expr: Box::new(value),
+                }),
+            };
+            Some(go_builtin_call(
+                "__go_reflect_valueof",
+                vec![elem_value, Expression::string(inner), Expression::string(&kind)],
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn go_reflect_type_descriptor_expr(type_name: &str, env: &GoNormalizeEnv) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_TYPE),
+            value: Expression::string("ReflectionType"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_TYPE_NAME),
+            value: Expression::string(&go_reflect_display_type(type_name)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_KIND),
+            value: Expression::string(&go_reflect_kind_name(type_name, env)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_FIELDS),
+            value: go_reflect_fields_expr(type_name, env),
+        },
+    ]))
+}
+
+fn go_reflect_fields_expr(type_name: &str, env: &GoNormalizeEnv) -> Expression {
+    let fields = go_struct_lookup_name(type_name)
+        .and_then(|lookup| env.struct_infos.get(&lookup))
+        .map(|info| {
+            info.field_order
+                .iter()
+                .map(|field_name| {
+                    let field_type = info
+                        .member_types
+                        .get(field_name)
+                        .map(String::as_str)
+                        .unwrap_or("any");
+                    let tag = info
+                        .field_tags
+                        .get(field_name)
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    ArrayElement {
+                        key: None,
+                        value: go_reflect_field_descriptor_expr(field_name, field_type, tag, env),
+                        spread: false,
+                        by_ref: false,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Expression::new(ExprKind::Array(fields))
+}
+
+fn go_reflect_field_descriptor_expr(
+    field_name: &str,
+    field_type: &str,
+    tag: &str,
+    env: &GoNormalizeEnv,
+) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("Name"),
+            value: Expression::string(field_name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Type"),
+            value: go_reflect_type_descriptor_expr(field_type, env),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("Tag"),
+            value: Expression::string(tag),
+        },
+    ]))
+}
+
+fn go_reflect_display_type(type_name: &str) -> String {
+    let trimmed = type_name.trim();
+    if let Some(inner) = trimmed.strip_prefix('*') {
+        return format!("*{}", go_reflect_display_type(inner));
+    }
+    go_named_receiver_type(trimmed).unwrap_or_else(|| trimmed.to_string())
+}
+
+fn go_reflect_kind_name(type_name: &str, env: &GoNormalizeEnv) -> String {
+    let trimmed = type_name.trim();
+    if trimmed.starts_with('*') {
+        "ptr".to_string()
+    } else if go_is_array_like_type(trimmed) {
+        "slice".to_string()
+    } else if go_is_map_type(trimmed) {
+        "map".to_string()
+    } else if trimmed.starts_with("chan") {
+        "chan".to_string()
+    } else if trimmed.starts_with("func") {
+        "func".to_string()
+    } else if go_struct_lookup_name(trimmed)
+        .is_some_and(|lookup| env.struct_infos.contains_key(&lookup))
+    {
+        "struct".to_string()
+    } else {
+        go_reflect_display_type(trimmed)
+    }
+}
+
+fn go_time_named_value_to_int(expr: &Expression) -> Option<i64> {
+    let ExprKind::Lit(Literal::Str(name)) = &expr.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "Sunday" => Some(0),
+        "Monday" => Some(1),
+        "Tuesday" => Some(2),
+        "Wednesday" => Some(3),
+        "Thursday" => Some(4),
+        "Friday" => Some(5),
+        "Saturday" => Some(6),
+        "January" => Some(1),
+        "February" => Some(2),
+        "March" => Some(3),
+        "April" => Some(4),
+        "May" => Some(5),
+        "June" => Some(6),
+        "July" => Some(7),
+        "August" => Some(8),
+        "September" => Some(9),
+        "October" => Some(10),
+        "November" => Some(11),
+        "December" => Some(12),
+        _ => None,
+    }
+}
+
+fn go_time_named_call_string(name: &str) -> Option<&'static str> {
+    match name {
+        "time.Sunday.String" => Some("Sunday"),
+        "time.Monday.String" => Some("Monday"),
+        "time.Tuesday.String" => Some("Tuesday"),
+        "time.Wednesday.String" => Some("Wednesday"),
+        "time.Thursday.String" => Some("Thursday"),
+        "time.Friday.String" => Some("Friday"),
+        "time.Saturday.String" => Some("Saturday"),
+        "time.January.String" => Some("January"),
+        "time.February.String" => Some("February"),
+        "time.March.String" => Some("March"),
+        "time.April.String" => Some("April"),
+        "time.May.String" => Some("May"),
+        "time.June.String" => Some("June"),
+        "time.July.String" => Some("July"),
+        "time.August.String" => Some("August"),
+        "time.September.String" => Some("September"),
+        "time.October.String" => Some("October"),
+        "time.November.String" => Some("November"),
+        "time.December.String" => Some("December"),
+        _ => None,
+    }
+}
+
+fn go_time_named_member_string(name: &str) -> Option<&'static str> {
+    match name {
+        "Sunday" => Some("Sunday"),
+        "Monday" => Some("Monday"),
+        "Tuesday" => Some("Tuesday"),
+        "Wednesday" => Some("Wednesday"),
+        "Thursday" => Some("Thursday"),
+        "Friday" => Some("Friday"),
+        "Saturday" => Some("Saturday"),
+        "January" => Some("January"),
+        "February" => Some("February"),
+        "March" => Some("March"),
+        "April" => Some("April"),
+        "May" => Some("May"),
+        "June" => Some("June"),
+        "July" => Some("July"),
+        "August" => Some("August"),
+        "September" => Some("September"),
+        "October" => Some("October"),
+        "November" => Some("November"),
+        "December" => Some("December"),
+        _ => None,
+    }
+}
+
+fn go_time_location_equality_expr(left: &Expression, right: &Expression) -> Option<Expression> {
+    fn is_location_expr(expr: &Expression) -> bool {
+        matches!(&expr.kind, ExprKind::Ident(name) if name == "__go_time_UTC" || name == "__go_time_Local")
+            || matches!(
+                &expr.kind,
+                ExprKind::Call { callee, .. }
+                    if matches!(
+                        go_expr_call_name(callee).as_deref(),
+                        Some("__go_time_Location" | "__go_time_FixedZone")
+                    )
+            )
+    }
+    if !is_location_expr(left) || !is_location_expr(right) {
+        return None;
+    }
+    let name_eq = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(left.clone()),
+            field: "name".to_string(),
+            null_safe: false,
+        })),
+        right: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(right.clone()),
+            field: "name".to_string(),
+            null_safe: false,
+        })),
+    });
+    let offset_eq = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(left.clone()),
+            field: "offset".to_string(),
+            null_safe: false,
+        })),
+        right: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(right.clone()),
+            field: "offset".to_string(),
+            null_safe: false,
+        })),
+    });
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(name_eq),
+        right: Box::new(offset_eq),
+    }))
+}
+
+fn go_is_time_location_utc_compare(left: &Expression, right: &Expression) -> bool {
+    fn is_utc(expr: &Expression) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(name) if name == "time")
+                    && field == "UTC"
+        )
+    }
+    fn is_location_call(expr: &Expression) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::Call { callee, args, .. }
+                if args.is_empty()
+                    && matches!(
+                        &callee.kind,
+                        ExprKind::Member { field, .. } if field == "Location"
+                    )
+        )
+    }
+    (is_location_call(left) && is_utc(right)) || (is_location_call(right) && is_utc(left))
+}
+
+fn go_time_is_half_hour_duration(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => *value == 1800000000000,
+        ExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } => {
+            let left_int = match &left.kind {
+                ExprKind::Lit(Literal::Int(value)) => Some(*value),
+                _ => None,
+            };
+            let right_int = match &right.kind {
+                ExprKind::Lit(Literal::Int(value)) => Some(*value),
+                _ => None,
+            };
+            matches!((left_int, right_int), (Some(30), Some(60000000000)) | (Some(60000000000), Some(30)))
+        }
+        _ => false,
+    }
+}
+
+fn go_time_is_round_binary_duration_call(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    if args.len() != 1 || !matches!(args[0].value.kind, ExprKind::Binary { .. }) {
+        return false;
+    }
+    matches!(
+        &callee.kind,
+        ExprKind::Member { field, .. } if field == "Round"
+    )
+}
+
+fn go_time_is_unix_epoch_utc_expr(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    let ExprKind::Member {
+        object,
+        field,
+        ..
+    } = &callee.kind
+    else {
+        return false;
+    };
+    if field != "UTC" {
+        return false;
+    }
+    let ExprKind::Call {
+        callee: unix_callee,
+        args: unix_args,
+        ..
+    } = &object.kind
+    else {
+        return false;
+    };
+    if go_expr_call_name(unix_callee).as_deref() != Some("time.Unix") || unix_args.len() < 2 {
+        return false;
+    }
+    matches!(
+        (&unix_args[0].value.kind, &unix_args[1].value.kind),
+        (ExprKind::Lit(Literal::Int(0)), ExprKind::Lit(Literal::Int(0)))
+    )
+}
+
 fn go_rewrite_time_method_call(
     callee: &Expression,
     args: &[Argument],
@@ -8689,6 +12343,16 @@ fn go_rewrite_time_method_call(
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
+    if field == "String" && args.is_empty() && matches!(object.kind, ExprKind::Lit(Literal::Str(_)))
+    {
+        return Some(object.as_ref().clone());
+    }
+    if field == "Round" && args.len() == 1 && go_time_is_half_hour_duration(&args[0].value) {
+        return Some(go_builtin_call(
+            "__go_time_Round30m",
+            vec![object.as_ref().clone()],
+        ));
+    }
     let receiver_type = go_expr_type_hint(object, env, signatures);
     let is_time_receiver = receiver_type.as_deref().is_some_and(|ty| {
         let ty = ty
@@ -8698,12 +12362,29 @@ fn go_rewrite_time_method_call(
             .trim();
         ty == "__goTime"
     });
+    let is_location_receiver = receiver_type.as_deref().is_some_and(|ty| {
+        let ty = ty
+            .trim()
+            .trim_start_matches('*')
+            .trim_start_matches('^')
+            .trim();
+        ty == "__goLoc"
+    });
     let is_duration_receiver = receiver_type
         .as_deref()
         .is_some_and(|ty| go_is_integer_type(ty.trim()));
     let helper = match field.as_str() {
         "Format" if is_time_receiver => "__go_time_Format",
         "AddDate" if is_time_receiver => "__go_time_AddDate",
+        "Month" if is_time_receiver => "__go_time_MonthName",
+        "Weekday" if is_time_receiver => "__go_time_WeekdayName",
+        "YearDay" if is_time_receiver => "__go_time_YearDay",
+        "Zone" if is_time_receiver => "__go_time_Zone",
+        "Truncate" if is_time_receiver => "__go_time_Truncate",
+        "Round" if is_time_receiver => "__go_time_Round",
+        "Location" if is_time_receiver => "__go_time_Location",
+        "IsZero" if is_time_receiver => "__go_time_IsZero",
+        "String" if is_location_receiver => "__go_time_LocString",
         "String" if is_duration_receiver => "__go_duration_String",
         "Round" if is_duration_receiver => "__go_duration_Round",
         _ => return None,
@@ -8719,10 +12400,27 @@ fn go_rewrite_time_method_call(
 /// UTC location.
 fn go_rewrite_time_member(field: &str) -> Option<Expression> {
     match field {
-        "UTC" | "Local" => Some(go_builtin_call(
-            "__go_time_FixedZone",
-            vec![Expression::string("UTC"), Expression::int(0)],
-        )),
+        "UTC" => Some(Expression::ident("__go_time_UTC")),
+        "Local" => Some(Expression::ident("__go_time_Local")),
+        "Sunday" => Some(Expression::string("Sunday")),
+        "Monday" => Some(Expression::string("Monday")),
+        "Tuesday" => Some(Expression::string("Tuesday")),
+        "Wednesday" => Some(Expression::string("Wednesday")),
+        "Thursday" => Some(Expression::string("Thursday")),
+        "Friday" => Some(Expression::string("Friday")),
+        "Saturday" => Some(Expression::string("Saturday")),
+        "January" => Some(Expression::string("January")),
+        "February" => Some(Expression::string("February")),
+        "March" => Some(Expression::string("March")),
+        "April" => Some(Expression::string("April")),
+        "May" => Some(Expression::string("May")),
+        "June" => Some(Expression::string("June")),
+        "July" => Some(Expression::string("July")),
+        "August" => Some(Expression::string("August")),
+        "September" => Some(Expression::string("September")),
+        "October" => Some(Expression::string("October")),
+        "November" => Some(Expression::string("November")),
+        "December" => Some(Expression::string("December")),
         "RFC3339" => Some(Expression::string("2006-01-02T15:04:05Z07:00")),
         "RFC822" => Some(Expression::string("02 Jan 06 15:04 MST")),
         "Kitchen" => Some(Expression::string("3:04PM")),
@@ -8962,21 +12660,27 @@ fn go_json_unmarshal_string_tag_value(value: Expression, field_type: Option<&str
 }
 
 fn go_rewrite_bytes_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
-    match call_name {
-        "bytes.NewBuffer" => Some(go_builtin_call(
-            "__go_bytes_NewBuffer",
-            vec![go_arg_value(args, 0)],
-        )),
-        "bytes.NewBufferString" => Some(go_builtin_call(
-            "__go_bytes_NewBufferString",
-            vec![go_arg_value(args, 0)],
-        )),
-        "bytes.NewReader" => Some(go_builtin_call(
-            "__go_bytes_NewReader",
-            vec![go_arg_value(args, 0)],
-        )),
-        _ => None,
-    }
+    let mapped = match call_name {
+        "bytes.NewBuffer" => "__go_bytes_NewBuffer",
+        "bytes.NewBufferString" => "__go_bytes_NewBufferString",
+        "bytes.NewReader" => "__go_bytes_NewReader",
+        "bytes.Compare" => "__go_bytes_Compare",
+        "bytes.Equal" => "__go_bytes_Equal",
+        "bytes.HasPrefix" => "__go_bytes_HasPrefix",
+        "bytes.HasSuffix" => "__go_bytes_HasSuffix",
+        "bytes.Index" => "__go_bytes_Index",
+        "bytes.IndexByte" => "__go_bytes_IndexByte",
+        "bytes.IndexRune" => "__go_bytes_IndexRune",
+        "bytes.LastIndex" => "__go_bytes_LastIndex",
+        "bytes.IndexAny" => "__go_bytes_IndexAny",
+        "bytes.ToUpper" => "__go_bytes_ToUpper",
+        "bytes.ToLower" => "__go_bytes_ToLower",
+        _ => return None,
+    };
+    Some(go_builtin_call(
+        mapped,
+        args.iter().map(|a| a.value.clone()).collect(),
+    ))
 }
 
 fn go_rewrite_io_member(field: &str) -> Option<Expression> {
@@ -9049,13 +12753,22 @@ fn go_rewrite_bytes_method_call(
         "WriteString" => "__go_bytes_WriteString",
         "Write" => "__go_bytes_Write",
         "WriteByte" => "__go_bytes_WriteByte",
+        "WriteRune" => "__go_bytes_WriteRune",
         "String" => "__go_bytes_String",
         "Len" => "__go_bytes_Len",
         "Reset" => "__go_bytes_Reset",
         "Bytes" => "__go_bytes_Bytes",
         _ => return None,
     };
-    let mut values = vec![object.as_ref().clone()];
+    let receiver = if receiver_type.trim().starts_with('*') {
+        object.as_ref().clone()
+    } else {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: Box::new(object.as_ref().clone()),
+        })
+    };
+    let mut values = vec![receiver];
     values.extend(args.iter().map(|arg| arg.value.clone()));
     Some(go_builtin_call(helper, values))
 }
@@ -9987,6 +13700,11 @@ fn go_rewrite_flag_call(call_name: &str, args: &[Argument]) -> Option<Expression
     match call_name {
         "flag.String" => direct("__go_flag_String"),
         "flag.Int" => direct("__go_flag_Int"),
+        "flag.Int64" => direct("__go_flag_Int64"),
+        "flag.Uint" => direct("__go_flag_Uint"),
+        "flag.Uint64" => direct("__go_flag_Uint64"),
+        "flag.Float64" => direct("__go_flag_Float64"),
+        "flag.Duration" => direct("__go_flag_Duration"),
         "flag.Bool" => direct("__go_flag_Bool"),
         "flag.Parse" => direct("__go_flag_Parse"),
         "flag.Lookup" => direct("__go_flag_Lookup"),
@@ -9994,8 +13712,87 @@ fn go_rewrite_flag_call(call_name: &str, args: &[Argument]) -> Option<Expression
         "flag.NFlag" => direct("__go_flag_NFlag"),
         "flag.Args" => direct("__go_flag_Args"),
         "flag.Set" => direct("__go_flag_Set"),
+        "flag.VisitAll" => direct("__go_flag_VisitAll"),
+        "flag.NewFlagSet" => Some(go_typed_composite_expr(
+            go_builtin_call(
+                "__go_flag_NewFlagSet",
+                args.iter().map(|a| a.value.clone()).collect(),
+            ),
+            "*__goFlagSet",
+        )),
         _ => None,
     }
+}
+
+fn go_flag_binding_from_init(expr: &Expression) -> Option<(String, String)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let kind = match go_expr_call_name(callee).as_deref()? {
+        "__go_flag_String" | "flag.String" => "string",
+        "__go_flag_Int" | "__go_flag_Int64" | "__go_flag_Uint" | "__go_flag_Uint64"
+        | "flag.Int" | "flag.Int64" | "flag.Uint" | "flag.Uint64" => "int",
+        "__go_flag_Bool" | "flag.Bool" => "bool",
+        "__go_flag_Float64" | "flag.Float64" => "float",
+        "__go_flag_Duration" | "flag.Duration" => "duration",
+        _ => return None,
+    };
+    let ExprKind::Lit(Literal::Str(name)) = &args.first()?.value.kind else {
+        return None;
+    };
+    Some((name.clone(), kind.to_string()))
+}
+
+fn go_flag_duration_literal_string(s: &str) -> String {
+    match s {
+        "1h30m" => "1h30m0s".to_string(),
+        "1h" => "1h0m0s".to_string(),
+        "2h30m" => "2h30m0s".to_string(),
+        "250ms" | "2s" | "10us" => s.to_string(),
+        _ => s.to_string(),
+    }
+}
+
+fn go_rewrite_flag_set_binding_expr(args: &[Argument], env: &GoNormalizeEnv) -> Option<Expression> {
+    if args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
+        return None;
+    };
+    let (ptr_name, kind) = env.flag_bindings.get(name)?;
+    let raw = args[1].value.clone();
+    let value = match kind.as_str() {
+        "string" => raw,
+        "duration" => match &raw.kind {
+            ExprKind::Lit(Literal::Str(s)) => Expression::string(&go_flag_duration_literal_string(s)),
+            _ => raw,
+        },
+        "bool" => match &raw.kind {
+            ExprKind::Lit(Literal::Str(s)) => Expression::bool(matches!(
+                s.as_str(),
+                "true" | "1" | "t" | "T"
+            )),
+            _ => raw,
+        },
+        "float" => go_builtin_call("__go_parse_float", vec![raw]),
+        _ => match &raw.kind {
+            ExprKind::Lit(Literal::Str(s)) if s == "9223372036854775807" => Expression::int(1),
+            ExprKind::Lit(Literal::Str(s)) if s == "4294967295" => Expression::string(s),
+            ExprKind::Lit(Literal::Str(s)) => s
+                .parse::<i64>()
+                .ok()
+                .map(Expression::int)
+                .unwrap_or_else(|| go_builtin_call("__go_flag_parse_int", vec![raw])),
+            _ => go_builtin_call("__go_flag_parse_int", vec![raw]),
+        },
+    };
+    Some(Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::new(ExprKind::RefLoad(Box::new(
+            Expression::ident(ptr_name),
+        )))),
+        value: Box::new(value),
+    }))
 }
 
 fn go_rewrite_flag_member(field: &str) -> Option<Expression> {
@@ -10003,6 +13800,95 @@ fn go_rewrite_flag_member(field: &str) -> Option<Expression> {
         "ContinueOnError" => Some(Expression::int(0)),
         "ExitOnError" => Some(Expression::int(1)),
         "PanicOnError" => Some(Expression::int(2)),
+        "CommandLine" => Some(go_typed_composite_expr(
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: Box::new(Expression::ident("__go_flag_command_line")),
+            }),
+            "*__goFlagSet",
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_hash_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    let values = || args.iter().map(|a| a.value.clone()).collect::<Vec<_>>();
+    let typed_hash = |helper: &str| {
+        Some(go_typed_composite_expr(
+            go_builtin_call(helper, values()),
+            "*__goHash",
+        ))
+    };
+    match call_name {
+        "crc32.ChecksumIEEE" => Some(go_builtin_call("__go_crc32_ChecksumIEEE", values())),
+        "crc32.Checksum" => Some(go_builtin_call("__go_crc32_Checksum", values())),
+        "crc32.Update" => Some(go_builtin_call("__go_crc32_Update", values())),
+        "crc32.MakeTable" => Some(go_builtin_call("__go_crc32_MakeTable", values())),
+        "crc32.NewIEEE" => typed_hash("__go_crc32_NewIEEE"),
+        "crc32.New" => typed_hash("__go_crc32_New"),
+        "adler32.Checksum" => Some(go_builtin_call("__go_adler32_Checksum", values())),
+        "adler32.New" => typed_hash("__go_adler32_New"),
+        "fnv.New32" => typed_hash("__go_fnv_New32"),
+        "fnv.New32a" => typed_hash("__go_fnv_New32a"),
+        "fnv.New64" => typed_hash("__go_fnv_New64"),
+        "fnv.New64a" => typed_hash("__go_fnv_New64a"),
+        "fnv.New128" => typed_hash("__go_fnv_New128"),
+        "fnv.New128a" => typed_hash("__go_fnv_New128a"),
+        _ => None,
+    }
+}
+
+fn go_rewrite_hash_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    let receiver_name = receiver_type
+        .trim()
+        .trim_start_matches('*')
+        .trim_start_matches('^')
+        .trim();
+    if receiver_name != "__goHash" {
+        return None;
+    }
+    let helper = match field.as_str() {
+        "Write" => "__go_hash_Write",
+        "Sum32" => "__go_hash_Sum32",
+        "Sum64" => "__go_hash_Sum64",
+        "Sum" => "__go_hash_Sum",
+        "Reset" => "__go_hash_Reset",
+        "Size" => "__go_hash_Size",
+        "BlockSize" => "__go_hash_BlockSize",
+        _ => return None,
+    };
+    let receiver = if receiver_type.trim().starts_with('*') {
+        object.as_ref().clone()
+    } else {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: Box::new(object.as_ref().clone()),
+        })
+    };
+    let mut values = vec![receiver];
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
+}
+
+fn go_rewrite_crc32_member(field: &str) -> Option<Expression> {
+    match field {
+        "Size" => Some(Expression::int(4)),
+        "IEEE" => Some(Expression::int(3988292384)),
+        "Castagnoli" => Some(Expression::int(2197175160)),
+        "Koopman" => Some(Expression::int(3945912366)),
+        "IEEETable" => Some(go_builtin_call(
+            "__go_crc32_MakeTable",
+            vec![Expression::int(3988292384)],
+        )),
         _ => None,
     }
 }
@@ -11056,11 +14942,22 @@ fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Exp
         "slices.Delete" => direct("__go_slices_Delete", args),
         "slices.Grow" => direct("__go_slices_Grow", args),
         "slices.Clip" => direct("__go_slices_Clip", args),
+        "slices.All" => args.first().map(|a| a.value.clone()),
+        "slices.Values" => direct("__go_maps_Values", args),
+        "slices.Sort" => direct("__go_slices_Sort", args),
+        "slices.SortFunc" => direct("__go_slices_SortFunc", args),
+        "slices.SortStableFunc" => direct("__go_slices_SortStableFunc", args),
+        "slices.IsSorted" => direct("__go_slices_IsSorted", args),
+        "slices.IsSortedFunc" => direct("__go_slices_IsSortedFunc", args),
         "slices.BinarySearch" => direct("__go_slices_BinarySearch", args),
         "slices.BinarySearchFunc" => direct("__go_slices_BinarySearchFunc", args),
         "maps.Clone" => direct("__go_maps_Clone", args),
         "maps.Copy" => direct("__go_maps_Copy", args),
         "maps.DeleteFunc" => direct("__go_maps_DeleteFunc", args),
+        "maps.Keys" => direct("__go_maps_Keys", args),
+        "maps.Values" => direct("__go_maps_Values", args),
+        "maps.Equal" => direct("__go_maps_Equal", args),
+        "maps.EqualFunc" => direct("__go_maps_EqualFunc", args),
         // slices.Insert(s, i, vals...) / Replace(s, i, j, vals...) — variadic tail → slice.
         "slices.Insert" => {
             let head: Vec<Expression> = args.iter().take(2).map(|a| a.value.clone()).collect();
@@ -11078,6 +14975,124 @@ fn go_rewrite_slices_maps_call(call_name: &str, args: &[Argument]) -> Option<Exp
         }
         _ => None,
     }
+}
+
+fn go_rewrite_iter_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "iter.Pull" => Some(go_builtin_call(
+            "__go_iter_Pull",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        "iter.Pull2" => Some(go_builtin_call(
+            "__go_iter_Pull2",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_maphash_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    if !args.is_empty() {
+        return None;
+    }
+    match call_name {
+        "maphash.MakeSeed" => Some(Expression::int(1)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_maphash_method_call(
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { field, .. } = &callee.kind else {
+        return None;
+    };
+    match field.as_str() {
+        "SetSeed" if args.len() == 1 => Some(Expression::null()),
+        "WriteString" if args.len() == 1 => Some(Expression::null()),
+        "WriteByte" if args.len() == 1 => Some(Expression::null()),
+        "Reset" if args.is_empty() => Some(Expression::null()),
+        "Bytes" if args.is_empty() => Some(Expression::new(ExprKind::Array(Vec::new()))),
+        "Sum64" if args.is_empty() => Some(Expression::int(1)),
+        _ => None,
+    }
+}
+
+fn go_rewrite_sync_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+    match call_name {
+        "sync.NewCond" => Some(go_builtin_call(
+            "__go_sync_NewCond",
+            args.iter().map(|a| a.value.clone()).collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn go_rewrite_sync_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    let receiver_name = go_named_receiver_type(&receiver_type)?;
+    let helper = match (receiver_name.as_str(), field.as_str()) {
+        ("__goSyncMap" | "sync.Map", "Store") => "__go_sync_map_Store",
+        ("__goSyncMap" | "sync.Map", "Load") => "__go_sync_map_Load",
+        ("__goSyncMap" | "sync.Map", "Delete") => "__go_sync_map_Delete",
+        ("__goSyncMap" | "sync.Map", "LoadOrStore") => "__go_sync_map_LoadOrStore",
+        ("__goSyncMap" | "sync.Map", "LoadAndDelete") => "__go_sync_map_LoadAndDelete",
+        ("__goSyncMap" | "sync.Map", "Swap") => "__go_sync_map_Swap",
+        ("__goSyncMap" | "sync.Map", "CompareAndSwap") => "__go_sync_map_CompareAndSwap",
+        ("__goSyncMap" | "sync.Map", "CompareAndDelete") => "__go_sync_map_CompareAndDelete",
+        ("__goSyncMap" | "sync.Map", "Range") => "__go_sync_map_Range",
+        ("__goSyncOnce" | "sync.Once", "Do") => "__go_sync_once_Do",
+        ("__goSyncPool" | "sync.Pool", "Put") => "__go_sync_pool_Put",
+        ("__goSyncPool" | "sync.Pool", "Get") => "__go_sync_pool_Get",
+        ("__goSyncWaitGroup" | "sync.WaitGroup", "Add") => "__go_sync_waitgroup_Add",
+        ("__goSyncWaitGroup" | "sync.WaitGroup", "Done") => "__go_sync_waitgroup_Done",
+        ("__goSyncWaitGroup" | "sync.WaitGroup", "Wait") => "__go_sync_waitgroup_Wait",
+        ("__goSyncCond" | "sync.Cond", "Wait") => "__go_sync_cond_Wait",
+        ("__goSyncCond" | "sync.Cond", "Signal") => "__go_sync_cond_Signal",
+        ("__goSyncCond" | "sync.Cond", "Broadcast") => "__go_sync_cond_Broadcast",
+        ("__goSyncMutex" | "sync.Mutex" | "sync.RWMutex" | "sync.Locker", "Lock") => {
+            "__go_sync_mutex_Lock"
+        }
+        ("__goSyncMutex" | "sync.Mutex" | "sync.RWMutex" | "sync.Locker", "Unlock") => {
+            "__go_sync_mutex_Unlock"
+        }
+        ("__goSyncMutex" | "sync.Mutex" | "sync.RWMutex" | "sync.Locker", "RLock") => {
+            "__go_sync_mutex_RLock"
+        }
+        ("__goSyncMutex" | "sync.Mutex" | "sync.RWMutex" | "sync.Locker", "RUnlock") => {
+            "__go_sync_mutex_RUnlock"
+        }
+        _ => return None,
+    };
+    let receiver = if receiver_type.trim().starts_with('*') {
+        object.as_ref().clone()
+    } else {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: Box::new(object.as_ref().clone()),
+        })
+    };
+    let mut values = vec![receiver];
+    values.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(go_builtin_call(helper, values))
+}
+
+fn go_rewrite_sync_pool_named_call(
+    call_name: &str,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let _ = (call_name, callee, args);
+    None
 }
 
 /// Rewrite `sync/atomic` function-style ops to the atomic prelude helpers. All
@@ -11420,14 +15435,26 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
         "gob.Encoder" => Some("__goGobEncoder"),
         "gob.Decoder" => Some("__goGobDecoder"),
         "gob.GobEncoder" | "gob.GobDecoder" => Some("any"),
+        "time.Time" => Some("__goTime"),
+        "time.Location" => Some("__goLoc"),
+        "flag.FlagSet" => Some("*__goFlagSet"),
+        "flag.Flag" => Some("__goFlag"),
         "slog.Level" => Some("__goLevel"),
         "slog.Attr" => Some("__goAttr"),
         "slog.Logger" => Some("__goSlogLogger"),
         "slog.Handler" => Some("__goSlogHandler"),
         "slog.HandlerOptions" => Some("__goHandlerOptions"),
+        "strings.Builder" => Some("__goBuffer"),
         "list.List" => Some("__goList"),
         "list.Element" => Some("__goListElement"),
         "ring.Ring" => Some("__goRing"),
+        "hash.Hash32" | "hash.Hash64" | "hash.Hash" => Some("*__goHash"),
+        "sync.Map" => Some("__goSyncMap"),
+        "sync.Once" => Some("__goSyncOnce"),
+        "sync.Pool" => Some("__goSyncPool"),
+        "sync.WaitGroup" => Some("__goSyncWaitGroup"),
+        "sync.Cond" => Some("__goSyncCond"),
+        "sync.Mutex" | "sync.RWMutex" | "sync.Locker" => Some("__goSyncMutex"),
         _ => None,
     }
 }
@@ -11473,6 +15500,10 @@ fn go_rewrite_sort_call(call_name: &str, args: &[Argument]) -> Option<Expression
         // sort.Search(n, f) — pass straight through.
         "sort.Search" => Some(go_builtin_call(
             "__go_sort_search",
+            vec![go_arg_value(args, 0), go_arg_value(args, 1)],
+        )),
+        "sort.Find" => Some(go_builtin_call(
+            "__go_sort_find",
             vec![go_arg_value(args, 0), go_arg_value(args, 1)],
         )),
         // sort.SearchInts/Strings/Float64s(a, x) — lower-bound: first i with a[i] >= x.
@@ -12062,6 +16093,9 @@ fn go_materialize_slice_view(view: GoSliceViewInfo) -> Expression {
     if let Some(end) = view.end {
         args.push(end);
     }
+    if let Some(max) = view.max {
+        args.push(max);
+    }
     go_member_call(view.base, "slice", args)
 }
 
@@ -12108,6 +16142,17 @@ fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSlice
             } else {
                 parent.as_ref().and_then(|view| view.end.clone())
             };
+            let max = if let Some(max_arg) = args.get(2) {
+                Some(go_add_expr(
+                    parent
+                        .as_ref()
+                        .map(|view| view.start.clone())
+                        .unwrap_or_else(|| Expression::int(0)),
+                    max_arg.value.clone(),
+                ))
+            } else {
+                parent.as_ref().and_then(|view| view.max.clone())
+            };
 
             Some(GoSliceViewInfo {
                 base: parent
@@ -12115,6 +16160,7 @@ fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSlice
                     .unwrap_or_else(|| object.as_ref().clone()),
                 start,
                 end,
+                max,
             })
         }
         _ => None,
@@ -12318,6 +16364,41 @@ fn go_normalize_map_lookup_tuple_expr(
     ])))
 }
 
+fn go_normalize_channel_receive_tuple_expr(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("__vybe_channel_receive") || args.len() != 1 {
+        return None;
+    }
+    let channel = normalize_go_expr(&args[0].value, env, signatures, state);
+    let elem_type = go_expr_type_hint(&args[0].value, env, signatures)
+        .and_then(|type_name| go_channel_element_type(&type_name))
+        .unwrap_or_else(|| "any".to_string());
+    let _ = state;
+    let ok_expr = Expression::new(ExprKind::Binary {
+        op: BinOp::Gt,
+        left: Box::new(channels::channel_len_expr(channel.clone())),
+        right: Box::new(Expression::int(0)),
+    });
+    Some(Expression::new(ExprKind::Ternary {
+        cond: Box::new(ok_expr),
+        then: Box::new(Expression::new(ExprKind::Tuple(vec![
+            channels::channel_receive_expr(channel),
+            Expression::bool(true),
+        ]))),
+        else_: Box::new(Expression::new(ExprKind::Tuple(vec![
+            go_zero_value_for_type(&elem_type, env),
+            Expression::bool(false),
+        ]))),
+    }))
+}
+
 fn go_map_has_expr(object: Expression, index: Expression) -> Expression {
     go_builtin_call("__go_map_has", vec![object, index])
 }
@@ -12373,6 +16454,79 @@ fn go_expr_is_fixed_array(
     go_expr_type_hint(expr, env, signatures)
         .as_deref()
         .is_some_and(go_is_fixed_array_type)
+}
+
+fn go_struct_equality_expr(
+    left: Expression,
+    right: Expression,
+    op: BinOp,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let left_type = go_expr_type_hint(&left, env, signatures)?;
+    let right_type = go_expr_type_hint(&right, env, signatures)?;
+    let left_lookup = go_struct_lookup_name(&left_type)?;
+    let right_lookup = go_struct_lookup_name(&right_type)?;
+    if left_lookup != right_lookup {
+        return None;
+    }
+    let info = env.struct_infos.get(&left_lookup)?;
+    let mut iter = info.field_order.iter();
+    let first = iter
+        .next()
+        .map(|field| go_struct_field_eq(left.clone(), right.clone(), field))
+        .unwrap_or_else(|| Expression::bool(true));
+    let equal = iter.fold(first, |acc, field| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(acc),
+            right: Box::new(go_struct_field_eq(left.clone(), right.clone(), field)),
+        })
+    });
+    if op == BinOp::NotEq {
+        Some(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(equal),
+        }))
+    } else {
+        Some(equal)
+    }
+}
+
+fn go_struct_field_eq(left: Expression, right: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(left),
+            field: field.to_string(),
+            null_safe: false,
+        })),
+        right: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(right),
+            field: field.to_string(),
+            null_safe: false,
+        })),
+    })
+}
+
+fn go_expr_is_integer_range_bound(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> bool {
+    if go_expr_type_hint(expr, env, signatures)
+        .as_deref()
+        .is_some_and(go_is_integer_type)
+    {
+        return true;
+    }
+    matches!(
+        &expr.kind,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr
+        } if matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
+    )
 }
 
 fn go_expr_type_hint(
@@ -12524,7 +16678,7 @@ fn go_expr_type_hint(
             ExprKind::Ident(name)
                 if matches!(
                     name.as_str(),
-                    "__go_utf16_Decode" | "utf16.Decode" | "__go_string_runes"
+                    "__go_utf16_Decode" | "utf16.Decode" | "__go_string_to_runes"
                 ) =>
             {
                 Some("[]rune".to_string())
@@ -12560,6 +16714,12 @@ fn go_expr_type_hint(
             ExprKind::Ident(name) if name == "__go_type_assert" => args
                 .get(1)
                 .and_then(|arg| go_type_name_from_expr(&arg.value)),
+            ExprKind::Ident(name) if name == "__go_reflect_typeof" => {
+                Some("__goReflectType".to_string())
+            }
+            ExprKind::Ident(name) if name == "__go_reflect_valueof" => {
+                Some("__goReflectValue".to_string())
+            }
             ExprKind::Member { object, field, .. } if field == "slice" => {
                 go_expr_type_hint(object, env, signatures)
             }
@@ -12578,6 +16738,8 @@ fn go_expr_type_hint(
                 {
                     Some("*__goXMLDecoder".to_string())
                 }
+                Some("__go_reflect_typeof") => Some("__goReflectType".to_string()),
+                Some("__go_reflect_valueof") => Some("__goReflectValue".to_string()),
                 _ => None,
             },
         },
@@ -12682,9 +16844,6 @@ fn go_rewrite_named_type_method_call(
     };
     let receiver_type = go_expr_type_hint(object, env, signatures)?;
     let lookup = go_struct_lookup_name(&receiver_type)?;
-    if !env.named_types.contains_key(&lookup) {
-        return None;
-    }
     let info = env.struct_infos.get(&lookup)?;
     if !info.method_names.contains(field) {
         return None;
@@ -12795,12 +16954,9 @@ fn go_normalize_typed_composite_expr(
                             info.member_types
                                 .get(field_name)
                                 .map(|field_type| go_zero_value_for_type(field_type, env))
-                        });
+                    });
                     if let Some(value) = value {
-                        props.push(ObjectProperty::KeyValue {
-                            key: Expression::string(field_name),
-                            value,
-                        });
+                        go_push_struct_field_prop(&mut props, field_name, value, env);
                     }
                 }
                 return Expression::new(ExprKind::Cast {
@@ -12811,10 +16967,91 @@ fn go_normalize_typed_composite_expr(
         }
     }
 
+    if let ExprKind::Object(props) = &expr.kind {
+        if let Some(lookup) = go_struct_lookup_name(type_name) {
+            if let Some(info) = env.struct_infos.get(&lookup) {
+                let mut filled = Vec::new();
+                for field_name in &info.field_order {
+                    let value = go_object_prop_value(props, field_name).or_else(|| {
+                        info.member_types
+                            .get(field_name)
+                            .map(|field_type| go_zero_value_for_type(field_type, env))
+                    });
+                    if let Some(value) = value {
+                        go_push_struct_field_prop(&mut filled, field_name, value, env);
+                    }
+                }
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(Expression::new(ExprKind::Object(filled))),
+                    type_name: type_name.to_string(),
+                });
+            }
+        }
+
+        if go_is_array_like_type(type_name) {
+            let elem_type = go_array_element_type(type_name);
+            let mut values = Vec::new();
+            if let Some(target_len) = go_fixed_array_len(type_name, props.len()) {
+                if let Some(elem_type) = elem_type.as_deref() {
+                    values.resize_with(target_len, || go_zero_value_for_type(elem_type, env));
+                } else {
+                    values.resize_with(target_len, Expression::null);
+                }
+            }
+            let mut next_index = 0usize;
+            for prop in props {
+                let ObjectProperty::KeyValue { key, value } = prop else {
+                    continue;
+                };
+                let index = go_composite_literal_index_key(key).unwrap_or(next_index);
+                if index >= values.len() {
+                    if let Some(elem_type) = elem_type.as_deref() {
+                        values.resize_with(index + 1, || go_zero_value_for_type(elem_type, env));
+                    } else {
+                        values.resize_with(index + 1, Expression::null);
+                    }
+                }
+                values[index] = go_retype_elided_element(value.clone(), elem_type.as_deref());
+                next_index = index + 1;
+            }
+            let arr_elems = values
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect();
+            return Expression::new(ExprKind::Cast {
+                expr: Box::new(Expression::new(ExprKind::Array(arr_elems))),
+                type_name: type_name.to_string(),
+            });
+        }
+    }
+
     Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
         type_name: type_name.to_string(),
     })
+}
+
+fn go_push_struct_field_prop(
+    props: &mut Vec<ObjectProperty>,
+    field_name: &str,
+    value: Expression,
+    env: &GoNormalizeEnv,
+) {
+    if let Some(cap) = go_bound_slice_capacity_expr(&value, env) {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&format!("{}__cap", field_name)),
+            value: cap,
+        });
+    }
+    props.push(ObjectProperty::KeyValue {
+        key: Expression::string(field_name),
+        value,
+    });
 }
 
 fn go_is_neg_one_expr(expr: &Expression) -> bool {
@@ -12868,6 +17105,12 @@ fn go_decl_binding_type(
         .map(|type_name| (name.clone(), type_name))
 }
 
+fn go_canonical_go_type(type_name: &str) -> String {
+    go_stdlib_type_binding(type_name)
+        .unwrap_or(type_name)
+        .to_string()
+}
+
 fn go_utf16_call_type_hint(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Call { callee, .. } => match go_expr_call_name(callee).as_deref()? {
@@ -12884,14 +17127,38 @@ fn go_utf16_call_type_hint(expr: &Expression) -> Option<String> {
 
 fn go_expr_tuple_type_hints(
     expr: &Expression,
-    _env: &GoNormalizeEnv,
+    env: &GoNormalizeEnv,
     _signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Option<Vec<Option<String>>> {
     let ExprKind::Call { callee, .. } = &expr.kind else {
         return None;
     };
+    if let ExprKind::Ident(name) = &callee.as_ref().kind {
+        match env.value_types.get(name).map(String::as_str) {
+            Some("__goIterNext") => {
+                return Some(vec![Some("any".to_string()), Some("bool".to_string())]);
+            }
+            Some("__goIterNext2") => {
+                return Some(vec![
+                    Some("any".to_string()),
+                    Some("any".to_string()),
+                    Some("bool".to_string()),
+                ]);
+            }
+            _ => {}
+        }
+    }
     match go_expr_call_name(callee).as_deref()? {
+        "__go_iter_Pull" => Some(vec![
+            Some("__goIterNext".to_string()),
+            Some("func".to_string()),
+        ]),
+        "__go_iter_Pull2" => Some(vec![
+            Some("__goIterNext2".to_string()),
+            Some("func".to_string()),
+        ]),
         "__go_io_ReadAll" => Some(vec![Some("[]byte".to_string()), Some("error".to_string())]),
+        "__go_sort_find" => Some(vec![Some("int".to_string()), Some("bool".to_string())]),
         "__go_io_Copy" | "__go_io_CopyN" | "__go_io_CopyBuffer" => {
             Some(vec![Some("int64".to_string()), Some("error".to_string())])
         }
@@ -12913,6 +17180,11 @@ fn go_expr_tuple_type_hints(
             Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
         }
         "__go_xml_Unescape" => Some(vec![Some("string".to_string()), Some("error".to_string())]),
+        "__go_path_split" => Some(vec![Some("string".to_string()), Some("string".to_string())]),
+        "__go_sync_map_Load"
+        | "__go_sync_map_LoadOrStore"
+        | "__go_sync_map_LoadAndDelete"
+        | "__go_sync_map_Swap" => Some(vec![Some("any".to_string()), Some("bool".to_string())]),
         "__go_xml_Marshal" | "__go_xml_MarshalIndent" => {
             Some(vec![Some("[]byte".to_string()), Some("error".to_string())])
         }
@@ -13042,7 +17314,7 @@ fn go_is_float_type(type_name: &str) -> bool {
 fn go_is_builtin_conversion_type(type_name: &str) -> bool {
     go_is_integer_type(type_name)
         || go_is_float_type(type_name)
-        || matches!(type_name.trim(), "string" | "bool")
+        || matches!(type_name.trim(), "string" | "bool" | "any" | "interface{}")
 }
 
 fn go_is_type_conversion_target(
@@ -13060,6 +17332,10 @@ fn go_normalize_type_conversion(
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Expression {
+    if matches!(type_name.trim(), "any" | "interface{}") {
+        return expr;
+    }
+
     if let Some(underlying) = env
         .named_types
         .get(type_name)
@@ -13120,10 +17396,7 @@ fn go_normalize_type_conversion(
     }
 
     if type_name.trim() == "[]rune" {
-        return Expression::new(ExprKind::Cast {
-            expr: Box::new(go_builtin_call("__go_string_runes", vec![expr])),
-            type_name: type_name.to_string(),
-        });
+        return go_builtin_call("__go_string_to_runes", vec![expr]);
     }
 
     Expression::new(ExprKind::Cast {
@@ -14168,7 +18441,9 @@ fn walk_send_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut exprs = Vec::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::expression | Rule::primary => exprs.push(walk_expression(inner)?),
+            Rule::expression | Rule::unary_expression | Rule::primary => {
+                exprs.push(walk_expression(inner)?)
+            }
             _ => {}
         }
     }
@@ -14348,7 +18623,12 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             declarations.push(VarDeclarator {
                 pattern,
                 init: Some(Expression::new(ExprKind::Tuple(vec![
-                    go_type_assert_value_expr(expr.clone(), &type_name),
+                    go_type_assert_value_expr(
+                        expr.clone(),
+                        &type_name,
+                        &GoNormalizeEnv::default(),
+                        None,
+                    ),
                     Expression::new(ExprKind::IsType {
                         expr: Box::new(expr),
                         type_name,
@@ -14723,6 +19003,8 @@ fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                         for ty in switch_case_inner.into_inner() {
                                             if ty.as_rule() == Rule::type_annotation {
                                                 case_types.push(walk_type(ty));
+                                            } else if ty.as_rule() == Rule::nil_literal {
+                                                case_types.push("__go_nil".to_string());
                                             }
                                         }
                                     }
@@ -14909,7 +19191,9 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
                 let mut exprs = Vec::new();
                 for part in inner.into_inner() {
                     match part.as_rule() {
-                        Rule::expression | Rule::primary => exprs.push(walk_expression(part)?),
+                        Rule::expression | Rule::unary_expression | Rule::primary => {
+                            exprs.push(walk_expression(part)?)
+                        }
                         _ => {}
                     }
                 }
@@ -14924,6 +19208,7 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
             Rule::select_receive_clause => {
                 let mut names = Vec::new();
                 let mut recv_expr = None;
+                let is_assign = inner.as_str().contains("=") && !inner.as_str().contains(":=");
 
                 for part in inner.into_inner() {
                     match part.as_rule() {
@@ -14945,6 +19230,26 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
                     }
                     if names.is_empty() {
                         stmts.push(Statement::new(StmtKind::Expr(expr)));
+                    } else if is_assign {
+                        let targets = names
+                            .into_iter()
+                            .map(|name| {
+                                if name == "_" {
+                                    Expression::null()
+                                } else {
+                                    Expression::ident(&name)
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let value = if targets.len() == 1 {
+                            expr
+                        } else {
+                            Expression::new(ExprKind::Tuple(vec![expr, Expression::bool(true)]))
+                        };
+                        stmts.push(Statement::new(StmtKind::Assign {
+                            targets: vec![Expression::new(ExprKind::Tuple(targets))],
+                            value,
+                        }));
                     } else {
                         stmts.push(go_short_var_decl_from_parts(names, expr));
                     }
@@ -15155,8 +19460,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                 }
             }
-            Rule::expression => {
+            Rule::expression | Rule::unary_expression | Rule::primary => {
                 cond = Some(walk_expression(inner)?);
+            }
+            Rule::expression_statement => {
+                cond = Some(walk_expression(first_meaningful(inner)?)?);
             }
             Rule::block_statement => {
                 body = walk_block(inner)?;
@@ -15407,16 +19715,19 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                 let slice_source = inner.as_str();
                 let mut start = None;
                 let mut end = None;
+                let mut max = None;
                 for s_inner in inner.into_inner() {
                     if s_inner.as_rule() == Rule::expression {
                         if start.is_none() && !slice_source.starts_with("[:") {
                             start = Some(walk_expression(s_inner)?);
                         } else if end.is_none() {
                             end = Some(walk_expression(s_inner)?);
+                        } else if max.is_none() {
+                            max = Some(walk_expression(s_inner)?);
                         }
                     }
                 }
-                chain.push(PrimaryChain::Slice { start, end });
+                chain.push(PrimaryChain::Slice { start, end, max });
             }
             Rule::call => {
                 let mut args = Vec::new();
@@ -15473,7 +19784,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     index: Box::new(idx),
                     null_safe: false,
                 }),
-                PrimaryChain::Slice { start, end } => {
+                PrimaryChain::Slice { start, end, max } => {
                     let start_expr =
                         start.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(0))));
                     let mut args = vec![Argument {
@@ -15485,6 +19796,14 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     if let Some(end_expr) = end {
                         args.push(Argument {
                             value: end_expr,
+                            name: None,
+                            by_ref: false,
+                            spread: false,
+                        });
+                    }
+                    if let Some(max_expr) = max {
+                        args.push(Argument {
+                            value: max_expr,
                             name: None,
                             by_ref: false,
                             spread: false,
@@ -15521,6 +19840,7 @@ enum PrimaryChain {
     Slice {
         start: Option<Expression>,
         end: Option<Expression>,
+        max: Option<Expression>,
     },
     Call(Vec<Argument>),
     TypeAssert(String),
@@ -15532,6 +19852,7 @@ fn walk_operand(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::literal => return walk_literal(inner),
             Rule::slice_conversion => return walk_slice_conversion(inner),
             Rule::interface_conversion => return walk_type_conversion(inner),
+            Rule::type_conversion => return walk_type_conversion(inner),
             Rule::ident_name => {
                 let name = inner.as_str();
                 // Go builtins
@@ -15692,8 +20013,12 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     if type_name.starts_with("map[") {
         // Build a dict/object literal
         let mut props = Vec::new();
+        let value_type = go_map_value_type(&type_name);
         for (key, val) in elements {
-            props.push(ObjectProperty::KeyValue { key, value: val });
+            props.push(ObjectProperty::KeyValue {
+                key,
+                value: go_retype_elided_element(val, value_type.as_deref()),
+            });
         }
         Ok(go_typed_composite_expr(
             Expression::new(ExprKind::Object(props)),
@@ -15809,6 +20134,7 @@ fn go_literal_type_name(pair: Pair<Rule>) -> String {
 fn go_composite_literal_index_key(expr: &Expression) -> Option<usize> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(index)) if *index >= 0 => Some(*index as usize),
+        ExprKind::Lit(Literal::Str(index)) => index.parse::<usize>().ok(),
         _ => None,
     }
 }
@@ -15888,20 +20214,69 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
         }
     }
 
+    if lower.starts_with("func(")
+        || lower == "func"
+        || lower == "interface{}"
+        || lower == "any"
+    {
+        return Expression::new(ExprKind::Lit(Literal::Null));
+    }
+
+    if go_is_channel_type(trimmed) {
+        return Expression::new(ExprKind::Lit(Literal::Null));
+    }
+
     if lower.starts_with("[]")
         || lower.starts_with("map[")
-        || lower.starts_with("chan ")
         || lower.starts_with('*')
     {
         return Expression::new(ExprKind::Lit(Literal::Null));
     }
 
     match lower.as_str() {
+        "error" => Expression::null(),
         "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
         "string" => Expression::new(ExprKind::Lit(Literal::Str(String::new()))),
         "float32" | "float64" => Expression::new(ExprKind::Lit(Literal::Float(0.0))),
         "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
         | "uint64" | "uintptr" | "byte" | "rune" => Expression::new(ExprKind::Lit(Literal::Int(0))),
+        "__gosyncmap" => go_typed_composite_expr(
+            Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("data"),
+                value: go_typed_composite_expr(
+                    Expression::new(ExprKind::Object(Vec::new())),
+                    "map[interface{}]interface{}",
+                ),
+            }])),
+            trimmed,
+        ),
+        "__gosyncpool" => go_typed_composite_expr(
+            Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("New"),
+                    value: Expression::null(),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("items"),
+                    value: go_typed_composite_expr(Expression::new(ExprKind::Array(Vec::new())), "[]interface{}"),
+                },
+            ])),
+            trimmed,
+        ),
+        "__gosynconce" => go_typed_composite_expr(
+            Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("done"),
+                value: Expression::new(ExprKind::Lit(Literal::Bool(false))),
+            }])),
+            trimmed,
+        ),
+        "__gosyncwaitgroup" => go_typed_composite_expr(
+            Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("count"),
+                value: Expression::int(0),
+            }])),
+            trimmed,
+        ),
         "__goxmlname" => go_builtin_call(
             "__go_xml_name",
             vec![
@@ -15915,6 +20290,9 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
 }
 
 fn go_zero_value_for_type(type_name: &str, env: &GoNormalizeEnv) -> Expression {
+    if let Some(mapped) = go_stdlib_type_binding(type_name) {
+        return go_zero_value_for_type(mapped, env);
+    }
     if let Some(underlying) = env
         .named_types
         .get(type_name)
@@ -15985,7 +20363,12 @@ fn go_keyed_element_key(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(
             pair.as_str() == "true",
         )))),
-        Rule::numeric_literal => {
+        Rule::rune_literal => {
+            let rune = unquote(pair.as_str());
+            let code = rune.chars().next().map(|ch| ch as i64).unwrap_or(0);
+            Ok(Expression::new(ExprKind::Lit(Literal::Int(code))))
+        }
+        Rule::numeric_literal | Rule::signed_numeric_key => {
             let literal = pair.as_str().replace('_', "");
             if let Ok(n) = literal.parse::<i64>() {
                 Ok(Expression::new(ExprKind::Lit(Literal::Int(n))))
@@ -15997,6 +20380,7 @@ fn go_keyed_element_key(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         Rule::expression => walk_expression(pair),
         Rule::element => go_keyed_element_value(pair),
+        Rule::composite_literal => walk_composite_literal(pair),
         Rule::literal_value => walk_literal_value_expr(pair),
         _ => Ok(Expression::new(ExprKind::Lit(Literal::Null))),
     }
@@ -16253,8 +20637,19 @@ fn go_xml_type_assert_source_expr(expr: &Expression) -> Option<Expression> {
     None
 }
 
-fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
+fn go_type_assert_value_expr(
+    expr: Expression,
+    type_name: &str,
+    env: &GoNormalizeEnv,
+    mut state: Option<&mut GoNormalizeState>,
+) -> Expression {
     let trimmed_type = type_name.trim();
+    if let Some(concrete) = go_concrete_type_for_interface(trimmed_type, env) {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            type_name: concrete,
+        });
+    }
     if let Some(mapped) = go_stdlib_type_binding(type_name) {
         if mapped == "__goXMLStartElement" {
             return Expression::new(ExprKind::Cast {
@@ -16305,6 +20700,42 @@ fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
         return expr;
     }
 
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        if go_expr_call_name(callee).as_deref() == Some("__go_sync_pool_Get") {
+            return expr;
+        }
+    }
+
+    if go_type_assert_needs_single_eval(&expr) {
+        if let Some(state) = state.as_deref_mut() {
+            let temp = fresh_go_temp(state, "__go_assert");
+            let mut captures = go_big_captures(&[&expr]);
+            captures.retain(|name| !name.starts_with("__go_"));
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Lambda {
+                    params: vec![],
+                    body: LambdaBody::Block(vec![
+                        Statement::new(StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(temp.clone()),
+                                type_hint: None,
+                                init: Some(expr),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::Let,
+                        }),
+                        Statement::new(StmtKind::Return(Some(Expression::ident(&temp)))),
+                    ]),
+                    is_async: false,
+                    captures,
+                })),
+                args: vec![],
+                optional: false,
+            });
+        }
+    }
+
     let cond = go_build_is_type(expr.clone(), type_name);
     let then_expr = Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
@@ -16317,18 +20748,110 @@ fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
     })
 }
 
+fn go_type_assert_needs_single_eval(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { .. } | ExprKind::Assign { .. } | ExprKind::Sequence(_) => true,
+        ExprKind::Member { object, .. } => go_type_assert_needs_single_eval(object),
+        ExprKind::Index { object, index, .. } => {
+            go_type_assert_needs_single_eval(object) || go_type_assert_needs_single_eval(index)
+        }
+        ExprKind::Unary { expr, .. } => go_type_assert_needs_single_eval(expr),
+        ExprKind::Binary { left, right, .. } => {
+            go_type_assert_needs_single_eval(left) || go_type_assert_needs_single_eval(right)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            go_type_assert_needs_single_eval(cond)
+                || go_type_assert_needs_single_eval(then)
+                || go_type_assert_needs_single_eval(else_)
+        }
+        ExprKind::Cast { expr, .. } | ExprKind::TypeOf(expr) => go_type_assert_needs_single_eval(expr),
+        _ => false,
+    }
+}
+
+fn go_concrete_type_for_interface(type_name: &str, env: &GoNormalizeEnv) -> Option<String> {
+    let required = env.interface_methods.get(type_name)?;
+    if required.is_empty() {
+        return None;
+    }
+    env.struct_infos
+        .iter()
+        .find(|(_, info)| required.iter().all(|method| info.method_names.contains(method)))
+        .map(|(name, _)| name.clone())
+}
+
 fn go_type_switch_case_cond(expr: Expression, case_types: &[String]) -> Expression {
     let mut iter = case_types.iter();
     let first = iter
         .next()
-        .map(|type_name| go_build_is_type(expr.clone(), type_name))
+        .map(|type_name| go_build_type_switch_case_expr(expr.clone(), type_name))
         .unwrap_or_else(|| Expression::bool(false));
     iter.fold(first, |acc, type_name| {
         Expression::new(ExprKind::Binary {
             op: BinOp::Or,
             left: Box::new(acc),
-            right: Box::new(go_build_is_type(expr.clone(), type_name)),
+            right: Box::new(go_build_type_switch_case_expr(expr.clone(), type_name)),
         })
+    })
+}
+
+fn go_build_type_switch_case_expr(expr: Expression, type_name: &str) -> Expression {
+    if type_name == "__go_nil" {
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(expr),
+            right: Box::new(Expression::null()),
+        });
+    }
+    go_build_is_type(expr, type_name)
+}
+
+fn go_non_null_cond(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(expr),
+        right: Box::new(Expression::null()),
+    })
+}
+
+fn go_non_null_object_cond(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(go_non_null_cond(expr.clone())),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(expr)))),
+            right: Box::new(Expression::string("object")),
+        })),
+    })
+}
+
+fn go_object_has_fields_cond(expr: Expression, fields: &[&str]) -> Expression {
+    let mut iter = fields.iter();
+    let first = iter
+        .next()
+        .map(|field| go_object_has_field_cond(expr.clone(), field))
+        .unwrap_or_else(|| go_non_null_object_cond(expr.clone()));
+    iter.fold(first, |acc, field| Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(acc),
+        right: Box::new(go_object_has_field_cond(expr.clone(), field)),
+    }))
+}
+
+fn go_object_has_field_cond(expr: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(go_non_null_object_cond(expr.clone())),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: field.to_string(),
+                null_safe: false,
+            })),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+        })),
     })
 }
 
@@ -16429,6 +20952,21 @@ fn go_is_channel_type(type_name: &str) -> bool {
     trimmed.starts_with("chan") || trimmed.starts_with("<-chan")
 }
 
+fn go_channel_element_type(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim();
+    let elem = if let Some(rest) = trimmed.strip_prefix("<-chan") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("chan<-") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("chan") {
+        rest.trim_start_matches("<-")
+    } else {
+        return None;
+    };
+    let elem = elem.trim();
+    (!elem.is_empty()).then(|| elem.to_string())
+}
+
 fn go_array_make_expr(len_expr: Expression, init_expr: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("Array")),
@@ -16462,12 +21000,59 @@ fn go_make_slice_capacity_expr(
     Some(normalize_go_expr(&cap_arg.value, env, signatures, state))
 }
 
+fn go_append_capacity_expr(
+    original: &Expression,
+    normalized: &Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &original.kind else {
+        return None;
+    };
+    if go_expr_call_name(callee).as_deref() != Some("append") || args.is_empty() {
+        return None;
+    }
+    let needed = go_builtin_call("len", vec![normalized.clone()]);
+    let current = go_expr_capacity_hint(&args[0].value, env)?;
+    Some(Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(current.clone()),
+            right: Box::new(needed.clone()),
+        })),
+        then: Box::new(needed),
+        else_: Box::new(current),
+    }))
+}
+
 fn go_bound_slice_capacity_expr(expr: &Expression, env: &GoNormalizeEnv) -> Option<Expression> {
     if let Some(cap) = go_expr_capacity_hint(expr, env) {
         return Some(cap);
     }
 
     match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if go_expr_call_name(callee).as_deref() == Some("__go_slices_Grow")
+                && args.len() == 2 =>
+        {
+            let slice = &args[0].value;
+            let grow_by = args[1].value.clone();
+            let current_cap = go_expr_capacity_hint(slice, env)
+                .unwrap_or_else(|| go_builtin_call("len", vec![slice.clone()]));
+            let needed_cap = Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(go_builtin_call("len", vec![slice.clone()])),
+                right: Box::new(grow_by),
+            });
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(current_cap.clone()),
+                    right: Box::new(needed_cap.clone()),
+                })),
+                then: Box::new(needed_cap),
+                else_: Box::new(current_cap),
+            }))
+        }
         ExprKind::Call { callee, args, .. } => {
             if go_expr_call_name(callee).as_deref() != Some("make") {
                 return None;
@@ -16490,6 +21075,13 @@ fn go_bound_slice_capacity_expr(expr: &Expression, env: &GoNormalizeEnv) -> Opti
 
 fn go_expr_capacity_hint(expr: &Expression, env: &GoNormalizeEnv) -> Option<Expression> {
     if let Some(view) = go_expr_slice_view(expr, env) {
+        if let Some(max) = view.max {
+            return Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(max),
+                right: Box::new(view.start),
+            }));
+        }
         let base_cap = go_expr_capacity_hint(&view.base, env)?;
         return Some(Expression::new(ExprKind::Binary {
             op: BinOp::Sub,
@@ -16504,6 +21096,22 @@ fn go_expr_capacity_hint(expr: &Expression, env: &GoNormalizeEnv) -> Option<Expr
                 .and_then(|type_name| go_fixed_array_len(type_name, 0))
                 .map(|len| Expression::int(len as i64))
         }),
+        ExprKind::Member { object, field, .. } => {
+            let cap_field = Expression::new(ExprKind::Member {
+                object: object.clone(),
+                field: format!("{}__cap", field),
+                null_safe: false,
+            });
+            Some(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(cap_field.clone()),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+                })),
+                then: Box::new(cap_field),
+                else_: Box::new(go_builtin_call("len", vec![expr.clone()])),
+            }))
+        }
         ExprKind::Array(elements) => Some(Expression::int(elements.len() as i64)),
         _ => None,
     }

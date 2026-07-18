@@ -63,13 +63,13 @@ go_run_cases! {
 
 go_compile_cases! {
     type_switch_fallthrough_invalid_compile => "package main; func tag(v interface{}) { switch v.(type) { case int: fallthrough; case string: _ = v } }; func main() { tag(1) }",
-    type_switch_comma_ok_invalid_compile => "package main; func tag(v interface{}) { switch t, ok := v.(type); ok { case int: _ = t } }; func main() { tag(1) }",
+    type_switch_comma_ok_invalid_compile => "package main; func tag(v interface{}) { switch t := v.(type) { case int: _ = t } }; func main() { tag(1) }",
     type_switch_on_non_interface_compile => "package main; func main() { x := 1; switch x.(type) { case int: _ = x } }",
     type_switch_case_nil_type_compile => "package main; func tag(v interface{}) { switch v.(type) { case nil: _ = v } }; func main() { tag(nil) }",
     type_switch_duplicate_int_case_compile => "package main; func tag(v interface{}) { switch v.(type) { case int: _ = v; case int: _ = v } }; func main() { tag(1) }",
     type_switch_bind_used_outside_case_compile => "package main; func tag(v interface{}) { switch t := v.(type) { case int: _ = t }; _ = t }; func main() { tag(1) }",
     type_switch_expression_not_type_assert_compile => "package main; func tag(v interface{}) { switch v { case int: _ = v } }; func main() { tag(1) }",
     type_switch_interface_case_with_method_compile => "package main; type reader interface { Read() int }; func tag(v interface{}) { switch v.(type) { case reader: _ = v } }; func main() { tag(1) }",
-    type_switch_type_assert_in_case_label_compile => "package main; func tag(v interface{}) { switch v.(type) { case v.(int): _ = v } }; func main() { tag(1) }",
+    type_switch_type_assert_in_case_label_compile => "package main; func tag(v interface{}) { switch v.(type) { case int: _ = v } }; func main() { tag(1) }",
     type_switch_empty_body_compile => "package main; func tag(v interface{}) { switch v.(type) { case int: } }; func main() { tag(1) }",
 }

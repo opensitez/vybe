@@ -18,7 +18,7 @@ go_run_cases! {
     ),
     errorf_float_precision => (
         "package main; import \"fmt\"; func main() { err := fmt.Errorf(\"ratio %.2f\", 0.125); fmt.Println(err.Error()) }",
-        vec!["ratio 0.13"]
+        vec!["ratio 0.12"]
     ),
     errorf_bool_verb => (
         "package main; import \"fmt\"; func main() { err := fmt.Errorf(\"enabled=%t\", false); fmt.Println(err.Error()) }",

@@ -168,7 +168,7 @@ block_statement = { "{" ~ statement_list ~ "}" }
 
 statement_list = { (statement ~ ";"?)* }
 
-expression_statement = { expression }
+expression_statement = { expression ~ ";"? }
 
 // assignment before expression_statement; assign_op covers "="
 assignment_statement = {
@@ -262,11 +262,11 @@ select_comm_clause = {
 }
 
 select_send_clause = {
-    primary ~ "<-" ~ expression
+    unary_expression ~ "<-" ~ expression
 }
 
 select_receive_clause = {
-    (ident_list ~ ":=")? ~ expression
+    (ident_list ~ (":=" | "="))? ~ expression
 }
 
 kw_default = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -300,17 +300,18 @@ type_switch_case = {
     | kw_default
 }
 
-type_list = { type_annotation ~ ("," ~ type_annotation)* }
+type_list = { (type_annotation | nil_literal) ~ ("," ~ (type_annotation | nil_literal))* }
 
 // ── For statement ───────────────────────────────────────────────────────────
 // Order matters: for_clause (has ";") must be tried before while-style.
 // "for expr block" = while-style; "for block" = infinite loop.
 
 for_statement = {
-    "for" ~ for_clause
+    ("for" ~ for_clause
     | "for" ~ range_clause
+    | "for" ~ unary_expression ~ block_statement
     | "for" ~ expression ~ block_statement
-    | "for" ~ block_statement
+    | "for" ~ block_statement) ~ ";"?
 }
 
 // for_init may have trailing ";" (short_var_declaration includes it)
@@ -358,7 +359,7 @@ go_statement    = { "go"    ~ expression ~ ";"? }
 
 // ── Send statement ──────────────────────────────────────────────────────────
 
-send_statement = { primary ~ "<-" ~ expression ~ ";"? }
+send_statement = { unary_expression ~ "<-" ~ expression ~ ";"? }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 // Flat precedence chain — walker uses op.as_str() to determine the operator.
@@ -424,6 +425,7 @@ postfix_op = _{
 operand = {
     literal
     | "(" ~ expression ~ ")"
+    | type_conversion
     | slice_conversion
     | interface_conversion
     | composite_literal
@@ -434,6 +436,7 @@ operand = {
 if_operand = {
     literal
     | "(" ~ expression ~ ")"
+    | type_conversion
     | slice_conversion
     | interface_conversion
     | function_literal
@@ -444,6 +447,7 @@ if_operand = {
 range_operand = {
     literal
     | "(" ~ expression ~ ")"
+    | type_conversion
     | slice_conversion
     | interface_conversion
     | function_literal
@@ -457,6 +461,10 @@ slice_conversion = {
 
 interface_conversion = {
     interface_type ~ "(" ~ expression ~ ")"
+}
+
+type_conversion = {
+    "(" ~ type_annotation ~ ")" ~ "(" ~ expression ~ ")"
 }
 
 selector       = { "." ~ ident_name }
@@ -506,7 +514,7 @@ literal_value = { "{" ~ element_list? ~ "}" }
 element_list = { keyed_element ~ ("," ~ keyed_element)* ~ ","? }
 
 keyed_element = {
-    (string_literal | numeric_literal | bool_literal | ident_name) ~ ":" ~ element
+    (string_literal | signed_numeric_key | numeric_literal | bool_literal | rune_literal | composite_literal | literal_value | ident_name) ~ ":" ~ element
     | element
 }
 
@@ -578,6 +586,8 @@ rune_literal = @{
 // ── Numeric literals ─────────────────────────────────────────────────────────
 
 numeric_literal = @{ numeric_literal_core ~ "i"? ~ !(ASCII_ALPHANUMERIC | "_") }
+
+signed_numeric_key = @{ ("+" | "-") ~ numeric_literal_core ~ "i"? ~ !(ASCII_ALPHANUMERIC | "_") }
 
 numeric_literal_core = _{
     ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+

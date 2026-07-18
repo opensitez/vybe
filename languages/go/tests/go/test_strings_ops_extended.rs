@@ -112,7 +112,7 @@ go_run_cases! {
     ),
     last_index_any => (
         "package main; import \"fmt\"; import \"strings\"; func main() { fmt.Println(strings.LastIndexAny(\"abc123\", \"19\")) }",
-        vec!["6"]
+        vec!["3"]
     ),
     last_index_func_trailing_digit => (
         "package main; import \"fmt\"; import \"strings\"; func main() { fmt.Println(strings.LastIndexFunc(\"ab12\", func(r rune) bool { return r >= '0' && r <= '9' })) }",
@@ -145,12 +145,12 @@ go_run_cases! {
         vec!["go"]
     ),
     trim_prefix_removed => (
-        "package main; import \"fmt\"; import \"strings\"; func main() { rest, ok := strings.TrimPrefix(\"prefix:value\", \"prefix:\"); fmt.Println(rest); fmt.Println(ok) }",
-        vec!["value", "true"]
+        "package main; import \"fmt\"; import \"strings\"; func main() { rest := strings.TrimPrefix(\"prefix:value\", \"prefix:\"); fmt.Println(rest) }",
+        vec!["value"]
     ),
     trim_suffix_removed => (
-        "package main; import \"fmt\"; import \"strings\"; func main() { rest, ok := strings.TrimSuffix(\"name.go\", \".go\"); fmt.Println(rest); fmt.Println(ok) }",
-        vec!["name", "true"]
+        "package main; import \"fmt\"; import \"strings\"; func main() { rest := strings.TrimSuffix(\"name.go\", \".go\"); fmt.Println(rest) }",
+        vec!["name"]
     ),
 }
 

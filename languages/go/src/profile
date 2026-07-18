@@ -60,6 +60,13 @@ materialize_bool_results = true
 "__go_xml_name_prefix" = { emit = "common:xml.prefix",          min_args = 1, max_args = 1 }
 "__go_xml_name_equal" = { emit = "common:xml.equal",            min_args = 2, max_args = 2 }
 "__go_xml_node_name"  = { emit = "common:xml.node_name",        min_args = 1, max_args = 1 }
+"__go_reflect_typeof"  = { emit = "common:go.reflect_typeof",   min_args = 1, max_args = 4 }
+"__go_reflect_valueof" = { emit = "common:go.reflect_valueof",  min_args = 1, max_args = 3 }
+"__go_reflect_len"     = { emit = "common:go.reflect_len",      min_args = 1, max_args = 1 }
+"__go_reflect_index"   = { emit = "common:go.reflect_index",    min_args = 2, max_args = 2 }
+"__go_reflect_field_by_name" = { emit = "common:go.reflect_field_by_name", min_args = 2, max_args = 2 }
+"reflect.TypeOf"      = { emit = "common:go.reflect_typeof",    min_args = 1, max_args = 1 }
+"reflect.ValueOf"     = { emit = "common:go.reflect_valueof",   min_args = 1, max_args = 1 }
 "__go_string_runes"   = { emit = "host:ecma:array:from",        min_args = 1, max_args = 1 }
 "__go_btoa"           = { emit = "host:ecma:string:btoa",       min_args = 1, max_args = 1 }
 "__go_atob"           = { emit = "host:ecma:string:atob",       min_args = 1, max_args = 1 }
@@ -155,7 +162,7 @@ materialize_bool_results = true
 "__go_fixed_array_equal" = { emit = "common:collections.sequence_equal", min_args = 2, max_args = 2 }
 "make"            = { emit = "host:ecma:array:from",           min_args = 1, max_args = 3 }
 "copy"            = { emit = "host:ecma:array:copyWithin",     min_args = 2, max_args = 3 }
-"delete"          = { emit = "host:ecma:object:delete",        min_args = 2, max_args = 2 }
+"delete"          = { emit = "common:reflection.delete",       min_args = 2, max_args = 2 }
 
 # ── Error handling ───────────────────────────────────────────────────────────
 
@@ -250,9 +257,34 @@ Cap          = { emit = "common:collections.length", min_args = 0, max_args = 0 
 
 # Map methods
 HasKey       = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
-Delete       = { emit = "host:ecma:object:delete",  min_args = 1, max_args = 1 }
-Keys         = { emit = "host:ecma:object:keys",    min_args = 0, max_args = 0 }
-Values       = { emit = "host:ecma:object:values",  min_args = 0, max_args = 0 }
+Delete       = { emit = "common:reflection.delete", min_args = 1, max_args = 1 }
+Keys         = { emit = "common:reflection.keys",   min_args = 0, max_args = 0 }
+Values       = { emit = "common:reflection.values", min_args = 0, max_args = 0 }
+
+# reflect.Type / reflect.Value methods. The Go adapter exposes the language API
+# while using the shared reflection descriptor fields under the hood.
+Kind        = { emit = "common:go.reflect_kind",      min_args = 0, max_args = 0 }
+Name        = { emit = "common:go.reflect_name",      min_args = 0, max_args = 0 }
+Interface   = { emit = "common:go.reflect_interface", min_args = 0, max_args = 0 }
+Int         = { emit = "common:go.reflect_int",       min_args = 0, max_args = 0 }
+Uint        = { emit = "common:go.reflect_uint",      min_args = 0, max_args = 0 }
+Float       = { emit = "common:go.reflect_float",     min_args = 0, max_args = 0 }
+Bool        = { emit = "common:go.reflect_bool",      min_args = 0, max_args = 0 }
+String      = { emit = "common:go.reflect_string",    min_args = 0, max_args = 0 }
+NumField    = { emit = "common:go.reflect_num_field", min_args = 0, max_args = 0 }
+Field       = { emit = "common:go.reflect_field",     min_args = 1, max_args = 1 }
+FieldByName = { emit = "common:go.reflect_field_by_name", min_args = 1, max_args = 1 }
+MapIndex    = { emit = "common:go.reflect_map_index", min_args = 1, max_args = 1 }
+IsValid     = { emit = "common:go.reflect_is_valid",  min_args = 0, max_args = 0 }
+IsNil       = { emit = "common:go.reflect_is_nil",    min_args = 0, max_args = 0 }
+CanSet      = { emit = "common:go.reflect_can_set",   min_args = 0, max_args = 0 }
+IsZero      = { emit = "common:go.reflect_is_zero",   min_args = 0, max_args = 0 }
+Elem        = { emit = "common:go.reflect_elem",      min_args = 0, max_args = 0 }
+Set         = { emit = "common:go.reflect_set",       min_args = 1, max_args = 1 }
+SetInt      = { emit = "common:go.reflect_set_int",   min_args = 1, max_args = 1 }
+SetUint     = { emit = "common:go.reflect_set_uint",  min_args = 1, max_args = 1 }
+SetString   = { emit = "common:go.reflect_set_string", min_args = 1, max_args = 1 }
+SetBool     = { emit = "common:go.reflect_set_bool",  min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY METHODS — higher-order functions

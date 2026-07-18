@@ -16,6 +16,7 @@ vybe_emitter = { workspace = true }
 vybe_plugin = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }

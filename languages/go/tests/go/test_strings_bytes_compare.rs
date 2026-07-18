@@ -105,7 +105,7 @@ go_run_cases! {
     ),
     strings_repeat_two_rune_pattern => (
         "package main; import \"fmt\"; import \"strings\"; func main() { fmt.Println(strings.Repeat(\"-=\", 3)) }",
-        vec!["-=-=-"]
+        vec!["-=-=-="]
     ),
     strings_repeat_large_count => (
         "package main; import \"fmt\"; import \"strings\"; func main() { fmt.Println(len(strings.Repeat(\"x\", 10))) }",

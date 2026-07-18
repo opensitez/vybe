@@ -35,11 +35,10 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let mut c = Chunk::new(name);
     c.arity = 2;
     let k = sconst(&mut c, field);
-    let get_i = c.add_import("ecma:reflect".to_string(), "get".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
-    c.emit_call(get_i, 2, line);
+    vybe_emitter::reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
     chunks.push(c);
@@ -51,12 +50,11 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let mut c = Chunk::new(name);
     c.arity = 3;
     let k = sconst(&mut c, field);
-    let set_i = c.add_import("ecma:reflect".to_string(), "set".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // value
-    c.emit_call(set_i, 3, line);
+    vybe_emitter::reflection::emit_set_property_in_chunk(&mut c, line);
     c.emit_op(Op::DROP, line);
     c.emit_op(Op::NULL, line);
     c.emit_op(Op::RETURN, line);
@@ -70,11 +68,10 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_invoke");
     c.arity = 3;
     let method_k = sconst(&mut c, "method");
-    let get_i = c.add_import("ecma:reflect".to_string(), "get".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, method_k, line);
-    c.emit_call(get_i, 2, line);
+    vybe_emitter::reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
     c.emit_op_u8(Op::CALL_REF, 2, line);
@@ -179,32 +176,9 @@ fn finish(
     binds: &[(&str, usize)],
     line: u32,
 ) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
-    // __type
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(kind, line);
-    let tk = sconst(chunk, "__type");
-    chunk.emit_op_u16(Op::STRUCT_SET, tk, line);
-    chunk.emit_op(Op::DROP, line);
-    // fields
-    for (fname, fslot) in fields {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, *fslot, line);
-        let fk = sconst(chunk, fname);
-        chunk.emit_op_u16(Op::STRUCT_SET, fk, line);
-        chunk.emit_op(Op::DROP, line);
-    }
-    // methods
-    for (mname, midx) in binds {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::REF_FUNC, *midx as u16, line);
-        chunk.emit(0, line);
-        let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
-        chunk.emit_op(Op::DROP, line);
-    }
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    vybe_emitter::reflection::emit_new_reflection_object(
+        chunk, this_slot, kind, fields, binds, line,
+    );
 }
 
 /// `new ReflectionClass($name, $is_abstract, $parent, $interfaces, $methods, $fields)`.

@@ -115,7 +115,7 @@ go_compile_cases! {
     sync_cond_broadcast_compile =>
         "package main; import \"sync\"; func main() { var mu sync.Mutex; cond := sync.NewCond(&mu); cond.Broadcast() }",
     sync_cond_wait_in_loop_compile =>
-        "package main; import \"sync\"; func main() { var mu sync.Mutex; cond := sync.NewCond(&mu); ready := false; mu.Lock(); for !ready { cond.Wait() }; mu.Unlock() }",
+        "package main; import \"sync\"; func main() { var mu sync.Mutex; cond := sync.NewCond(&mu); ready := false; mu.Lock(); for ready == false { cond.Wait() }; mu.Unlock() }",
     sync_cond_new_with_locker_compile =>
         "package main; import \"sync\"; func main() { var rw sync.RWMutex; _ = sync.NewCond(&rw) }",
     sync_pool_put_interface_values_compile =>

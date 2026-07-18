@@ -87,7 +87,7 @@ go_run_cases! {
     ),
     errors_as_joined_misses_second => (
         "package main; import \"fmt\"; import \"errors\"; type coded struct { code int }; func (c coded) Error() string { return \"coded\" }; func main() { joined := errors.Join(errors.New(\"plain\"), coded{code: 1}); var target coded; fmt.Println(errors.As(joined, &target)) }",
-        vec!["false"]
+        vec!["true"]
     ),
     errors_is_joined_nil_target => (
         "package main; import \"fmt\"; import \"errors\"; func main() { joined := errors.Join(errors.New(\"x\")); fmt.Println(errors.Is(joined, nil)) }",

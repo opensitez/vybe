@@ -487,6 +487,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                         method_name,
                         *method_chunk_idx,
                         None,
+                        false, // PHP binds the receiver at call time, not on access
                         line,
                     );
                 }

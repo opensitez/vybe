@@ -47,11 +47,11 @@ go_run_cases! {
     ),
     path_split_yields_dir_and_file => (
         "package main; import \"fmt\"; import \"path\"; func main() { dir, file := path.Split(\"/a/b/c\"); fmt.Println(dir); fmt.Println(file) }",
-        vec!["/a/b", "c"]
+        vec!["/a/b/", "c"]
     ),
     path_split_bare_filename_no_dir => (
         "package main; import \"fmt\"; import \"path\"; func main() { dir, file := path.Split(\"file.txt\"); fmt.Println(dir); fmt.Println(file) }",
-        vec![".", "file.txt"]
+        vec!["", "file.txt"]
     ),
     filepath_clean_simplifies_dot_segments => (
         "package main; import \"fmt\"; import \"path/filepath\"; func main() { fmt.Println(filepath.Clean(\"a/b/./c/\")) }",
@@ -67,7 +67,7 @@ go_run_cases! {
     ),
     filepath_split_parent_and_leaf => (
         "package main; import \"fmt\"; import \"path/filepath\"; func main() { dir, file := filepath.Split(\"/opt/bin/go\"); fmt.Println(dir); fmt.Println(file) }",
-        vec!["/opt/bin", "go"]
+        vec!["/opt/bin/", "go"]
     ),
 }
 

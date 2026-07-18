@@ -181,7 +181,7 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 Boolean             = { emit = "host:ecma:boolean:Boolean",       min_args = 1, max_args = 1 }
 Number              = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 String              = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
-Object              = { emit = "host:ecma:object:Object",         min_args = 0, max_args = 1 }
+Object              = { emit = "common:reflection.object",        min_args = 0, max_args = 1 }
 BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, max_args = 1 }
 
 # ── BigInt static methods ────────────────────────────────────────────────────
@@ -234,30 +234,46 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 # `dict.keys/values/items`, Ruby `Hash#keys`, etc. Running vybex-compiled
 # JS under V8 is possible because V8 satisfies these imports natively.
 
-"Object.keys"        = { emit = "host:ecma:object:keys",        min_args = 1, max_args = 1 }
-"Object.values"      = { emit = "host:ecma:object:values",      min_args = 1, max_args = 1 }
-"Object.entries"     = { emit = "host:ecma:object:entries",     min_args = 1, max_args = 1 }
-"Object.assign"      = { emit = "host:ecma:object:assign",       min_args = 2, max_args = 255 }
-"Object.freeze"      = { emit = "host:ecma:object:freeze",       min_args = 1, max_args = 1 }
-"Object.fromEntries" = { emit = "host:ecma:object:fromEntries",  min_args = 1, max_args = 1 }
-"Object.hasOwn"      = { emit = "host:ecma:object:hasOwn",      min_args = 2, max_args = 2 }
-"Object.create"      = { emit = "host:ecma:object:create",       min_args = 1, max_args = 2 }
-"Object.seal"        = { emit = "host:ecma:object:seal",         min_args = 1, max_args = 1 }
-"Object.isFrozen"    = { emit = "host:ecma:object:isFrozen",     min_args = 1, max_args = 1 }
-"Object.isSealed"    = { emit = "host:ecma:object:isSealed",     min_args = 1, max_args = 1 }
-"Object.is"          = { emit = "host:ecma:object:is",           min_args = 2, max_args = 2 }
-"Object.getPrototypeOf"     = { emit = "host:ecma:object:getPrototypeOf",     min_args = 1, max_args = 1 }
-"Object.getOwnPropertyNames" = { emit = "host:ecma:object:getOwnPropertyNames", min_args = 1, max_args = 1 }
-"Object.getOwnPropertyDescriptor"  = { emit = "host:ecma:object:getOwnPropertyDescriptor",  min_args = 2, max_args = 2 }
-"Object.getOwnPropertyDescriptors" = { emit = "host:ecma:object:getOwnPropertyDescriptors", min_args = 1, max_args = 1 }
-"Object.getOwnPropertySymbols"     = { emit = "host:ecma:object:getOwnPropertySymbols",     min_args = 1, max_args = 1 }
-"Object.defineProperty"            = { emit = "host:ecma:object:defineProperty",             min_args = 3, max_args = 3 }
-"Object.defineProperties"          = { emit = "host:ecma:object:defineProperties",           min_args = 2, max_args = 2 }
-"Object.preventExtensions"         = { emit = "host:ecma:object:preventExtensions",          min_args = 1, max_args = 1 }
-"Object.isExtensible"              = { emit = "host:ecma:object:isExtensible",               min_args = 1, max_args = 1 }
-"Object.setPrototypeOf"            = { emit = "host:ecma:object:setPrototypeOf",             min_args = 2, max_args = 2 }
-"Object.groupBy"                   = { emit = "host:ecma:object:groupBy",                     min_args = 2, max_args = 2 }
+"Object.keys"        = { emit = "common:reflection.keys",        min_args = 1, max_args = 1 }
+"Object.values"      = { emit = "common:reflection.values",      min_args = 1, max_args = 1 }
+"Object.entries"     = { emit = "common:reflection.entries",     min_args = 1, max_args = 1 }
+"Object.assign"      = { emit = "common:reflection.assign",      min_args = 2, max_args = 255 }
+"Object.freeze"      = { emit = "common:reflection.freeze",      min_args = 1, max_args = 1 }
+"Object.fromEntries" = { emit = "common:reflection.from_entries", min_args = 1, max_args = 1 }
+"Object.hasOwn"      = { emit = "common:reflection.has_own",     min_args = 2, max_args = 2 }
+"Object.create"      = { emit = "common:reflection.create",      min_args = 1, max_args = 2 }
+"Object.seal"        = { emit = "common:reflection.seal",        min_args = 1, max_args = 1 }
+"Object.isFrozen"    = { emit = "common:reflection.is_frozen",   min_args = 1, max_args = 1 }
+"Object.isSealed"    = { emit = "common:reflection.is_sealed",   min_args = 1, max_args = 1 }
+"Object.is"          = { emit = "common:reflection.object_is",    min_args = 2, max_args = 2 }
+"Object.getPrototypeOf"     = { emit = "common:reflection.get_prototype_of", min_args = 1, max_args = 1 }
+"Object.getOwnPropertyNames" = { emit = "common:reflection.get_own_property_names", min_args = 1, max_args = 1 }
+"Object.getOwnPropertyDescriptor"  = { emit = "common:reflection.get_own_property_descriptor", min_args = 2, max_args = 2 }
+"Object.getOwnPropertyDescriptors" = { emit = "common:reflection.get_own_property_descriptors", min_args = 1, max_args = 1 }
+"Object.getOwnPropertySymbols"     = { emit = "common:reflection.get_own_property_symbols", min_args = 1, max_args = 1 }
+"Object.defineProperty"            = { emit = "common:reflection.define_property", min_args = 3, max_args = 3 }
+"Object.defineProperties"          = { emit = "common:reflection.define_properties", min_args = 2, max_args = 2 }
+"Object.preventExtensions"         = { emit = "common:reflection.prevent_extensions", min_args = 1, max_args = 1 }
+"Object.isExtensible"              = { emit = "common:reflection.is_extensible", min_args = 1, max_args = 1 }
+"Object.setPrototypeOf"            = { emit = "common:reflection.set_prototype_of", min_args = 2, max_args = 2 }
+"Object.groupBy"                   = { emit = "common:reflection.group_by", min_args = 2, max_args = 2 }
 "Map.groupBy"                      = { emit = "host:ecma:map:groupBy",                        min_args = 2, max_args = 2 }
+
+# ── Reflect static methods ──────────────────────────────────────────────────
+
+"Reflect.get"                     = { emit = "common:reflection.get", min_args = 2, max_args = 3 }
+"Reflect.set"                     = { emit = "common:reflection.set", min_args = 3, max_args = 4 }
+"Reflect.has"                     = { emit = "common:reflection.reflect_has", min_args = 2, max_args = 2 }
+"Reflect.apply"                   = { emit = "common:reflection.apply", min_args = 3, max_args = 3 }
+"Reflect.construct"               = { emit = "common:reflection.construct", min_args = 2, max_args = 3 }
+"Reflect.deleteProperty"          = { emit = "common:reflection.delete_property", min_args = 2, max_args = 2 }
+"Reflect.defineProperty"          = { emit = "common:reflection.reflect_define_property", min_args = 3, max_args = 3 }
+"Reflect.getOwnPropertyDescriptor" = { emit = "common:reflection.reflect_get_own_property_descriptor", min_args = 2, max_args = 2 }
+"Reflect.getPrototypeOf"          = { emit = "common:reflection.reflect_get_prototype_of", min_args = 1, max_args = 1 }
+"Reflect.isExtensible"            = { emit = "common:reflection.reflect_is_extensible", min_args = 1, max_args = 1 }
+"Reflect.ownKeys"                 = { emit = "common:reflection.own_keys", min_args = 1, max_args = 1 }
+"Reflect.preventExtensions"       = { emit = "common:reflection.reflect_prevent_extensions", min_args = 1, max_args = 1 }
+"Reflect.setPrototypeOf"          = { emit = "common:reflection.reflect_set_prototype_of", min_args = 2, max_args = 2 }
 
 # ── JSON ─────────────────────────────────────────────────────────────────────
 
@@ -440,9 +456,9 @@ with          = { emit = "host:ecma:array:with",          min_args = 2, max_args
 # §20.1.3 Object.prototype intrinsics. The host fns check the receiver's
 # own/prototype chain for a user override FIRST (user_method_override in
 # ecma/object.rs), so compile-time routing stays spec-correct.
-propertyIsEnumerable   = { emit = "host:ecma:object:propertyIsEnumerable",    min_args = 1, max_args = 1 }
-hasOwnProperty         = { emit = "host:ecma:object:hasOwnProperty",          min_args = 1, max_args = 1 }
-isPrototypeOf          = { emit = "host:ecma:object:isPrototypeOf",           min_args = 1, max_args = 1 }
+propertyIsEnumerable   = { emit = "common:reflection.property_is_enumerable", min_args = 1, max_args = 1 }
+hasOwnProperty         = { emit = "common:reflection.has_own_property",       min_args = 1, max_args = 1 }
+isPrototypeOf          = { emit = "common:reflection.is_prototype_of",        min_args = 1, max_args = 1 }
 # §20.1.3.7 default valueOf: returns the receiver itself (host fn is
 # __primitive-aware so wrapper objects unwrap correctly).
 # BISECT-OFF valueOf

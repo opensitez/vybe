@@ -137,15 +137,15 @@ go_run_cases! {
     ),
     quote_empty_string => (
         "package main; import \"fmt\"; import \"strconv\"; func main() { fmt.Println(strconv.Quote(\"\")) }",
-        vec!["\"\"\""]
+        vec!["\"\""]
     ),
     unquote_hex_escape => (
         "package main; import \"fmt\"; import \"strconv\"; func main() { s, _ := strconv.Unquote(`\"\\x41\"`); fmt.Println(s) }",
         vec!["A"]
     ),
     unquote_unicode_escape => (
-        "package main; import \"fmt\"; import \"strconv\"; func main() { s, _ := strconv.Unquote(`\"\\u03BB\"`); fmt.Println(int([]rune(s)[0])) }",
-        vec!["955"]
+        "package main; import \"fmt\"; import \"strconv\"; func main() { s, _ := strconv.Unquote(`\"\\u03BB\"`); fmt.Println(s == \"λ\") }",
+        vec!["true"]
     ),
     unquote_octal_escape => (
         "package main; import \"fmt\"; import \"strconv\"; func main() { s, _ := strconv.Unquote(`\"\\101\"`); fmt.Println(s) }",

@@ -48,7 +48,7 @@ go_run_cases! {
     ),
     range_int_continue_skip_middle => (
         "package main; import \"fmt\"; func main() { total := 0; for i := range 4 { if i == 2 { continue }; total += i }; fmt.Println(total) }",
-        vec!["3"]
+        vec!["4"]
     ),
     range_int_product_nonzero_indices => (
         "package main; import \"fmt\"; func main() { total := 1; for i := range 4 { if i > 0 { total *= i } }; fmt.Println(total) }",

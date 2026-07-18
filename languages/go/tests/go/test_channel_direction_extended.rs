@@ -24,7 +24,7 @@ go_run_cases! {
     send_only_in_struct_field => ("package main; import \"fmt\"; type sink struct { ch chan<- int }; func main() { ch := make(chan int, 1); s := sink{ch: ch}; s.ch <- 5; fmt.Println(<-ch) }", vec!["5"]),
     recv_only_in_struct_field => ("package main; import \"fmt\"; type source struct { ch <-chan int }; func main() { ch := make(chan int, 1); ch <- 6; s := source{ch: ch}; fmt.Println(<-s.ch) }", vec!["6"]),
     send_only_interface_box => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); var s chan<- int = ch; var v interface{} = s; _ = v; s <- 7; fmt.Println(<-ch) }", vec!["7"]),
-    send_only_after_close_read_side => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 1; close(ch); var r <-chan int = ch; v, ok := <-r; fmt.Println(v); fmt.Println(ok) }", vec!["1", "false"]),
+    send_only_after_close_read_side => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); ch <- 1; close(ch); var r <-chan int = ch; v, ok := <-r; fmt.Println(v); fmt.Println(ok) }", vec!["1", "true"]),
     send_only_unbuffered_buffered_fallback => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); var s chan<- int = ch; s <- 9; fmt.Println(<-ch) }", vec!["9"]),
     recv_only_zero_value_from_closed => ("package main; import \"fmt\"; func main() { ch := make(chan int); close(ch); var r <-chan int = ch; v, ok := <-r; fmt.Println(v); fmt.Println(ok) }", vec!["0", "false"]),
     send_only_chan_of_chan => ("package main; import \"fmt\"; func main() { inner := make(chan int, 1); outer := make(chan chan int, 1); var s chan<- chan int = outer; s <- inner; got := <-outer; got <- 4; fmt.Println(<-inner) }", vec!["4"]),
