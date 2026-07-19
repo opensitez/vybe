@@ -6,13 +6,13 @@
 //! and the WASM writer can still aggregate those imports into a module
 //! section.
 
-use crate::Target;
 #[allow(unused_imports)]
 use crate::instructions::core_wasm;
+use crate::Target;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
-use vybe_bytecode::opcode::Op;
 
 // ── `ecma:array.*` import helpers (Phase D) ─────────────────
 //
@@ -320,105 +320,23 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Trap (WASM `unreachable`) unless `arr` (in a local) is a non-null array and
-/// `idx` (in a local) is in bounds — the spec `array.get`/`array.set`/etc.
-/// null and out-of-bounds checks. Unsigned compare so a negative index (huge as
-/// u32) also traps. Leaves the stack unchanged.
-/// Trap (`unreachable`) if the array in local `arr` is a null reference.
-fn emit_null_check(chunks: &mut [Chunk], current: usize, arr: u16, line: u32) {
-    lget(&mut chunks[current], arr, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::UNREACHABLE, line);
-    chunks[current].emit_end(line);
-}
 
-/// Trap (`unreachable`) if the top-of-stack ref is null, otherwise leave it
-/// unchanged. The compiler-side null guard for WASM GC `struct.get`/`struct.set`
-/// (and any nullable ref that spec-traps on access): a null ref carries no rtt
-/// stamp, so this can't be VM-side without a typed null. Composes as a
-/// pass-through so the existing field read/write lowering is unchanged.
-pub fn emit_nonnull_or_trap(chunks: &mut [Chunk], current: usize, line: u32) {
-    let slot = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], slot, line);
-    emit_null_check(chunks, current, slot, line);
-    lget(&mut chunks[current], slot, line);
-}
-
-/// Trap if `start + count >u array.len` — the range check for `array.copy`.
-fn emit_range_check(
-    chunks: &mut [Chunk],
-    current: usize,
-    arr: u16,
-    start: u16,
-    count: u16,
-    line: u32,
-) {
-    lget(&mut chunks[current], arr, line);
-    chunks[current].emit_op(Op::ARRAY_LENGTH, line); // [len]
-    lget(&mut chunks[current], start, line);
-    lget(&mut chunks[current], count, line);
-    chunks[current].emit_op(Op::I32_ADD, line); // [len, start+count]
-    chunks[current].emit_op(Op::I32_LT_U, line); // len <u (start+count) → out of range
-    chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::UNREACHABLE, line);
-    chunks[current].emit_end(line);
-}
-
-/// WASM GC `array.copy`: traps on a null source/destination array or an
-/// out-of-range copy region (spec). Stack: [dst, dst_idx, src, src_idx, len].
+/// WASM GC `array.copy`: purely the VM opcode. Stack: [dst, dst_idx, src,
+/// src_idx, len]. The VM traps on a null (TypedNull) src/dst and on an
+/// out-of-range region for stamped GC arrays — no compiler-side guard.
 pub fn emit_gc_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
-    let len = alloc_local(&mut chunks[current]);
-    let src_idx = alloc_local(&mut chunks[current]);
-    let src = alloc_local(&mut chunks[current]);
-    let dst_idx = alloc_local(&mut chunks[current]);
-    let dst = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], len, line);
-    lset(&mut chunks[current], src_idx, line);
-    lset(&mut chunks[current], src, line);
-    lset(&mut chunks[current], dst_idx, line);
-    lset(&mut chunks[current], dst, line);
-    emit_null_check(chunks, current, dst, line);
-    emit_null_check(chunks, current, src, line);
-    emit_range_check(chunks, current, dst, dst_idx, len, line);
-    emit_range_check(chunks, current, src, src_idx, len, line);
-    lget(&mut chunks[current], dst, line);
-    lget(&mut chunks[current], dst_idx, line);
-    lget(&mut chunks[current], src, line);
-    lget(&mut chunks[current], src_idx, line);
-    lget(&mut chunks[current], len, line);
     chunks[current].emit_op(Op::ARRAY_COPY, line);
 }
 
-/// WASM GC `array.get`: traps on a null array or out-of-bounds index (spec),
-/// unlike the polymorphic `emit_get` used for the dynamic languages' lenient
-/// subscript. Stack: [array, index] → [value].
+/// WASM GC `array.get`: purely the VM opcode. Stack: [array, index] → [value].
+/// `Op::ARRAY_GET` traps on a null (TypedNull) ref and out-of-bounds index for
+/// stamped GC arrays, unlike the lenient dynamic-language subscript.
 pub fn emit_gc_array_get(chunks: &mut [Chunk], current: usize, line: u32) {
-    // Null-trap is compiler-side (a null ref carries no stamp); the OOB trap is
-    // VM-side — `Op::ARRAY_GET` traps for stamped GC arrays.
-    let arr = alloc_local(&mut chunks[current]);
-    let idx = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], idx, line);
-    lset(&mut chunks[current], arr, line);
-    emit_null_check(chunks, current, arr, line);
-    lget(&mut chunks[current], arr, line);
-    lget(&mut chunks[current], idx, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
 }
 
-/// WASM GC `array.set`: same null/bounds trap checks as [`emit_gc_array_get`].
-/// Stack: [array, index, value] → [retval] (dropped by the void statement form).
+/// WASM GC `array.set`: purely the VM opcode. Stack: [array, index, value].
 pub fn emit_gc_array_set(chunks: &mut [Chunk], current: usize, line: u32) {
-    // Null-trap compiler-side; OOB-trap VM-side (stamped GC array).
-    let val = alloc_local(&mut chunks[current]);
-    let idx = alloc_local(&mut chunks[current]);
-    let arr = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], val, line);
-    lset(&mut chunks[current], idx, line);
-    lset(&mut chunks[current], arr, line);
-    emit_null_check(chunks, current, arr, line);
-    lget(&mut chunks[current], arr, line);
-    lget(&mut chunks[current], idx, line);
-    lget(&mut chunks[current], val, line);
     chunks[current].emit_op(Op::ARRAY_SET, line);
 }
 

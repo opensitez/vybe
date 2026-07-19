@@ -1,7 +1,6 @@
 // `java` now lives in the `languages/java` crate (`vybe_lang_java`); it
 // registers itself through `vybe_plugin::registry` via the aggregator.
 
-use crate::ast::Module;
 use vybe_bytecode::Chunk;
 
 /// Per-language emit dispatcher: routes a `common:<prefix>.<op>` name to

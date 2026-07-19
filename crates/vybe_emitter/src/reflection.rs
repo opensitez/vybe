@@ -19,8 +19,11 @@
 
 use std::sync::Arc;
 
+use vybe_ast::{ArrayElement, ExprKind, Expression, Literal};
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+
+use crate::collections;
 
 pub const FIELD_TYPE: &str = "__type";
 pub const FIELD_TYPES: &str = "__types";
@@ -35,6 +38,119 @@ pub const FIELD_TAGS: &str = "__tags";
 pub const FIELD_KIND: &str = "__kind";
 pub const FIELD_VALUE: &str = "__value";
 pub const FIELD_REF: &str = "__ref";
+
+pub const MEMBER_KIND_FIELD: &str = "field";
+pub const MEMBER_KIND_METHOD: &str = "method";
+pub const MEMBER_KIND_CONSTRUCTOR: &str = "constructor";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemberToken {
+    pub kind: String,
+    pub owner: String,
+    pub name: String,
+    pub param_count: usize,
+    pub type_name: Option<String>,
+    pub return_type: Option<String>,
+    pub param_types: Vec<String>,
+    pub modifiers: i64,
+}
+
+/// Build the shared compile-time reflection member token used by language
+/// walkers when declaration metadata is known. Language surfaces may wrap this
+/// in their own public objects, but the slot order is shared:
+/// `[kind, owner, name, param_count, type_name, return_type, param_types, modifiers]`.
+pub fn member_token_expr(
+    kind: &str,
+    owner: &str,
+    name: &str,
+    param_count: usize,
+    type_name: Option<String>,
+    return_type: Option<String>,
+    param_types: Vec<String>,
+    modifiers: i64,
+) -> Expression {
+    Expression::new(ExprKind::Array(vec![
+        array_value(Expression::string(kind)),
+        array_value(Expression::string(owner)),
+        array_value(Expression::string(name)),
+        array_value(Expression::int(param_count as i64)),
+        array_value(
+            type_name
+                .map(|name| Expression::string(&name))
+                .unwrap_or_else(Expression::null),
+        ),
+        array_value(
+            return_type
+                .map(|name| Expression::string(&name))
+                .unwrap_or_else(Expression::null),
+        ),
+        array_value(string_array_expr(param_types)),
+        array_value(Expression::int(modifiers)),
+    ]))
+}
+
+pub fn member_token(expr: &Expression) -> Option<MemberToken> {
+    let ExprKind::Array(elems) = &expr.kind else {
+        return None;
+    };
+    Some(MemberToken {
+        kind: token_string(elems, 0)?.to_string(),
+        owner: token_string(elems, 1)?.to_string(),
+        name: token_string(elems, 2)?.to_string(),
+        param_count: token_int(elems, 3).and_then(|value| usize::try_from(value).ok())?,
+        type_name: token_string(elems, 4).map(str::to_string),
+        return_type: token_string(elems, 5).map(str::to_string),
+        param_types: token_string_array(elems, 6).unwrap_or_default(),
+        modifiers: token_int(elems, 7).unwrap_or_default(),
+    })
+}
+
+pub fn string_array_expr(values: Vec<String>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| array_value(Expression::string(&value)))
+            .collect(),
+    ))
+}
+
+fn array_value(value: Expression) -> ArrayElement {
+    ArrayElement {
+        key: None,
+        value,
+        spread: false,
+        by_ref: false,
+    }
+}
+
+fn token_string(elems: &[ArrayElement], index: usize) -> Option<&str> {
+    match elems.get(index).map(|elem| &elem.value.kind) {
+        Some(ExprKind::Lit(Literal::Str(value))) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn token_int(elems: &[ArrayElement], index: usize) -> Option<i64> {
+    match elems.get(index).map(|elem| &elem.value.kind) {
+        Some(ExprKind::Lit(Literal::Int(value))) => Some(*value),
+        _ => None,
+    }
+}
+
+fn token_string_array(elems: &[ArrayElement], index: usize) -> Option<Vec<String>> {
+    let Some(ExprKind::Array(values)) = elems.get(index).map(|elem| &elem.value.kind) else {
+        return None;
+    };
+    Some(
+        values
+            .iter()
+            .filter_map(|elem| match &elem.value.kind {
+                ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .collect(),
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReflectKind {
@@ -52,6 +168,7 @@ pub enum ReflectKind {
     Struct,
     Class,
     Interface,
+    Exception,
     Pointer,
     Slice,
     Channel,
@@ -74,6 +191,7 @@ impl ReflectKind {
             ReflectKind::Struct => "struct",
             ReflectKind::Class => "class",
             ReflectKind::Interface => "interface",
+            ReflectKind::Exception => "exception",
             ReflectKind::Pointer => "ptr",
             ReflectKind::Slice => "slice",
             ReflectKind::Channel => "chan",
@@ -317,6 +435,11 @@ pub fn emit_stamp_type(chunk: &mut Chunk, object_slot: u16, type_name: &str, lin
     emit_set_slot_string_field(chunk, object_slot, FIELD_TYPE, type_name, line);
 }
 
+/// Stack: unchanged. Writes `object.__typename = type_name`.
+pub fn emit_stamp_type_name(chunk: &mut Chunk, object_slot: u16, type_name: &str, line: u32) {
+    emit_set_slot_string_field(chunk, object_slot, FIELD_TYPE_NAME, type_name, line);
+}
+
 /// Stack: unchanged. Writes `object.__kind = kind`.
 pub fn emit_stamp_kind(chunk: &mut Chunk, object_slot: u16, kind: ReflectKind, line: u32) {
     emit_set_slot_string_field(chunk, object_slot, FIELD_KIND, kind.as_str(), line);
@@ -449,6 +572,297 @@ pub fn emit_value_descriptor(
     chunk.emit_op(Op::DROP, line);
     emit_stamp_kind(chunk, descriptor_slot, kind, line);
     chunk.emit_op_u16(Op::LOCAL_GET, descriptor_slot, line);
+}
+
+/// Stack: `[object] -> [object[field]]`.
+pub fn emit_descriptor_field(chunk: &mut Chunk, field: &str, line: u32) {
+    chunk.emit_string_const(field, line);
+    emit_get_property_in_chunk(chunk, line);
+}
+
+/// Create a reflection type descriptor from stack metadata and leave it on the
+/// stack. Supported stack layouts:
+///
+/// - `[value]`
+/// - `[value, type_name]`
+/// - `[value, type_name, fields]`
+/// - `[value, type_name, kind_name, fields]`
+pub fn emit_type_descriptor_from_stack(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let fields_slot = chunks[current].alloc_scratch(1);
+    let kind_slot = chunks[current].alloc_scratch(1);
+    let type_slot = chunks[current].alloc_scratch(1);
+    let value_slot = chunks[current].alloc_scratch(1);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
+    }
+    if argc >= 2 {
+        if argc >= 4 {
+            chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        } else {
+            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        }
+        chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    let methods_slot = chunks[current].alloc_scratch(1);
+    let attrs_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, methods_slot, line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
+    let out_slot = chunks[current].alloc_scratch(1);
+    emit_type_descriptor(
+        &mut chunks[current],
+        out_slot,
+        type_slot,
+        ReflectKind::Object,
+        fields_slot,
+        methods_slot,
+        attrs_slot,
+        line,
+    );
+    emit_stamp_kind_from_slot(&mut chunks[current], out_slot, kind_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+/// Create a reflection value descriptor from stack metadata and leave it on the
+/// stack. Supported stack layouts:
+///
+/// - `[value]`
+/// - `[value, type_name]`
+/// - `[value, type_name, kind_name]`
+/// - `[value, type_name, kind_name, ref_marker]`
+pub fn emit_value_descriptor_from_stack(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let ref_slot = chunks[current].alloc_scratch(1);
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, ref_slot, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, ref_slot, line);
+    }
+    let kind_slot = chunks[current].alloc_scratch(1);
+    let type_slot = chunks[current].alloc_scratch(1);
+    let value_slot = chunks[current].alloc_scratch(1);
+    if argc >= 2 {
+        if argc >= 3 {
+            chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        } else {
+            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        }
+        chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    let out_slot = chunks[current].alloc_scratch(1);
+    emit_value_descriptor(
+        &mut chunks[current],
+        out_slot,
+        value_slot,
+        type_slot,
+        ReflectKind::Object,
+        ref_slot,
+        line,
+    );
+    emit_stamp_kind_from_slot(&mut chunks[current], out_slot, kind_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+/// Stack: `[value] -> [ReflectionValue(value)]`.
+pub fn emit_wrap_existing_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_string_const("any", line);
+    chunks[current].emit_string_const("any", line);
+    emit_value_descriptor_from_stack(chunks, current, 3, line);
+}
+
+/// Stack: `[descriptor] -> [len(descriptor.__fields)]`.
+pub fn emit_reflect_num_field(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_descriptor_field(&mut chunks[current], FIELD_FIELDS, line);
+    collections::emit_len(chunks, current, line);
+}
+
+/// Stack: `[descriptor, index] -> [descriptor.__fields[index]]`.
+pub fn emit_reflect_field(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let index = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_FIELDS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_get(chunks, current, line);
+}
+
+/// Stack: `[descriptor, name] -> [field_descriptor|null]`.
+///
+/// Language walkers may statically lower name lookups into direct field/index
+/// access when they have declaration metadata. The runtime fallback is null so
+/// unknown reflection queries remain non-panicking.
+pub fn emit_reflect_field_by_name(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let name = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Stack: `[value_descriptor] -> [len(value_descriptor.__value)]`.
+pub fn emit_reflect_len(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    collections::emit_len(chunks, current, line);
+}
+
+/// Stack: `[value_descriptor, index] -> [ReflectionValue(value[index])]`.
+pub fn emit_reflect_index(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let index = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_get(chunks, current, line);
+    emit_wrap_existing_value(chunks, current, line);
+}
+
+/// Stack: `[map_descriptor, key_descriptor] -> [ReflectionValue(map[key])]`.
+pub fn emit_reflect_map_index(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let key = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    collections::emit_get(chunks, current, line);
+    emit_wrap_existing_value(chunks, current, line);
+}
+
+/// Stack: `[value_descriptor] -> [true]`.
+pub fn emit_reflect_is_valid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_bool_const(true, line);
+}
+
+/// Stack: `[value_descriptor] -> [value_descriptor.__value == null]`.
+pub fn emit_reflect_is_nil(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Stack: `[value_descriptor] -> [value_descriptor.__ref != null]`.
+pub fn emit_reflect_can_set(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_descriptor_field(&mut chunks[current], FIELD_REF, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    crate::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Stack: `[value_descriptor] -> [bool]`.
+pub fn emit_reflect_is_zero(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_KIND, line);
+    chunks[current].emit_string_const("string", line);
+    crate::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_string_const("", line);
+    crate::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_i32_const(0, line);
+    crate::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+/// Stack: `[value_descriptor] -> [value_descriptor.__elem ?? value_descriptor]`.
+pub fn emit_reflect_elem(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    emit_descriptor_field(&mut chunks[current], "__elem", line);
+    let elem = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+    chunks[current].emit_end(line);
+}
+
+/// Stack: `[target_descriptor, value_descriptor] -> [null]`.
+pub fn emit_reflect_set_value(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_descriptor_field(&mut chunks[current], FIELD_VALUE, line);
+    emit_set_field_from_stack(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Stack: `[target_descriptor, primitive_value] -> [null]`.
+pub fn emit_reflect_set_primitive(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    emit_set_field_from_stack(&mut chunks[current], FIELD_VALUE, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Stack: `[object, value] -> []`. Writes `object[field] = value`.
+pub fn emit_set_field_from_stack(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = sconst(chunk, field);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// Stack: unchanged. Writes `object[field] = value_slot`.
+pub fn emit_stamp_kind_from_slot(chunk: &mut Chunk, object_slot: u16, kind_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
+    let key = sconst(chunk, FIELD_KIND);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_import_call(

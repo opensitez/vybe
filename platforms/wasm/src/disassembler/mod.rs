@@ -230,6 +230,10 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
                 let _ = write!(out, " memory={memidx}");
             }
         }
+        OperandFormat::MemLane => {
+            let lane = chunk.code.get(ip + 4).copied().unwrap_or(0);
+            let _ = write!(out, " {lane}");
+        }
         OperandFormat::BrTable => {
             let mut operand_ip = ip + 4;
             let count = read_leb_u32(&chunk.code, &mut operand_ip);

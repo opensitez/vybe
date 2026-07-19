@@ -172,23 +172,20 @@ impl Compiler {
         target: &Expression,
         args: &[Expression],
     ) -> Result<(), String> {
-        let delegate_slot = self.define_local("__raise_event_delegate");
+        // A raised event may hold a multicast delegate (array of handlers).
+        // The shared invoker iterates and calls each, and yields null for a
+        // null delegate — so no explicit null guard is needed here.
         self.compile_expr(target)?;
-        self.emit_u16(Op::LOCAL_SET, delegate_slot);
-
-        self.emit_u16(Op::LOCAL_GET, delegate_slot);
-        self.emit(Op::REF_IS_NULL);
-        let line = self.line;
-        let skip_null = self.chunk().emit_block(line);
-        self.chunk().emit_br_if(0, line);
-        self.emit_u16(Op::LOCAL_GET, delegate_slot);
         for arg in args {
             self.compile_expr(arg)?;
         }
-        self.emit_u8(Op::CALL_REF, args.len() as u8);
+        common::delegates::emit_invoke(
+            &mut self.chunks,
+            self.current,
+            (args.len() + 1) as u8,
+            self.line,
+        );
         self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-        self.chunk().patch_block(skip_null);
         Ok(())
     }
 

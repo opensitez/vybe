@@ -8,6 +8,8 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
+use crate::reflection;
+
 /// Build a standard exception constructor chunk.
 /// All languages should use this shape: { __type, __exception_type, name, message }.
 /// This ensures Python `except ValueError` can catch a Dart `throw ValueError("...")`.
@@ -22,19 +24,24 @@ pub fn emit_exception_constructor(
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
-    // __type = exc_name (for ref_test matching)
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(exc_name, line);
-    let t_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, t_key, line);
-    chunk.emit_op(Op::DROP, line);
-
-    // __exception_type = exc_name (Python convention)
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(exc_name, line);
-    let et_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, et_key, line);
-    chunk.emit_op(Op::DROP, line);
+    // Shared type/reflection stamps. `__exception_type` remains for older
+    // language surfaces, while reflection consumers read `__typename`/`__kind`.
+    let canon = canonical_exception_name(exc_name);
+    for (key, val) in [
+        (reflection::FIELD_TYPE, canon),
+        (reflection::FIELD_TYPE_NAME, canon),
+        ("__exception_type", canon),
+        (
+            reflection::FIELD_KIND,
+            reflection::ReflectKind::Exception.as_str(),
+        ),
+    ] {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_string_const(val, line);
+        let k = chunk.add_constant(Value::String(Arc::from(key)));
+        chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+        chunk.emit_op(Op::DROP, line);
+    }
 
     // name = exc_name (JS Error convention)
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -68,7 +75,7 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
     chunk.emit_op_u16(Op::STRUCT_SET, link_key, line); // [err, err]
     chunk.emit_op(Op::DROP, line); // [err]
-    // delete err.name — own stamp off, prototype `name` takes over
+                                   // delete err.name — own stamp off, prototype `name` takes over
     crate::instructions::core_wasm::dup(chunk, line); // [err, err]
     chunk.emit_string_const("name", line); // [err, err, "name"]
     let del = chunk.add_import("ecma:object", "delete");
@@ -288,9 +295,17 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     // [obj, msg_val] → [obj]
     chunk.emit_op(Op::DROP, line);
 
-    // __type and __exception_type use the canonical name (for cross-language
-    // catch dispatch).
-    for (key, val) in [("__type", canon), ("__exception_type", canon)] {
+    // Shared type/reflection stamps use the canonical name for cross-language
+    // catch dispatch and introspection compatibility.
+    for (key, val) in [
+        (reflection::FIELD_TYPE, canon),
+        (reflection::FIELD_TYPE_NAME, canon),
+        ("__exception_type", canon),
+        (
+            reflection::FIELD_KIND,
+            reflection::ReflectKind::Exception.as_str(),
+        ),
+    ] {
         chunk.emit_dup(line);
         chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
@@ -476,7 +491,7 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
         chunk.emit_string_const(name, line);
     }
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, chain.len() as u16, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__types")));
+    let key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
 }

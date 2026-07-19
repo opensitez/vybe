@@ -1044,7 +1044,7 @@ fn emit_core_op(
         // ref.func (Closure format): emit ref.func with WASM function index
         _ if op == Op::REF_FUNC => {
             let chunk_idx = read_u16(&chunk.code, ip);
-            let uv_count = chunk.code[*ip] as usize;
+            let uv_count = (chunk.code[*ip] & 0x7f) as usize; // mask 0x80 no-intern flag
             *ip += 1;
             *ip += uv_count * 3; // skip upvalue descriptors (u8 is_local + u16 index)
             // Store as table index (i32) for call_indirect — box as externref.
@@ -1836,6 +1836,11 @@ fn emit_vm_internal_op(
         _ if op == Op::SET_TYPE_ID => {
             body.push(0x01);
         } // nop (type is structural in GC)
+        // WASM GC typed null → the real `ref.null none` bytes.
+        _ if op == Op::NULL_NONE => {
+            body.push(0xD0);
+            body.push(HT_NONE);
+        }
         _ if op == Op::HALT => {
             body.push(0x0F);
         } // return (not unreachable — _start should return cleanly)

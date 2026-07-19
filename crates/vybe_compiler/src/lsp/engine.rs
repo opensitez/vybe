@@ -10,7 +10,6 @@
 use super::extract;
 use super::symbols::*;
 use crate::ast::Lang;
-use crate::languages;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

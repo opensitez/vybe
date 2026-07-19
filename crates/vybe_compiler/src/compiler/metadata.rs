@@ -881,6 +881,7 @@ impl Compiler {
     /// private properties and for statically-typed field hiding
     /// (java/C#/VB: `Parent.value` and a hiding `Child.value` occupy distinct
     /// slots, resolved by the reference's declared type).
+    #[allow(dead_code)]
     pub(super) fn field_storage_name_for_class(
         &self,
         class_name: &str,

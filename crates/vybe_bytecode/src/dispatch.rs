@@ -46,6 +46,42 @@ impl VM {
     /// types — registered ahead of the module's — don't skew the mapping the
     /// way a raw compile-time table position would.
     #[inline]
+    /// Materialize the canonical capture-free funcref for function chunk
+    /// `func_idx` — the same object `REF_FUNC` produces (interned via
+    /// `funcref_cache`), so identity is stable. Used to populate passive element
+    /// segments at instantiation.
+    pub(crate) fn make_funcref(&mut self, func_idx: usize) -> Value {
+        if let Some(cached) = self.funcref_cache.get(&func_idx) {
+            return cached.clone();
+        }
+        let chunk = &self.chunks[func_idx];
+        let arity = chunk.arity;
+        let name = if chunk.name == "<script>" {
+            None
+        } else {
+            Some(chunk.name.clone())
+        };
+        let func = crate::value::Function {
+            name,
+            arity,
+            chunk_index: func_idx,
+            upvalues: Vec::new(),
+        };
+        let mut obj = Object {
+            properties: std::collections::HashMap::new(),
+            kind: ObjectKind::Function(func),
+            type_id: 0,
+            fields: Vec::new(),
+        };
+        let table_idx = self.func_table.len();
+        obj.properties
+            .insert("__table_idx".into(), Value::F64(table_idx as f64));
+        let func_val = Value::Object(Arc::new(Mutex::new(obj)));
+        self.func_table.push(func_val.clone());
+        self.funcref_cache.insert(func_idx, func_val.clone());
+        func_val
+    }
+
     pub(crate) fn resolve_gc_array_rtt(&self, type_imm: usize) -> usize {
         if type_imm == 0 {
             return 0;
@@ -157,6 +193,21 @@ fn wasm_bool(value: bool) -> Value {
     Value::I32(if value { 1 } else { 0 })
 }
 
+/// The stringref "WTF-8 position treatment": a byte offset past the end clamps
+/// to the length; an offset that lands inside a multi-byte codepoint is advanced
+/// forward to the next codepoint boundary (or the end). Used by the
+/// `stringview_wtf8.*` cursor ops.
+fn wtf8_treat(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut p = pos;
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
 fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
     if idx >= typed_array_live_length(ta) {
         return None;
@@ -230,6 +281,52 @@ fn read_leb_u64(code: &[u8], ip: &mut usize) -> u64 {
         shift += 7;
     }
     result
+}
+
+/// The element storage byte-width and decode `kind` of a GC array element
+/// storage type name. `kind` feeds `decode_le_numeric`: 0=i32, 1=i64, 2=f32,
+/// 3=f64, 4=i8 (packed), 5=i16 (packed). Ref element types return None.
+fn array_elem_storage_kind(name: &str) -> Option<(usize, u8)> {
+    Some(match name {
+        "i8" => (1, 4),
+        "i16" => (2, 5),
+        "i32" => (4, 0),
+        "i64" => (8, 1),
+        "f32" => (4, 2),
+        "f64" => (8, 3),
+        _ => return None,
+    })
+}
+
+/// Decode `bytes` (little-endian, exactly the element width) into the numeric
+/// Value for an untyped GC array element. `kind`: 0=i32, 1=i64, 2=f32, 3=f64,
+/// 4=i8, 5=i16 (packed lanes are read as their raw unsigned storage; a later
+/// `array.get_s`/`get_u` performs the sign/zero extension).
+fn decode_le_numeric(kind: u8, bytes: &[u8]) -> Value {
+    match kind {
+        1 => Value::I64(i64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
+        2 => Value::F32(f32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
+        3 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
+        4 => Value::I32(bytes.first().map(|b| *b as i32).unwrap_or(0)),
+        5 => Value::I32(u16::from_le_bytes(bytes.try_into().unwrap_or([0; 2])) as i32),
+        _ => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
+    }
+}
+
+/// Decode `bytes` (little-endian, exactly `kind.bytes_per_element()`) into the
+/// numeric Value a `TypedArray` of the given element kind stores.
+fn decode_typed_le(kind: crate::value::TypedElemKind, bytes: &[u8]) -> Value {
+    use crate::value::TypedElemKind::*;
+    match kind {
+        I8 => Value::I32(bytes.first().map(|b| (*b as i8) as i32).unwrap_or(0)),
+        U8 | U8Clamped => Value::I32(bytes.first().map(|b| *b as i32).unwrap_or(0)),
+        I16 => Value::I32(i16::from_le_bytes(bytes.try_into().unwrap_or([0; 2])) as i32),
+        U16 => Value::I32(u16::from_le_bytes(bytes.try_into().unwrap_or([0; 2])) as i32),
+        I32 | U32 => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
+        F32 => Value::F32(f32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
+        F64 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
+        BigI64 | BigU64 => Value::I64(i64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
+    }
 }
 
 fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
@@ -536,19 +633,17 @@ impl VM {
     pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
         let chunk_idx = self.frame().chunk_index;
         let code = &self.chunks[chunk_idx].code;
-        let mut ip = self.frame().ip;
+        let ip = self.frame().ip;
+        // Multi-memory selector. VM instructions are always 4 bytes, so the
+        // memidx selector is a fixed 4-byte block — `0xEE 0x00 <memidx u16 BE>`
+        // — keeping the following instruction 4-aligned. Only emitted for a
+        // non-default memory; absent means memidx 0.
         if code.get(ip) == Some(&0xEE) && code.get(ip + 1) == Some(&0x00) {
-            ip += 2;
-            let memidx = read_leb_u32(code, &mut ip) as usize;
-            self.frame_mut().ip = ip;
+            let memidx = ((code[ip + 2] as usize) << 8) | (code[ip + 3] as usize);
+            self.frame_mut().ip = ip + 4;
             return memidx;
         }
-        if self.next_bytes_decode_opcode() {
-            return 0;
-        }
-        let memidx = read_leb_u32(&self.chunks[chunk_idx].code, &mut ip) as usize;
-        self.frame_mut().ip = ip;
-        memidx
+        0
     }
 
     /// Pop a stringref operand, trapping on a null reference (WASM stringref
@@ -556,7 +651,7 @@ impl VM {
     fn pop_stringref(&mut self) -> Result<Arc<str>, VMError> {
         match self.pop() {
             Value::String(s) => Ok(s),
-            Value::Null | Value::Undefined => {
+            Value::Null | Value::TypedNull(_) | Value::Undefined => {
                 Err(VMError::new("trap: null string reference"))
             }
             other => Err(VMError::new(format!(
@@ -564,6 +659,36 @@ impl VM {
                 other.type_tag()
             ))),
         }
+    }
+
+    /// Read a codepoint-iterator view (`string.as_iter` result): its backing
+    /// string and current codepoint index, stashed in the object's properties.
+    fn read_string_iter(&mut self, view: &Value) -> Result<(Arc<str>, usize), VMError> {
+        let obj = match view {
+            Value::Object(o) => o,
+            _ => return Err(VMError::new("trap: null stringview_iter reference")),
+        };
+        let guard = obj.lock().unwrap();
+        let s = match guard.properties.get("__iter_str") {
+            Some(Value::String(s)) => s.clone(),
+            _ => return Err(VMError::new("trap: not a stringview_iter")),
+        };
+        let pos = match guard.properties.get("__iter_pos") {
+            Some(Value::I32(p)) => *p as usize,
+            _ => 0,
+        };
+        Ok((s, pos))
+    }
+
+    /// Update the codepoint index of an iterator view in place.
+    fn write_string_iter_pos(&mut self, view: &Value, pos: usize) -> Result<(), VMError> {
+        if let Value::Object(o) = view {
+            o.lock()
+                .unwrap()
+                .properties
+                .insert("__iter_pos".to_string(), Value::I32(pos as i32));
+        }
+        Ok(())
     }
 
     /// Read `[start, end)` bytes from a GC array of i8/i16 elements (used by
@@ -590,6 +715,22 @@ impl VM {
     }
 
     pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
+        // Explicit multi-memory selector: the compiler folds any static offset
+        // into the address, so a non-default memory is carried by the same
+        // fixed 4-byte `0xEE 0x00 <memidx u16 BE>` sentinel `memory.size`/`grow`
+        // use — keeping the stream 4-aligned. Offset is therefore 0 here.
+        // Checked before the opcode-lookahead so the sentinel is never mistaken
+        // for the next instruction.
+        {
+            let chunk_idx = self.frame().chunk_index;
+            let code = &self.chunks[chunk_idx].code;
+            let ip = self.frame().ip;
+            if code.get(ip) == Some(&0xEE) && code.get(ip + 1) == Some(&0x00) {
+                let memidx = ((code[ip + 2] as usize) << 8) | (code[ip + 3] as usize);
+                self.frame_mut().ip = ip + 4;
+                return (0, memidx);
+            }
+        }
         if self.next_bytes_decode_opcode() {
             return (0, 0);
         }
@@ -956,6 +1097,12 @@ impl VM {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
                     let obj = self.pop();
+                    // WASM GC `struct.get` traps on a null ref. Only a TYPED null
+                    // (a GC reference) traps; a plain null — a dynamic-language
+                    // `obj.field` on null — stays lenient (handled below).
+                    if matches!(obj, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: struct.get on null reference"));
+                    }
                     // Auto-join thread when accessing .result on a Task/Thread object
                     if let Value::Object(ref o) = obj {
                         let needs_join = {
@@ -998,6 +1145,11 @@ impl VM {
                     let name = self.constant_str(idx);
                     let val = self.pop();
                     let obj = self.pop();
+                    // WASM GC `struct.set` traps on a typed null (GC ref); a plain
+                    // null (dynamic-language write) stays lenient.
+                    if matches!(obj, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: struct.set on null reference"));
+                    }
                     if let Value::Object(o) = &obj {
                         // Check for setter: __set_{name}. Property setters
                         // installed by the .NET class wrappers use a
@@ -1047,6 +1199,11 @@ impl VM {
                 _ if op == Op::ARRAY_GET => {
                     let key = self.pop();
                     let obj = self.pop();
+                    // WASM GC `array.get` traps on a typed null (GC array ref);
+                    // a plain null (dynamic subscript) stays lenient.
+                    if matches!(obj, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.get on null reference"));
+                    }
                     match &obj {
                         Value::Object(o) => {
                             // WASM GC `array.get`: spec (trap on out-of-bounds),
@@ -1196,6 +1353,11 @@ impl VM {
                     let val = self.pop();
                     let key = self.pop();
                     let obj = self.pop();
+                    // WASM GC `array.set` traps on a typed null (GC array ref);
+                    // a plain null (dynamic subscript) stays lenient.
+                    if matches!(obj, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.set on null reference"));
+                    }
                     if let Value::Object(o) = &obj {
                         // WASM GC `array.set`: spec (trap on out-of-bounds).
                         if self.is_gc_array_obj(o) {
@@ -2018,6 +2180,29 @@ impl VM {
                 }
                 _ if op == Op::REF_FUNC => {
                     let func_idx = self.read_u16() as usize;
+                    // The uv_count byte's high bit (0x80) is a "do not intern"
+                    // flag: a bound method stamps a per-receiver property on its
+                    // funcref, so it must be a FRESH object per binding — never
+                    // the shared interned canonical one. The low 7 bits are the
+                    // real upvalue count (methods never have ≥128 captures).
+                    let uv_raw = self.read_byte();
+                    let no_intern = uv_raw & 0x80 != 0;
+                    let uv_count = (uv_raw & 0x7f) as usize;
+
+                    // Capture-free funcref: return the interned canonical object
+                    // so two `ref.func $f` tear-offs are reference-identical. This
+                    // is what lets `ref.eq` be a pure `Arc::ptr_eq` — identity is
+                    // established at CREATION, not faked at comparison time. (No
+                    // upvalue bytes follow when uv_count == 0, so the instruction
+                    // stream is already fully consumed.)
+                    if uv_count == 0 && !no_intern {
+                        if let Some(cached) = self.funcref_cache.get(&func_idx) {
+                            let v = cached.clone();
+                            self.push(v)?;
+                            continue;
+                        }
+                    }
+
                     let chunk = &self.chunks[func_idx];
                     let arity = chunk.arity;
                     let name = if chunk.name == "<script>" {
@@ -2026,7 +2211,6 @@ impl VM {
                         Some(chunk.name.clone())
                     };
 
-                    let uv_count = self.read_byte() as usize;
                     let mut upvalues: Vec<Arc<Mutex<Upvalue>>> = Vec::with_capacity(uv_count);
                     for _ in 0..uv_count {
                         let is_local = self.read_byte() != 0;
@@ -2061,6 +2245,10 @@ impl VM {
                         .insert("__table_idx".into(), Value::F64(table_idx as f64));
                     let func_val = Value::Object(Arc::new(Mutex::new(obj)));
                     self.func_table.push(func_val.clone());
+                    // Intern the canonical capture-free funcref for reuse.
+                    if uv_count == 0 {
+                        self.funcref_cache.insert(func_idx, func_val.clone());
+                    }
                     self.push(func_val)?;
                 }
 
@@ -2359,6 +2547,11 @@ impl VM {
                 // `array.init_data $t $d` / `array.init_elem $t $e` — copy
                 // elements into an existing array. Stub to a no-op (same
                 // rationale as new_data / new_elem above).
+                // `array.init_data $t $d` — copy `count` ELEMENTS from data
+                // segment `$d` into an array (WASM GC). Stack: [array, dst_elem,
+                // src_byte_offset, count]. Each element occupies `elemsize` bytes
+                // in the segment, read little-endian; `src` is a BYTE offset so
+                // the source span is `[src, src + count·elemsize)`.
                 _ if op == Op::ARRAY_INIT_DATA => {
                     let _typeidx = self.read_u16();
                     let dataidx = self.read_u16() as u32;
@@ -2372,15 +2565,32 @@ impl VM {
                     let data = self
                         .data_segments
                         .get(dataidx as usize)
-                        .ok_or_else(|| VMError::new("array.init_data: missing data segment"))?;
-                    let src_end = src_offset.saturating_add(size);
-                    if src_end > data.len() {
-                        return Err(VMError::new("array.init_data: source out of bounds"));
-                    }
+                        .ok_or_else(|| VMError::new("array.init_data: missing data segment"))?
+                        .clone();
+                    let check_src = |elem_size: usize| -> Result<(), VMError> {
+                        let end = src_offset.saturating_add(size.saturating_mul(elem_size));
+                        if end > data.len() {
+                            return Err(VMError::new("array.init_data: source out of bounds"));
+                        }
+                        Ok(())
+                    };
                     if let Value::Object(obj) = array {
+                        // The value model stores i32/f32/f64 all as f64, so the
+                        // element byte width cannot be read from the runtime
+                        // value — recover it from the array's rtt (its element
+                        // storage type, kept as the type's single "field").
+                        let (elem_size, kind) = {
+                            let tid = obj.lock().unwrap().type_id;
+                            self.type_registry
+                                .get(tid)
+                                .and_then(|td| td.field_defs.first())
+                                .and_then(|f| array_elem_storage_kind(&f.name))
+                                .unwrap_or((4, 0))
+                        };
                         let mut o = obj.lock().unwrap();
                         match &mut o.kind {
                             ObjectKind::Array(elems) => {
+                                check_src(elem_size)?;
                                 let dst_end = dst_offset.saturating_add(size);
                                 if dst_end > elems.len() {
                                     return Err(VMError::new(
@@ -2388,10 +2598,14 @@ impl VM {
                                     ));
                                 }
                                 for i in 0..size {
-                                    elems[dst_offset + i] = Value::I32(data[src_offset + i] as i32);
+                                    let base = src_offset + i * elem_size;
+                                    elems[dst_offset + i] =
+                                        decode_le_numeric(kind, &data[base..base + elem_size]);
                                 }
                             }
                             ObjectKind::TypedArray(ta) => {
+                                let elem_size = ta.elem.bytes_per_element();
+                                check_src(elem_size)?;
                                 let dst_end = dst_offset.saturating_add(size);
                                 if dst_end > typed_array_live_length(ta) {
                                     return Err(VMError::new(
@@ -2399,11 +2613,9 @@ impl VM {
                                     ));
                                 }
                                 for i in 0..size {
-                                    typed_array_write(
-                                        ta,
-                                        dst_offset + i,
-                                        &Value::I32(data[src_offset + i] as i32),
-                                    );
+                                    let base = src_offset + i * elem_size;
+                                    let v = decode_typed_le(ta.elem, &data[base..base + elem_size]);
+                                    typed_array_write(ta, dst_offset + i, &v);
                                 }
                             }
                             _ => return Err(VMError::new("array.init_data: not an array")),
@@ -2532,7 +2744,7 @@ impl VM {
                 _ if op == Op::REF_TEST_NULL => {
                     let typeidx = self.read_u16();
                     let val = self.pop();
-                    let result = if matches!(val, Value::Null) {
+                    let result = if val.is_null_ref() {
                         true
                     } else {
                         let target_name = self.constant_str(typeidx);
@@ -2543,7 +2755,7 @@ impl VM {
                 _ if op == Op::REF_CAST_NULL => {
                     let typeidx = self.read_u16();
                     let val = self.peek(0).clone();
-                    if !matches!(val, Value::Null) {
+                    if !val.is_null_ref() {
                         let target_name = self.constant_str(typeidx);
                         if !self.test_type(&val, &target_name) {
                             return Err(VMError::new(&format!(
@@ -2561,7 +2773,7 @@ impl VM {
                 // `ref.as_non_null` — trap if the operand is null, otherwise
                 // pass the value through unchanged.
                 _ if op == Op::REF_AS_NON_NULL => {
-                    if let Some(Value::Null) = self.stack.last() {
+                    if self.stack.last().map_or(false, |v| v.is_null_ref()) {
                         return Err(VMError::new("trap: ref.as_non_null on null reference"));
                     }
                 }
@@ -2571,7 +2783,7 @@ impl VM {
                 // the value; otherwise pop and fall through.
                 _ if op == Op::BR_ON_NULL => {
                     let offset = self.read_i16();
-                    let is_null = matches!(self.stack.last(), Some(Value::Null));
+                    let is_null = self.stack.last().map_or(false, |v| v.is_null_ref());
                     if is_null {
                         self.pop();
                         let f = self.frame_mut();
@@ -2580,7 +2792,7 @@ impl VM {
                 }
                 _ if op == Op::BR_ON_NON_NULL => {
                     let offset = self.read_i16();
-                    let is_null = matches!(self.stack.last(), Some(Value::Null));
+                    let is_null = self.stack.last().map_or(false, |v| v.is_null_ref());
                     if !is_null {
                         let f = self.frame_mut();
                         f.ip = (f.ip as i64 + offset as i64) as usize;
@@ -2591,6 +2803,8 @@ impl VM {
 
                 // -- Immediates --
                 _ if op == Op::NULL => self.push(Value::Null)?,
+                // `ref.null none` — a WASM GC typed null (traps on GC accessors).
+                _ if op == Op::NULL_NONE => self.push(Value::TypedNull(0))?,
 
                 _ if op == Op::I32_CONST => {
                     let v = self.read_leb_i32();
@@ -2617,30 +2831,17 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let eq = match (&a, &b) {
-                        (Value::Null, Value::Null) => true,
+                        // All nulls (typed or plain) are ref.eq.
+                        _ if a.is_null_ref() && b.is_null_ref() => true,
                         (Value::Undefined, Value::Undefined) => true,
-                        (Value::Object(a), Value::Object(b)) => {
-                            // Object identity, plus plain-function-reference
-                            // identity: two `ref.func $f` tear-offs mint distinct
-                            // objects yet reference the same function, so they are
-                            // ref.eq. Restricted to upvalue-free funcrefs — two
-                            // closures over the same code but different captures
-                            // are distinct instances and keep object identity.
-                            Arc::ptr_eq(a, b) || {
-                                let (ao, bo) = (a.lock().unwrap(), b.lock().unwrap());
-                                match (&ao.kind, &bo.kind) {
-                                    (
-                                        ObjectKind::Function(fa),
-                                        ObjectKind::Function(fb),
-                                    ) => {
-                                        fa.chunk_index == fb.chunk_index
-                                            && fa.upvalues.is_empty()
-                                            && fb.upvalues.is_empty()
-                                    }
-                                    _ => false,
-                                }
-                            }
-                        }
+                        // Pure WASM `ref.eq`: reference identity only. Two
+                        // `ref.func $f` tear-offs of the same capture-free
+                        // function are identical because `REF_FUNC` INTERNS them
+                        // (one canonical object per function) — identity is
+                        // established at creation, not faked here. Closures with
+                        // captures stay distinct, as do bound methods (which
+                        // capture `self`), so `C().f is C().f` is correctly false.
+                        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
                         (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
                         (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
                         _ => false,
@@ -2830,7 +3031,7 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     let eq = match (&a, &b) {
-                        (Value::Null, Value::Null) => true,
+                        _ if a.is_null_ref() && b.is_null_ref() => true,
                         (Value::String(x), Value::String(y)) => x == y,
                         _ => false,
                     };
@@ -2838,14 +3039,228 @@ impl VM {
                 }
                 _ if op == Op::STRING_AS_WTF8 || op == Op::STRING_AS_WTF16 => {
                     // Views over the same content: return the string unchanged
-                    // (trap on null). Full stringview cursor ops are unimplemented.
+                    // (trap on null). The stringview cursor ops below operate on
+                    // this string directly (position is an explicit operand).
                     let s = self.pop_stringref()?;
                     self.push(Value::String(s))?;
                 }
 
+                // ── Stringref: additional encodings (WTF-16 / WTF-8 / lossy) ──
+                // Native strings are always valid UTF-8 (= valid USV sequences,
+                // no lone surrogates), so WTF-8 and lossy-UTF-8 encode/decode
+                // identically to UTF-8; WTF-16 mirrors the existing UTF-16 paths.
+                _ if op == Op::STRING_NEW_WTF16 => {
+                    // (ptr, codeunits): read codeunits × 2 bytes as little-endian u16.
+                    let units = self.pop().as_i32() as u32 as usize;
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let bytes = self.read_memory_bytes(0, ptr, units * 2)?;
+                    let u16s: Vec<u16> = bytes
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    let s = String::from_utf16_lossy(&u16s);
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_ENCODE_WTF8 || op == Op::STRING_ENCODE_LOSSY_UTF8 => {
+                    // (str, ptr): write the UTF-8 bytes, return the byte count.
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let bytes = s.as_bytes().to_vec();
+                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.push(Value::I32(bytes.len() as i32))?;
+                }
+                _ if op == Op::STRING_NEW_WTF8_ARRAY || op == Op::STRING_NEW_LOSSY_UTF8_ARRAY => {
+                    // (array, start, end): decode the byte range into a string.
+                    let end = self.pop().as_i32() as u32 as usize;
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let arr = self.pop();
+                    let units = self.read_array_code_units(&arr, start, end)?;
+                    let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
+                    // WTF-8 is strict like UTF-8 here (we can't hold surrogates);
+                    // lossy replaces malformed sequences with U+FFFD.
+                    let s = if op == Op::STRING_NEW_LOSSY_UTF8_ARRAY {
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    } else {
+                        String::from_utf8(bytes).map_err(|_| VMError::new("trap: invalid UTF-8"))?
+                    };
+                    self.push(Value::String(Arc::from(s.as_str())))?;
+                }
+                _ if op == Op::STRING_ENCODE_WTF8_ARRAY
+                    || op == Op::STRING_ENCODE_LOSSY_UTF8_ARRAY =>
+                {
+                    // (str, array, start): write the UTF-8 bytes into the array.
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let arr = self.pop();
+                    let s = self.pop_stringref()?;
+                    let obj = match &arr {
+                        Value::Object(o) => o.clone(),
+                        _ => return Err(VMError::new("trap: null array reference")),
+                    };
+                    let units: Vec<u32> = s.as_bytes().iter().map(|&b| b as u32).collect();
+                    let mut guard = obj.lock().unwrap();
+                    let elems = match &mut guard.kind {
+                        ObjectKind::Array(v) => v,
+                        _ => return Err(VMError::new("trap: expected array reference")),
+                    };
+                    if start.saturating_add(units.len()) > elems.len() {
+                        return Err(VMError::new("trap: array access out of bounds"));
+                    }
+                    for (i, u) in units.iter().enumerate() {
+                        elems[start + i] = Value::I32(*u as i32);
+                    }
+                    self.push(Value::I32(units.len() as i32))?;
+                }
+                _ if op == Op::STRING_IS_USV_SEQUENCE => {
+                    // A native Rust string is always a valid Unicode scalar-value
+                    // sequence (no lone surrogates possible) → always 1 for a
+                    // non-null string.
+                    let _s = self.pop_stringref()?;
+                    self.push(Value::I32(1))?;
+                }
+
+                // ── Stringview cursor ops (positions are explicit operands) ──
+                // The view IS the string (string.as_wtf8/wtf16 return it). WTF-8
+                // positions are byte offsets with the spec's "position treatment"
+                // (snap forward to the next codepoint boundary, clamp to length);
+                // WTF-16 positions are code-unit offsets, clamped to length.
+                _ if op == Op::STRINGVIEW_WTF16_LENGTH => {
+                    let s = self.pop_stringref()?;
+                    self.push(Value::I32(s.encode_utf16().count() as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF16_GET_CODEUNIT => {
+                    let pos = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let u = *units
+                        .get(pos)
+                        .ok_or_else(|| VMError::new("trap: stringview_wtf16 index out of bounds"))?;
+                    self.push(Value::I32(u as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF16_SLICE => {
+                    let end = self.pop().as_i32() as u32 as usize;
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let a = start.min(units.len());
+                    let b = end.min(units.len());
+                    let out = if a < b {
+                        String::from_utf16_lossy(&units[a..b])
+                    } else {
+                        String::new()
+                    };
+                    self.push(Value::String(Arc::from(out.as_str())))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF16_ENCODE => {
+                    // (view, ptr, pos, len) → code units written.
+                    let len = self.pop().as_i32() as u32 as usize;
+                    let pos = self.pop().as_i32() as u32 as usize;
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let start = pos.min(units.len());
+                    let count = len.min(units.len() - start);
+                    let mut bytes = Vec::with_capacity(count * 2);
+                    for u in &units[start..start + count] {
+                        bytes.extend_from_slice(&u.to_le_bytes());
+                    }
+                    self.write_memory_bytes(0, ptr, &bytes)?;
+                    self.push(Value::I32(count as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF8_ADVANCE => {
+                    // (view, pos, bytes) → next byte offset (highest codepoint
+                    // boundary ≤ treated_pos + bytes).
+                    let bytes = self.pop().as_i32() as u32 as usize;
+                    let pos = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let start = wtf8_treat(&s, pos);
+                    let mut target = start.saturating_add(bytes).min(s.len());
+                    while target > start && !s.is_char_boundary(target) {
+                        target -= 1;
+                    }
+                    self.push(Value::I32(target as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF8_SLICE => {
+                    // (view, start, end) → substring over the treated byte range.
+                    let end = self.pop().as_i32() as u32 as usize;
+                    let start = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let a = wtf8_treat(&s, start);
+                    let b = wtf8_treat(&s, end);
+                    let out = if a < b { s[a..b].to_string() } else { String::new() };
+                    self.push(Value::String(Arc::from(out.as_str())))?;
+                }
+                _ if op == Op::STRINGVIEW_WTF8_ENCODE_UTF8 => {
+                    // (view, ptr, pos, bytes) → (next_pos, bytes_written). Writes
+                    // whole codepoints only, never splitting one across the limit.
+                    let max = self.pop().as_i32() as u32 as usize;
+                    let pos = self.pop().as_i32() as u32 as usize;
+                    let ptr = self.pop().as_i32() as u32 as usize;
+                    let s = self.pop_stringref()?;
+                    let start = wtf8_treat(&s, pos);
+                    let mut end = start.saturating_add(max).min(s.len());
+                    while end > start && !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let written = &s.as_bytes()[start..end];
+                    self.write_memory_bytes(0, ptr, written)?;
+                    // Two results: next position, then bytes written (spec order).
+                    self.push(Value::I32(end as i32))?;
+                    self.push(Value::I32((end - start) as i32))?;
+                }
+
+                // ── Codepoint iterators ──────────────────────────────────────
+                // `string.as_iter` yields a cursor object: an ordinary object
+                // carrying the string plus a codepoint index in its properties
+                // (`__iter_str` / `__iter_pos`). The iter ops read/advance it.
+                _ if op == Op::STRING_AS_ITER => {
+                    let s = self.pop_stringref()?;
+                    let mut obj = crate::value::Object::new();
+                    obj.properties.insert("__iter_str".to_string(), Value::String(s));
+                    obj.properties.insert("__iter_pos".to_string(), Value::I32(0));
+                    self.push(Value::Object(Arc::new(std::sync::Mutex::new(obj))))?;
+                }
+                _ if op == Op::STRINGVIEW_ITER_NEXT => {
+                    let view = self.pop();
+                    let (s, pos) = self.read_string_iter(&view)?;
+                    let total = s.chars().count();
+                    if pos >= total {
+                        self.push(Value::I32(-1))?;
+                    } else {
+                        let cp = s.chars().nth(pos).unwrap() as i32;
+                        self.write_string_iter_pos(&view, pos + 1)?;
+                        self.push(Value::I32(cp))?;
+                    }
+                }
+                _ if op == Op::STRINGVIEW_ITER_ADVANCE => {
+                    let n = self.pop().as_i32() as u32 as usize;
+                    let view = self.pop();
+                    let (s, pos) = self.read_string_iter(&view)?;
+                    let total = s.chars().count();
+                    let new_pos = pos.saturating_add(n).min(total);
+                    self.write_string_iter_pos(&view, new_pos)?;
+                    self.push(Value::I32((new_pos - pos) as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_ITER_REWIND => {
+                    let n = self.pop().as_i32() as u32 as usize;
+                    let view = self.pop();
+                    let (_s, pos) = self.read_string_iter(&view)?;
+                    let new_pos = pos.saturating_sub(n);
+                    self.write_string_iter_pos(&view, new_pos)?;
+                    self.push(Value::I32((pos - new_pos) as i32))?;
+                }
+                _ if op == Op::STRINGVIEW_ITER_SLICE => {
+                    // Substring of up to `n` codepoints from the cursor; does NOT
+                    // advance the iterator.
+                    let n = self.pop().as_i32() as u32 as usize;
+                    let view = self.pop();
+                    let (s, pos) = self.read_string_iter(&view)?;
+                    let out: String = s.chars().skip(pos).take(n).collect();
+                    self.push(Value::String(Arc::from(out.as_str())))?;
+                }
+
                 _ if op == Op::REF_IS_NULL => {
                     let v = self.pop();
-                    self.push(Value::I32(if matches!(v, Value::Null | Value::Undefined) {
+                    self.push(Value::I32(if v.is_null_ref() || matches!(v, Value::Undefined) {
                         1
                     } else {
                         0
@@ -3670,16 +4085,28 @@ impl VM {
                     let is64 = self.tbl_is_64(tidx);
                     let delta = self.pop_table_count(is64)?;
                     let init = self.pop();
+                    // WASM spec: growing past the declared max fails, returning -1
+                    // (as the index type) without resizing.
+                    let max = self.wasm_table_maxes.get(tidx).copied().flatten();
                     let table = self
                         .table_mut(tidx)
                         .ok_or_else(|| VMError::new("trap: table.grow unknown table"))?;
                     let old_size = table.len();
                     let new_size = old_size.saturating_add(delta);
-                    table.resize(new_size, init);
-                    if is64 {
-                        self.push(Value::I64(old_size as i64))?;
+                    let exceeds_max = max.is_some_and(|m| new_size > m);
+                    if exceeds_max {
+                        if is64 {
+                            self.push(Value::I64(-1))?;
+                        } else {
+                            self.push(Value::I32(-1))?;
+                        }
                     } else {
-                        self.push(Value::I32(old_size as i32))?;
+                        table.resize(new_size, init);
+                        if is64 {
+                            self.push(Value::I64(old_size as i64))?;
+                        } else {
+                            self.push(Value::I32(old_size as i32))?;
+                        }
                     }
                 }
                 _ if op == Op::TABLE_FILL => {
@@ -3820,6 +4247,9 @@ impl VM {
                     let val = self.pop();
                     let start = self.pop().as_i32().max(0) as usize;
                     let arr = self.pop();
+                    if matches!(arr, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.fill on null reference"));
+                    }
                     if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut a) = o.kind {
@@ -3836,6 +4266,29 @@ impl VM {
                     let src = self.pop();
                     let dst_off = self.pop().as_i32().max(0) as usize;
                     let dst = self.pop();
+                    if matches!(src, Value::TypedNull(_)) || matches!(dst, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.copy on null reference"));
+                    }
+                    // WASM GC `array.copy` traps when the copy region is out of
+                    // bounds of a stamped GC array; dynamic-language arrays stay
+                    // lenient (clamped). A null src/dst carries no rtt, so its
+                    // trap is guarded compiler-side.
+                    let src_is_gc = matches!(&src, Value::Object(o) if self.is_gc_array_obj(o));
+                    let dst_is_gc = matches!(&dst, Value::Object(o) if self.is_gc_array_obj(o));
+                    if src_is_gc || dst_is_gc {
+                        let arr_len = |v: &Value| -> usize {
+                            match v {
+                                Value::Object(o) => match &o.lock().unwrap().kind {
+                                    ObjectKind::Array(a) => a.len(),
+                                    _ => 0,
+                                },
+                                _ => 0,
+                            }
+                        };
+                        if src_off + len > arr_len(&src) || dst_off + len > arr_len(&dst) {
+                            return Err(VMError::new("trap: array.copy out of bounds"));
+                        }
+                    }
                     // Read source slice
                     let src_vals: Vec<Value> = if let Value::Object(obj) = &src {
                         let o = obj.lock().unwrap();
@@ -3874,7 +4327,7 @@ impl VM {
                 // decide where to stash the fresh fiber.
                 _ if op == Op::CONT_NEW => {
                     let func_val = self.pop();
-                    if matches!(func_val, Value::Null) {
+                    if func_val.is_null_ref() {
                         return Err(VMError::new("cont.new: null function reference"));
                     }
                     let state = crate::value::ContinuationState {
@@ -4204,7 +4657,7 @@ impl VM {
                         } else {
                             return Err(VMError::new("cont.bind: not a continuation"));
                         }
-                    } else if matches!(cont_val, Value::Null) {
+                    } else if cont_val.is_null_ref() {
                         return Err(VMError::new("cont.bind: null continuation"));
                     } else {
                         return Err(VMError::new("cont.bind: not a continuation"));
@@ -4312,7 +4765,7 @@ impl VM {
                         .cloned()
                         .unwrap_or_default();
                     let exn = self.pop();
-                    if matches!(exn, Value::Null) {
+                    if exn.is_null_ref() {
                         return Err(VMError::new("resume_throw_ref: null exception reference"));
                     }
                     let cont = self.pop();
@@ -6958,6 +7411,14 @@ impl VM {
                 _ if op == Op::SET_TYPE_ID => {
                     // Stack: [obj, type_id_i32] → [obj]
                     let type_id = self.pop().as_i32() as usize;
+                    // Stamping a null yields a WASM GC TYPED null (`ref.null $t`):
+                    // it behaves like a plain null everywhere except the GC
+                    // accessors, which trap on it per spec.
+                    if self.peek(0).is_null_ref() {
+                        self.pop();
+                        self.push(Value::TypedNull(type_id))?;
+                        continue;
+                    }
                     let obj = self.peek(0);
                     if let Value::Object(o) = obj {
                         let mut obj_mut = o.lock().unwrap();

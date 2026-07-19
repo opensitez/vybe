@@ -23,7 +23,33 @@ use vybe_bytecode::chunk::TypeEntry;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
+use crate::reflection;
+
 // ── Object creation ─────────────────────────────────────────────────────
+
+fn set_string_field(chunk: &mut Chunk, field: &str, value: &str, line: u32) {
+    chunk.emit_string_const(value, line);
+    let key = chunk.add_constant(Value::String(Arc::from(field)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn stamp_local_string_field(chunk: &mut Chunk, slot: u16, field: &str, value: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    set_string_field(chunk, field, value, line);
+}
+
+fn stamp_reflection_type_fields(
+    chunk: &mut Chunk,
+    slot: u16,
+    type_name: &str,
+    kind: reflection::ReflectKind,
+    line: u32,
+) {
+    stamp_local_string_field(chunk, slot, reflection::FIELD_TYPE, type_name, line);
+    stamp_local_string_field(chunk, slot, reflection::FIELD_TYPE_NAME, type_name, line);
+    stamp_local_string_field(chunk, slot, reflection::FIELD_KIND, kind.as_str(), line);
+}
 
 /// Create a new empty object and stamp it with type info.
 /// Emits: struct_new 0 → local, __type string stamp, __control_name stamp,
@@ -44,20 +70,23 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
-    // Stamp __type string (untyped fallback for typeof/instanceof)
-    // struct_set expects [obj, val] → leaves [val]
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(class_name, line);
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
-    chunk.emit_op(Op::DROP, line);
+    // Stamp shared reflection/class type metadata.
+    stamp_reflection_type_fields(
+        chunk,
+        this_slot,
+        class_name,
+        reflection::ReflectKind::Object,
+        line,
+    );
 
     // Stamp __control_name = lowercased class name (canonical control identity).
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(&class_name.to_lowercase(), line);
-    let cname_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, cname_key, line);
-    chunk.emit_op(Op::DROP, line);
+    stamp_local_string_field(
+        chunk,
+        this_slot,
+        "__control_name",
+        &class_name.to_lowercase(),
+        line,
+    );
 
     // Stamp WASM GC type_id via __tid_ global. The caller has already
     // canonicalised `class_name` per the source language's case-
@@ -70,7 +99,7 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
     {
-        let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id")));
+        let tid_key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPE_ID)));
         chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
     }
     chunk.emit_op(Op::DROP, line);
@@ -84,11 +113,13 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// `emit_new_typed_object` minus the allocation. `class_name` must be
 /// canonicalised like there.
 pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_string_const(class_name, line);
-    let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
-    chunk.emit_op(Op::DROP, line);
+    stamp_reflection_type_fields(
+        chunk,
+        this_slot,
+        class_name,
+        reflection::ReflectKind::Object,
+        line,
+    );
 
     let tid_name = chunk.add_constant(Value::String(Arc::from(
         format!("__tid_{}", class_name).as_str(),
@@ -96,7 +127,7 @@ pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, l
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
     {
-        let tid_key = chunk.add_constant(Value::String(Arc::from("__type_id")));
+        let tid_key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPE_ID)));
         chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
     }
     chunk.emit_op(Op::DROP, line);
@@ -131,7 +162,7 @@ pub fn emit_instanceof_chain(
     class_name: &str,
     line: u32,
 ) {
-    let types_key = chunks[current].add_constant(Value::String(Arc::from("__types")));
+    let types_key = chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
 
     // Stack: []
     chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
@@ -154,7 +185,7 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_string_const(class_name, line); // [this, array, array, name]
     crate::collections::emit_push(chunks, current, line); // [this, array, len]
     chunks[current].emit_op(Op::DROP, line); // [this, array]
-    // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
+                                             // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
     chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line); // [array]
     chunks[current].emit_op(Op::DROP, line); // []
 }
@@ -172,9 +203,9 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     let (obj_s, klass_s, types_s) = (base, base + 1, base + 2);
     chunks[current].emit_op_u16(Op::LOCAL_SET, klass_s, line); // [obj]
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_s, line); // []
-    // types = obj["__types"]
+                                                             // types = obj["__types"]
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
-    chunks[current].emit_string_const("__types", line);
+    chunks[current].emit_string_const(reflection::FIELD_TYPES, line);
     crate::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, types_s, line);
     // if types present → types.includes(class_name); else obj["__type"] == class_name
@@ -187,7 +218,7 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::collections::emit_contains(chunks, current, line); // __types.includes(class_name)
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
-    chunks[current].emit_string_const("__type", line);
+    chunks[current].emit_string_const(reflection::FIELD_TYPE, line);
     crate::collections::emit_get(chunks, current, line); // obj["__type"]
     chunks[current].emit_op_u16(Op::LOCAL_GET, klass_s, line);
     crate::ops::emit_dyn_eq(&mut chunks[current], line);
@@ -217,11 +248,14 @@ pub fn emit_bind_method(
 /// Stamp `__name__` (the class's own name) on the class/constructor object so
 /// `Cls.__name__` and `type(obj).__name__` resolve. Stack: unchanged.
 pub fn emit_stamp_class_name(chunk: &mut Chunk, ctor_slot: u16, class_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    chunk.emit_string_const(class_name, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__name__")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
-    chunk.emit_op(Op::DROP, line);
+    stamp_local_string_field(chunk, ctor_slot, "__name__", class_name, line);
+    stamp_reflection_type_fields(
+        chunk,
+        ctor_slot,
+        class_name,
+        reflection::ReflectKind::Class,
+        line,
+    );
 }
 
 /// Stamp `__mro__` on the class object: an array of the ancestor class objects
@@ -415,7 +449,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
     }
     c.emit_end(line); // end if passed==0
-    // i += 1
+                      // i += 1
     c.emit_op_u16(Op::LOCAL_GET, i, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::I32_ADD, line);
@@ -447,10 +481,18 @@ fn push_array_value_local(chunks: &mut [Chunk], current: usize, slot: u16, line:
 fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
-    chunk.emit_string_const("object", line);
-    let key = chunk.add_constant(Value::String(Arc::from("__name__")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
-    chunk.emit_op(Op::DROP, line);
+    set_string_field(chunk, "__name__", "object", line);
+    chunk.emit_dup(line);
+    set_string_field(chunk, reflection::FIELD_TYPE, "object", line);
+    chunk.emit_dup(line);
+    set_string_field(chunk, reflection::FIELD_TYPE_NAME, "object", line);
+    chunk.emit_dup(line);
+    set_string_field(
+        chunk,
+        reflection::FIELD_KIND,
+        reflection::ReflectKind::Class.as_str(),
+        line,
+    );
 }
 
 fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
@@ -467,11 +509,26 @@ pub fn emit_bind_bound_method(
     method_name: &str,
     method_chunk_idx: usize,
     rest_fixed_count: Option<u8>,
+    distinct_per_instance: bool,
     line: u32,
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
-    chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
+    if distinct_per_instance {
+        // Capture the receiver as upvalue[0] so this funcref is a FRESH object
+        // for every instance (uv_count > 0 means `REF_FUNC` does NOT intern it).
+        // The upvalue is inert for dispatch — `self` still routes through the
+        // `__vybe_method_receiver` property below — but it gives each instance's
+        // bound method a distinct identity (`C().f is C().f` is False under
+        // `methods_bind_on_access`; `c.f is c.f` stays True since the binding is
+        // stored once per instance).
+        chunk.emit(1, line); // 1 upvalue
+        chunk.emit(1, line); // is_local = true
+        chunk.emit((this_slot >> 8) as u8, line); // capture index (u16, big-endian)
+        chunk.emit((this_slot & 0xff) as u8, line);
+    } else {
+        chunk.emit(0, line); // 0 upvalues (bind-at-call languages share the fn)
+    }
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
@@ -526,6 +583,7 @@ pub fn emit_bind_bound_method_with_aliases(
     method_name: &str,
     method_chunk_idx: usize,
     rest_fixed_count: Option<u8>,
+    distinct_per_instance: bool,
     line: u32,
 ) {
     emit_bind_bound_method(
@@ -534,6 +592,7 @@ pub fn emit_bind_bound_method_with_aliases(
         method_name,
         method_chunk_idx,
         rest_fixed_count,
+        distinct_per_instance,
         line,
     );
     for &alias in cross_language_aliases(method_name) {
@@ -546,6 +605,7 @@ pub fn emit_bind_bound_method_with_aliases(
             alias,
             method_chunk_idx,
             rest_fixed_count,
+            distinct_per_instance,
             line,
         );
     }
@@ -1039,13 +1099,23 @@ pub fn register_type(
 /// the registry id *by name*, then `TypeDef::is_array` reads the `Array` kind
 /// back to apply spec trapping `array.get`/`set`/`copy`. Names are unique per
 /// declaration so the index↔name mapping is stable.
-pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str) -> usize {
+pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str) -> usize {
     let type_index = chunks[0].types.len() + 1;
+    // The element storage type (`i32`/`i64`/`f32`/`f64`/`i8`/`i16`/ref) is kept
+    // as the array's single "field" so the VM can recover the element byte width
+    // (for `array.init_data` / packed `array.get_s`) from the instance's rtt —
+    // the value model stores i32/f32/f64 all as f64, so the width can't be read
+    // back from the runtime value.
+    let fields = if elem_type.is_empty() {
+        Vec::new()
+    } else {
+        vec![elem_type.to_string()]
+    };
     chunks[0].types.push(TypeEntry {
         name: name.to_string(),
         kind: vybe_bytecode::chunk::CompositeKind::Array,
         parent: String::new(),
-        fields: Vec::new(),
+        fields,
         methods: Vec::new(),
         is_interface: false,
         implements: Vec::new(),

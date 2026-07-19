@@ -119,6 +119,21 @@ pub struct LanguageProfile {
     /// tuple allocation for the common `return a, b` / `a, b = f()` idiom.
     pub multi_value_tuple_returns: bool,
 
+    /// Reading a method off an instance yields a fresh bound-method object,
+    /// distinct per instance and carrying its own receiver (Python/Ruby
+    /// descriptor semantics: `C().f is C().f` is False). When false, the
+    /// language binds the receiver at call time and instance method reads share
+    /// the underlying function (JS: `a.m === b.m` is True). General behavior,
+    /// gated on the profile — never a language-name check.
+    pub methods_bind_on_access: bool,
+
+    /// A parameter's default expression is evaluated ONCE at definition and
+    /// reused on every call that omits the arg (Python/Ruby: the classic
+    /// mutable-default — `def f(a=[])` shares one list; `f() is f()` is True).
+    /// When false (JS/C#/… per spec) the default is re-evaluated per call.
+    /// General behavior, gated on the profile — never a language-name check.
+    pub default_args_evaluated_once: bool,
+
     /// VB: ByRef args wrapped in single-element arrays for call-by-reference.
     pub byref_boxing: bool,
 
@@ -918,6 +933,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("multi_value_tuple_returns")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let methods_bind_on_access = compiler
+        .get("methods_bind_on_access")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let default_args_evaluated_once = compiler
+        .get("default_args_evaluated_once")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let byref_boxing = compiler
         .get("byref_boxing")
         .and_then(|v| v.as_bool())
@@ -1534,6 +1557,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         function_references,
         commonjs_require,
         multi_value_tuple_returns,
+        methods_bind_on_access,
+        default_args_evaluated_once,
         byref_boxing,
         with_block,
         new_with_initializer,

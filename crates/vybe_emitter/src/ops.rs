@@ -8,8 +8,8 @@
 //!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -218,7 +218,7 @@ pub fn emit_lua_to_bool(chunk: &mut Chunk, line: u32) {
 pub fn emit_dyn_not(chunk: &mut Chunk, line: u32) {
     emit_dyn_to_bool(chunk, line); // any → i32
     chunk.emit_op(Op::I32_EQZ, line); // negate: i32
-    // Result is i32 — WASM-compliant
+                                      // Result is i32 — WASM-compliant
 }
 
 // ── emit_dyn_eq ───────────────────────────────────────────────────────
@@ -315,7 +315,7 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
     chunk.emit_end(line); // null
-    // Result is i32 (0 or 1) — WASM-compliant for IF conditions
+                          // Result is i32 (0 or 1) — WASM-compliant for IF conditions
 }
 
 fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -527,7 +527,7 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
-    // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions
+                          // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions
 }
 
 pub fn emit_dyn_lt(chunk: &mut Chunk, line: u32) {
@@ -622,7 +622,7 @@ fn emit_js_relational_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
-    // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions.
+                          // Result is i32 (0 or 1) — WASM-compliant for IF/BR_IF conditions.
 }
 
 pub fn emit_js_lt(chunk: &mut Chunk, line: u32) {

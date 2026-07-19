@@ -4,8 +4,8 @@
 //! Input uses `wasi:cli/stdin.get-stdin` + `[method]input-stream.blocking-read`.
 //! File I/O uses `wasi:filesystem/*` imports.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 /// Emit print/log. Stack: [arg1, ..., argN] → []
 /// Routes to wasi:logging/logging.log. Flexible arity:

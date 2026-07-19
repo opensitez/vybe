@@ -366,14 +366,14 @@ opcode_category! {
     [0x52] v128_bitselect => None, "v128.bitselect";
     [0x53] v128_any_true => None, "v128.any_true";
     // Load/store lane, load zero
-    [0x54] v128_load8_lane => U8, "v128.load8_lane";
-    [0x55] v128_load16_lane => U8, "v128.load16_lane";
-    [0x56] v128_load32_lane => U8, "v128.load32_lane";
-    [0x57] v128_load64_lane => U8, "v128.load64_lane";
-    [0x58] v128_store8_lane => U8, "v128.store8_lane";
-    [0x59] v128_store16_lane => U8, "v128.store16_lane";
-    [0x5A] v128_store32_lane => U8, "v128.store32_lane";
-    [0x5B] v128_store64_lane => U8, "v128.store64_lane";
+    [0x54] v128_load8_lane => MemLane, "v128.load8_lane";
+    [0x55] v128_load16_lane => MemLane, "v128.load16_lane";
+    [0x56] v128_load32_lane => MemLane, "v128.load32_lane";
+    [0x57] v128_load64_lane => MemLane, "v128.load64_lane";
+    [0x58] v128_store8_lane => MemLane, "v128.store8_lane";
+    [0x59] v128_store16_lane => MemLane, "v128.store16_lane";
+    [0x5A] v128_store32_lane => MemLane, "v128.store32_lane";
+    [0x5B] v128_store64_lane => MemLane, "v128.store64_lane";
     [0x5C] v128_load32_zero => None, "v128.load32_zero";
     [0x5D] v128_load64_zero => None, "v128.load64_zero";
     // Promote / demote

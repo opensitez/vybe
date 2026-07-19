@@ -9,6 +9,14 @@ use std::sync::{Arc, Mutex, Weak};
 pub enum Value {
     /// Explicitly empty — VB Nothing, JS null.
     Null,
+    /// A WASM GC **typed null** — `ref.null $t` / a defaulted `(ref null $t)`
+    /// local. Carries the referenced type's registry id. Behaves identically to
+    /// `Null` everywhere (equality, truthiness, printing, `ref.is_null`) EXCEPT
+    /// the GC accessors: `struct.get`/`set` and `array.get`/`set`/`copy`/`fill`
+    /// trap on it per spec, while a plain `Null` (a dynamic-language null) stays
+    /// lenient. This is what lets the shared accessor opcodes be spec-compliant
+    /// without breaking JS/PHP/… null handling.
+    TypedNull(usize),
     /// Uninitialized / missing — JS undefined. VB compiler doesn't emit this.
     Undefined,
     Bool(bool),
@@ -56,10 +64,12 @@ pub enum ValueTag {
     Symbol = 10,
     BigInt = 11,
     F32 = 12,
+    /// WASM GC typed null — a `Null` that traps on GC accessors.
+    TypedNull = 13,
 }
 
 impl ValueTag {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 14;
     pub fn as_usize(self) -> usize {
         self as usize
     }
@@ -78,6 +88,7 @@ impl ValueTag {
             ValueTag::Symbol => "Symbol",
             ValueTag::BigInt => "BigInt",
             ValueTag::F32 => "F32",
+            ValueTag::TypedNull => "TypedNull",
         }
     }
 }
@@ -89,6 +100,7 @@ impl Value {
     pub fn tag(&self) -> ValueTag {
         match self {
             Value::Null => ValueTag::Null,
+            Value::TypedNull(_) => ValueTag::TypedNull,
             Value::Undefined => ValueTag::Undefined,
             Value::Bool(_) => ValueTag::Bool,
             Value::I32(_) => ValueTag::I32,
@@ -207,6 +219,13 @@ impl Value {
         matches!(self, Value::Bool(true))
     }
 
+    /// Whether this is a null reference — plain `Null` OR a WASM GC typed null.
+    /// `ref.is_null`, `br_on_null`, `ref.cast`, etc. treat both as null.
+    #[inline]
+    pub fn is_null_ref(&self) -> bool {
+        matches!(self, Value::Null | Value::TypedNull(_))
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Value::String(s) => s,
@@ -218,7 +237,7 @@ impl Value {
     /// Value type tag — for the host to inspect.
     pub fn type_tag(&self) -> &'static str {
         match self {
-            Value::Null => "null",
+            Value::Null | Value::TypedNull(_) => "null",
             Value::Undefined => "undefined",
             Value::Bool(_) => "bool",
             Value::I32(_) => "i32",
@@ -267,7 +286,13 @@ impl Value {
     /// must be compiled as host calls or bytecode sequences.
     pub fn eq(&self, other: &Value) -> bool {
         match (self, other) {
-            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+            // A typed null and a plain null are both "null" — equal regardless
+            // of the referenced type (only the GC accessors distinguish them).
+            (
+                Value::Null | Value::TypedNull(_),
+                Value::Null | Value::TypedNull(_),
+            )
+            | (Value::Undefined, Value::Undefined) => true,
             // null == undefined is true in JS loose equality, but this is strict eq
             // JS loose eq is handled by js_loose_eq in the JS compiler
             (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -373,7 +398,11 @@ impl Value {
     /// `-0` and `+0` are equal here but distinct under `Object.is`.
     pub fn same_value_zero(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::Null, Value::Null) => true,
+            // All nulls (typed or plain) are SameValueZero-equal.
+            (
+                Value::Null | Value::TypedNull(_),
+                Value::Null | Value::TypedNull(_),
+            ) => true,
             (Value::Undefined, Value::Undefined) => true,
             (Value::Bool(x), Value::Bool(y)) => x == y,
 
@@ -432,7 +461,8 @@ impl Hash for Value {
         // bucket. Numeric cross-type equality means I32(1), I64(1),
         // and F64(1.0) all hash as the same i64 under one tag.
         match self {
-            Value::Null => 0u8.hash(state),
+            // A typed null hashes like a plain null — they compare equal.
+            Value::Null | Value::TypedNull(_) => 0u8.hash(state),
             Value::Undefined => 1u8.hash(state),
             Value::Bool(b) => {
                 2u8.hash(state);
@@ -522,6 +552,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Null => write!(f, "null"),
+            Value::TypedNull(_) => write!(f, "null"),
             Value::Undefined => write!(f, "undefined"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::I32(n) => write!(f, "{}", n),
@@ -558,8 +589,11 @@ impl fmt::Display for Value {
                     } else {
                         write!(f, "inf")
                     }
-                } else if *n == (*n as i64) as f32 && n.abs() < 1e15 {
-                    write!(f, "{}.0", *n as i64)
+                } else if n.fract() == 0.0 {
+                    // A whole-valued f32 prints with a trailing `.0` (WAT float
+                    // text), regardless of magnitude — `fract()` stays correct
+                    // beyond the i64 range where the old cast-based check failed.
+                    write!(f, "{}.0", n)
                 } else {
                     write!(f, "{}", n)
                 }

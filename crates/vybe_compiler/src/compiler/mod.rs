@@ -40,8 +40,10 @@ mod class_context;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
 mod classes;
 mod control_flow;
-mod dotnet_calls;
+mod case_insensitive_collections;
 mod emit_helpers;
+mod enums;
+mod reflection;
 mod events;
 mod expressions;
 mod lambdas;
@@ -167,6 +169,15 @@ pub(crate) struct CallSignature {
     param_defaults: Vec<Option<Expression>>,
     min_arity: usize,
     has_rest: bool,
+    /// The last param is a `**kwargs`-style collector: named args that match no
+    /// declared param are gathered into a dict bound to it (data-driven, so any
+    /// language whose frontend emits an `is_kwargs` param opts in).
+    has_kwargs: bool,
+    /// Position of the variadic (`*args`) collector, wherever it sits. Distinct
+    /// from `has_rest` (which is "the LAST param is rest", the shape the runtime
+    /// rest-packing handles): with a trailing `**kwargs` the rest is NOT last, so
+    /// only the named-arg reorder collects positionals into it.
+    rest_index: Option<usize>,
 }
 
 impl CallSignature {
@@ -179,9 +190,11 @@ impl CallSignature {
             param_defaults: params.iter().map(|param| param.default.clone()).collect(),
             min_arity: params
                 .iter()
-                .take_while(|param| param.default.is_none() && !param.is_rest)
+                .take_while(|param| param.default.is_none() && !param.is_rest && !param.is_kwargs)
                 .count(),
             has_rest: params.last().is_some_and(|param| param.is_rest),
+            has_kwargs: params.last().is_some_and(|param| param.is_kwargs),
+            rest_index: params.iter().position(|param| param.is_rest),
         }
     }
 }
@@ -320,6 +333,10 @@ pub struct Compiler {
     pub(crate) line: u32,
     pub(crate) defined_globals: HashSet<String>,
     const_globals: HashSet<String>,
+    /// Compile-time integer values of immutable globals whose initializer is a
+    /// constant expression (WASM). Feeds extended-const evaluation of data/elem
+    /// segment offsets (`(offset (i32.add (global.get $g) (i32.const N)))`).
+    pub(crate) global_const_values: std::collections::HashMap<String, i64>,
     in_strict: bool,
     /// True while compiling the operand of a `typeof`. `typeof undeclaredName`
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
@@ -2091,6 +2108,7 @@ impl Compiler {
             line: 1,
             defined_globals: HashSet::new(),
             const_globals: HashSet::new(),
+            global_const_values: std::collections::HashMap::new(),
             in_strict: false,
             in_typeof_operand: false,
             program_lexical_names: HashSet::new(),
@@ -2379,14 +2397,13 @@ impl Compiler {
         // load time in a separate step.
         self.link(module);
 
-        // Register the .NET BCL class wrappers (Object → … → Form, Button, …)
-        // before walking the user body, so user code that writes
-        // `Inherits Form` finds a real `Form` class with a real ctor chain.
-        // Gated on `profile.namespaces.use_dotnet` so non-.NET languages
-        // don't get the names installed in their global scope.
-        if self.profile.namespaces.use_dotnet {
-            self.register_dotnet_classes()?;
-        }
+        // .NET BCL classes no longer emit a per-class constructor prelude:
+        // control/value/drawing types resolve through the component descriptor
+        // (properties/methods) and the GUI-direct `vybe:gui` path or a
+        // descriptor constructor (construction), and user `class Form1 : Form`
+        // base construction lowers via `try_emit_framework_control_base`. See
+        // the retired `registry::dotnet` (keep-set went empty once the drawing
+        // Body methods migrated to `MethodBody::Common`).
 
         if crate::registry::plib::module_uses_plib_gcl(module) {
             self.register_plib_gcl_classes()?;

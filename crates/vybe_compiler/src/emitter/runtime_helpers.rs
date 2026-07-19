@@ -73,7 +73,7 @@ fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
 
 fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
     match chunk.constants[idx as usize].clone() {
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null | Value::TypedNull(_) => chunk.emit_op(Op::NULL, line),
         Value::Undefined => crate::emitter::expressions::emit_undefined(chunk, line),
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),

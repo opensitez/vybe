@@ -40,6 +40,8 @@ impl Op {
     // `AWAIT_SUSPEND_TAG`.
     // GC extensions
     pub const SET_TYPE_ID: Op = Op::new(0xFF, 0x50);
+    /// WASM GC typed null (`ref.null none`) — pushes `Value::TypedNull`.
+    pub const NULL_NONE: Op = Op::new(0xFF, 0x51);
     // Weak references
     // Multi-memory
     // Extended const
@@ -100,6 +102,12 @@ opcode_category! {
     [0x4F] promise_suspend => None, "promise.suspend";
     // GC extensions
     [0x50] set_type_id => None, "set_type_id";
+    // WASM GC typed null (`ref.null none`): pushes a `Value::TypedNull` — behaves
+    // like a plain null everywhere except the GC accessors (`struct.get`/
+    // `array.get`/…) which trap on it per spec. Lowers to the real `ref.null
+    // none` bytes (0xD0 0x71); the reader maps a null of any GC heap type back
+    // to it. Distinct from the core `NULL` op, which is `ref.null extern`.
+    [0x51] null_none => None, "ref.null_none";
     // Weak references
     // Multi-memory
     // Extended const

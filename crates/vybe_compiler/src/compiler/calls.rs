@@ -824,6 +824,39 @@ impl Compiler {
                 .any(|name| name == &method_key)
     }
 
+    /// Resolve an instance method on a typed receiver through the .NET class
+    /// HIERARCHY: walk the receiver's chain (user pending-classes into the
+    /// framework descriptor). A user-declared member of the same name is an
+    /// override → dynamic dispatch (`None`). Otherwise the first framework
+    /// ancestor is returned, so the descriptor resolves the method to a direct
+    /// `vybe:gui` host call. One rule for `Button.Show` and for a
+    /// `class MyForm : Form`'s inherited members — no emitted thunks.
+    pub(super) fn dotnet_framework_instance_method_owner(
+        &self,
+        type_hint: &str,
+        method_name: &str,
+        arg_count: u8,
+    ) -> Option<String> {
+        let surface = common::dotnet::surface();
+        let mut current = self
+            .resolve_pending_class_name_for_type_hint(type_hint)
+            .unwrap_or_else(|| Self::normalize_type_hint(type_hint));
+        loop {
+            if surface.is_descriptor_class(&current) {
+                // Framework class — the descriptor walks the rest of the chain.
+                return surface
+                    .lookup_instance_method(&current, method_name, arg_count)
+                    .map(|_| current);
+            }
+            let pending = self.pending_classes.get(&current)?;
+            let key = self.js_member_storage_name_for_class(&current, method_name);
+            if pending.instance_member_names.iter().any(|name| name == &key) {
+                return None;
+            }
+            current = pending.parent.clone()?;
+        }
+    }
+
     fn direct_receiver_has_own_pending_method(
         &self,
         receiver: &Expression,
@@ -1705,8 +1738,14 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         inst!(self, core_wasm::undefined);
         self.emit_u16(Op::LOCAL_GET, args_slot);
-        let idx = self.import("ecma:reflect", "apply");
-        self.emit_host_call(idx, 3);
+        let line = self.line;
+        common::reflection::emit_reflect_op(
+            &mut self.chunks,
+            self.current,
+            common::reflection::ReflectOp::Apply,
+            3,
+            line,
+        );
         Ok(true)
     }
 
@@ -2255,6 +2294,109 @@ impl Compiler {
         }
 
         for signature in signatures {
+            // `**kwargs` collector, possibly alongside a non-last `*args`. This
+            // is the unified named+variadic+kwargs binding: positionals fill the
+            // fixed params then the variadic collector; named args matching no
+            // fixed param go into the kwargs dict. Emitted as
+            // `[fixed…, rest_array?, kwargs_dict]`, which the callee binds
+            // positionally — a `*a, **k` shape is never runtime-rest-packed (its
+            // last param is `**k`, not the rest), so there's no double packing.
+            // Data-driven via `has_kwargs`; a no-op for languages without it.
+            if signature.has_kwargs && !signature.has_rest {
+                let kw_index = signature.param_names.len().saturating_sub(1);
+                let rest_index = signature.rest_index.filter(|&i| i < kw_index);
+
+                let mut fixed_slots: Vec<Option<Argument>> = vec![None; kw_index];
+                let mut rest_items: Vec<Expression> = Vec::new();
+                let mut kwargs_entries: Vec<ObjectProperty> = Vec::new();
+                let mut next_positional = 0usize;
+                let mut valid = true;
+
+                for arg in args {
+                    if arg.spread {
+                        valid = false;
+                        break;
+                    }
+                    if let Some(name) = arg.name.as_deref() {
+                        match signature.param_names[..kw_index]
+                            .iter()
+                            .position(|param_name| param_name.eq_ignore_ascii_case(name))
+                        {
+                            // A named arg for a real fixed param (not the variadic).
+                            Some(index) if Some(index) != rest_index => {
+                                if fixed_slots[index].is_some() {
+                                    valid = false;
+                                    break;
+                                }
+                                let mut ordered = arg.clone();
+                                ordered.name = None;
+                                fixed_slots[index] = Some(ordered);
+                            }
+                            // Matches the variadic's name or nothing → kwargs.
+                            _ => kwargs_entries.push(ObjectProperty::KeyValue {
+                                key: Expression::new(ExprKind::Lit(Literal::Str(name.to_string()))),
+                                value: arg.value.clone(),
+                            }),
+                        }
+                    } else if rest_index.is_some_and(|r| next_positional >= r) {
+                        // Positional past the variadic's slot → into the rest array.
+                        rest_items.push(arg.value.clone());
+                    } else {
+                        while next_positional < fixed_slots.len()
+                            && fixed_slots[next_positional].is_some()
+                        {
+                            next_positional += 1;
+                        }
+                        if next_positional >= fixed_slots.len() {
+                            valid = false;
+                            break;
+                        }
+                        fixed_slots[next_positional] = Some(arg.clone());
+                        next_positional += 1;
+                    }
+                }
+
+                if !valid {
+                    continue;
+                }
+                if fixed_slots.iter().take(signature.min_arity).any(Option::is_none) {
+                    continue;
+                }
+
+                let mut ordered_args = Vec::with_capacity(kw_index + 1);
+                for (i, slot) in fixed_slots.into_iter().enumerate() {
+                    if Some(i) == rest_index {
+                        ordered_args.push(Argument::positional(Expression::new(ExprKind::Array(
+                            rest_items
+                                .iter()
+                                .cloned()
+                                .map(|value| ArrayElement {
+                                    key: None,
+                                    value,
+                                    spread: false,
+                                    by_ref: false,
+                                })
+                                .collect(),
+                        ))));
+                    } else {
+                        match slot {
+                            Some(arg) => ordered_args.push(arg),
+                            None => {
+                                let default =
+                                    signature.param_defaults.get(i).and_then(|d| d.clone());
+                                ordered_args.push(Argument::positional(
+                                    default.unwrap_or_else(Expression::null),
+                                ));
+                            }
+                        }
+                    }
+                }
+                ordered_args.push(Argument::positional(Expression::new(ExprKind::Object(
+                    kwargs_entries,
+                ))));
+                return ordered_args;
+            }
+
             let mut slots: Vec<Option<Argument>> = vec![None; signature.param_names.len()];
             let mut next_positional = 0usize;
             let mut valid = true;
@@ -2426,8 +2568,38 @@ impl Compiler {
             }
         }
 
-        if self.try_compile_js_iterator_from_generator_take_to_array(callee, args)? {
-            return Ok(());
+        // A call whose callee resolves to a framework GUI control class —
+        // `Form("Calculator")`, `Window.Forms.Form(...)`, `Window.Forms.TextBox()`
+        // — constructs the control through the `vybe:gui` host factory, the
+        // same GUI-direct path as `New Form()`. Control classes no longer emit
+        // a per-class constructor global; construction resolves through the
+        // component descriptor. The callee is resolved by its LAST segment
+        // (namespace qualifiers are ignored, matching how the class name used
+        // to resolve as a global). Guarded so a user function/class/local of
+        // the same name, or a method call on an instance, is left alone.
+        if self.profile.namespaces.use_dotnet {
+            let parts = self.flatten_member_chain(callee);
+            if let Some(last) = parts.last() {
+                let canonical = common::gui::canonical_control_name(last);
+                let canon_last = self.canon(last);
+                let first_is_local = parts
+                    .first()
+                    .map_or(false, |f| self.scope().resolve(f).is_some());
+                if !canonical.is_empty()
+                    && !first_is_local
+                    && !self.defined_functions.contains(&canon_last)
+                    && !self.defined_classes.contains(&canon_last)
+                {
+                    let host_name = common::gui::host_fn_new_control(&canonical);
+                    let new_idx = self.import("vybe:gui", &host_name);
+                    for a in args {
+                        self.compile_expr(&a.value)?;
+                    }
+                    let line = self.line;
+                    common::gui::emit_new_control(self.chunk(), new_idx, args.len() as u8, line);
+                    return Ok(());
+                }
+            }
         }
 
         if self.try_compile_go_map_has_call(callee, args)? {
@@ -3682,10 +3854,12 @@ impl Compiler {
                     let qualified_method = self.canon(&format!("{}.{}", class_canon, method_name));
                     let method_idx = self.str_const(&method_canon);
                     self.emit_u16(Op::STRUCT_GET, method_idx);
-                    let fn_tmp = self
-                        .scope()
-                        .resolve("__early_static_fn")
-                        .unwrap_or_else(|| self.define_local("__early_static_fn"));
+                    // A FRESH slot per call site: reusing a same-named
+                    // `__early_static_fn` slot aliases the outer callee when a
+                    // nested call (`f(g(x))`) resolves the same name, so the
+                    // outer `call_ref` would invoke the inner function. Each
+                    // call must hold its own funcref until it fires.
+                    let fn_tmp = self.define_local("__early_static_fn");
                     self.emit_u16(Op::LOCAL_SET, fn_tmp);
 
                     if let Some(param_modes) = self
@@ -4754,7 +4928,23 @@ impl Compiler {
             // per-function LINQ entries every .NET profile used to carry. The
             // fallback is skipped for user-shadowed names and for methods the
             // runtime collection registry owns at this arity (`List.Count()`).
+            // Framework method resolution walks the .NET class hierarchy
+            // (user subclasses into the descriptor) and wins over the "pending
+            // class ⇒ dynamic" gate, so `Button.Show` / inherited control
+            // members resolve to `vybe:gui` host calls instead of needing an
+            // emitted thunk. Returns `None` on a user override → dynamic.
+            let framework_method_owner = class_name
+                .as_deref()
+                .filter(|_| self.profile.namespaces.use_dotnet)
+                .and_then(|cn| {
+                    self.dotnet_framework_instance_method_owner(
+                        cn,
+                        field,
+                        arg_exprs.len() as u8,
+                    )
+                });
             let surface_type: Option<String> = match &class_name {
+                _ if framework_method_owner.is_some() => framework_method_owner,
                 Some(cn) if self.resolve_pending_class_name_for_type_hint(cn).is_some() => None,
                 // The .NET surface serves .NET-shaped profiles ONLY. Ungated,
                 // this hijacked typed receivers in other languages (JS
@@ -4955,6 +5145,18 @@ impl Compiler {
                 _ => false,
             };
             let receiver_type_hint = self.infer_expr_type_hint(object);
+            // A receiver statically known to be a string keeps its string
+            // value-method (`Contains` → str_includes, etc.). Names like
+            // `Contains`/`IndexOf` collide with collection descriptor methods,
+            // so they otherwise divert to runtime collection dispatch — which
+            // does a dynamic method lookup on the receiver *object*. A string
+            // is a primitive with no such method, so that path fails at
+            // runtime ("undefined is not callable"). Strings are never runtime
+            // collections, so the value-method is unambiguously correct here.
+            let receiver_is_known_string = receiver_type_hint
+                .as_deref()
+                .map(Self::normalize_type_hint)
+                .is_some_and(|type_hint| Self::is_string_type_hint(&type_hint));
             let receiver_has_pending_user_method = self
                 .infer_expr_type_hint(object)
                 .as_deref()
@@ -5029,10 +5231,13 @@ impl Compiler {
                     arg_exprs.len() as u8,
                 )
                 && !prefer_dotnet_adapter
+                && !(receiver_is_known_string && matched_value_method.is_some())
             {
                 // Let the generic member-call path consult the runtime type
                 // registry for shared .NET collection methods instead of
                 // intercepting them via language profile value-method tables.
+                // Exception: a statically-known string receiver keeps its
+                // string value-method (strings are never runtime collections).
             } else if let Some(def) = matched_value_method {
                 if self.profile.supports_spread_arguments
                     && field == "push"
@@ -5089,6 +5294,18 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     common::collections::emit_len(&mut self.chunks, self.current, line);
+                    return Ok(());
+                }
+                // Intrinsic value methods (`s.capitalize()`, `s.removeprefix(p)`, …)
+                // recompile from the AST with the receiver as `args[0]`; they must
+                // NOT be handed a pre-pushed receiver/args like the opcode/common
+                // path below (which would leave the receiver untouched on the stack).
+                if let BuiltinEmit::Intrinsic(intrinsic_name) = &def.emit {
+                    let name = intrinsic_name.clone();
+                    let mut intr_args: Vec<&Expression> = Vec::with_capacity(arg_exprs.len() + 1);
+                    intr_args.push(object);
+                    intr_args.extend(arg_exprs.iter().copied());
+                    self.emit_intrinsic(&name, &intr_args)?;
                     return Ok(());
                 }
                 // Object is first arg, then explicit args
@@ -6738,13 +6955,21 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.chunk().emit_else(line);
                 if field.eq_ignore_ascii_case("Invoke") {
-                    // C# delegate null-conditional invocation: `d?.Invoke(args)`
-                    // should call the delegate value directly when non-null.
+                    // C# delegate null-conditional invocation: `d?.Invoke(args)`.
+                    // A multicast delegate is an array of handlers, so route
+                    // through the shared invoker (iterates + calls each in
+                    // order) rather than a bare CALL_REF that only handles a
+                    // single function.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    common::delegates::emit_invoke(
+                        &mut self.chunks,
+                        self.current,
+                        (arg_exprs.len() + 1) as u8,
+                        self.line,
+                    );
                     self.chunk().emit_end(line);
                     return Ok(());
                 }
@@ -8762,7 +8987,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 crate::emitter::instructions::recipes::is_object(self.chunk(), line);
                 self.chunk().emit_if_value(line);
-                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {
                     ExprKind::Member {
@@ -8785,6 +9009,7 @@ impl Compiler {
                     }
                     _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
                 }
+                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_host_call(reflect_idx, 2);
                 self.chunk().emit_else(line);
                 inst!(self, core_wasm::undefined);
@@ -8801,7 +9026,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 crate::emitter::instructions::recipes::is_object(self.chunk(), line);
                 self.chunk().emit_if_value(line);
-                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {
                     ExprKind::Member {
@@ -8824,6 +9048,7 @@ impl Compiler {
                     }
                     _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
                 }
+                let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_host_call(reflect_idx, 2);
                 self.chunk().emit_else(line);
                 inst!(self, core_wasm::undefined);

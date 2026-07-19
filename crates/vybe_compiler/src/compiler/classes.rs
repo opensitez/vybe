@@ -204,6 +204,56 @@ impl Compiler {
         }
     }
 
+    /// True when `parent_name` is a framework GUI control used as a class
+    /// parent under a profile that has the dotnet namespace mounted.
+    ///
+    /// `canonical_control_name` is a global, language-blind string table, so it
+    /// matches `"Timer"`/`"Panel"`/… regardless of which language is compiling.
+    /// Gating on `use_dotnet` re-establishes the resolver scoping the bare
+    /// string match skips: only treat the name as a control when `dotnet.*` is
+    /// actually in scope, so a same-named class in a non-GUI language (e.g. a
+    /// Python `class X(Timer)`) never misroutes to `vybe:gui`.
+    pub(crate) fn is_framework_control_parent(&self, parent_name: &str) -> bool {
+        self.profile.namespaces.use_dotnet
+            && !common::gui::canonical_control_name(parent_name).is_empty()
+            // A user class shadowing a control name (`class Timer { … }`) wins,
+            // mirroring the standalone-`new` path's `!dotnet_ctor_registered`
+            // guard — otherwise `class X : Timer` over the user's own Timer
+            // would misroute to `vybe:gui new_Timer`.
+            && !self.defined_classes.contains(&self.canon(parent_name))
+    }
+
+    /// A framework GUI control (`Button`, `Form`, `Panel`, …) used as a class
+    /// parent constructs through the `vybe:gui` host factory directly rather
+    /// than through a per-class constructor global. The host `new_<Type>`
+    /// builds the complete control object — identity fields plus the
+    /// `Controls`/`components` collections — so no emitted ctor chunk is
+    /// needed, and control access resolves through the component descriptor at
+    /// each call site (see `dotnet_framework_instance_method_owner` /
+    /// `lookup_instance_property`). Returns `true` when it emitted the
+    /// construction into `this_slot`; `false` for non-control parents, leaving
+    /// the caller's normal constructor-ref path to run.
+    fn try_emit_framework_control_base(
+        &mut self,
+        parent_name: &str,
+        base_args: &[Expression],
+        this_slot: u16,
+    ) -> Result<bool, String> {
+        let canonical = common::gui::canonical_control_name(parent_name);
+        if canonical.is_empty() {
+            return Ok(false);
+        }
+        let host_name = common::gui::host_fn_new_control(&canonical);
+        let new_idx = self.import(common::gui::GUI_MODULE, &host_name);
+        for a in base_args {
+            self.compile_expr(a)?;
+        }
+        let line = self.line;
+        common::gui::emit_new_control(self.chunk(), new_idx, base_args.len() as u8, line);
+        self.emit_u16(Op::LOCAL_SET, this_slot);
+        Ok(true)
+    }
+
     fn emit_derived_ctor_stamps(
         &mut self,
         name: &str,
@@ -366,6 +416,7 @@ impl Compiler {
             binds.extend(per_class);
         }
 
+        let bind_on_access = self.profile.methods_bind_on_access;
         for (mname, chunk_idx, rest_fixed) in binds {
             if let Some(prop) = mname.strip_prefix("__get_") {
                 common::classes::emit_bind_getter(self.chunk(), this_slot, prop, chunk_idx, line);
@@ -378,6 +429,7 @@ impl Compiler {
                     &mname,
                     chunk_idx,
                     rest_fixed,
+                    bind_on_access,
                     line,
                 );
             }
@@ -411,12 +463,20 @@ impl Compiler {
         &mut self,
         func_idx: usize,
         capture_names: &[String],
+        // When true, tag the funcref with the 0x80 "no-intern" flag so the VM
+        // mints a FRESH object rather than the shared interned canonical one.
+        // A bound method stamps a per-receiver property on its funcref, so it
+        // must be distinct per binding (`C().f is C().f` False, and each
+        // receiver stays correct). Does NOT touch upvalues (the closure env
+        // lives at upvalue[0], so capturing the receiver there would corrupt it).
+        no_intern: bool,
     ) -> Result<(), String> {
         let line = self.line;
+        let count_byte = capture_names.len() as u8 | if no_intern { 0x80 } else { 0 };
         common::functions::emit_ref_func(
             &mut self.chunks[self.current],
             func_idx,
-            capture_names.len() as u8,
+            count_byte,
             line,
         );
         for capture_name in capture_names {
@@ -521,6 +581,13 @@ impl Compiler {
             }
         }
 
+        // A `methods_bind_on_access` language (Python/Ruby) needs a DISTINCT
+        // bound-method object per instance (`C().f is C().f` False). Tag these
+        // funcrefs "no-intern" so the VM mints a fresh object per binding (the
+        // receiver stamped below then stays per-instance). Only when the method
+        // carries a receiver.
+        let no_intern = self.profile.methods_bind_on_access && bind_receiver;
+
         for bind_name in bind_names {
             self.emit_u16(Op::LOCAL_GET, this_slot);
             if let Some(class_name) = &proto_class {
@@ -536,10 +603,10 @@ impl Compiler {
                 let line = self.line;
                 self.chunk().emit_if(line);
                 self.emit(Op::DROP);
-                self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+                self.emit_ref_func_with_captures(method_chunk_idx, capture_names, no_intern)?;
                 self.chunks[self.current].emit_end(line);
             } else {
-                self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+                self.emit_ref_func_with_captures(method_chunk_idx, capture_names, no_intern)?;
             }
             if bind_receiver {
                 inst!(self, core_wasm::dup);
@@ -857,7 +924,7 @@ impl Compiler {
             }
         }
 
-        for p in params {
+        for (param_index, p) in params.iter().enumerate() {
             // Default parameters: ECMA-262 §15.2.3 — only `undefined`
             // triggers the default (not `null`). The VM now pads
             // missing positional args with `Undefined`, distinct from
@@ -875,8 +942,33 @@ impl Compiler {
                 }
                 let branch_line = self.line;
                 self.chunks[self.current].emit_if(branch_line);
-                self.compile_expr(default)?;
-                self.emit_u16(Op::LOCAL_SET, slot);
+                if self.profile.default_args_evaluated_once {
+                    // Evaluate-once (Python/Ruby): the default is computed on the
+                    // first call that omits the arg and cached in a per-parameter
+                    // module global, so every later call reuses the SAME object
+                    // (`def f(a=[]); f() is f()` is True). A separate init-flag
+                    // global gates the one-time evaluation (correct even when the
+                    // default value itself is null). The cache key is unique per
+                    // (function chunk, parameter index).
+                    let cache = format!("__vybe_dflt_{}_{}", self.current, param_index);
+                    let inited = format!("__vybe_dflt_init_{}_{}", self.current, param_index);
+                    let cache_idx = self.global_name_const_idx(&cache);
+                    let inited_idx = self.global_name_const_idx(&inited);
+                    self.emit_u16(Op::GLOBAL_GET, inited_idx);
+                    self.emit(Op::REF_IS_NULL); // uninitialised global reads null
+                    let init_line = self.line;
+                    self.chunks[self.current].emit_if(init_line);
+                    self.compile_expr(default)?;
+                    self.emit_u16(Op::GLOBAL_SET, cache_idx);
+                    self.emit_const(Value::Bool(true));
+                    self.emit_u16(Op::GLOBAL_SET, inited_idx);
+                    self.chunks[self.current].emit_end(init_line);
+                    self.emit_u16(Op::GLOBAL_GET, cache_idx);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                } else {
+                    self.compile_expr(default)?;
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                }
                 self.chunks[self.current].emit_end(branch_line);
             }
             self.maybe_initialize_fortran_out_param(p);
@@ -2415,7 +2507,7 @@ impl Compiler {
                                helper_idx: usize,
                                helper_captures: &[String]|
          -> Result<(), String> {
-            cc.emit_ref_func_with_captures(helper_idx, helper_captures)
+            cc.emit_ref_func_with_captures(helper_idx, helper_captures, false)
         };
 
         let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> = Vec::new();
@@ -2655,7 +2747,29 @@ impl Compiler {
                             !body_has_super_call(stmts)
                         };
 
-                    if let Some((_, _, base_args)) = &ctor_body {
+                    // Framework GUI control parent (`class Form1 : Form`):
+                    // construct via the `vybe:gui` host factory directly. The
+                    // host builds the full control (identity + Controls
+                    // collection), replacing the per-class ctor global we no
+                    // longer emit for control types.
+                    // Only intercept on the paths where the block below
+                    // (`has_explicit_base || auto_base_needed ||
+                    // ctor_body.is_none()`) consumes our `this_slot`
+                    // construction; when a ctor body drives `super()` itself,
+                    // leave construction to that statement so we don't build
+                    // the instance twice.
+                    let framework_ctrl_parent = parent
+                        .as_deref()
+                        .filter(|p| self.is_framework_control_parent(p))
+                        .filter(|_| has_explicit_base || auto_base_needed || ctor_body.is_none());
+                    if let Some(fp) = framework_ctrl_parent {
+                        let base_args: Vec<Expression> = ctor_body
+                            .as_ref()
+                            .and_then(|(_, _, ba)| ba.as_ref())
+                            .map(|a| a.to_vec())
+                            .unwrap_or_default();
+                        self.try_emit_framework_control_base(fp, &base_args, this_slot)?;
+                    } else if let Some((_, _, base_args)) = &ctor_body {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
@@ -3328,7 +3442,15 @@ impl Compiler {
             let proto_local = self.define_local(&format!("__{}_prototype", name));
             self.emit_u16(Op::LOCAL_SET, proto_local);
 
-            if let Some(parent_name) = parent {
+            // Framework GUI control parents have no emitted ctor global, so
+            // `emit_parent_ctor_value` yields null — skip prototype-chain
+            // linking (a `STRUCT_GET prototype` on null would trap). Control
+            // members resolve through the component descriptor, not a JS
+            // prototype chain.
+            let proto_parent = parent
+                .as_deref()
+                .filter(|p| !self.is_framework_control_parent(p));
+            if let Some(parent_name) = proto_parent {
                 self.emit_parent_ctor_value(parent_name);
                 let parent_proto_key = self.str_const("prototype");
                 self.emit_u16(Op::STRUCT_GET, parent_proto_key);
@@ -3369,7 +3491,10 @@ impl Compiler {
             // (static inheritance walks it), %Function.prototype% for
             // base classes (C.bind / C.call / C.apply resolve through it).
             if self.class_prototype_dispatch() {
-                if let Some(parent_name) = parent {
+                // Control parents (null ctor global) get the base-class
+                // %Function.prototype% link, not a null static-inheritance
+                // link — matching how a control resolves as a leaf class.
+                if let Some(parent_name) = proto_parent {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
                     self.emit_parent_ctor_value(parent_name);
                     let proto_link_key = self.str_const("__proto__");
@@ -3407,7 +3532,7 @@ impl Compiler {
                     .copied()
                     .unwrap_or((self.chunks[*mci].is_async, self.chunks[*mci].is_generator));
                 self.emit_u16(Op::LOCAL_GET, proto_local);
-                self.emit_ref_func_with_captures(*mci, &[])?;
+                self.emit_ref_func_with_captures(*mci, &[], false)?;
                 // ECMA-262 function-kind stamp: async/generator methods'
                 // __proto__ is the matching intrinsic prototype (§27.7.1 /
                 // §27.3.1 / §27.4.1) — `getPrototypeOf(C.prototype.m)`.

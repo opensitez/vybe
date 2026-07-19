@@ -5,8 +5,8 @@
 //! - remove:  [current, handler] -> [delegate]
 
 use crate::instructions::core_wasm;
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 use crate::collections;
 
@@ -57,6 +57,137 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// Invoke a (possibly multicast) delegate. `argc` counts every value on the
+/// stack — the delegate plus its `argc - 1` handler arguments. A multicast
+/// delegate is an array of functions: call each in source order, keeping the
+/// last result (matches .NET `Func` multicast). A single function is called
+/// directly; a null delegate yields null (matches `d?.Invoke(...)`).
+/// Stack: `[delegate, a0 .. a(argc-2)]` -> `[result]`.
+pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let n = (argc as u16).saturating_sub(1); // handler-argument count
+    let base = chunks[current].alloc_scratch(5 + n);
+    let delegate_slot = base;
+    let result_slot = base + 1;
+    let len_slot = base + 2;
+    let i_slot = base + 3;
+    let handler_slot = base + 4;
+    let arg_base = base + 5;
+
+    // Pop handler args (last-pushed on top) then the delegate.
+    let mut k = n;
+    while k > 0 {
+        k -= 1;
+        chunks[current].emit_op_u16(Op::LOCAL_SET, arg_base + k, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delegate_slot, line);
+
+    // result = null
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    // if delegate is non-null
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    // if the delegate is a multicast array
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    // len = delegate.length; i = 0
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    let block_p = chunks[current].emit_block(line);
+    let (loop_p, _) = chunks[current].emit_loop_s(line);
+    // while i < len
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    crate::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    // handler = delegate[i]; result = handler(args...)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
+    for j in 0..n {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
+    }
+    chunks[current].emit_op_u8(Op::CALL_REF, n as u8, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    // i++
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    crate::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+
+    // else: single function — call it directly
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    for j in 0..n {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
+    }
+    chunks[current].emit_op_u8(Op::CALL_REF, n as u8, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line); // isArray
+
+    chunks[current].emit_end(line); // non-null
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `.GetInvocationList()` — normalize a delegate to the array of its handlers.
+/// null → `[]`, a multicast array → itself, a single function → `[fn]`. Callers
+/// then use `.Length` / `.Contains(h)` on a plain array. Stack: `[delegate]` -> `[array]`.
+pub fn emit_get_invocation_list(chunks: &mut [Chunk], current: usize, line: u32) {
+    let delegate_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delegate_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    chunks[current].emit_else(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
     chunks[current].emit_end(line);
 }
 

@@ -227,7 +227,7 @@ fn serialize_json_value(
         Value::Undefined | Value::Symbol(_) => None,
         Value::Object(obj) if is_function_like_object(obj) && in_array => Some("null".to_string()),
         Value::Object(obj) if is_function_like_object(obj) => None,
-        Value::Null => Some("null".to_string()),
+        Value::Null | Value::TypedNull(_) => Some("null".to_string()),
         Value::Bool(b) => Some(if *b { "true".into() } else { "false".into() }),
         Value::I32(n) => Some(n.to_string()),
         Value::I64(n) => Some(n.to_string()),

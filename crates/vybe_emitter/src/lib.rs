@@ -23,6 +23,8 @@ pub mod components;
 pub mod convert;
 pub mod delegates;
 pub mod dict;
+#[path = "enum.rs"]
+pub mod r#enum;
 pub mod errors;
 pub mod events;
 pub mod expressions;
@@ -43,7 +45,9 @@ pub mod promises;
 pub mod prototypes;
 pub mod random;
 pub mod references;
+pub mod reflection;
 pub mod slices;
+pub mod sorted_collection;
 pub mod sprintf;
 pub mod strings;
 pub mod target;

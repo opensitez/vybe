@@ -2150,10 +2150,18 @@ fn translate_wasm_to_chunk(
             0xC3 => chunk.emit_op(Op::I64_EXTEND16_S, 0),
             0xC4 => chunk.emit_op(Op::I64_EXTEND32_S, 0),
 
-            // Reference types
+            // Reference types. `ref.null <ht>`: an externref/funcref null is a
+            // plain null (lenient); a GC-heap null (none/any/eq/i31/struct/array
+            // or a concrete type index) is a WASM GC typed null that traps on the
+            // GC accessors — Op::NULL_NONE.
             0xD0 => {
+                let ht = wasm.get(pos).copied().unwrap_or(0);
                 skip_leb128(wasm, &mut pos); // heaptype
-                chunk.emit_op(Op::NULL, 0);
+                if ht == 0x6F || ht == 0x70 {
+                    chunk.emit_op(Op::NULL, 0); // extern / func → plain null
+                } else {
+                    chunk.emit_op(Op::NULL_NONE, 0); // GC heap null → typed null
+                }
             }
             0xD1 => chunk.emit_op(Op::REF_IS_NULL, 0),
 

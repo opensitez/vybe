@@ -2602,7 +2602,7 @@ fn register_iteration(vm: &mut VM) {
 /// Matches ECMA-262 §7.1.2 ToBoolean.
 fn is_truthy(v: &Value) -> bool {
     match v {
-        Value::Null | Value::Undefined => false,
+        Value::Null | Value::TypedNull(_) | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,

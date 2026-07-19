@@ -2145,6 +2145,7 @@ impl Compiler {
                                 "list"
                                     | "arraylist"
                                     | "dictionary"
+                                    | "sorteddictionary"
                                     | "queue"
                                     | "stack"
                                     | "hashset"
@@ -2290,9 +2291,16 @@ impl Compiler {
 
                 if let Some(target) = dotnet_instance_property {
                     match target {
-                        common::dotnet::InstancePropertyTarget::Host { module, func } => {
+                        common::dotnet::InstancePropertyTarget::Host { module, func, key } => {
                             let idx = self.import(&module, &func);
-                            self.emit_host_call(idx, 1);
+                            // Generic `vybe:gui` getter takes (this, "Key");
+                            // dedicated getters take just (this).
+                            if let Some(key) = key {
+                                self.emit_const(Value::String(Arc::from(key.as_str())));
+                                self.emit_host_call(idx, 2);
+                            } else {
+                                self.emit_host_call(idx, 1);
+                            }
                             return Ok(());
                         }
                     }
@@ -2954,7 +2962,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     inst!(self, recipes::is_object);
                     self.chunk().emit_if_value(lookup_line);
-                    let reflect_idx = self.import("ecma:reflect", "get");
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match &index.kind {
                         ExprKind::Member {
@@ -2977,6 +2984,7 @@ impl Compiler {
                         }
                         _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                     }
+                    let reflect_idx = self.import("ecma:reflect", "get");
                     self.emit_host_call(reflect_idx, 2);
                     self.chunk().emit_else(lookup_line);
                     inst!(self, core_wasm::undefined);
@@ -3146,7 +3154,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         inst!(self, recipes::is_object);
                         self.chunk().emit_if_value(lookup_line);
-                        let reflect_idx = self.import("ecma:reflect", "get");
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         match &index.kind {
                             ExprKind::Member {
@@ -3170,6 +3177,7 @@ impl Compiler {
                             }
                             _ => self.emit_u16(Op::LOCAL_GET, key_slot),
                         }
+                        let reflect_idx = self.import("ecma:reflect", "get");
                         self.emit_host_call(reflect_idx, 2);
                         self.chunk().emit_else(lookup_line);
                         inst!(self, core_wasm::undefined);
@@ -3467,8 +3475,13 @@ impl Compiler {
                         let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                         self.emit_u16(Op::LOCAL_GET, ctor_slot);
                         self.emit_u16(Op::LOCAL_GET, args_slot);
-                        let reflect_construct = self.import("ecma:reflect", "construct");
-                        self.emit_host_call(reflect_construct, 2);
+                        common::reflection::emit_reflect_op(
+                            &mut self.chunks,
+                            self.current,
+                            common::reflection::ReflectOp::Construct,
+                            2,
+                            line,
+                        );
                         self.restore_js_new_target(saved_js_new_target);
                         return Ok(());
                     }
@@ -3800,8 +3813,13 @@ impl Compiler {
                     let (args_slot, _) = self.compile_call_args_array(args, "js_new")?;
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     self.emit_u16(Op::LOCAL_GET, args_slot);
-                    let reflect_construct = self.import("ecma:reflect", "construct");
-                    self.emit_host_call(reflect_construct, 2);
+                    common::reflection::emit_reflect_op(
+                        &mut self.chunks,
+                        self.current,
+                        common::reflection::ReflectOp::Construct,
+                        2,
+                        self.line,
+                    );
                     self.restore_js_new_target(saved_js_new_target);
                     return Ok(());
                 }
@@ -4289,7 +4307,7 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                // Track dynamic key in __keys (stringified)
+                                                     // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4469,9 +4487,9 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                            // Track key — host fn checks if it's a
-                            // Symbol and routes to `__sym_keys` so
-                            // Object.keys excludes it (ECMA-262 §7.3.22).
+                                                 // Track key — host fn checks if it's a
+                                                 // Symbol and routes to `__sym_keys` so
+                                                 // Object.keys excludes it (ECMA-262 §7.3.22).
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                             let track_idx = self.import("ecma:object", "trackKey");
@@ -5551,11 +5569,33 @@ impl Compiler {
                                     );
                                 }
                             }
-                            self.emit_var_get(&parent_name);
-                            for a in args {
-                                self.compile_expr(&a.value)?;
+                            // Framework GUI control parent (`MyBase.New()` /
+                            // `super()` over `Form`/`Button`/…): construct via
+                            // the `vybe:gui` host factory, the same GUI-direct
+                            // path the auto-base construction uses. Control
+                            // leaves no longer have a ctor global to CALL_REF.
+                            if self.is_framework_control_parent(&parent_name) {
+                                let canonical =
+                                    common::gui::canonical_control_name(&parent_name);
+                                let host_name = common::gui::host_fn_new_control(&canonical);
+                                let new_idx = self.import(common::gui::GUI_MODULE, &host_name);
+                                for a in args {
+                                    self.compile_expr(&a.value)?;
+                                }
+                                let line = self.line;
+                                common::gui::emit_new_control(
+                                    self.chunk(),
+                                    new_idx,
+                                    args.len() as u8,
+                                    line,
+                                );
+                            } else {
+                                self.emit_var_get(&parent_name);
+                                for a in args {
+                                    self.compile_expr(&a.value)?;
+                                }
+                                self.emit_u8(Op::CALL_REF, args.len() as u8);
                             }
-                            self.emit_u8(Op::CALL_REF, args.len() as u8);
                             if let Some(slot) = self
                                 .scope()
                                 .resolve(&self_kw)
@@ -5661,12 +5701,41 @@ impl Compiler {
                         idx_slot,
                         line,
                     );
-                    let var_name = match &generator.target.kind {
-                        ExprKind::Ident(n) => n.clone(),
-                        _ => "__comp_var".to_string(),
+                    // Tuple target (`for a, b in …`): store the element, then bind
+                    // each component from its position. Single-Ident targets keep
+                    // the original single-slot binding; only the previously
+                    // unbindable non-Ident path gains destructuring.
+                    let tuple_names: Option<Vec<String>> = match &generator.target.kind {
+                        ExprKind::Tuple(parts) => Some(
+                            parts
+                                .iter()
+                                .map(|p| match &p.kind {
+                                    ExprKind::Ident(n) => n.clone(),
+                                    _ => "_".to_string(),
+                                })
+                                .collect(),
+                        ),
+                        _ => None,
                     };
-                    let var_slot = self.define_local(&var_name);
-                    self.emit_u16(Op::LOCAL_SET, var_slot);
+                    if let Some(names) = tuple_names {
+                        let elem_slot = self.define_local("__comp_elem");
+                        self.emit_u16(Op::LOCAL_SET, elem_slot);
+                        for (k, nm) in names.iter().enumerate() {
+                            let slot = self.define_local(nm);
+                            self.emit_u16(Op::LOCAL_GET, elem_slot);
+                            self.emit_const(Value::I32(k as i32));
+                            let l = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, l);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                        }
+                    } else {
+                        let var_name = match &generator.target.kind {
+                            ExprKind::Ident(n) => n.clone(),
+                            _ => "__comp_var".to_string(),
+                        };
+                        let var_slot = self.define_local(&var_name);
+                        self.emit_u16(Op::LOCAL_SET, var_slot);
+                    }
 
                     for cond_expr in &generator.conditions {
                         self.compile_expr(cond_expr)?;

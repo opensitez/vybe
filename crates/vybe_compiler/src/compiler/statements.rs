@@ -712,10 +712,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let iterator_key = self.str_const("iterator");
                         self.emit_u16(Op::STRUCT_GET, iterator_key);
-                        // IsCallable(iter.iterator) via the host — replaces the
-                        // retired VM-internal REF_IS_FUNC opcode.
-                        let is_callable_idx = self.import("ecma:reflect", "isCallable");
-                        self.emit_host_call(is_callable_idx, 1);
+                        // IsCallable(iter.iterator) via the shared reflection
+                        // substrate — replaces the retired VM-internal
+                        // REF_IS_FUNC opcode.
+                        common::reflection::emit_is_callable(&mut self.chunks, self.current, line);
                         {
                             let line = self.line;
                             crate::emitter::ops::emit_dyn_not(self.chunk(), line);
@@ -3326,8 +3326,9 @@ impl Compiler {
                 self.chunks[0].memory_min_pages.push(*min_pages);
                 self.chunks[0].memory_max_pages.push(*max_pages);
             }
-            StmtKind::TableDecl { min_size, .. } => {
+            StmtKind::TableDecl { min_size, max_size } => {
                 self.chunks[0].table_min_sizes.push(*min_size);
+                self.chunks[0].table_max_sizes.push(*max_size);
             }
             StmtKind::DataSegment {
                 memory_index,
@@ -3340,7 +3341,7 @@ impl Compiler {
                 // instantiation-time copy. Passive segments (offset None) stay in
                 // `data_segments` for `memory.init`.
                 if let Some(off) = offset {
-                    let offset_val = const_eval_u64(off).ok_or_else(|| {
+                    let offset_val = const_eval_u64(off, &self.global_const_values).ok_or_else(|| {
                         "data segment offset must be a constant integer expression".to_string()
                     })?;
                     self.chunks[0].active_data_segments.push(
@@ -3511,14 +3512,23 @@ impl Compiler {
         let mut next_val = 0i64;
 
         for member in members {
-            let value_expr = if let Some(value) = &member.value {
+            let (value_expr, numeric_value) = if let Some(value) = &member.value {
                 if let ExprKind::Lit(Literal::Int(n)) = &value.kind {
                     next_val = *n;
+                    (value.clone(), Some(*n))
+                } else {
+                    // Non-literal member value (e.g. `1 << 0`): the forward
+                    // field still works, but we can't key a compile-time
+                    // reverse entry off it, so skip its reverse map entry.
+                    (value.clone(), None)
                 }
-                value.clone()
             } else {
-                Expression::new(ExprKind::Lit(Literal::Int(next_val)))
+                (
+                    Expression::new(ExprKind::Lit(Literal::Int(next_val))),
+                    Some(next_val),
+                )
             };
+            // Forward entry: `Color.Red = 0`.
             synthetic_members.push(ClassMember::Field {
                 name: member.name.clone(),
                 type_hint: Some(name.to_string()),
@@ -3527,6 +3537,21 @@ impl Compiler {
                 with_events: false,
                 array_bounds: None,
             });
+            // Reverse entry: `Color[0] = "Red"` — the TypeScript numeric-enum
+            // shape, so `value → name` lookups (ToString/GetName) can read the
+            // enum object at runtime (`EnumType[value]`) instead of relying on
+            // compile-time ordinal tables. Keyed by the value's string form,
+            // which an integer index resolves to.
+            if let Some(nv) = numeric_value {
+                synthetic_members.push(ClassMember::Field {
+                    name: nv.to_string(),
+                    type_hint: None,
+                    init: Some(Expression::string(&member.name)),
+                    modifiers: static_modifiers.clone(),
+                    with_events: false,
+                    array_bounds: None,
+                });
+            }
             next_val += 1;
         }
 
@@ -3748,7 +3773,7 @@ impl Compiler {
                     }
                     _ => self.compile_expr(cls)?,
                 }
-                common::classes::emit_instanceof(&mut self.chunks, self.current, self.line);
+                common::reflection::emit_instanceof(&mut self.chunks, self.current, self.line);
                 {
                     let line = self.line;
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -4211,6 +4236,15 @@ impl Compiler {
                     if *kind == VarDeclKind::Const && self.profile.ecma_lexical_declarations {
                         self.const_globals.insert(cn.clone());
                     }
+                    // Record the global's constant init value (if it is a
+                    // constant expression) so extended-const data/elem offsets
+                    // can resolve `global.get $g` at compile time (WASM). Keyed
+                    // by the declared name to match the offset's `Ident`.
+                    if let Some(init) = &decl.init {
+                        if let Some(v) = const_eval_i128(init, &self.global_const_values) {
+                            self.global_const_values.insert(name.to_string(), v as i64);
+                        }
+                    }
                     self.defined_globals.insert(cn);
                 } else {
                     // ECMA-262 §10.2.11: `var` is function-scoped (must
@@ -4568,6 +4602,38 @@ impl Compiler {
                 if self.private_member_access_forbidden(field) {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
+                }
+                // .NET control property write resolves through the component
+                // descriptor to a direct `vybe:gui` host call — no emitted
+                // accessor. Stack on entry is [value]. The generic property
+                // setter takes (this, "Key", value); dedicated setters (this,
+                // value).
+                if self.profile.namespaces.use_dotnet && !self.expr_user_value_type_name(object).is_some() {
+                    if let Some(type_hint) = self.infer_expr_type_hint(object) {
+                        let class_name = Self::normalize_type_hint(&type_hint);
+                        if let Some(common::dotnet::InstancePropertyTarget::Host {
+                            module,
+                            func,
+                            key,
+                        }) = common::dotnet::surface()
+                            .lookup_instance_property_setter(&class_name, field)
+                        {
+                            let value_tmp = self.define_local("__dotnet_prop_value");
+                            self.emit_u16(Op::LOCAL_SET, value_tmp);
+                            self.compile_expr(object)?;
+                            let idx = self.import(&module, &func);
+                            if let Some(key) = key {
+                                self.emit_const(Value::String(Arc::from(key.as_str())));
+                                self.emit_u16(Op::LOCAL_GET, value_tmp);
+                                self.emit_host_call(idx, 3);
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, value_tmp);
+                                self.emit_host_call(idx, 2);
+                            }
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
+                    }
                 }
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
@@ -5795,13 +5861,53 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
 }
 
-/// Evaluate a constant integer expression (a WASM data-segment offset is a
-/// constant expression, in practice `i32.const N` → `Lit(Int)`). Returns `None`
-/// for anything non-constant so the caller can report it rather than guess.
-fn const_eval_u64(expr: &Expression) -> Option<u64> {
+/// Evaluate a constant integer expression (a WASM data/elem-segment offset).
+/// Plain `i32.const N` → `Lit(Int)`; the Extended Const Expressions proposal
+/// also permits `i32.add`/`sub`/`mul` and `global.get` of an immutable global
+/// whose initializer is itself a constant expression. Returns `None` for
+/// anything non-constant so the caller can report it rather than guess.
+fn const_eval_i128(expr: &Expression, globals: &std::collections::HashMap<String, i64>) -> Option<i128> {
     match &expr.kind {
-        ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) => Some(*n as u64),
-        ExprKind::Lit(Literal::Float(f)) => Some(*f as u64),
+        ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) => Some(*n as i128),
+        ExprKind::Lit(Literal::Float(f)) => Some(*f as i128),
+        // `global.get $g` lowers to an identifier; resolve it to the global's
+        // recorded constant init value (extended-const allows this).
+        ExprKind::Ident(name) => globals.get(name).map(|v| *v as i128),
+        ExprKind::Binary { op, left, right } => {
+            let l = const_eval_i128(left, globals)?;
+            let r = const_eval_i128(right, globals)?;
+            match op {
+                BinOp::Add => Some(l.wrapping_add(r)),
+                BinOp::Sub => Some(l.wrapping_sub(r)),
+                BinOp::Mul => Some(l.wrapping_mul(r)),
+                _ => None,
+            }
+        }
+        // The wast walker lowers a folded `(i32.add …)`/`(i64.mul …)` const
+        // expression to `Call(Ident("i32_add"), [a, b])` (not a `Binary`);
+        // fold those arithmetic builtins too.
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Ident(fname) = &callee.kind else {
+                return None;
+            };
+            if args.len() != 2 {
+                return None;
+            }
+            let l = const_eval_i128(&args[0].value, globals)?;
+            let r = const_eval_i128(&args[1].value, globals)?;
+            match fname.as_str() {
+                "i32_add" | "i64_add" => Some(l.wrapping_add(r)),
+                "i32_sub" | "i64_sub" => Some(l.wrapping_sub(r)),
+                "i32_mul" | "i64_mul" => Some(l.wrapping_mul(r)),
+                _ => None,
+            }
+        }
         _ => None,
     }
+}
+
+/// Extended-const evaluation to a `u64` byte offset (wrapping to 32/64-bit is
+/// handled by the caller's memory model; a WASM i32 offset wraps mod 2^32).
+fn const_eval_u64(expr: &Expression, globals: &std::collections::HashMap<String, i64>) -> Option<u64> {
+    const_eval_i128(expr, globals).map(|v| v as u64)
 }

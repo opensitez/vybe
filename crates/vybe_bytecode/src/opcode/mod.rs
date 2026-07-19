@@ -148,6 +148,28 @@ impl Op {
     pub fn wasm_name(self) -> &'static str {
         self.wasm_name_opt().unwrap_or("unknown")
     }
+
+    /// Like [`from_wasm_name`](Self::from_wasm_name) but tolerant of the wast
+    /// walker's name flattening: the walker turns a mnemonic's single `.` into
+    /// `_`, and some namespaces already contain `_` (`stringview_wtf16.length`,
+    /// `stringview_wtf8.advance`), so the dot's original position is ambiguous.
+    /// Try the exact name, then each underscore position as the dot; return the
+    /// first that resolves. Only reached when an exact lookup already failed, so
+    /// normal (already-dotted) callers are unaffected.
+    pub fn from_flattened_name(name: &str) -> Option<Op> {
+        if let Some(op) = Self::from_wasm_name(name) {
+            return Some(op);
+        }
+        let positions: Vec<usize> = name.match_indices('_').map(|(i, _)| i).collect();
+        for i in positions {
+            let mut cand = name.to_string();
+            cand.replace_range(i..i + 1, ".");
+            if let Some(op) = Self::from_wasm_name(&cand) {
+                return Some(op);
+            }
+        }
+        None
+    }
 }
 
 impl std::fmt::Debug for Op {
@@ -194,6 +216,10 @@ pub enum OperandFormat {
     /// WASM memory64 memarg: alignment LEB + u64 offset LEB, with the same
     /// optional memory-index extension as MemArg.
     MemArg64,
+    /// WASM SIMD lane memory op (`v128.load8_lane` / `v128.store32_lane` / …):
+    /// a `MemArg` (alignment LEB + offset LEB, same optional memory-index
+    /// extension) followed by a single lane-index byte.
+    MemLane,
     /// Variable: u16 func_idx + u8 upvalue_count + descriptors.
     Closure,
     /// Variable: u32 LEB count + count × u32 LEB labels + u32 LEB default.
@@ -219,7 +245,11 @@ impl OperandFormat {
     pub const fn fixed_size(self) -> usize {
         match self {
             Self::None => 0,
-            Self::U8 => 1,
+            // A single lane byte. `MemLane` load/store ops carry the same lane
+            // byte as `U8`; the VM's optional-memarg peek never consumes a byte
+            // because lane indices are < 0x80. They differ only in operand order
+            // at emission (see the compiler), not in encoding size.
+            Self::U8 | Self::MemLane => 1,
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U8_U8_U8 | Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
@@ -250,7 +280,8 @@ impl OperandFormat {
             Self::MemArg64 => memarg64_size(code, operand_start),
             Self::Closure => {
                 let uv_count_pos = operand_start + 2;
-                let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
+                // Mask the 0x80 "no-intern" flag (see REF_FUNC dispatch).
+                let uv_count = (code.get(uv_count_pos).copied().unwrap_or(0) & 0x7f) as usize;
                 // u16 func_idx + u8 count + per-upvalue (u8 is_local + u16 index)
                 2 + 1 + uv_count * 3
             }

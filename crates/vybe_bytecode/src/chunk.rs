@@ -228,6 +228,9 @@ pub struct Chunk {
     /// Declared reference tables for modules decoded from standard WASM.
     /// Entries are minimum element counts, in spec table-index order.
     pub table_min_sizes: Vec<u64>,
+    /// Optional maximum element count per table (aligns with `table_min_sizes`).
+    /// `table.grow` past this returns -1 (WASM spec). `None` = unbounded.
+    pub table_max_sizes: Vec<Option<u64>>,
     /// Per-table index type: `true` = 64-bit (table64). Aligns with
     /// `table_min_sizes`. Like memory64, table64 adds no new opcodes — the
     /// VM reads this to pick the index operand width (i32 vs i64).
@@ -236,6 +239,11 @@ pub struct Chunk {
     pub data_segments: Vec<Vec<u8>>,
     /// Passive element segment payloads decoded from standard WASM.
     pub elem_segments: Vec<Vec<Value>>,
+    /// Passive element segments compiled from source (`(elem $e $f …)`), stored
+    /// as per-segment lists of function chunk indices. The VM resolves each to a
+    /// funcref `Value` at instantiation (same as `REF_FUNC`) and populates
+    /// `elem_segments`, so `table.init`/`array.new_elem` read real funcrefs.
+    pub passive_elem_funcs: Vec<Vec<usize>>,
     /// Active data segments to instantiate before executing decoded WASM.
     pub active_data_segments: Vec<ActiveDataSegment>,
     /// Active element segments to instantiate before executing decoded WASM.
@@ -312,9 +320,11 @@ impl Chunk {
             memory_max_pages: Vec::new(),
             memory_is_64: Vec::new(),
             table_min_sizes: Vec::new(),
+            table_max_sizes: Vec::new(),
             table_is_64: Vec::new(),
             data_segments: Vec::new(),
             elem_segments: Vec::new(),
+            passive_elem_funcs: Vec::new(),
             active_data_segments: Vec::new(),
             active_elem_segments: Vec::new(),
             stack_switch_handlers: BTreeMap::new(),

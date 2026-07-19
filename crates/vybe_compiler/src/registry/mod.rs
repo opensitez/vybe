@@ -6,8 +6,10 @@
 //! class tables. They are `impl Compiler` extensions and therefore
 //! compiler-coupled, so they live here rather than in the platform crates.
 //!
-//! - `dotnet` — .NET BCL wrapper classes (VB / C#).
 //! - `plib` — Pascal GCL/plib adapter classes.
+//!
+//! The former `dotnet` pass (per-class .NET ctor globals for VB / C#) is
+//! retired — control/value/drawing types resolve through the component
+//! descriptor + the GUI-direct `vybe:gui` path instead of an emitted prelude.
 
-pub mod dotnet;
 pub mod plib;

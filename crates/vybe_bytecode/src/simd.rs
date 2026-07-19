@@ -303,15 +303,15 @@ impl VM {
         // ── WASM GC abstract heap types (spec §6.2) ───────────────
         // Bottom types: always false for any non-null value.
         if matches!(target_name, "none" | "nofunc" | "noextern") {
-            return matches!(val, Value::Null);
+            return val.is_null_ref();
         }
         // `any`: top of internal hierarchy — true for every non-null value.
         if target_name == "any" {
-            return !matches!(val, Value::Null | Value::Undefined);
+            return !val.is_null_ref() && !matches!(val, Value::Undefined);
         }
         // `extern`: external references (all JS values are externref in Vybe).
         if target_name == "extern" {
-            return !matches!(val, Value::Null);
+            return !val.is_null_ref();
         }
         // `eq`: types on which ref.eq is allowed — i31 + struct + array.
         if target_name == "eq" {
@@ -445,7 +445,7 @@ impl VM {
                     false
                 }
             }
-            Value::Null | Value::Undefined => false,
+            Value::Null | Value::TypedNull(_) | Value::Undefined => false,
             Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()),
         }
     }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_bytecode::value::Value;
 use vybe_platform_wasm::write_wasm;
+use vybe_platform_wasm::read_wasm;
 use vybe_bytecode::{Chunk, Op, VM};
 
 /// Run without appending RETURN — caller is responsible for the full layout.
@@ -462,12 +463,12 @@ fn array_fill_sets_range() {
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
-        // array.fill: pops (count, start, val, arr) → push arr, val, start, count
+        // array.fill spec stack: [arrayref, index, value, count].
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         let one = c.add_constant(Value::I32(1));
         let three = c.add_constant(Value::I32(3));
-        c.emit_op_u16(Op::CONST, fill, 0); // val
-        c.emit_op_u16(Op::CONST, one, 0); // start
+        c.emit_op_u16(Op::CONST, one, 0); // index (start)
+        c.emit_op_u16(Op::CONST, fill, 0); // value
         c.emit_op_u16(Op::CONST, three, 0); // count
         c.emit_op(Op::ARRAY_FILL, 0);
 
@@ -872,4 +873,46 @@ fn ref_get_desc_on_struct_without_desc_returns_null() {
         c.emit_op(Op::REF_IS_NULL, 0);
     });
     assert_eq!(r.as_i32(), 1);
+}
+
+// ── WASM GC typed-null (ref.null none) codec round-trip ──────────────────────
+
+#[test]
+fn typed_null_encodes_as_ref_null_none_and_roundtrips() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    // A WASM GC typed null serializes to the real `ref.null none` (0xD0 0x71),
+    // NOT `ref.null extern` (0xD0 0x6F).
+    assert!(
+        has_bytes(&wasm, &[0xD0, 0x71]),
+        "typed null must encode as ref.null none (0xD0 0x71)"
+    );
+
+    // Decode + re-encode: it must still be `ref.null none`, i.e. it decoded back
+    // to a typed null (Op::NULL_NONE), not collapsed to a plain null.
+    let chunks = read_wasm(&wasm).expect("read_wasm failed");
+    let wasm2 = write_wasm(&chunks);
+    assert!(
+        has_bytes(&wasm2, &[0xD0, 0x71]),
+        "typed null must round-trip as ref.null none"
+    );
+}
+
+#[test]
+fn plain_null_encodes_as_ref_null_extern() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    // A plain (dynamic-language) null is `ref.null extern` (0xD0 0x6F).
+    assert!(
+        has_bytes(&wasm, &[0xD0, 0x6F]),
+        "plain null must encode as ref.null extern (0xD0 0x6F)"
+    );
 }

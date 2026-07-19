@@ -38,21 +38,8 @@ pub mod registry; // platform class-library registration (dotnet BCL, pascal pli
 /// (via the aggregator) and is removed from this list — the compiler keeps
 /// dispatching through the registry either way.
 fn register_builtin_languages() {
-    use languages::*;
-    use vybe_plugin::registry::{LanguagePlugin, register_language};
-    macro_rules! reg {
-        ($name:literal, $m:ident, emit: $emit:expr, norm: $norm:expr, tree: $tree:expr) => {
-            register_language(LanguagePlugin {
-                name: $name,
-                parse: $m::parse,
-                profile_source: $m::profile_source,
-                emit_dispatch: $emit,
-                normalize_class: $norm,
-                register_tree: $tree,
-            });
-        };
-    }
     // `java` is an out-of-crate language (`vybe_lang_java`); it self-registers.
+    // Built-in registrations are now handled by the language crates' own registrars.
 }
 
 /// Idempotent, `Once`-guarded language registration — called before any

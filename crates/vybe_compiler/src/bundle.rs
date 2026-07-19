@@ -1943,14 +1943,18 @@ fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
         .map(str::trim_start)
         .unwrap_or(trimmed);
 
-    (starts_control_header(body, "if")
+    let starts_for = starts_control_header(body, "for");
+    let starts_control = starts_control_header(body, "if")
         || starts_control_header(body, "foreach")
-        || starts_control_header(body, "for")
+        || starts_for
         || starts_control_header(body, "while")
-        || starts_control_header(body, "switch"))
+        || starts_control_header(body, "switch");
+
+    starts_control
         && !body.contains('{')
         && !body.contains(':')
         && !body.contains("?>")
+        && (starts_for || !body.contains(';'))
 }
 
 fn should_stop_multiline_php_header_scan(line: &str) -> bool {

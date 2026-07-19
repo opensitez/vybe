@@ -20,10 +20,12 @@
 //! `false` if the name is unknown — letting the caller fall through to its
 //! own dispatch for language-specific common ops.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
-use crate::emitter::{channels, collections, dict, heap, object, ops, strings, threading, xml};
+use crate::emitter::{
+    channels, collections, dict, heap, object, ops, reflection, strings, threading, xml,
+};
 use vybe_emitter::threading as thread_adapter;
 
 /// Handle common ops that need only a chunk and line.
@@ -108,6 +110,236 @@ pub fn emit_common(
             }
             object::emit_to_string_or(&mut chunks[current], line);
         }
+
+        // ── Reflection substrate ──
+        // These are runtime primitives only. Language adapters retain their
+        // surface quirks (`Reflect.*`, PHP ReflectionClass, Go reflect.Value),
+        // but all three can share the same object/property/type operations.
+        "reflection.typeof" => reflection::emit_typeof(chunks, current, line),
+        "reflection.is_callable" => reflection::emit_is_callable(chunks, current, line),
+        "reflection.get" => {
+            reflection::emit_reflect_op(chunks, current, reflection::ReflectOp::Get, argc, line)
+        }
+        "reflection.set" => {
+            reflection::emit_reflect_op(chunks, current, reflection::ReflectOp::Set, argc, line)
+        }
+        "reflection.has_own" => reflection::emit_has_own(chunks, current, line),
+        "reflection.has_in" => reflection::emit_has_in(chunks, current, line),
+        "reflection.keys" => {
+            reflection::emit_object_view(chunks, current, reflection::ObjectKeysMode::Own, line)
+        }
+        "reflection.for_in" => {
+            reflection::emit_object_view(chunks, current, reflection::ObjectKeysMode::ForIn, line)
+        }
+        "reflection.values" => {
+            reflection::emit_object_view(chunks, current, reflection::ObjectKeysMode::Values, line)
+        }
+        "reflection.entries" => {
+            reflection::emit_object_view(chunks, current, reflection::ObjectKeysMode::Entries, line)
+        }
+        "reflection.instanceof" => reflection::emit_instanceof(chunks, current, line),
+        "reflection.object" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Object, argc, line)
+        }
+        "reflection.assign" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Assign, argc, line)
+        }
+        "reflection.freeze" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Freeze, argc, line)
+        }
+        "reflection.from_entries" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::FromEntries,
+            argc,
+            line,
+        ),
+        "reflection.create" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Create, argc, line)
+        }
+        "reflection.seal" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Seal, argc, line)
+        }
+        "reflection.is_frozen" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::IsFrozen, argc, line)
+        }
+        "reflection.is_sealed" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::IsSealed, argc, line)
+        }
+        "reflection.object_is" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Is, argc, line)
+        }
+        "reflection.get_prototype_of" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::GetPrototypeOf,
+            argc,
+            line,
+        ),
+        "reflection.get_own_property_names" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::GetOwnPropertyNames,
+            argc,
+            line,
+        ),
+        "reflection.get_own_property_descriptor" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::GetOwnPropertyDescriptor,
+            argc,
+            line,
+        ),
+        "reflection.get_own_property_descriptors" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::GetOwnPropertyDescriptors,
+            argc,
+            line,
+        ),
+        "reflection.get_own_property_symbols" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::GetOwnPropertySymbols,
+            argc,
+            line,
+        ),
+        "reflection.define_property" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::DefineProperty,
+            argc,
+            line,
+        ),
+        "reflection.define_properties" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::DefineProperties,
+            argc,
+            line,
+        ),
+        "reflection.prevent_extensions" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::PreventExtensions,
+            argc,
+            line,
+        ),
+        "reflection.is_extensible" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::IsExtensible,
+            argc,
+            line,
+        ),
+        "reflection.set_prototype_of" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::SetPrototypeOf,
+            argc,
+            line,
+        ),
+        "reflection.group_by" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::GroupBy, argc, line)
+        }
+        "reflection.delete" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Delete, argc, line)
+        }
+        "reflection.object_get" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Get, argc, line)
+        }
+        "reflection.object_set" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::Set, argc, line)
+        }
+        "reflection.track_key" => {
+            reflection::emit_object_op(chunks, current, reflection::ObjectOp::TrackKey, argc, line)
+        }
+        "reflection.property_is_enumerable" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::PropertyIsEnumerable,
+            argc,
+            line,
+        ),
+        "reflection.has_own_property" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::HasOwnProperty,
+            argc,
+            line,
+        ),
+        "reflection.is_prototype_of" => reflection::emit_object_op(
+            chunks,
+            current,
+            reflection::ObjectOp::IsPrototypeOf,
+            argc,
+            line,
+        ),
+        "reflection.apply" => {
+            reflection::emit_reflect_op(chunks, current, reflection::ReflectOp::Apply, argc, line)
+        }
+        "reflection.construct" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::Construct,
+            argc,
+            line,
+        ),
+        "reflection.delete_property" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::DeleteProperty,
+            argc,
+            line,
+        ),
+        "reflection.reflect_define_property" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::DefineProperty,
+            argc,
+            line,
+        ),
+        "reflection.reflect_get_own_property_descriptor" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::GetOwnPropertyDescriptor,
+            argc,
+            line,
+        ),
+        "reflection.reflect_get_prototype_of" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::GetPrototypeOf,
+            argc,
+            line,
+        ),
+        "reflection.reflect_has" => {
+            reflection::emit_reflect_op(chunks, current, reflection::ReflectOp::Has, argc, line)
+        }
+        "reflection.reflect_is_extensible" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::IsExtensible,
+            argc,
+            line,
+        ),
+        "reflection.own_keys" => {
+            reflection::emit_reflect_op(chunks, current, reflection::ReflectOp::OwnKeys, argc, line)
+        }
+        "reflection.reflect_prevent_extensions" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::PreventExtensions,
+            argc,
+            line,
+        ),
+        "reflection.reflect_set_prototype_of" => reflection::emit_reflect_op(
+            chunks,
+            current,
+            reflection::ReflectOp::SetPrototypeOf,
+            argc,
+            line,
+        ),
 
         // ── XML qualified names ──
         // Portable QName shape shared by Go xml.Name, .NET XName, Java QName,
@@ -227,6 +459,9 @@ pub fn emit_common(
         // ── Delegate ops ──
         "delegates.combine" => crate::emitter::delegates::emit_combine(chunks, current, line),
         "delegates.remove" => crate::emitter::delegates::emit_remove(chunks, current, line),
+        "delegates.invocation_list" => {
+            crate::emitter::delegates::emit_get_invocation_list(chunks, current, line)
+        }
 
         // ── JS Node compatibility adapters ───────────────────────
         // JS source keeps the Node-shaped call surface, but lowers

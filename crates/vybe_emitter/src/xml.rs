@@ -10,8 +10,8 @@
 
 use crate::collections;
 use crate::ops;
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 pub const XML_NAME_TYPE: &str = "XmlName";
 pub const FIELD_TYPE: &str = "__type";

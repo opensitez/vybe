@@ -204,7 +204,7 @@ pub fn register(vm: &mut VM) {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
             let tag = match &v {
                 Value::Undefined => "undefined",
-                Value::Null => "object",
+                Value::Null | Value::TypedNull(_) => "object",
                 Value::Bool(_) => "boolean",
                 Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => "number",
                 Value::String(_) => "string",

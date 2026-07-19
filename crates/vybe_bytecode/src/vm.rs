@@ -11,7 +11,15 @@ use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
 use crate::value::{Object, ObjectKind, Upvalue, Value};
 
-pub(crate) const MAX_FRAMES: usize = 256;
+// Heap-OOM guard for the iterative frame Vec (vybe's WASM recursion is
+// iterative — `call` pushes a CallFrame and the single `run` loop continues —
+// so this bounds heap growth, NOT the native OS stack). WASM imposes no
+// call-depth limit (stack exhaustion is implementation-defined); ECMA-262
+// §6.2.3 surfaces it as a catchable `RangeError`, which the cap does via
+// `make_stack_overflow_error`. 256 was far too low for legitimate deep
+// recursion; 16_384 is comparable to a JS engine's frame budget while a
+// CallFrame is only tens of bytes (well under memory pressure).
+pub(crate) const MAX_FRAMES: usize = 16_384;
 pub(crate) const MAX_STACK: usize = 65536;
 
 /// Result of VM execution — may complete or suspend for async.
@@ -593,11 +601,21 @@ pub struct VM {
     /// separate funcref array (see `wasm_tables`). Keeping them apart is what
     /// stops the ~2000 registered host fns from swamping a module's table 0.
     pub func_table: Vec<Value>,
+    /// Interned capture-free funcrefs, keyed by `chunk_index`. A `ref.func $f`
+    /// (`REF_FUNC`) with no captured upvalues always yields the SAME object, so
+    /// two tear-offs of one function are reference-identical — this is what
+    /// makes `ref.eq` (and `is`/`===` on functions) a pure `Arc::ptr_eq` without
+    /// any funcref-dedup extension in the comparison op. Closures WITH captures
+    /// are never interned (different captures = distinct objects).
+    pub(crate) funcref_cache: std::collections::HashMap<usize, Value>,
     /// WASM reference tables (reference-types / multi-table proposal), indexed
     /// directly: table N is `wasm_tables[N]`, table 0 included. Declared by
     /// `(table …)`, populated by elem segments / `table.set` / `ref.func`
     /// values, and read by `table.get`/`call_indirect`.
     pub wasm_tables: Vec<Vec<Value>>,
+    /// Optional maximum element count per table (spec table limits). `table.grow`
+    /// past the max returns -1; `None` = unbounded. Aligns with `wasm_tables`.
+    pub(crate) wasm_table_maxes: Vec<Option<usize>>,
     /// Optional per-slot value-type recorder. `Some` enables the
     /// LOCAL_SET / LOCAL_GET hooks to tally which `Value` variants
     /// flow through each local, feeding the anyref/ABI migration with
@@ -811,7 +829,9 @@ impl VM {
             memory_is_64: Vec::new(),
             table_is_64: Vec::new(),
             func_table: Vec::new(),
+            funcref_cache: std::collections::HashMap::new(),
             wasm_tables: Vec::new(),
+            wasm_table_maxes: Vec::new(),
             type_recorder: None,
             active_continuations: Vec::new(),
             cur_fiber_id: 0,
@@ -1675,7 +1695,7 @@ impl VM {
                             }
                             ip += 4 + 2 + 1; // 4 opcode + 2 func_idx + 1 uv_count
                             if ip - 1 < code.len() {
-                                let uv_count = code[ip - 1] as usize;
+                                let uv_count = (code[ip - 1] & 0x7f) as usize;
                                 ip += uv_count * 3; // u8 is_local + u16 index
                             }
                             continue;
@@ -1827,7 +1847,7 @@ impl VM {
                             }
                             ip += 4 + 2 + 1; // opcode + func_idx + uv_count
                             if ip - 1 < code.len() {
-                                let uv_count = code[ip - 1] as usize;
+                                let uv_count = (code[ip - 1] & 0x7f) as usize;
                                 ip += uv_count * 3; // per upvalue: u8 is_local + u16 index
                             }
                             continue;
@@ -1849,6 +1869,11 @@ impl VM {
         self.instantiate_declared_memories(&declared_memories, &declared_memory_maxes)?;
         self.table_is_64 = self.chunks[script_idx].table_is_64.clone();
         let declared_tables = self.chunks[script_idx].table_min_sizes.clone();
+        self.wasm_table_maxes = self.chunks[script_idx]
+            .table_max_sizes
+            .iter()
+            .map(|m| m.map(|v| v as usize))
+            .collect();
         self.instantiate_declared_tables(&declared_tables)?;
         let data_segments = self.chunks[script_idx].data_segments.clone();
         if !data_segments.is_empty() {
@@ -1924,6 +1949,18 @@ impl VM {
                 ));
             }
             table[offset..offset + values.len()].clone_from_slice(&values);
+        }
+        // Passive element segments compiled from source: resolve each function
+        // chunk index to its canonical funcref and populate `elem_segments`, so
+        // `table.init`/`array.new_elem` copy real funcrefs (WASM passive elems).
+        let passive_elem_funcs = self.chunks[script_idx].passive_elem_funcs.clone();
+        for (seg_idx, funcs) in passive_elem_funcs.iter().enumerate() {
+            if funcs.is_empty() {
+                continue;
+            }
+            let vals: Vec<crate::value::Value> =
+                funcs.iter().map(|&fi| self.make_funcref(fi)).collect();
+            self.set_elem_segment(seg_idx, vals);
         }
 
         // Resolve imports for ALL new chunks (not just script chunk).

@@ -139,11 +139,17 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
                 next,
             )
         }
+        // SIMD lane mem op: a single lane-index byte (the VM's optional-memarg
+        // peek never consumes a byte since lane indices are < 0x80).
+        OperandFormat::MemLane => {
+            let lane = chunk.code.get(operand_start).copied().unwrap_or(0);
+            (format!("{} lane={}", name, lane), operand_start + 1)
+        }
         OperandFormat::Closure => {
             // ref_func: u16 func_index, u8 upvalue_count, then
             // (u8 is_local + u16 index) descriptors
             let func_idx = chunk.read_u16(operand_start);
-            let uv_count = chunk.code.get(operand_start + 2).copied().unwrap_or(0) as usize;
+            let uv_count = (chunk.code.get(operand_start + 2).copied().unwrap_or(0) & 0x7f) as usize;
             let total = 3 + uv_count * 3;
             (
                 format!("Closure func={} upvalues={}", func_idx, uv_count),

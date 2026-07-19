@@ -41,7 +41,7 @@ fn deep_clone(
 ) -> Result<Value, Value> {
     match v {
         // Primitives — pass through; they're Copy or immutable.
-        Value::Null | Value::Undefined => Ok(v.clone()),
+        Value::Null | Value::TypedNull(_) | Value::Undefined => Ok(v.clone()),
         Value::Bool(_) | Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) => {
             Ok(v.clone())
         }

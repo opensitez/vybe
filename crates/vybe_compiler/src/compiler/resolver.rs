@@ -31,6 +31,7 @@ use vybe_bytecode::Op;
 /// inside `resolve_path` itself). Each registrar is Once-guarded.
 fn register_platform_trees() {
     crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
+    crate::platforms::libc::emitter::tree_register::register_namespace_tree();
     crate::platforms::plib::emitter::tree_register::register_namespace_tree();
     // Language namespace trees dispatch through the registry (c/php/dart/java),
     // so no `crate::languages::<lang>` paths are hardcoded here.

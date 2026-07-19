@@ -120,7 +120,7 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::DROP, line); // [retval]
     core_wasm::i32_const(chunk, line, 0); // has_more = 0 → [retval, 0]
     chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
-    // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]
+                            // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]
     let handler_ip = chunk.code.len();
     core_wasm::i32_const(chunk, line, 1); // has_more = 1 → [yieldval, 1]
     chunk.emit_end(line); // end $block → [value, has_more]
@@ -168,16 +168,16 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
 
     // Stash has_more in val_slot temporarily so we can check it after clearing it from the stack
     chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line); // val_slot = has_more (top)
-    // Stack: [value]
+                                                      // Stack: [value]
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line); // restore has_more to TOS
-    // Stack: [value, has_more]
+                                                      // Stack: [value, has_more]
 
     chunk.emit_op(Op::I32_EQZ, line); // 1 if done (has_more==0)
     chunk.emit_if(line); // if done {
     chunk.emit_op(Op::DROP, line); //   drop dangling value (was below has_more)
     chunk.emit_br(2, line); //   br 2 → exit outer block
     chunk.emit_end(line); // } end if
-    // Stack: [value]  — only reached when has_more=1
+                          // Stack: [value]  — only reached when has_more=1
 
     chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line); // val_slot = yielded value
 
@@ -754,7 +754,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
     chunk.emit_op(Op::F64_GE, line);
     chunk.emit_br_if(1, line); // exit al_block
-    // result.push(obj[idx]) — ARRAY_GET handles string coercion
+                               // result.push(obj[idx]) — ARRAY_GET handles string coercion
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -773,7 +773,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_end(line);
     chunk.patch_block(al_block);
     chunk.emit_br(1, line); // exit outer_block with populated result
-    // Nesting: outer_block(1) → this-if(0). br(1) = outer_block.
+                            // Nesting: outer_block(1) → this-if(0). br(1) = outer_block.
 
     chunk.emit_end(line); // end if(no next)
 

@@ -69,14 +69,34 @@ impl Op {
     pub const STRING_ENCODE_WTF16: Op = Op::new(0xFB, 0x87);
     pub const STRING_CONCAT: Op = Op::new(0xFB, 0x88);
     pub const STRING_EQ: Op = Op::new(0xFB, 0x89);
+    pub const STRING_NEW_WTF16: Op = Op::new(0xFB, 0x81);
+    pub const STRING_IS_USV_SEQUENCE: Op = Op::new(0xFB, 0x8A);
     pub const STRING_NEW_LOSSY_UTF8: Op = Op::new(0xFB, 0x8B);
     pub const STRING_NEW_WTF8: Op = Op::new(0xFB, 0x8C);
+    pub const STRING_ENCODE_LOSSY_UTF8: Op = Op::new(0xFB, 0x8D);
+    pub const STRING_ENCODE_WTF8: Op = Op::new(0xFB, 0x8E);
     pub const STRING_AS_WTF8: Op = Op::new(0xFB, 0x90);
+    pub const STRINGVIEW_WTF8_ADVANCE: Op = Op::new(0xFB, 0x91);
+    pub const STRINGVIEW_WTF8_ENCODE_UTF8: Op = Op::new(0xFB, 0x92);
+    pub const STRINGVIEW_WTF8_SLICE: Op = Op::new(0xFB, 0x93);
     pub const STRING_AS_WTF16: Op = Op::new(0xFB, 0x98);
+    pub const STRINGVIEW_WTF16_LENGTH: Op = Op::new(0xFB, 0x99);
+    pub const STRINGVIEW_WTF16_GET_CODEUNIT: Op = Op::new(0xFB, 0x9A);
+    pub const STRINGVIEW_WTF16_ENCODE: Op = Op::new(0xFB, 0x9B);
+    pub const STRINGVIEW_WTF16_SLICE: Op = Op::new(0xFB, 0x9C);
+    pub const STRING_AS_ITER: Op = Op::new(0xFB, 0xA0);
+    pub const STRINGVIEW_ITER_NEXT: Op = Op::new(0xFB, 0xA1);
+    pub const STRINGVIEW_ITER_ADVANCE: Op = Op::new(0xFB, 0xA2);
+    pub const STRINGVIEW_ITER_REWIND: Op = Op::new(0xFB, 0xA3);
+    pub const STRINGVIEW_ITER_SLICE: Op = Op::new(0xFB, 0xA4);
     pub const STRING_NEW_UTF8_ARRAY: Op = Op::new(0xFB, 0xB0);
     pub const STRING_NEW_WTF16_ARRAY: Op = Op::new(0xFB, 0xB1);
     pub const STRING_ENCODE_UTF8_ARRAY: Op = Op::new(0xFB, 0xB2);
     pub const STRING_ENCODE_WTF16_ARRAY: Op = Op::new(0xFB, 0xB3);
+    pub const STRING_NEW_LOSSY_UTF8_ARRAY: Op = Op::new(0xFB, 0xB4);
+    pub const STRING_NEW_WTF8_ARRAY: Op = Op::new(0xFB, 0xB5);
+    pub const STRING_ENCODE_LOSSY_UTF8_ARRAY: Op = Op::new(0xFB, 0xB6);
+    pub const STRING_ENCODE_WTF8_ARRAY: Op = Op::new(0xFB, 0xB7);
 }
 
 opcode_category! {

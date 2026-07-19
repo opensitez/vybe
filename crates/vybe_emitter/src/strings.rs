@@ -4,8 +4,8 @@
 //! C# $strings, VB string concat) emit the same pattern: compile parts,
 //! toString each expression, concatenate.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 /// Emit toString conversion on TOS via host call.
 /// Stack before: [value]  Stack after: [string]

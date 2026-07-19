@@ -75,6 +75,14 @@ impl Compiler {
         let ExprKind::Member { object, field, .. } = &callee.kind else {
             return None;
         };
+        // `control.CreateGraphics()` returns a Graphics — typing the result
+        // lets `g.DrawLine(...)` resolve through the component descriptor
+        // (Graphics no longer binds its drawing methods via a ctor thunk).
+        // Independent of the receiver's exact control type, so checked before
+        // the terminal-type extraction (which bails on a `new X()` receiver).
+        if field.eq_ignore_ascii_case("CreateGraphics") {
+            return Some("Graphics".into());
+        }
         let class_name = Self::expr_terminal_type_name(object)?;
         if class_name.eq_ignore_ascii_case("TimeSpan")
             && matches!(

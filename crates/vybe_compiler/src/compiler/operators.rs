@@ -1048,7 +1048,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, t_ctor);
                     let name_key = self.str_const("name");
                     self.chunk().emit_op_u16(Op::STRUCT_GET, name_key, l); // [val, ctor_name]
-                    common::classes::emit_instanceof(&mut self.chunks, self.current, l);
+                    common::reflection::emit_instanceof(&mut self.chunks, self.current, l);
                 }
             }
             BinOp::NullCoalesce => unreachable!(), // handled in compile_expr

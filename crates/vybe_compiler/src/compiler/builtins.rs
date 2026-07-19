@@ -72,6 +72,10 @@ fn wasm_heap_type_ref(expr: Option<&Expression>) -> (String, bool) {
 fn collect_heap_type_ref(e: &Expression, name: &mut String, nullable: &mut bool) {
     match &e.kind {
         ExprKind::Ident(n) if n == "null" => *nullable = true,
+        // `ref` is the reftype-constructor keyword in a folded `(ref [null] ht)`
+        // operand, NOT a heap-type name — skip it so the real heap type (`i31`,
+        // `$T`, …) is what gets recorded.
+        ExprKind::Ident(n) if n == "ref" => {}
         ExprKind::Ident(n) if name.is_empty() => *name = n.clone(),
         ExprKind::Lit(Literal::Null) => *nullable = true,
         ExprKind::Lit(Literal::Str(s)) if &**s == "null" => *nullable = true,
@@ -1120,6 +1124,51 @@ impl Compiler {
                     self.register_wast_struct_type(args);
                     return Ok(true);
                 }
+                // Compile-time directive from the wast walker: install a GC
+                // `(array …)` type carrying its element storage type so the VM
+                // can recover the element byte width from an instance's rtt.
+                // Emitted before any `array.*` so `resolve_gc_array_type_id`
+                // finds this (element-typed) entry rather than a bare one.
+                "__wast_register_array_type" => {
+                    let name = expr_str_lit(args.first().copied());
+                    let elem = expr_str_lit(args.get(1).copied());
+                    if !name.is_empty() {
+                        let key = format!("__wast_array::{name}");
+                        if let Some(idx) =
+                            self.chunks[0].types.iter().position(|t| t.name == key)
+                        {
+                            if self.chunks[0].types[idx].fields.is_empty() && !elem.is_empty() {
+                                self.chunks[0].types[idx].fields = vec![elem];
+                            }
+                        } else {
+                            common::classes::register_gc_array_type(&mut self.chunks, &key, &elem);
+                        }
+                    }
+                    return Ok(true);
+                }
+                // Compile-time directive from the wast walker: register a passive
+                // element segment's funcref list (resolved to function chunk
+                // indices) under its segment index, so `table.init`/`array.new_elem`
+                // read real funcrefs the VM materializes at instantiation.
+                "__wast_register_passive_elem" => {
+                    let seg_index = expr_const_u16(args.first().copied()) as usize;
+                    let mut chunk_indices = Vec::new();
+                    for a in &args[1..] {
+                        let name = expr_str_lit(Some(a));
+                        if let Some(idx) =
+                            self.resolve_unique_static_method_chunk_for_class("__wasm_module", &name)
+                        {
+                            chunk_indices.push(idx);
+                        }
+                    }
+                    if self.chunks[0].passive_elem_funcs.len() <= seg_index {
+                        self.chunks[0]
+                            .passive_elem_funcs
+                            .resize_with(seg_index + 1, Vec::new);
+                    }
+                    self.chunks[0].passive_elem_funcs[seg_index] = chunk_indices;
+                    return Ok(true);
+                }
                 // `ref.test <ht>` / `ref.cast <ht>` — runtime type check against
                 // the named GC type via the registered hierarchy. A nullable
                 // heap type (`(ref null $T)`) uses the `_NULL` op (null passes);
@@ -1128,12 +1177,50 @@ impl Compiler {
                 // through, or trap if it is null (spec). Wrapped around the field
                 // access object by the walker so the read/write lowering is
                 // unchanged; dynamic-language member access is never routed here.
-                "__wast_nonnull" => {
-                    for a in args {
-                        self.compile_expr(a)?;
-                    }
+                // `ref.null $t` → a WASM GC typed null: the single `ref.null none`
+                // op (Op::NULL_NONE) pushes a TypedNull and round-trips as
+                // `0xD0 0x71` in `.wasm`. The VM's GC accessors trap on it; it's a
+                // plain null elsewhere. Non-wast callers keep emitting bare
+                // Op::NULL → plain null (`ref.null extern`).
+                "__wast_typed_null" => {
                     let l = self.line;
-                    common::collections::emit_nonnull_or_trap(&mut self.chunks, self.current, l);
+                    self.chunk().emit_op(Op::NULL_NONE, l);
+                    return Ok(true);
+                }
+                // Stamp a struct instance with its WASM GC rtt: compile the
+                // object, then `GLOBAL_GET __tid_<T>` (the registered type id,
+                // installed at load) + `SET_TYPE_ID` so the instance carries the
+                // real `type_id` for `ref.test`/`ref.cast` — no `__type` string.
+                "__wast_stamp_type" => {
+                    if let Some(obj) = args.first() {
+                        self.compile_expr(obj)?;
+                    }
+                    let type_name = expr_str_lit(args.get(1).copied());
+                    let l = self.line;
+                    let g = self.chunk().add_constant(Value::String(std::sync::Arc::from(
+                        format!("__tid_{type_name}").as_str(),
+                    )));
+                    self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
+                    self.chunk().emit_op(Op::SET_TYPE_ID, l);
+                    return Ok(true);
+                }
+                // Stamp an `array.new_fixed` literal with its `(array …)` rtt:
+                // register the type (so its `__tid_` global exists at load) and
+                // SET_TYPE_ID, so the fixed array traps on OOB like `array.new`.
+                "__wast_stamp_array_type" => {
+                    if let Some(obj) = args.first() {
+                        self.compile_expr(obj)?;
+                    }
+                    let type_ref = expr_str_lit(args.get(1).copied());
+                    // Registering returns the 1-based table index; the load-time
+                    // `__tid___wast_array::<ref>` global carries the registry id.
+                    let _ = self.resolve_gc_array_type_id(&type_ref);
+                    let l = self.line;
+                    let g = self.chunk().add_constant(Value::String(std::sync::Arc::from(
+                        format!("__tid___wast_array::{type_ref}").as_str(),
+                    )));
+                    self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
+                    self.chunk().emit_op(Op::SET_TYPE_ID, l);
                     return Ok(true);
                 }
                 "ref.test" | "ref_test" | "ref.test_null" | "ref_test_null" => {
@@ -1170,11 +1257,11 @@ impl Compiler {
                 }
                 _ => {}
             }
-            let dotted = name.replacen('_', ".", 1);
-            if Op::from_wasm_name(name)
-                .or_else(|| Op::from_wasm_name(&dotted))
-                .is_some()
-            {
+            // A `@@mem<N>` suffix (wast multi-memory selector) is not part of the
+            // opcode name — check the base name so the op still routes here;
+            // `emit_builtin_opcode` strips the suffix and emits the selector.
+            let base_name = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
+            if Op::from_flattened_name(base_name).is_some() {
                 self.emit_builtin_opcode(name, args)?;
                 return Ok(true);
             }
@@ -1270,7 +1357,10 @@ impl Compiler {
         if let Some(idx) = self.chunks[0].types.iter().position(|t| t.name == key) {
             return idx + 1;
         }
-        common::classes::register_gc_array_type(&mut self.chunks, &key)
+        // No element type known here (lazy registration from a bare `array.*`);
+        // the wast `__wast_register_array_type` directive registers it with the
+        // element storage type ahead of use.
+        common::classes::register_gc_array_type(&mut self.chunks, &key, "")
     }
 
     /// Emit a compiler_common operation by namespaced name.
@@ -1460,10 +1550,7 @@ impl Compiler {
                 // from the VM's opcode table rather than maintaining a second
                 // hardcoded list. Profile names are underscore-form
                 // (`i32_clz`); WASM mnemonics dot the type prefix (`i32.clz`).
-                let dotted = op_name.replacen('_', ".", 1);
-                if let Some(op) =
-                    Op::from_wasm_name(op_name).or_else(|| Op::from_wasm_name(&dotted))
-                {
+                if let Some(op) = Op::from_flattened_name(op_name) {
                     self.emit(op);
                 } else {
                     let c = self.str_const(op_name);
@@ -1959,12 +2046,23 @@ impl Compiler {
                 }
             }
             _ => {
+                // Multi-memory selector suffix from the wast walker
+                // (`i32.store@@mem1`, or `memory.copy@@mem<dst>@@mem<src>` with
+                // two indices): non-default linear memories. Strip the suffixes
+                // to resolve the base opcode; each selected memidx is emitted
+                // after the opcode as the VM's fixed 4-byte `0xEE 0x00 <u16>`
+                // selector, in order (one per positional memidx the VM reads).
+                let (op_name, mem_selectors): (&str, Vec<u32>) = {
+                    let mut parts = op_name.split("@@mem");
+                    let base = parts.next().unwrap_or(op_name);
+                    let sels: Vec<u32> = parts.filter_map(|p| p.parse::<u32>().ok()).collect();
+                    (base, sels)
+                };
                 // Single source of truth: resolve any remaining opcode straight
                 // from the VM's opcode table. The VM's `operand_format` (same
                 // table) tells us how to encode any immediates — lane index,
                 // v128.const value, shuffle mask — so there is no second list.
-                let dotted = op_name.replacen('_', ".", 1);
-                let resolved = Op::from_wasm_name(op_name).or_else(|| Op::from_wasm_name(&dotted));
+                let resolved = Op::from_flattened_name(op_name);
                 let Some(op) = resolved else {
                     self.emit(Op::NULL);
                     return Ok(());
@@ -1990,10 +2088,47 @@ impl Compiler {
                         let imm = expr_const_u16(args.first().copied());
                         self.chunk().emit_op_u16(op, imm, l);
                     }
-                    // Lane ops (extract_lane / replace_lane / load_lane / …):
-                    // fold puts the immediate first, then the stack operands.
+                    // Two index immediates then stack operands: the GC
+                    // array-from-segment ops (`array.new_data $T $d`,
+                    // `array.new_elem`, `array.init_data`, `array.init_elem`)
+                    // carry `typeidx` + `dataidx`/`elemidx`. Without this arm they
+                    // fell to the plain `_` arm, emitted NO immediates, and the VM
+                    // read the next opcode's bytes as the segment index.
+                    OperandFormat::U16_U16 => {
+                        for a in args.iter().skip(2) {
+                            self.compile_expr(a)?;
+                        }
+                        let imm1 = expr_const_u16(args.first().copied());
+                        let imm2 = expr_const_u16(args.get(1).copied());
+                        self.chunk().emit_op_u16(op, imm1, l);
+                        self.chunk().emit((imm2 >> 8) as u8, l);
+                        self.chunk().emit((imm2 & 0xff) as u8, l);
+                    }
+                    // Lane ops (extract_lane / replace_lane): the fold puts the
+                    // lane immediate first, then the stack operands.
                     OperandFormat::U8 => {
                         for a in &args[1..] {
+                            self.compile_expr(a)?;
+                        }
+                        let lane = expr_const_u8(args.first().copied());
+                        self.chunk().emit_op(op, l);
+                        self.chunk().emit(lane, l);
+                    }
+                    // SIMD lane memory ops (`v128.load8_lane` / `v128.store32_lane`
+                    // / …): an optional memarg then a lane byte. The wast fold
+                    // supplies just the lane index (memarg defaults to 0), so we
+                    // emit align=0 (the VM reads that as "no offset/memidx") then
+                    // the lane byte. Stack operands (addr, vector) follow.
+                    OperandFormat::MemLane => {
+                        // SIMD lane mem op. The VM pops the top operand first:
+                        // `load*_lane` wants the vector on top (`[addr vector]`),
+                        // `store*_lane` wants the address on top (`[vector addr]`).
+                        // The fold hands operands in source (deepest-first) order,
+                        // so push them reversed to land the right one on top.
+                        // Only a lane byte is emitted — the VM's optional-memarg
+                        // peek never consumes a byte because lane indices are
+                        // < 0x80 (so the byte reads back as the lane).
+                        for a in args[1..].iter().rev() {
                             self.compile_expr(a)?;
                         }
                         let lane = expr_const_u8(args.first().copied());
@@ -2038,6 +2173,18 @@ impl Compiler {
                             self.compile_expr(a)?;
                         }
                         self.emit(op);
+                        // Multi-memory selectors, read by the VM's
+                        // `read_optional_memarg`/`read_optional_memidx_immediate`.
+                        // VM instructions are always 4 bytes, so each selector is a
+                        // fixed 4-byte block (`0xEE 0x00 <memidx u16 BE>`) that keeps
+                        // the following instruction 4-aligned. `memory.copy` emits
+                        // two (dst then src); load/store/size/grow/fill emit one.
+                        for midx in &mem_selectors {
+                            self.chunk().emit(0xEE, l);
+                            self.chunk().emit(0x00, l);
+                            self.chunk().emit((midx >> 8) as u8, l);
+                            self.chunk().emit((midx & 0xff) as u8, l);
+                        }
                     }
                 }
             }
@@ -4259,6 +4406,69 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
+            "partition" | "rpartition" => {
+                // `s.partition(sep)` → `(before, sep, after)`, split on the first
+                // (rpartition: last) occurrence; `(s, '', '')` when not found.
+                if args.len() >= 2 {
+                    let from_right = name == "rpartition";
+                    let s = self.define_local("__pt_s");
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, s);
+                    let sep = self.define_local("__pt_sep");
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, sep);
+                    // i = (r)indexOf(s, sep) as i32
+                    self.emit_u16(Op::LOCAL_GET, s);
+                    self.emit_u16(Op::LOCAL_GET, sep);
+                    if from_right {
+                        common::strings::emit_last_index_of(self.chunk(), line);
+                    } else {
+                        common::strings::emit_index_of(self.chunk(), line);
+                    }
+                    let to_f64 = self.import("wasm:js-number", "toF64");
+                    self.emit_host_call(to_f64, 1);
+                    self.emit(Op::I32_TRUNC_SAT_F64_S);
+                    let i = self.define_local("__pt_i");
+                    self.emit_u16(Op::LOCAL_SET, i);
+                    self.emit_u16(Op::LOCAL_GET, i);
+                    self.emit_const(Value::I32(0));
+                    self.emit(Op::I32_LT_S);
+                    self.chunk().emit_if_value(line);
+                    // Not found: partition → (s, '', ''); rpartition → ('', '', s)
+                    // (the unmatched whole string sits on the far side of the
+                    // search direction). Universal partition semantics.
+                    if from_right {
+                        self.emit_const(Value::String(Arc::from("")));
+                        self.emit_const(Value::String(Arc::from("")));
+                        self.emit_u16(Op::LOCAL_GET, s);
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, s);
+                        self.emit_const(Value::String(Arc::from("")));
+                        self.emit_const(Value::String(Arc::from("")));
+                    }
+                    common::tuples::emit_tuple(&mut self.chunks, self.current, 3, line);
+                    self.chunk().emit_else(line);
+                    // before = s[0:i]
+                    self.emit_u16(Op::LOCAL_GET, s);
+                    self.emit_const(Value::I32(0));
+                    self.emit_u16(Op::LOCAL_GET, i);
+                    common::strings::emit_substring(self.chunk(), line);
+                    // sep
+                    self.emit_u16(Op::LOCAL_GET, sep);
+                    // after = s[i+len(sep):]
+                    self.emit_u16(Op::LOCAL_GET, s);
+                    self.emit_u16(Op::LOCAL_GET, i);
+                    self.emit_u16(Op::LOCAL_GET, sep);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit(Op::I32_ADD);
+                    self.emit_const(Value::I32(0x7FFF_FFFF));
+                    common::strings::emit_substring(self.chunk(), line);
+                    common::tuples::emit_tuple(&mut self.chunks, self.current, 3, line);
+                    self.chunk().emit_end(line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
             "capitalize" => {
                 // Python/Ruby `s.capitalize()` → s[0].toUpperCase() +
                 // s.slice(1).toLowerCase(). Compose via ecma:string.
@@ -4340,7 +4550,13 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     let split_idx = self.import("ecma:string", "split");
                     self.emit_host_call(split_idx, 2);
-                    common::collections::emit_len(&mut self.chunks, self.current, line);
+                    // Length of the host array from split → i32 (the polymorphic
+                    // emit_len uses GC array.len, which misreads a host array).
+                    let arr_len = self.import("ecma:array", "length");
+                    self.emit_host_call(arr_len, 1);
+                    let to_f64 = self.import("wasm:js-number", "toF64");
+                    self.emit_host_call(to_f64, 1);
+                    self.emit(Op::I32_TRUNC_SAT_F64_S);
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_SUB);
                 } else {

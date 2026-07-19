@@ -34,8 +34,8 @@
 use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};
 
-use vybe_bytecode::Value;
 use vybe_bytecode::component::FuncSig;
+use vybe_bytecode::Value;
 
 /// A dot-separated canonical path into the tree (`"ecma.json.stringify"`).
 pub type Path = String;

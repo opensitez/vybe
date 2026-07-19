@@ -76,9 +76,9 @@ pub fn emit_set_dynamic(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_method_set(chunks: &mut [Chunk], current: usize, dict_slot: u16, line: u32) {
     // array_set(dict, key, val)
     let _val_tmp = chunks[current].add_constant(Value::Null); // dummy, we'll use stack
-    // Actually we need to save key for __keys. Use stack manipulation:
-    // Stack: [key, value]. Need [dict, key, value] for array_set.
-    // Then [dict.__keys, key] for array_push.
+                                                              // Actually we need to save key for __keys. Use stack manipulation:
+                                                              // Stack: [key, value]. Need [dict, key, value] for array_set.
+                                                              // Then [dict.__keys, key] for array_push.
 
     // Save value to use later
     // Strategy: emit dict first, then key+value are already there
@@ -134,8 +134,8 @@ pub fn emit_method_set_tracked(
     // REVISED: Take dict_slot, key_slot, val_slot.
     chunks[current].emit_op(Op::DROP, line); // drop key we just pushed
     chunks[current].emit_op(Op::DROP, line); // drop dict we just pushed
-    // Forget it — the stack ordering is too complex without a swap opcode.
-    // Just use array_set directly. Caller is responsible for stack order.
+                                             // Forget it — the stack ordering is too complex without a swap opcode.
+                                             // Just use array_set directly. Caller is responsible for stack order.
     crate::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -324,11 +324,11 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     // Null — return an empty array for legacy dicts without key tracking.
     chunks[current].emit_op(Op::DROP, line); // drop null
-    // We need the dict back — but it was consumed by struct_get.
-    // Can't recover without a local. Use host call as fallback.
-    // Actually, struct_get consumes the dict. We need to dup before.
-    // Let's restructure: caller should dup before calling emit_keys if they need dict after.
-    // For the fallback, emit empty array.
+                                             // We need the dict back — but it was consumed by struct_get.
+                                             // Can't recover without a local. Use host call as fallback.
+                                             // Actually, struct_get consumes the dict. We need to dup before.
+                                             // Let's restructure: caller should dup before calling emit_keys if they need dict after.
+                                             // For the fallback, emit empty array.
     crate::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);
@@ -498,7 +498,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
 /// because `entries` itself is polymorphic at the host fn level.
 pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     // [dict] → entries → [[k,v], ...]
-    let entries_fn = chunks[0].add_import("ecma:object", "entries");
+    let entries_fn = chunks[current].add_import("ecma:object", "entries");
     chunks[current].emit_call(entries_fn, 1, line);
 
     // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
@@ -515,7 +515,7 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
 /// §20.1.2.5. Polymorphic over Array, Map, and plain Object.
 /// Stack before: [dict]  Stack after: [array_of_pairs]
 pub fn emit_items(chunks: &mut [Chunk], current: usize, line: u32) {
-    let items_fn = chunks[0].add_import("ecma:object", "entries");
+    let items_fn = chunks[current].add_import("ecma:object", "entries");
     chunks[current].emit_call(items_fn, 1, line);
 }
 
