@@ -73,10 +73,10 @@ wat_exec! {
     test_return_call_ref => { r#"
 (type $sig (func (result i32)))
 (func $f1 (result i32) i32.const 42)
-(func (export "_start") (local $r (ref null $sig))
+(func (export "_start") (result i32) (local $r (ref null $sig))
   ref.func $f1
   local.set $r
-  
+
   local.get $r
   return_call_ref $sig
 )
@@ -88,10 +88,10 @@ wat_exec! {
   local.get 0
   local.get 1
   i32.add)
-(func (export "_start") (local $r (ref null $sig))
+(func (export "_start") (result i32) (local $r (ref null $sig))
   ref.func $add
   local.set $r
-  
+
   i32.const 10
   i32.const 20
   local.get $r

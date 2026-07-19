@@ -60,4 +60,17 @@ wat_exec! {
         v128.const f64x2 7.9 0 i32x4.relaxed_trunc_f64x2_s_zero i32x4.extract_lane 0 call $log)"#, "7" },
     test_i32x4_relaxed_trunc_f64x2_u_zero => { r#"(func (export "_start")
         v128.const f64x2 7.9 0 i32x4.relaxed_trunc_f64x2_u_zero i32x4.extract_lane 0 call $log)"#, "7" },
+
+    // ── relaxed integer dot products (i8×i7 → i16 / i32 accumulate) ───────────
+    // lane0 = a0*b0 + a1*b1 = 2*4 + 3*5 = 23 (b masked to 7 bits, here in range).
+    test_i16x8_relaxed_dot_i8x16_i7x16_s => { r#"(func (export "_start")
+        v128.const i8x16 2 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+        v128.const i8x16 4 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+        i16x8.relaxed_dot_i8x16_i7x16_s i16x8.extract_lane_s 0 call $log)"#, "23" },
+    // lane0 = c0 + (a0*b0 + a1*b1 + a2*b2 + a3*b3) = 100 + (1+2+3+4)*2 = 120.
+    test_i32x4_relaxed_dot_i8x16_i7x16_add_s => { r#"(func (export "_start")
+        v128.const i8x16 1 2 3 4 0 0 0 0 0 0 0 0 0 0 0 0
+        v128.const i8x16 2 2 2 2 0 0 0 0 0 0 0 0 0 0 0 0
+        v128.const i32x4 100 0 0 0
+        i32x4.relaxed_dot_i8x16_i7x16_add_s i32x4.extract_lane 0 call $log)"#, "120" },
 }

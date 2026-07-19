@@ -35,3 +35,4 @@ wat_exec! {
         (data (offset (i32.add (global.get $off) (i32.const 4))) "\63\00\00\00")
         (func (export "_start") i32.const 12 i32.load call $log))"#, "99" },
 }
+

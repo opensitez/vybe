@@ -81,14 +81,14 @@ wat_exec! {
 
     test_array_new_elem => { r#"
 (type $Arr (array (mut funcref)))
-(table 1 funcref)
-(elem $e (i32.const 0))
+(func $f)
+(elem $e $f)
 (func (export "_start") (local $a (ref null $Arr))
   i32.const 0
   i32.const 1
   array.new_elem $Arr $e
   local.set $a
-  
+
   local.get $a
   array.len
   call $log

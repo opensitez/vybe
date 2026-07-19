@@ -188,15 +188,15 @@ fn return_call_indirect() {
 // ── Exceptions proposal ───────────────────────────────────────────────────────
 
 #[test]
-fn try_catch_folded() {
+fn try_table_folded() {
     parse_ok(
         r#"
 (module
   (tag $e (param i32))
   (func (export "f")
-    (try
-      (nop)
-      (catch $e drop))))
+    (block $h
+      (try_table (catch_all $h)
+        (nop)))))
 "#,
     );
 }
@@ -213,17 +213,17 @@ fn throw_instr() {
 }
 
 #[test]
-fn rethrow_instr() {
+fn throw_ref_instr() {
     parse_ok(
         r#"
 (module
   (tag $e)
   (func (export "f")
-    try
-      nop
-    catch $e
-      rethrow 0
-    end))
+    (block $h (result exnref)
+      (try_table (catch_all_ref $h)
+        (nop))
+      unreachable)
+    throw_ref))
 "#,
     );
 }
