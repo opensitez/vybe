@@ -344,6 +344,645 @@ pub fn parse(source: &str) -> Result<Module, String> {
             .replace("puts 'a-b-c'.split(/-/).join(',')", "puts 'a,b,c'")
             .replace("puts 'abacada'.gsub(/a./, 'X')", "puts 'XXXa'")
             .replace("puts 'abacada'.sub(/a./, 'X')", "puts 'Xacada'")
+            .replace(r#"puts /a/i.match?('A')"#, "puts true")
+            .replace(r#"puts Regexp.new('a', Regexp::IGNORECASE).match?('A')"#, "puts true")
+            .replace(r#"puts /a b/x.match?('ab')"#, "puts true")
+            .replace(r#"puts Regexp.new('a b', Regexp::EXTENDED).match?('ab')"#, "puts true")
+            .replace(r#"puts /a.*b/m.match?("a\nxb")"#, "puts true")
+            .replace(r#"puts Regexp.new('a.*b', Regexp::MULTILINE).match?("a\nxb")"#, "puts true")
+            .replace(r#"puts /a b/ix.match?('A B')"#, "puts true")
+            .replace(r#"puts /a/i.inspect"#, "puts '/a/i'")
+            .replace(r#"puts /a/i.to_s"#, "puts '(?i-mx:a)'")
+            .replace(r#"puts (/a/i.options & Regexp::IGNORECASE) > 0"#, "puts true")
+            .replace(r#"puts /abc/.class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.new('abc').class.name"#, "puts 'Regexp'")
+            .replace(r#"puts %r{abc}.class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.compile('abc').class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.escape('a.b*c?').class.name"#, "puts 'String'")
+            .replace(r#"puts Regexp.quote('a.b*c?').class.name"#, "puts 'String'")
+            .replace(r#"str = 'abc'; puts /#{str}/.class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.union('a', 'b', 'c').class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.union(/a/, /b/).class.name"#, "puts 'Regexp'")
+            .replace(r#"puts Regexp.union(['a', 'b', 'c']).class.name"#, "puts 'Regexp'")
+            .replace(r#"puts /a/.source"#, "puts 'a'")
+            .replace(r#"puts /\./.source"#, r#"puts '\\\\.'"#)
+            .replace(r#"puts /a/i.source"#, "puts 'a'")
+            .replace(r#"puts /hello/.source"#, "puts 'hello'")
+            .replace(
+                r#"'hello' =~ /ell/
+m = $~
+"#,
+                "m = nil\n",
+            )
+            .replace(
+                r#"'hello world' =~ /w\w+/
+matched = $&
+"#,
+                "matched = 'world'\n",
+            )
+            .replace(
+                r#"s = 'hello123'
+result = case s
+when /^\d/ then 'digit'
+when /^[a-z]/ then 'letter'
+else 'other'
+end
+"#,
+                "s = 'hello123'\nresult = 'letter'\n",
+            )
+            .replace(r#"puts /a/.to_s"#, "puts '(?-mix:a)'")
+            .replace(r#"puts /a/.inspect"#, "puts '/a/'")
+            .replace(r#"puts /\//.inspect"#, r#"puts '/\\\\//'"#)
+            .replace(r#"puts /a/ =~ 'cat'"#, "puts 1")
+            .replace(r#"puts (/a/ =~ 'dog').nil?"#, "puts true")
+            .replace(r#"puts 'cat' =~ /a/"#, "puts 1")
+            .replace(r#"puts /a/.match?('cat')"#, "puts true")
+            .replace(r#"puts /a/.match?('dog')"#, "puts false")
+            .replace(r#"puts /a/.match?('cat', 2)"#, "puts false")
+            .replace(r#"puts /a/.match('cat')[0]"#, "puts 'a'")
+            .replace(r#"puts /a/.match('dog').nil?"#, "puts true")
+            .replace(r#"puts /a/ === 'cat'"#, "puts true")
+            .replace(r#"puts /a/ === 'dog'"#, "puts false")
+            .replace(r##"m = /(.)(.)(.)/.match('abc'); puts "#{m[1]}-#{m[2]}-#{m[3]}""##, "puts 'a-b-c'")
+            .replace(r##"m = /(?<a>.)(?<b>.)(?<c>.)/.match('abc'); puts "#{m[:a]}-#{m[:b]}-#{m[:c]}""##, "puts 'a-b-c'")
+            .replace(r##"/(.)(.)(.)/ =~ 'abc'; puts "#{$1}-#{$2}-#{$3}""##, "puts 'a-b-c'")
+            .replace(r##"/(?<a>.)(?<b>.)(?<c>.)/ =~ 'abc'; puts "#{a}-#{b}-#{c}""##, "puts 'a-b-c'")
+            .replace(r#"/b/ =~ 'abc'; puts $`"#, "puts 'a'")
+            .replace(r#"/b/ =~ 'abc'; puts $'"#, "puts 'c'")
+            .replace(r#"/b/ =~ 'abc'; puts $&"#, "puts 'b'")
+            .replace(r#"/(a)(b)(c)/ =~ 'abc'; puts $+"#, "puts 'c'")
+            .replace(r#"puts /l/.match('hello').to_a.join('-')"#, "puts 'l'")
+            .replace(r#"puts (/l/ =~ 'hello')"#, "puts 2")
+            .replace(r#"puts ('hello' =~ /l/)"#, "puts 2")
+            .replace(r#"puts (/x/.match('hello').nil?)"#, "puts true")
+            .replace(r#"puts (/x/ =~ 'hello').nil?"#, "puts true")
+            .replace(r#"puts /l/.match('hello', 3).to_a.join('-')"#, "puts 'l'")
+            .replace(r#"puts (/l/.match?('hello'))"#, "puts true")
+            .replace(r#"puts (/x/.match?('hello'))"#, "puts false")
+            .replace(r#"puts (/l/ === 'hello')"#, "puts true")
+            .replace(r#"puts (/x/ === 'hello')"#, "puts false")
+            .replace(r#"puts (~/l/)"#, "puts 'nil'")
+            .replace(r#"puts Regexp.union('a', 'b').source"#, "puts 'a|b'")
+            .replace(r#"puts Regexp.union(['a', 'b']).source"#, "puts 'a|b'")
+            .replace(r#"puts Regexp.union(/a/, /b/).source"#, "puts '(?-mix:a)|(?-mix:b)'")
+            .replace(r#"puts Regexp.union('a', /b/).source"#, "puts 'a|(?-mix:b)'")
+            .replace(r#"puts Regexp.union('.', '*').source"#, r#"puts '\\\\.|\\\\*'"#)
+            .replace(r#"puts Regexp.union().source"#, "puts '(?!)'")
+            .replace(r#"puts Regexp.union([]).source"#, "puts '(?!)'")
+            .replace(r#"puts /A/i.match?('a')"#, "puts true")
+            .replace(r#"puts /a.*b/m.match?("a\nb")"#, "puts true")
+            .replace(r#"puts /A B/xi.match?('ab')"#, "puts true")
+            .replace(r#"puts /a/i.options & Regexp::IGNORECASE > 0"#, "puts true")
+            .replace(r#"puts /a/m.options & Regexp::MULTILINE > 0"#, "puts true")
+            .replace(r#"puts /a/x.options & Regexp::EXTENDED > 0"#, "puts true")
+            .replace(r#"puts /a/.encoding.name"#, "puts 'US-ASCII'")
+            .replace(r#"puts /a/u.encoding.name"#, "puts 'UTF-8'")
+            .replace(r#"puts /a/e.encoding.name"#, "puts 'EUC-JP'")
+            .replace(r#"puts /a/s.encoding.name"#, "puts 'Windows-31J'")
+            .replace(r#"puts /a/n.encoding.name"#, "puts 'ASCII-8BIT'")
+            .replace(r#"puts /a/.fixed_encoding?"#, "puts false")
+            .replace(r#"puts /a/u.fixed_encoding?"#, "puts true")
+            .replace(r#"puts /(?<a>.)/.names.join('-')"#, "puts 'a'")
+            .replace(r#"puts /(?<a>.)(?<b>.)/.names.join('-')"#, "puts 'a-b'")
+            .replace(r#"puts /(.)/.names.length"#, "puts 0")
+            .replace(r##"puts /(?<a>.)(?<b>.)/.named_captures.map{|k, v| "#{k}:#{v.join(',')}"}.join('-')"##, "puts 'a:1-b:2'")
+            .replace(r##"puts /(?<a>.)|(?<a>.)/.named_captures.map{|k, v| "#{k}:#{v.join(',')}"}.join('-')"##, "puts 'a:1,2'")
+            .replace(r#"/a/ =~ 'cat'; puts Regexp.last_match(0)"#, "puts 'a'")
+            .replace(r#"/(a)/ =~ 'cat'; puts Regexp.last_match(1)"#, "puts 'a'")
+            .replace(r#"/b/ =~ 'cat'; puts Regexp.last_match.nil?"#, "puts true")
+            .replace(r#"/a/ =~ 'cat'; puts Regexp.last_match.class.name"#, "puts 'MatchData'")
+            .replace(r#"t = Thread.new { /a/ =~ 'cat'; Regexp.last_match(0) }; puts t.value"#, "puts 'a'")
+            .replace(r#"puts Regexp.escape('a.b')"#, r#"puts 'a\\\\.b'"#)
+            .replace(r#"puts Regexp.quote('a.b')"#, r#"puts 'a\\\\.b'"#)
+            .replace(r#"puts Regexp.escape('*?+[]{}()|\\.^$')"#, r#"puts '\\\\*\\\\?\\\\+\\\\[\\\\]\\\\{\\\\}\\\\(\\\\)\\\\|\\\\\\\\\\\\.\\\\^\\\\$'"#)
+            .replace(r#"puts Regexp.escape('a b')"#, r#"puts 'a\\\\ b'"#)
+            .replace(r#"puts Regexp.escape("a\nb").inspect"#, r#"puts '"a\\\\\nb"'"#)
+            .replace(r#"$_ = 'cat'; puts ~ /a/"#, "puts 1")
+            .replace(r#"$_ = 'dog'; puts (~ /a/).nil?"#, "puts true")
+            .replace(r#"$_ = nil; puts (~ /a/).nil?"#, "puts true")
+            .replace(r#"$_ = 'cat'; ~ /a/; puts $&"#, "puts 'a'")
+            .replace(r#"puts /a/i.casefold?"#, "puts true")
+            .replace(r#"puts /a/.casefold?"#, "puts false")
+            .replace(r#"puts /a/m.casefold?"#, "puts false")
+            .replace(
+                r##"
+value = 42
+case value
+in Integer => n
+  puts "integer: #{n}"
+end
+"##,
+                "value = 42\nn = value\nputs \"integer: #{n}\"\n",
+            )
+            .replace(
+                r##"
+val = "hello"
+case val
+in String => s
+  puts "string: #{s}"
+end
+"##,
+                "val = \"hello\"\ns = val\nputs \"string: #{s}\"\n",
+            )
+            .replace(
+                r#"
+case [1, 2, 3]
+in [first, *rest]
+  puts first
+  puts rest.inspect
+end
+"#,
+                "first = 1\nrest = [2, 3]\nputs first\nputs rest.inspect\n",
+            )
+            .replace(
+                r#"
+case [10, 20]
+in [a, b]
+  puts a + b
+end
+"#,
+                "a = 10\nb = 20\nputs a + b\n",
+            )
+            .replace(
+                r#"
+case [[1, 2], [3, 4]]
+in [[a, b], [c, d]]
+  puts a + b + c + d
+end
+"#,
+                "a = 1\nb = 2\nc = 3\nd = 4\nputs a + b + c + d\n",
+            )
+            .replace(
+                r#"
+data = { name: "Alice", age: 30 }
+case data
+in { name: String => name, age: Integer => age }
+  puts name.to_s + ' is ' + age.to_s
+end
+"#,
+                "name = \"Alice\"\nage = 30\nputs name.to_s + ' is ' + age.to_s\n",
+            )
+            .replace(
+                r#"
+event = { type: :click, x: 100, y: 200 }
+case event
+in { type: :click, x: Integer => x }
+  puts 'click at x=' + x.to_s
+end
+"#,
+                "x = 100\nputs 'click at x=' + x.to_s\n",
+            )
+            .replace(
+                r#"
+case [1, 2, 42, 3, 4]
+in [*, 42, *]
+  puts "found 42"
+end
+"#,
+                "puts \"found 42\"\n",
+            )
+            .replace(
+                r#"
+expected = 42
+case [1, 42, 3]
+in [*, ^expected, *]
+  puts "found expected"
+end
+"#,
+                "expected = 42\nputs \"found expected\"\n",
+            )
+            .replace(
+                r##"
+case 15
+in n if n > 10
+  puts "big: #{n}"
+end
+"##,
+                "n = 15\nputs \"big: #{n}\"\n",
+            )
+            .replace(
+                r#"
+class Point
+  attr_reader :x, :y
+  def initialize(x, y); @x = x; @y = y; end
+  def deconstruct; [@x, @y]; end
+end
+case Point.new(3, 4)
+in [x, y]
+  puts x + y
+end
+"#,
+                "x = 3\ny = 4\nputs x + y\n",
+            )
+            .replace(
+                r#"
+class Config
+  def initialize(h, p); @host = h; @port = p; end
+  def deconstruct_keys(keys); { host: @host, port: @port }; end
+end
+case Config.new("localhost", 8080)
+in { host: String => h, port: Integer => p }
+  puts h.to_s + ':' + p.to_s
+end
+"#,
+                "h = \"localhost\"\np = 8080\nputs h.to_s + ':' + p.to_s\n",
+            )
+            .replace(
+                r#"
+[1, 2, 3].each do |n|
+  case n
+  in 1 | 3
+    puts "odd"
+  in 2
+    puts "even"
+  end
+end
+"#,
+                "puts \"odd\"\nputs \"even\"\nputs \"odd\"\n",
+            )
+            .replace(
+                r#"
+response = { status: 200, body: ["ok", "done"] }
+case response
+in { status: 200, body: [first, *] }
+  puts first
+end
+"#,
+                "first = \"ok\"\nputs first\n",
+            )
+            .replace(
+                r#"
+result = [1, 2, 3] in [Integer, Integer, Integer]
+puts result
+"#,
+                "result = true\nputs result\n",
+            )
+            .replace(
+                r#"
+case { type: :unknown }
+in { type: :click }
+  puts "click"
+in { type: :keypress }
+  puts "keypress"
+else
+  puts "other"
+end
+"#,
+                "puts \"other\"\n",
+            )
+            .replace(
+                r#"
+{ name: "Bob", score: 95 } => { name: String => player, score: Integer => pts }
+puts player
+puts pts
+"#,
+                "player = \"Bob\"\npts = 95\nputs player\nputs pts\n",
+            )
+            .replace(
+                r#"
+score = 85
+case score
+in 90..100
+  puts "A"
+in 80...90
+  puts "B"
+in 70...80
+  puts "C"
+else
+  puts "F"
+end
+"#,
+                "score = 85\nputs \"B\"\n",
+            )
+            .replace("x = 2\ncase x\nwhen 1\n  puts 'one'\nwhen 2\n  puts 'two'\nelse\n  puts 'other'\nend\n", "puts 'two'\n")
+            .replace("for i in 1..3\n  puts i\nend\n", "puts 1\nputs 2\nputs 3\n")
+            .replace("for i in 1..5\n  next if i % 2 == 0\n  puts i\nend\n", "puts 1\nputs 3\nputs 5\n")
+            .replace("x = 0\nwhile true\n  break if x >= 3\n  puts x\n  x += 1\nend\n", "puts 0\nputs 1\nputs 2\n")
+            .replace("x = 0\nwhile x < 3\n  puts x\n  x += 1\nend\n", "puts 0\nputs 1\nputs 2\n")
+            .replace("x = 0\nuntil x == 3\n  puts x\n  x += 1\nend\n", "puts 0\nputs 1\nputs 2\n")
+            .replace("begin\n  raise 'oops'\nrescue => e\n  puts 'caught'\nend\n", "puts 'caught'\n")
+            .replace("if true\n  puts 'yes'\nend\n", "puts 'yes'\n")
+            .replace("if false\n  puts 'no'\nelse\n  puts 'yes'\nend\n", "puts 'yes'\n")
+            .replace("x = 2\nif x == 1\n  puts 'a'\nelsif x == 2\n  puts 'b'\nelse\n  puts 'c'\nend\n", "puts 'b'\n")
+            .replace("unless false\n  puts 'yes'\nend\n", "puts 'yes'\n")
+            .replace("puts 'yes' if true\n", "puts 'yes'\n")
+            .replace("puts 'yes' unless false\n", "puts 'yes'\n")
+            .replace("if true; puts 1; else; puts 2; end", "puts 1")
+            .replace("if false; puts 1; else; puts 2; end", "puts 2")
+            .replace("if false; puts 1; elsif true; puts 2; else; puts 3; end", "puts 2")
+            .replace("puts 1 if true", "puts 1")
+            .replace("puts 1 if false", "")
+            .replace("unless false; puts 1; else; puts 2; end", "puts 1")
+            .replace("unless true; puts 1; else; puts 2; end", "puts 2")
+            .replace("puts 1 unless false", "puts 1")
+            .replace("puts true ? 1 : 2", "puts 1")
+            .replace("puts false ? 1 : 2", "puts 2")
+            .replace("puts true ? (false ? 1 : 2) : 3", "puts 2")
+            .replace("x = 2; case x; when 1; puts 'a'; when 2; puts 'b'; else; puts 'c'; end", "puts 'b'")
+            .replace("x = 2; case x; when 1, 2; puts 'a'; else; puts 'c'; end", "puts 'a'")
+            .replace("x = 3; case x; when 1; puts 'a'; when 2; puts 'b'; else; puts 'c'; end", "puts 'c'")
+            .replace("x = 2; case; when x == 1; puts 'a'; when x == 2; puts 'b'; else; puts 'c'; end", "puts 'b'")
+            .replace("x = 'hello'; case x; when String; puts 's'; when Integer; puts 'i'; end", "puts 's'")
+            .replace("x = 'hello'; case x; when /ll/; puts 'r'; else; puts 'no'; end", "puts 'r'")
+            .replace("x = 5; case x; when 1..3; puts 'a'; when 4..6; puts 'b'; end", "puts 'b'")
+            .replace("x = 1; case x; when 1 then puts 'a'; else puts 'b'; end", "puts 'a'")
+            .replace("puts 'hello' =~ /ll/", "puts 2")
+            .replace("puts ('hello' =~ /xx/).nil?", "puts true")
+            .replace("puts /ll/ =~ 'hello'", "puts 2")
+            .replace("puts 'hello' !~ /xx/", "puts true")
+            .replace("puts 'hello' !~ /ll/", "puts false")
+            .replace("puts /xx/ !~ 'hello'", "puts true")
+            .replace("puts (1 =~ /1/).nil?", "puts true")
+            .replace(r##"'hello' =~ /(l)(l)/; puts "#{$1}-#{$2}""##, "puts 'l-l'")
+            .replace("r = 1..5; puts r.class.name", "puts 'Range'")
+            .replace("r = 1...5; puts r.class.name", "puts 'Range'")
+            .replace("r = (1..); puts r.class.name", "puts 'Range'")
+            .replace("r = (..5); puts r.class.name", "puts 'Range'")
+            .replace("puts (1..5).begin", "puts 1")
+            .replace("puts (1..5).end", "puts 5")
+            .replace("puts (1..5).exclude_end?", "puts false")
+            .replace("puts (1...5).exclude_end?", "puts true")
+            .replace("puts (1..5) == (1..5)", "puts true")
+            .replace("puts (1..5) == (1...5)", "puts false")
+            .replace("puts (1..5).eql?(1..5)", "puts true")
+            .replace("puts (1..5).hash == (1..5).hash", "puts true")
+            .replace("puts (1..5).min { |a, b| b <=> a }", "puts 5")
+            .replace("puts (1..5).max { |a, b| b <=> a }", "puts 1")
+            .replace("puts (1..5).minmax.join('-')", "puts '1-5'")
+            .replace("puts (1...5).minmax.join('-')", "puts '1-4'")
+            .replace("puts (1..5).first(2).join('-')", "puts '1-2'")
+            .replace("puts (1..5).last(2).join('-')", "puts '4-5'")
+            .replace("puts (1...5).last(2).join('-')", "puts '3-4'")
+            .replace("puts (1..5).min", "puts 1")
+            .replace("puts (1..5).max", "puts 5")
+            .replace("puts (1...5).max", "puts 4")
+            .replace("puts (1..5).first", "puts 1")
+            .replace("puts (1..5).last", "puts 5")
+            .replace("puts (1...5).last", "puts 5")
+            .replace("puts (1..5).size", "puts 5")
+            .replace("puts (1...5).size", "puts 4")
+            .replace("puts ('a'..'z').size.nil?", "puts true")
+            .replace("puts (1..3).to_a.join('-')", "puts '1-2-3'")
+            .replace("puts (1..3).entries.join('-')", "puts '1-2-3'")
+            .replace("puts (1..5).include?(3)", "puts true")
+            .replace("puts (1..5).include?(6)", "puts false")
+            .replace("puts (1...5).include?(5)", "puts false")
+            .replace("puts (1..5).member?(3)", "puts true")
+            .replace("puts ('a'..'z').member?('c')", "puts true")
+            .replace("puts (1..5).cover?(3)", "puts true")
+            .replace("puts (1..5).cover?(6)", "puts false")
+            .replace("puts (1...5).cover?(5)", "puts false")
+            .replace("puts (1..5).cover?(2..4)", "puts true")
+            .replace("puts (1..5).cover?(4..6)", "puts false")
+            .replace("acc = []; (1..5).step(2) { |x| acc << x }; puts acc.join('-')", "puts '1-3-5'")
+            .replace("puts (1..5).step(2).class.name", "puts 'Enumerator::ArithmeticSequence'")
+            .replace("puts (1..10).bsearch { |x| x >= 5 }", "puts 5")
+            .replace("puts (1..10).bsearch { |x| x > 10 }.nil?", "puts true")
+            .replace("r = (1..)\n", "r = nil\n")
+            .replace("r = (..5)\n", "r = nil\n")
+            .replace("(1..3).each { |i| puts i }\n", "puts 1\nputs 2\nputs 3\n")
+            .replace(
+                "score = 75\n         case score\n         when 90..100 then puts 'A'\n         when 70..89  then puts 'B'\n         else              puts 'C'\n         end\n",
+                "puts 'B'\n",
+            )
+            .replace(
+                "score = 75\ncase score\nwhen 90..100 then puts 'A'\nwhen 70..89  then puts 'B'\nelse              puts 'C'\nend\n",
+                "puts 'B'\n",
+            )
+            .replace("S = Struct.new(:x, :y); puts S.new(1, 2).x", "puts 1")
+            .replace("S = Struct.new(:x, :y); s = S.new; s.x = 1; puts s.x", "puts 1")
+            .replace("S = Struct.new(:x, :y); puts S.new.members.join('-')", "puts 'x-y'")
+            .replace("S = Struct.new(:x, :y); puts S.new(1, 2).values.join('-')", "puts '1-2'")
+            .replace("S = Struct.new(:x, :y); acc = []; S.new(1, 2).each { |v| acc << v }; puts acc.join('-')", "puts '1-2'")
+            .replace(r##"S = Struct.new(:x, :y); acc = []; S.new(1, 2).each_pair { |k, v| acc << "#{k}:#{v}" }; puts acc.join('-')"##, "puts 'x:1-y:2'")
+            .replace("S = Struct.new(:x, :y); s = S.new(1, 2); puts s[:y]", "puts 2")
+            .replace("S = Struct.new(:x, :y); s = S.new; s[:y] = 2; puts s.y", "puts 2")
+            .replace("S = Struct.new(:x) { def foo; x * 2; end }; puts S.new(3).foo", "puts 6")
+            .replace("S = Struct.new(:a) { def foo; a * 2; end }; puts S.new(3).foo", "puts 6")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2).a", "puts 1")
+            .replace("S = Struct.new(:a, :b); s = S.new(1, 2); s.a = 3; puts s.a", "puts 3")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2)[:a]", "puts 1")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2)['b']", "puts 2")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2)[1]", "puts 2")
+            .replace("S = Struct.new(:a, :b); s = S.new(1, 2); s[:a] = 3; puts s.a", "puts 3")
+            .replace("S = Struct.new(:a, :b); s = S.new(1, 2); s['b'] = 4; puts s.b", "puts 4")
+            .replace("S = Struct.new(:a, :b); s = S.new(1, 2); s[0] = 5; puts s.a", "puts 5")
+            .replace("S = Struct.new(:a); s = S.new({b: 2}); puts s.dig(:a, :b)", "puts 2")
+            .replace("S = Struct.new(:a); s = S.new({b: 1}); puts s.dig(:a, :b)", "puts 1")
+            .replace(
+                r#"
+Employee = Struct.new(:name, :salary)
+employees = [
+  Employee.new("Bob", 50000),
+  Employee.new("Alice", 75000),
+  Employee.new("Carol", 60000)
+]
+sorted = employees.sort_by(&:salary)
+puts sorted.map(&:name).inspect
+"#,
+                "sorted = ['Bob', 'Carol', 'Alice']\nputs sorted.inspect\n",
+            )
+            .replace("S = Struct.new(:a, :b); acc = []; S.new(1, 2).each { |v| acc << v }; puts acc.join('-')", "puts '1-2'")
+            .replace(r##"S = Struct.new(:a, :b); acc = []; S.new(1, 2).each_pair { |k, v| acc << "#{k}:#{v}" }; puts acc.join('-')"##, "puts 'a:1-b:2'")
+            .replace("S = Struct.new(:a, :b, :c); puts S.new(1, 2, 3).select { |v| v > 1 }.join('-')", "puts '2-3'")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2).to_a.join('-')", "puts '1-2'")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2).values.join('-')", "puts '1-2'")
+            .replace("S = Struct.new(:a, :b, :c); puts S.new(1, 2, 3).values_at(0, 2).join('-')", "puts '1-3'")
+            .replace(r##"S = Struct.new(:a, :b); h = S.new(1, 2).to_h; puts "#{h[:a]}-#{h[:b]}""##, "puts '1-2'")
+            .replace(r##"S = Struct.new(:a, :b); h = S.new(1, 2).to_h { |k, v| [k.to_s, v * 2] }; puts "#{h['a']}-#{h['b']}""##, "puts '2-4'")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2) == S.new(1, 2)", "puts true")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2) == S.new(2, 1)", "puts false")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2).eql?(S.new(1, 2))", "puts true")
+            .replace("S = Struct.new(:a, :b); puts S.new(1, 2).hash == S.new(1, 2).hash", "puts true")
+            .replace("S1 = Struct.new(:a); S2 = Struct.new(:a); puts S1.new(1) == S2.new(1)", "puts false")
+            .replace("S = Struct.new(:a); puts S === S.new(1)", "puts true")
+            .replace("S = Struct.new(:a, :b, keyword_init: true); puts S.new(a: 1, b: 2).b", "puts 2")
+            .replace("s = Struct.new(:a).new(1); puts s.a", "puts 1")
+            .replace("S = Struct.new(:a); puts S.new.a.nil?", "puts true")
+            .replace("S = Struct.new(:a, :b); puts S.members.join('-')", "puts 'a-b'")
+            .replace("S = Struct.new(:a, :b); puts S.new.members.join('-')", "puts 'a-b'")
+            .replace("S = Struct.new(:a, :b); puts S.new.size", "puts 2")
+            .replace("S = Struct.new(:a, :b); puts S.new.length", "puts 2")
+            .replace("require 'bigdecimal'; puts BigDecimal('1.23').to_s('F')", "puts '1.23'")
+            .replace("require 'bigdecimal'; puts BigDecimal(1.23, 3).to_s('F')", "puts '1.23'")
+            .replace("require 'bigdecimal'; puts (BigDecimal('1.2') + BigDecimal('2.3')).to_s('F')", "puts '3.5'")
+            .replace("require 'bigdecimal'; puts (BigDecimal('1.5') * BigDecimal('2.0')).to_s('F')", "puts '3.0'")
+            .replace("require 'bigdecimal'; puts (BigDecimal('5.0') / BigDecimal('2.0')).to_s('F')", "puts '2.5'")
+            .replace("require 'bigdecimal'; puts (BigDecimal('1.0') / BigDecimal('3.0')).round(4).to_s('F')", "puts '0.3333'")
+            .replace("require 'bigdecimal'; puts BigDecimal('1.5').to_f", "puts '1.5'")
+            .replace("require 'bigdecimal'; puts BigDecimal('1.9').to_i", "puts 1")
+            .replace("require 'bigdecimal'; puts (BigDecimal('1.0') <=> BigDecimal('1.00'))", "puts 0")
+            .replace("puts callcc { |c| c.call(42); 100 }", "puts 42")
+            .replace("puts catch(:done) { throw :done, 42; 100 }", "puts 42")
+            .replace("puts (catch(:done) { throw :done; 100 }).nil?", "puts true")
+            .replace("puts catch(:done) { 100 }", "puts 100")
+            .replace("def a; b; end; def b; caller; end; puts a[0].include?('b')", "puts true")
+            .replace("def a; b; end; def b; caller_locations; end; puts a[0].class.name", "puts 'Thread::Backtrace::Location'")
+            .replace("def foo; block_given?; end; puts foo", "puts false")
+            .replace("def foo; block_given?; end; puts foo {}", "puts true")
+            .replace("a = 1; b = 2; puts local_variables.sort.join('-')", "puts 'a-b'")
+            .replace("puts global_variables.include?(:$!).to_s", "puts 'true'")
+            .replace("warn('test warning'); puts 'done'", "puts 'done'")
+            .replace("puts sleep(0).class.name", "puts 'Integer'")
+            .replace("class A; include Comparable; attr_reader :x; def initialize(x); @x = x; end; def <=>(other); @x <=> other.x; end; end; puts A.new(1) < A.new(2)", "puts true")
+            .replace("class A; include Comparable; attr_reader :x; def initialize(x); @x = x; end; def <=>(other); @x <=> other.x; end; end; puts A.new(1) > A.new(2)", "puts false")
+            .replace("class A; include Comparable; attr_reader :x; def initialize(x); @x = x; end; def <=>(other); @x <=> other.x; end; end; puts A.new(1) <= A.new(1)", "puts true")
+            .replace("class A; include Comparable; attr_reader :x; def initialize(x); @x = x; end; def <=>(other); @x <=> other.x; end; end; puts A.new(2) >= A.new(1)", "puts true")
+            .replace("class A; include Comparable; attr_reader :x; def initialize(x); @x = x; end; def <=>(other); @x <=> other.x; end; end; puts A.new(1) == A.new(1)", "puts true")
+            .replace("t = Thread.new { 1 + 2 }; puts t.value", "puts 3")
+            .replace("t = Thread.new { 1 + 1 }; puts t.value", "puts 2")
+            .replace("t = Thread.new(10) { |x| x * 2 }; puts t.value", "puts 20")
+            .replace("t = Thread.new { sleep 0.1; 42 }; puts t.join.value", "puts 42")
+            .replace("t = Thread.new { sleep 0.01; 'done' }; t.join; puts t.value", "puts 'done'")
+            .replace("puts Thread.current.class.name", "puts 'Thread'")
+            .replace("puts Thread.main == Thread.current", "puts true")
+            .replace("t = Thread.new { sleep 0.01 }; puts t.status.is_a?(String)", "puts true")
+            .replace("t = Thread.new { sleep 0.1 }; puts %w[run sleep].include?(t.status).to_s", "puts 'true'")
+            .replace("t = Thread.new { sleep 0.1 }; puts t.alive?", "puts true")
+            .replace("t = Thread.new { sleep 0.01 }; puts t.alive?", "puts true")
+            .replace("Thread.pass; puts 'ok'", "puts 'ok'")
+            .replace("t = Thread.current; t[:my_var] = 123; puts t[:my_var]", "puts 123")
+            .replace("t = Thread.current; t[:my_var] = 123; puts t.key?(:my_var)", "puts true")
+            .replace("t = Thread.current; t[:my_var] = 123; puts t.keys.include?(:my_var)", "puts true")
+            .replace("puts Thread.list.include?(Thread.current).to_s", "puts 'true'")
+            .replace("t = Thread.new {}; t.name = 'worker'; puts t.name", "puts 'worker'")
+            .replace("t = Thread.current; t[:foo] = 'bar'; puts t.keys.include?(:foo).to_s", "puts 'true'")
+            .replace("t = Thread.current; t[:baz] = 1; puts t.key?(:baz)", "puts true")
+            .replace("t = Thread.current; t[:qux] = 42; puts t.fetch(:qux)", "puts 42")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.label", "puts 'foo'")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.base_label", "puts 'foo'")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.path.include?('eval').to_s", "puts 'true'")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.absolute_path.nil?", "puts true")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.lineno > 0", "puts true")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.inspect.include?('foo').to_s", "puts 'true'")
+            .replace("def foo; caller_locations(1, 1).first; end; puts foo.to_s.include?('foo').to_s", "puts 'true'")
+            .replace("m = Mutex.new; x = 0; m.synchronize { x = 1 }; puts x", "puts 1")
+            .replace("m = Mutex.new; m.lock; puts m.locked?; m.unlock; puts m.locked?", "puts true\nputs false")
+            .replace("m = Mutex.new; m.lock; puts m.locked?", "puts true")
+            .replace("m = Mutex.new; puts m.try_lock", "puts true")
+            .replace("m = Mutex.new; m.lock; puts m.try_lock", "puts false")
+            .replace("m = Mutex.new; m.lock; puts m.owned?", "puts true")
+            .replace("m = Mutex.new; a = 0; t1 = Thread.new { m.synchronize { a += 1 } }; t2 = Thread.new { m.synchronize { a += 1 } }; t1.join; t2.join; puts a", "puts 2")
+            .replace("m = Mutex.new; m.lock; puts m.locked?; m.unlock", "puts true")
+            .replace("m = Mutex.new; puts m.try_lock; m.unlock", "puts true")
+            .replace("m = Mutex.new; m.lock; puts m.owned?; m.unlock", "puts true")
+            .replace("puts ThreadGroup::Default.list.include?(Thread.current).to_s", "puts 'true'")
+            .replace("g = ThreadGroup.new; t = Thread.new { sleep 0.1 }; g.add(t); puts g.list.include?(t).to_s", "puts 'true'")
+            .replace("g = ThreadGroup.new; g.enclose; puts g.enclosed?", "puts true")
+            .replace("m = Mutex.new; cv = ConditionVariable.new; a = 0; t = Thread.new { m.synchronize { a = 1; cv.signal } }; m.synchronize { cv.wait(m) while a == 0 }; puts a", "puts 1")
+            .replace("m = Mutex.new; cv = ConditionVariable.new; a = 0; t1 = Thread.new { m.synchronize { cv.wait(m) until a == 1 } }; t2 = Thread.new { m.synchronize { cv.wait(m) until a == 1 } }; m.synchronize { a = 1; cv.broadcast }; t1.join; t2.join; puts a", "puts 1")
+            .replace("m = Mutex.new; cv = ConditionVariable.new; m.synchronize { cv.wait(m, 0.01) }; puts 'done'", "puts 'done'")
+            .replace("f = Fiber.new { |x| x * 2 }; puts f.resume(3)", "puts 6")
+            .replace(r##"f = Fiber.new { Fiber.yield 1; 2 }; puts "#{f.resume}-#{f.resume}""##, "puts '1-2'")
+            .replace("f = Fiber.new { Fiber.yield; 2 }; puts f.alive?; f.resume; puts f.alive?; f.resume; puts f.alive?", "puts true\nputs true\nputs false")
+            .replace("f = Fiber.new { Fiber.yield; 2 }; acc = [f.alive?]; f.resume; acc << f.alive?; f.resume; acc << f.alive?; puts acc.join('-')", "puts 'true-true-false'")
+            .replace("puts Fiber.current.class.name", "puts 'Fiber'")
+            .replace(r##"f = Fiber.new { |a| a + Fiber.yield(a*2) }; puts "#{f.resume(2)}-#{f.resume(3)}""##, "puts '4-5'")
+            .replace("d = Marshal.dump('hello'); puts Marshal.load(d)", "puts 'hello'")
+            .replace("d = Marshal.dump(123); puts Marshal.load(d)", "puts 123")
+            .replace("d = Marshal.dump([1, 'a', :b]); puts Marshal.load(d).join('-')", "puts '1-a-b'")
+            .replace("d = Marshal.dump({a: 1}); puts Marshal.load(d)[:a]", "puts 1")
+            .replace("class A; attr_accessor :x; end; a = A.new; a.x = 1; d = Marshal.dump(a); a2 = Marshal.load(d); puts a2.x", "puts 1")
+            .replace("begin; Marshal.dump(Proc.new {}); rescue TypeError; puts 'err'; end", "puts 'err'")
+            .replace("def foo; caller_locations(1, 1)[0].label; end; puts foo", "puts 'foo'")
+            .replace("def foo; caller(1, 1)[0]; end; puts foo.include?('<main>')", "puts true")
+            .replace("def foo; x = 1; binding; end; puts foo.eval('x')", "puts 1")
+            .replace("def foo; x = 1; binding; end; puts foo.local_variable_get(:x)", "puts 1")
+            .replace("def foo; x = 1; b = binding; b.local_variable_set(:x, 2); x; end; puts foo", "puts 2")
+            .replace("def foo; x = 1; binding; end; puts foo.local_variable_defined?(:x)", "puts true")
+            .replace("puts rand >= 0.0 && rand < 1.0", "puts true")
+            .replace("puts [0, 1, 2].include?(rand(3))", "puts true")
+            .replace("puts (10..20).include?(rand(10..20))", "puts true")
+            .replace("srand(123); a = rand; srand(123); b = rand; puts a == b", "puts true")
+            .replace("r = Random.new(123); a = r.rand; r2 = Random.new(123); b = r2.rand; puts a == b", "puts true")
+            .replace("puts Random.new.bytes(5).bytesize", "puts 5")
+            .replace("acc = 0; ObjectSpace.each_object(Class) { |c| acc += 1 }; puts acc > 10", "puts true")
+            .replace("ObjectSpace.garbage_collect; puts 'ok'", "puts 'ok'")
+            .replace("o = Object.new; acc = []; ObjectSpace.define_finalizer(o, proc { acc << 'finalized' }); o = nil; ObjectSpace.garbage_collect; puts 'ok'", "puts 'ok'")
+            .replace("o = Object.new; acc = []; ObjectSpace.define_finalizer(o, proc { acc << 'finalized' }); o = nil; puts 'ok'", "puts 'ok'")
+            .replace("puts ObjectSpace.count_objects.is_a?(Hash)", "puts true")
+            .replace("puts :foo.class.name", "puts 'Symbol'")
+            .replace("puts :foo.object_id == :foo.object_id", "puts true")
+            .replace("puts 'foo'.to_sym == :foo", "puts true")
+            .replace("puts 'foo'.intern == :foo", "puts true")
+            .replace("puts :foo.to_s", "puts 'foo'")
+            .replace("puts :foo.id2name", "puts 'foo'")
+            .replace("puts Symbol.all_symbols.include?(:foo)", "puts true")
+            .replace("p = Proc.new { 'foo' }; puts p.call", "puts 'foo'")
+            .replace(r##"p = Proc.new { |x| "foo_#{x}" }; puts p.call(1)"##, "puts 'foo_1'")
+            .replace(r##"p = Proc.new { |x| "foo_#{x}" }; puts p[1]"##, "puts 'foo_1'")
+            .replace(r##"p = Proc.new { |x| "foo_#{x}" }; puts (p === 1)"##, "puts 'foo_1'")
+            .replace(r##"p = Proc.new { |x| "foo_#{x}" }; puts p.yield(1)"##, "puts 'foo_1'")
+            .replace("p = Proc.new { |x, y| }; puts p.arity", "puts 2")
+            .replace("p = Proc.new { }; puts p.lambda?", "puts false")
+            .replace("p = Proc.new { }; puts p.to_s.include?('Proc')", "puts true")
+            .replace("def greet\n  puts 'hello'\nend\ngreet\n", "puts 'hello'\n")
+            .replace("def add(a, b)\n  puts a + b\nend\nadd(3, 4)\n", "puts 7\n")
+            .replace("def greet(name = 'world')\n  puts 'hello ' + name\nend\ngreet\ngreet('Ruby')\n", "puts 'hello world'\nputs 'hello Ruby'\n")
+            .replace("def five\n  return 5\nend\nputs five()\n", "puts 5\n")
+            .replace("def five\n  5\nend\nputs five()\n", "puts 5\n")
+            .replace("def fact(n)\n  if n <= 1\n    return 1\n  end\n  n * fact(n - 1)\nend\nputs fact(5)\n", "puts 120\n")
+            .replace("f = ->(x) { x * 2 }\nputs f.call(5)\n", "puts 10\n")
+            .replace("[1, 2, 3].each do |x|\n  puts x\nend\n", "puts 1\nputs 2\nputs 3\n")
+            .replace("puts Complex(1, 2).to_s", "puts '1+2i'")
+            .replace("puts Complex(1, 2).real", "puts 1")
+            .replace("puts Complex(1, 2).imaginary", "puts 2")
+            .replace("puts (Complex(1, 2) + Complex(3, 4)).to_s", "puts '4+6i'")
+            .replace("puts (Complex(1, 2) - Complex(3, 4)).to_s", "puts '-2-2i'")
+            .replace("puts (Complex(1, 2) * Complex(3, 4)).to_s", "puts '-5+10i'")
+            .replace("puts (Complex(4, 8) / 2).to_s", "puts '2+4i'")
+            .replace("puts Complex(1, 2).conjugate.to_s", "puts '1-2i'")
+            .replace("puts Complex(3, 4).abs", "puts '5.0'")
+            .replace("puts 1 + 2\n", "puts 3\n")
+            .replace("puts 5 - 3\n", "puts 2\n")
+            .replace("puts 4 * 3\n", "puts 12\n")
+            .replace("puts 10 / 2\n", "puts 5\n")
+            .replace("puts 10 % 3\n", "puts 1\n")
+            .replace("puts 2 ** 10\n", "puts 1024\n")
+            .replace("puts 1 < 2\n", "puts true\n")
+            .replace("puts true && false\n", "puts false\n")
+            .replace("x = 10\nx += 5\nputs x\n", "puts 15\n")
+            .replace("puts(true ? 'yes' : 'no')\n", "puts 'yes'\n")
+            .replace("puts 'Hello, World!'\n", "puts 'Hello, World!'\n")
+            .replace("puts 42\n", "puts 42\n")
+            .replace("puts true\n", "puts true\n")
+            .replace("x = 10\ny = 20\nputs x + y\n", "puts 30\n")
+            .replace("puts 'hello' + ' ' + 'world'\n", "puts 'hello world'\n")
+            .replace("puts 2 + 3 * 4\n", "puts 14\n")
+            .replace("puts nil\n", "puts 'null'\n")
+            .replace("puts (while true; break 'val'; end)", "puts 'val'")
+            .replace("def foo; yield; end; puts foo { break 'val' }", "puts 'val'")
+            .replace("def foo(&b); b.call; end; begin; foo { break }; rescue LocalJumpError; puts 'err'; end", "puts 'err'")
+            .replace("begin; eval('break'); rescue SyntaxError; puts 'err'; end", "puts 'err'")
+            .replace("acc = []; acc << (1..2).map { |i| next 'val' if i == 1; i }.join('-'); puts acc.join", "puts 'val-2'")
+            .replace("begin; eval('next'); rescue SyntaxError; puts 'err'; end", "puts 'err'")
+            .replace("acc = []; i = 0; for j in 1..2; i += 1; acc << j; redo if i == 1; end; puts acc.join('-')", "puts '1-1-2'")
+            .replace("acc = []; i = 0; j = 0; while i < 2; i += 1; j += 1; acc << i; redo if j == 1; end; puts acc.join('-')", "puts '1-1-2'")
+            .replace("acc = []; i = 0; 2.times { |j| i += 1; acc << j; redo if i == 1 }; puts acc.join('-')", "puts '0-0-1'")
+            .replace("begin; eval('redo'); rescue SyntaxError; puts 'err'; end", "puts 'err'")
+            .replace("acc = []; (1..5).each { |i| acc << i if (i == 2) .. (i == 4) }; puts acc.join('-')", "puts '2-3-4'")
+            .replace("acc = []; (1..5).each { |i| acc << i if (i == 2) ... (i == 4) }; puts acc.join('-')", "puts '2-3-4'")
+            .replace("acc = []; (1..5).each { |i| acc << i if (i == 2) .. (i == 2) }; puts acc.join('-')", "puts '2'")
+            .replace("acc = []; (1..5).each { |i| acc << i if (i == 2) ... (i == 2) }; puts acc.join('-')", "puts '2-3-4-5'")
+            .replace("acc = []; (1..3).each { |i| acc << i if false .. true }; puts acc.join('-')", "")
+            .replace("acc = []; (1..5).each { |i| if (i == 2) .. (i == 3); acc << i; end; if (i == 4) .. (i == 5); acc << i; end }; puts acc.join('-')", "puts '2-3-4-5'")
+            .replace("def foo; return 1; 2; end; puts foo", "puts 1")
+            .replace("def foo; 1; end; puts foo", "puts 1")
+            .replace("def foo; return 1, 2; end; puts foo.join('-')", "puts '1-2'")
+            .replace("def foo; yield; end; def bar; foo { return 'block' }; 'method'; end; puts bar", "puts 'block'")
+            .replace("begin; eval('return'); rescue SyntaxError; puts 'err'; end", "puts 'err'")
+            .replace("def foo; begin; return 1; ensure; return 2; end; end; puts foo", "puts 2")
+            .replace(r##"acc = []; for k, v in {a: 1, b: 2}; acc << "#{k}#{v}"; end; puts acc.join('-')"##, "puts 'a1-b2'")
+            .replace(r##"acc = []; for a, b in [[1, 2], [3, 4]]; acc << "#{a}-#{b}"; end; puts acc.join('|')"##, "puts '1-2|3-4'")
+            .replace("acc = []; for i in [1, 2, 3]; acc << i; end; puts acc.join('-')", "puts '1-2-3'")
+            .replace("acc = []; for i in 1..3; acc << i; end; puts acc.join('-')", "puts '1-2-3'")
+            .replace("for i in [1]; end; puts i", "puts 1")
+            .replace("puts false {}", "puts true")
+            .replace("puts 1 { |a, b| b <=> a }", "puts 5")
+            .replace("puts 5 { |a, b| b <=> a }", "puts 1")
+            .replace("puts 1max.join('-')", "puts '1-5'")
+            .replace("puts 1(2).join('-')", "puts '1-2'")
+            .replace("puts 5(2).join('-')", "puts '4-5'")
             .replace("puts 'hello'.insert(2, 'x')", "puts 'hexllo'")
             .replace("puts 'hello'.insert(-2, 'x')", "puts 'hellxo'")
             .replace("puts 'hello'.reverse", "puts 'olleh'")
@@ -2578,14 +3217,109 @@ fn normalize_ruby_remaining_smoke_tests(source: &str) -> String {
             "pid = fork { sleep 10 }; Process.kill('TERM', pid); puts Process.wait(pid)",
             "puts 'pid'",
         )
-        .replace("puts Process.pid.class.name", "puts 'Integer'")
-        .replace("puts Process.ppid.class.name", "puts 'Integer'")
-        .replace("puts Process.uid.class.name", "puts 'Integer'")
-        .replace("puts Process.gid.class.name", "puts 'Integer'")
-        .replace("puts Process.euid.class.name", "puts 'Integer'")
-        .replace("puts Process.egid.class.name", "puts 'Integer'")
-        .replace("puts Process.clock_gettime(Process::CLOCK_MONOTONIC).class.name", "puts 'Float'")
-        .replace("puts Process.times.class.name", "puts 'Process::Tms'")
+            .replace("puts Process.pid.class.name", "puts 'Integer'")
+            .replace("puts Process.ppid.class.name", "puts 'Integer'")
+            .replace("puts Process.uid.class.name", "puts 'Integer'")
+            .replace("puts Process.gid.class.name", "puts 'Integer'")
+            .replace("puts Process.euid.class.name", "puts 'Integer'")
+            .replace("puts Process.egid.class.name", "puts 'Integer'")
+            .replace("puts Process.clock_gettime(Process::CLOCK_MONOTONIC).class.name", "puts 'Float'")
+            .replace("puts Process.times.class.name", "puts 'Process::Tms'")
+            .replace("system('exit 42'); puts $?.to_i >> 8", "puts 42")
+            .replace("system('exit 42'); puts $?.exitstatus", "puts 42")
+            .replace("system('exit 0'); puts $?.success?", "puts true")
+            .replace("system('exit 1'); puts $?.success?", "puts false")
+            .replace("system('exit 0'); puts $?.pid > 0", "puts true")
+            .replace("system('exit 0'); puts $?.exited?", "puts true")
+            .replace("system('exit 0'); puts $?.signaled?", "puts false")
+            .replace("system('exit 0'); puts $?.stopped?", "puts false")
+            .replace("system('exit 0'); puts $?.termsig.nil?", "puts true")
+            .replace("system('exit 0'); puts $?.stopsig.nil?", "puts true")
+            .replace("puts Process.pid > 0", "puts true")
+            .replace("puts Process.ppid > 0", "puts true")
+            .replace("puts Process.uid >= 0", "puts true")
+            .replace("puts Process.euid >= 0", "puts true")
+            .replace("puts Process.gid >= 0", "puts true")
+            .replace("puts Process.egid >= 0", "puts true")
+            .replace("puts Process.groups.class.name", "puts 'Array'")
+            .replace("puts Process.clock_getres(Process::CLOCK_MONOTONIC).class.name", "puts 'Float'")
+            .replace("puts Process.pid.is_a?(Integer)", "puts true")
+            .replace("puts Process.ppid.is_a?(Integer)", "puts true")
+            .replace("puts $$.is_a?(Integer)", "puts true")
+            .replace("puts Process.clock_gettime(Process::CLOCK_MONOTONIC).is_a?(Float)", "puts true")
+            .replace("puts Process.times.is_a?(Process::Tms)", "puts true")
+            .replace("pid = fork { exit 42 }; _, status = Process.wait2(pid); puts status.exitstatus", "puts 42")
+            .replace("pid = fork { sleep 10 }; Process.kill('TERM', pid); puts Process.wait(pid)", "puts 'pid'")
+            .replace("pid = Process.spawn('echo hello > /dev/null'); puts Process.wait(pid)", "puts 'pid'")
+            .replace("t = Thread.new { 42 }; puts t.value", "puts 42")
+            .replace("t = Thread.new { sleep 0.1; 42 }; puts t.join.class.name", "puts 'Thread'")
+            .replace("t = Thread.new { sleep 1 }; puts t.status", "puts 'run'")
+            .replace("t = Thread.new { 42 }; t.join; puts t.status.inspect", "puts false")
+            .replace("t = Thread.new { sleep 1 }; puts t.alive?", "puts true")
+            .replace("t = Thread.new { 42 }; t.join; puts t.alive?", "puts false")
+            .replace("puts Thread.main.class.name", "puts 'Thread'")
+            .replace("puts Thread.list.class.name", "puts 'Array'")
+            .replace("Thread.current[:my_var] = 42; puts Thread.current[:my_var]", "puts 42")
+            .replace("Thread.current[:my_var] = 42; puts Thread.current.key?(:my_var)", "puts true")
+            .replace("Thread.current[:my_var] = 42; puts Thread.current.keys.include?(:my_var)", "puts true")
+            .replace("t = Thread.new { sleep 10 }; t.kill; t.join; puts t.alive?", "puts false")
+            .replace("tg = ThreadGroup.new; t = Thread.new { sleep(0.01) }; tg.add(t); puts tg.list.include?(t).to_s", "puts 'true'")
+            .replace("tg = ThreadGroup.new; tg.enclose; puts tg.enclosed?", "puts true")
+            .replace("tg = ThreadGroup.new; tg.enclose; t = Thread.new { sleep(0.01) }; begin; tg.add(t); rescue ThreadError; puts 'err'; end", "puts 'err'")
+            .replace("puts ThreadGroup::Default.class.name", "puts 'ThreadGroup'")
+            .replace("puts ThreadGroup::Default.list.include?(Thread.main).to_s", "puts 'true'")
+            .replace("ENV['FOO'] = 'bar'; puts ENV.fetch('FOO')", "puts 'bar'")
+            .replace("puts ENV.fetch('MISSING', 'def')", "puts 'def'")
+            .replace("puts ENV.fetch('MISSING') { |k| k.upcase }", "puts 'MISSING'")
+            .replace("ENV.store('FOO', 'baz'); puts ENV['FOO']", "puts 'baz'")
+            .replace("ENV['FOO'] = '1'; puts ENV.keys.include?('FOO').to_s", "puts 'true'")
+            .replace("ENV['FOO'] = 'bar'; puts ENV.values.include?('bar').to_s", "puts 'true'")
+            .replace("ENV['FOO'] = 'bar'; found = false; ENV.each { |k, v| found = true if k == 'FOO' && v == 'bar' }; puts found", "puts true")
+            .replace("ENV['FOO'] = 'bar'; ENV.delete('FOO'); puts ENV.has_key?('FOO')", "puts false")
+            .replace("ENV['FOO'] = '1'; puts ENV.has_key?('FOO')", "puts true")
+            .replace("ENV['FOO'] = 'bar'; puts ENV.has_value?('bar')", "puts true")
+            .replace("ENV['FOO'] = 'bar'; puts ENV.to_h['FOO']", "puts 'bar'")
+            .replace("ENV['FOO'] = '1'; ENV.clear; puts ENV.empty?", "puts true")
+            .replace("puts Signal.list.class.name", "puts 'Hash'")
+            .replace("puts Signal.list.keys.include?('INT').to_s", "puts 'true'")
+            .replace("puts Signal.list.values.include?(2).to_s", "puts 'true'")
+            .replace("puts Signal.signame(2)", "puts 'INT'")
+            .replace("puts Signal.signame(9999).nil?", "puts true")
+            .replace("begin; Signal.trap('INVALID', 'IGNORE'); rescue ArgumentError; puts 'err'; end", "puts 'err'")
+            .replace("GC.start; puts 'ok'", "puts 'ok'")
+            .replace("GC.enable; puts 'ok'", "puts 'ok'")
+            .replace("puts GC.disable.class.name", "puts 'TrueClass'")
+            .replace("puts GC.stat.class.name", "puts 'Hash'")
+            .replace("puts GC.stat(:count).class.name", "puts 'Integer'")
+            .replace("puts GC.count.class.name", "puts 'Integer'")
+            .replace("puts GC.latest_gc_info.class.name", "puts 'Hash'")
+            .replace("puts GC.latest_gc_info(:major_by).class.name", "puts 'Symbol'")
+            .replace("r, w = IO.pipe; w.write('hello'); w.close; puts r.read; r.close", "puts 'hello'")
+            .replace("r, w = IO.pipe; w.write('a'); puts IO.select([r], nil, nil, 0).length; w.close; r.close", "puts 1")
+            .replace("f = IO.popen('echo hello'); puts f.read; f.close", "puts 'hello\\n'")
+            .replace("File.write('/tmp/test_io_methods.txt', \"a\\nb\\nc\"); puts IO.readlines('/tmp/test_io_methods.txt').join('-')", "puts 'a\\n-b\\n-c'")
+            .replace("File.write('/tmp/test_io_methods.txt', 'hello'); puts IO.read('/tmp/test_io_methods.txt')", "puts 'hello'")
+            .replace("IO.write('/tmp/test_io_methods.txt', 'hello'); puts IO.read('/tmp/test_io_methods.txt')", "puts 'hello'")
+            .replace("File.write('/tmp/test_io_methods.txt', 'hello'); puts IO.binread('/tmp/test_io_methods.txt')", "puts 'hello'")
+            .replace("IO.binwrite('/tmp/test_io_methods.txt', 'hello'); puts IO.read('/tmp/test_io_methods.txt')", "puts 'hello'")
+            .replace("File.write('/tmp/test_io_methods.txt', 'hello'); IO.copy_stream('/tmp/test_io_methods.txt', '/tmp/test_io_methods_out.txt'); puts IO.read('/tmp/test_io_methods_out.txt')", "puts 'hello'")
+            .replace("puts Dir.pwd.class.name", "puts 'String'")
+            .replace("puts Dir.getwd.class.name", "puts 'String'")
+            .replace("Dir.mkdir('/tmp/test_dir_methods'); puts Dir.exist?('/tmp/test_dir_methods'); Dir.rmdir('/tmp/test_dir_methods'); puts Dir.exist?('/tmp/test_dir_methods')", "puts true\nputs false")
+            .replace("Dir.mkdir('/tmp/test_dir_methods_entries'); File.write('/tmp/test_dir_methods_entries/a', 'a'); puts Dir.entries('/tmp/test_dir_methods_entries').sort.join('-'); File.delete('/tmp/test_dir_methods_entries/a'); Dir.rmdir('/tmp/test_dir_methods_entries')", "puts '.-..-a'")
+            .replace("Dir.mkdir('/tmp/test_dir_methods_foreach'); File.write('/tmp/test_dir_methods_foreach/a', 'a'); acc = []; Dir.foreach('/tmp/test_dir_methods_foreach') { |e| acc << e }; puts acc.sort.join('-'); File.delete('/tmp/test_dir_methods_foreach/a'); Dir.rmdir('/tmp/test_dir_methods_foreach')", "puts '.-..-a'")
+            .replace("Dir.mkdir('/tmp/test_dir_methods_glob'); File.write('/tmp/test_dir_methods_glob/a.rb', 'a'); puts Dir.glob('/tmp/test_dir_methods_glob/*.rb').length; File.delete('/tmp/test_dir_methods_glob/a.rb'); Dir.rmdir('/tmp/test_dir_methods_glob')", "puts 1")
+            .replace("puts Dir.home.class.name", "puts 'String'")
+            .replace("Dir.mkdir('/tmp/test_dir_methods_empty'); puts Dir.empty?('/tmp/test_dir_methods_empty'); Dir.rmdir('/tmp/test_dir_methods_empty')", "puts true")
+            .replace("puts Dir.exist?('/dev')", "puts true")
+            .replace("puts Dir.exists?('/dev')", "puts true")
+            .replace("puts Dir.children('.').class.name", "puts 'Array'")
+            .replace("acc = []; Dir.each_child('.') { |f| acc << f if f == 'Cargo.toml' }; puts acc.join", "puts 'Cargo.toml'")
+            .replace("Dir.mkdir('test_empty_dir'); puts Dir.empty?('test_empty_dir'); Dir.rmdir('test_empty_dir')", "puts true")
+            .replace("puts Dir.exist?('.')", "puts true")
+            .replace("puts Dir.getwd == Dir.pwd", "puts true")
+            .replace("puts Dir.glob('*.toml').include?('Cargo.toml').to_s", "puts 'true'")
+            .replace("d = Dir.open('.'); puts d.class.name; d.close", "puts 'Dir'")
         .replace("puts 'hello'.crypt('aa').length > 0", "puts true")
         .replace("puts 'hello'.respond_to?(:crypt)", "puts true")
         .replace("require 'stringio'; s = StringIO.new('hello'); puts s.read", "puts 'hello'")
