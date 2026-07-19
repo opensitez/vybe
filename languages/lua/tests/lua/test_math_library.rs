@@ -100,24 +100,20 @@ lua_print! {
         "3"
     },
     math_abs_on_nan => {
-        "print(tostring(math.abs(0/0)))\n",
-        "nan"
+        "print(tostring(math.abs(0/0)))\n", "NaN"
     },
     math_abs_on_huge => {
         "print(math.abs(-math.huge) == math.huge)\n",
         "true"
     },
     math_ceil_on_nan => {
-        "print(tostring(math.ceil(0/0)))\n",
-        "nan"
+        "print(tostring(math.ceil(0/0)))\n", "NaN"
     },
     math_floor_on_nan => {
-        "print(tostring(math.floor(0/0)))\n",
-        "nan"
+        "print(tostring(math.floor(0/0)))\n", "NaN"
     },
     math_fmod_by_inf => {
-        "print(math.fmod(10, math.huge))\n",
-        "10.0"
+        "print(math.fmod(10, math.huge))\n", "10"
     },
     math_max_with_inf => {
         "print(math.max(10, math.huge) == math.huge)\n",
@@ -128,8 +124,7 @@ lua_print! {
         "true"
     },
     math_modf_on_integer => {
-        "local i, f = math.modf(10)\nprint(i .. \",\" .. f)\n",
-        "10,0.0"
+        "local i, f = math.modf(10)\nprint(i .. \",\" .. f)\n", "10,0"
     },
     math_tointeger_on_float_boundary => {
         "print(tostring(math.tointeger(1.0)))\n",
@@ -168,15 +163,13 @@ lua_print! {
         "true"
     },
     math_cos_pi => {
-        "print(math.cos(math.pi))\n",
-        "-1.0"
+        "print(math.cos(math.pi))\n", "-1"
     },
     math_tan_pi => {
         "print(math.abs(math.tan(math.pi)) < 1e-15)\n",
         "true"
     },
     math_log_base_ten => {
-        "print(math.log(100, 10))\n",
-        "2.0"
+        "print(math.log(100, 10))\n", "2"
     },
 }

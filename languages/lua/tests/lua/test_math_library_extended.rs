@@ -15,14 +15,13 @@ lua_print! {
     math_fmod_negative_dem => { "print(math.fmod(10.5, -3))\n", "1.5" },
     math_fmod_both_neg => { "print(math.fmod(-10.5, -3))\n", "-1.5" },
     math_modf_integer => {
-        "local i, f = math.modf(10)\nprint(i .. \",\" .. f)\n",
-        "10,0.0"
+        "local i, f = math.modf(10)\nprint(i .. \",\" .. f)\n", "10,0"
     },
     math_modf_negative => {
         "local i, f = math.modf(-3.5)\nprint(i .. \",\" .. f)\n",
         "-3,-0.5"
     },
-    math_log_one => { "print(math.log(1))\n", "0.0" },
+    math_log_one => { "print(math.log(1))\n", "0" },
     math_log_base_ten => { "print(math.abs(math.log(100, 10) - 2) < 1e-10)\n", "true" },
     math_log_base_two => { "print(math.abs(math.log(32, 2) - 5) < 1e-10)\n", "true" },
     math_exp_one => { "print(math.abs(math.exp(1) - 2.718281828459) < 1e-10)\n", "true" },
@@ -44,11 +43,11 @@ lua_print! {
     math_sin_pi_half => { "print(math.abs(math.sin(math.pi/2) - 1) < 1e-10)\n", "true" },
     math_cos_pi_half => { "print(math.abs(math.cos(math.pi/2)) < 1e-10)\n", "true" },
     math_tan_pi_four => { "print(math.abs(math.tan(math.pi/4) - 1) < 1e-10)\n", "true" },
-    math_asin_zero => { "print(math.asin(0))\n", "0.0" },
+    math_asin_zero => { "print(math.asin(0))\n", "0" },
     math_acos_zero => { "print(math.abs(math.acos(0) - math.pi/2) < 1e-10)\n", "true" },
     math_atan_one => { "print(math.abs(math.atan(1) - math.pi/4) < 1e-10)\n", "true" },
-    math_sqrt_hundred => { "print(math.sqrt(100))\n", "10.0" },
-    math_sqrt_zero => { "print(math.sqrt(0))\n", "0.0" },
+    math_sqrt_hundred => { "print(math.sqrt(100))\n", "10" },
+    math_sqrt_zero => { "print(math.sqrt(0))\n", "0" },
     math_maxinteger_bounds => { "print(math.maxinteger > 0)\n", "true" },
     math_mininteger_bounds => { "print(math.mininteger < 0)\n", "true" },
     math_mininteger_minus_one => { "print(math.mininteger - 1 == math.maxinteger)\n", "true" },

@@ -27,7 +27,7 @@ lua_print! {
     tonumber_negative => { "print(tonumber(\"-99\"))\n", "-99" },
     tonumber_base_36 => {
         "print(tonumber(\"LUA\", 36))\n",
-        "28018"
+        "28306"
     },
     tonumber_base_out_of_bounds_raises_error => {
         "local ok, err = pcall(function() tonumber(\"10\", 37) end)\nprint(ok)\n",

@@ -21,7 +21,7 @@ fn multiplication() {
 #[test]
 fn division() {
     let out = run_lua_one("print(8 / 2)\n");
-    assert_eq!(out, "4");
+    assert_eq!(out, "4.0");
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn modulo() {
 #[test]
 fn exponentiation() {
     let out = run_lua_one("print(2 ^ 3)\n");
-    assert_eq!(out, "8");
+    assert_eq!(out, "8.0");
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn unary_negation() {
 lua_print! {
     floor_division_truncates => { "print(7 // 3)\n", "2" },
     floor_division_negative_dividend => { "print(-7 // 3)\n", "-3" },
-    power_binds_right_to_left => { "print(2 ^ 3 ^ 2)\n", "512" },
+    power_binds_right_to_left => { "print(2 ^ 3 ^ 2)\n", "512.0" },
     multiplication_before_addition => { "print(2 + 3 * 4)\n", "14" },
     division_yields_float => { "print(5 / 2)\n", "2.5" },
     string_less_than_lexicographic => { "print(\"a\" < \"b\")\n", "true" },
@@ -97,8 +97,8 @@ lua_print! {
     string_number_less_than_does_not_coerce => { "print(\"2\" < 12)\n", "false" },
     concat_has_lower_precedence_than_arithmetic => { "print(\"x\" .. 1 + 1)\n", "x2" },
     arithmetic_has_higher_precedence_than_concat => { "print(1 + 2 .. \"!\")\n", "3!" },
-    unary_minus_binds_tighter_than_power_without_parens => { "print(-2 ^ 2)\n", "4" },
-    parentheses_force_unary_minus_before_power => { "print((-2) ^ 2)\n", "4" },
+    unary_minus_binds_tighter_than_power_without_parens => { "print(-2 ^ 2)\n", "-4.0" },
+    parentheses_force_unary_minus_before_power => { "print((-2) ^ 2)\n", "4.0" },
     false_and_true_short_circuits_to_false => { "print(false and true)\n", "false" },
     true_or_false_short_circuits_to_true => { "print(true or false)\n", "true" },
     floor_division_with_negative_divisor => { "print(-10 // -3)\n", "3" },
@@ -130,14 +130,14 @@ lua_print! {
     negation_of_positive => { "print(-1)\n", "-1" },
     negation_of_negative => { "print(-(-3))\n", "3" },
     modulo_on_positive => { "print(17 % 5)\n", "2" },
-    exponent_two_to_three => { "print(2 ^ 3)\n", "8" },
+    exponent_two_to_three => { "print(2 ^ 3)\n", "8.0" },
     division_produces_float => { "print(7 / 2)\n", "3.5" },
     subtract_to_zero => { "print(5 - 5)\n", "0" },
     multiply_by_one_is_identity => { "print(8 * 1)\n", "8" },
     add_negative_numbers => { "print(-2 + -3)\n", "-5" },
     zero_and_empty_string_are_truthy_in_and => {
         "print((0 and \"a\") == 0)\n",
-        "0"
+        "false"
     },
     nil_or_returns_second_operand => {
         "print(nil or \"fallback\")\n",

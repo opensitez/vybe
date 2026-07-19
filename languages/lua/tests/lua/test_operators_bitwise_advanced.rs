@@ -7,7 +7,7 @@ lua_print! {
     },
     bitwise_shift_neg => {
         "local ok = pcall(function() return 1 << -1 end)\nprint(ok)\n",
-        "false"
+        "true"
     },
     bitwise_and_mask => {
         "print(0xFFFF & 0x00FF)\n",
@@ -15,7 +15,7 @@ lua_print! {
     },
     bitwise_or_mask => {
         "print(0xF000 | 0x0F00)\n",
-        "61440"
+        "65280"
     },
     bitwise_xor_mask => {
         "print(0xAAAA ~ 0x5555)\n",

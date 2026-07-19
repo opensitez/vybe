@@ -54,9 +54,9 @@ escape_seq = @{
     | "z" ~ WHITESPACE*                                                               // \z skip whitespace
     | ASCII_DIGIT ~ ASCII_DIGIT? ~ ASCII_DIGIT?)                                     // \DDD decimal
 }
-dq_str_char = @{ escape_seq | (!"\"" ~ !"\\" ~ ANY) }
-sq_str_char = @{ escape_seq | (!("'") ~ !"\\" ~ ANY) }
-string = { "\"" ~ dq_str_char* ~ "\"" | "'" ~ sq_str_char* ~ "'" }
+dq_str_char = { escape_seq | (!"\"" ~ !"\\" ~ ANY) }
+sq_str_char = { escape_seq | (!("'") ~ !"\\" ~ ANY) }
+string = @{ "\"" ~ dq_str_char* ~ "\"" | "'" ~ sq_str_char* ~ "'" }
 
 // Long bracket strings: [[...]], [=[...]=], [==[...]==] etc.
 long_string_open_0  = _{ "[[" }
@@ -145,11 +145,10 @@ call_chain = {
     | "[" ~ expr ~ "]"
 }
 
-unary = { unop ~ unary | postfix }
-
-pow_expr = { unary ~ (pow_op ~ unary)* }
+pow_expr = { postfix ~ (pow_op ~ unary)* }
 pow_op = { CARET }
-multiplicative = { pow_expr ~ (mul_op ~ pow_expr)* }
+unary = { unop ~ unary | pow_expr }
+multiplicative = { unary ~ (mul_op ~ unary)* }
 mul_op = { DOUBLESLASH | STAR | SLASH | PERCENT }
 additive = { multiplicative ~ (additive_op ~ multiplicative)* }
 additive_op = { PLUS | MINUS }

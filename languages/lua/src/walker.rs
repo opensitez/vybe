@@ -103,18 +103,52 @@ fn walk_for_numeric(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
-    let start = walk_expression(exprs.remove(0))?;
-    let limit = walk_expression(exprs.remove(0))?;
-    let step = if let Some(step_pair) = exprs.pop() {
+    let mut start = walk_expression(exprs.remove(0))?;
+    let mut limit = walk_expression(exprs.remove(0))?;
+    let mut step = if let Some(step_pair) = exprs.pop() {
         walk_expression(step_pair)?
     } else {
         Expression::new(ExprKind::Lit(Literal::Int(1)))
     };
+    if expr_contains_float(&start) || expr_contains_float(&limit) || expr_contains_float(&step) {
+        force_numeric_expr_float(&mut start);
+        force_numeric_expr_float(&mut limit);
+        force_numeric_expr_float(&mut step);
+    }
     let body = body_pair.map(walk_block).transpose()?.unwrap_or_default();
 
     Ok(super::normalize::build_numeric_for(
         var, start, limit, step, body,
     ))
+}
+
+fn expr_contains_float(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Unary { expr, .. } => expr_contains_float(expr),
+        ExprKind::Binary { left, right, .. } => expr_contains_float(left) || expr_contains_float(right),
+        ExprKind::Call { args, .. } => args.iter().any(|arg| expr_contains_float(&arg.value)),
+        _ => false,
+    }
+}
+
+fn force_numeric_expr_float(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => {
+            expr.kind = ExprKind::Lit(Literal::Float(*value as f64));
+        }
+        ExprKind::Unary { expr, .. } => force_numeric_expr_float(expr),
+        ExprKind::Binary { left, right, .. } => {
+            force_numeric_expr_float(left);
+            force_numeric_expr_float(right);
+        }
+        ExprKind::Call { args, .. } => {
+            for arg in args {
+                force_numeric_expr_float(&mut arg.value);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -562,12 +596,20 @@ fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
-    Ok(StmtKind::DoWhile {
-        body: lua_scoped_body(body),
+    let mut body_with_until = body;
+    body_with_until.push(Statement::new(StmtKind::If {
         cond: cond.ok_or("missing until condition")?,
-        until: true,
-    })
-}
+        then_body: vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))],
+        elifs: Vec::new(),
+        else_body: None,
+    }));
+
+        Ok(StmtKind::While {
+            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
+            body: body_with_until,
+            else_body: None,
+        })
+    }
 
 fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut values = Vec::new();
@@ -586,9 +628,11 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 by_ref: false,
             })
             .collect();
-        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Array(
-            elems,
-        )))))
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident("__lua_multi_row".to_string()))),
+            args: vec![Argument::positional(Expression::new(ExprKind::Array(elems)))],
+            optional: false,
+        }))))
     } else {
         Ok(StmtKind::Return(values.into_iter().next()))
     }
@@ -668,7 +712,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::bxor_expr => walk_binary_chain_with_ops(inner),
         Rule::band_expr => walk_binary_chain_with_ops(inner),
         Rule::shift_expr => walk_binary_chain_with_ops(inner),
-        Rule::concat_expr => walk_binary_chain(inner, |_| BinOp::Concat),
+        Rule::concat_expr => walk_right_assoc_chain(inner, BinOp::Concat),
         Rule::additive | Rule::multiplicative => walk_binary_chain_with_ops(inner),
         Rule::pow_expr => walk_pow_expr(inner),
         Rule::unary => walk_unary_from_inner(inner),
@@ -744,6 +788,27 @@ fn walk_pow_expr(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
     while let Some(left) = operands.pop() {
         acc = Expression::new(ExprKind::Binary {
             op: BinOp::Pow,
+            left: Box::new(left),
+            right: Box::new(acc),
+        });
+    }
+    Ok(acc.kind)
+}
+
+fn walk_right_assoc_chain(mut items: Vec<Pair<Rule>>, op: BinOp) -> Result<ExprKind, String> {
+    let mut operands = Vec::new();
+    operands.push(walk_expression(items.remove(0))?);
+    for item in items {
+        if is_lua_expr_rule(item.as_rule()) {
+            operands.push(walk_expression(item)?);
+        }
+    }
+    let mut acc = operands
+        .pop()
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+    while let Some(left) = operands.pop() {
+        acc = Expression::new(ExprKind::Binary {
+            op: op.clone(),
             left: Box::new(left),
             right: Box::new(acc),
         });
@@ -866,6 +931,15 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             for arg in chain_inner {
                 if arg.as_rule() == Rule::expr {
                     args.push(Argument::positional(walk_expression(arg)?));
+                }
+            }
+            if let ExprKind::Ident(name) = &expr.kind {
+                if name == "print" {
+                    expr = Expression::new(ExprKind::Ident("__lua_print".to_string()));
+                } else if name == "tostring" {
+                    expr = Expression::new(ExprKind::Ident("__lua_tostring".to_string()));
+                } else if name == "error" {
+                    expr = Expression::new(ExprKind::Ident("__lua_error".to_string()));
                 }
             }
             expr = Expression::new(ExprKind::Call {

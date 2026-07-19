@@ -9,9 +9,9 @@ print(ok and v == 3)"#), "true");
 
 #[test]
 fn test_resume_value_string_concat() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return \"a\" .. \"b\" end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return "a" .. "b" end)
 local ok, v = coroutine.resume(t)
-print(ok and v == \"ab\")"#), "true");
+print(ok and v == "ab")"#), "true");
 }
 
 #[test]
@@ -25,14 +25,14 @@ print(ok and v == false)"#), "true");
 fn test_resume_value_table() {
     assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return {a = 1} end)
 local ok, v = coroutine.resume(t)
-print(ok and type(v) == \"table\")"#), "true");
+print(ok and type(v) == "table")"#), "true");
 }
 
 #[test]
 fn test_resume_value_function() {
     assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return function() end end)
 local ok, v = coroutine.resume(t)
-print(ok and type(v) == \"function\")"#), "true");
+print(ok and type(v) == "function")"#), "true");
 }
 
 #[test]
@@ -44,7 +44,7 @@ print(ok and v == nil)"#), "true");
 
 #[test]
 fn test_resume_value_numeric_string_mix() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return 1, \"x\" end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return 1, "x" end)
 local ok, v = coroutine.resume(t)
 print(ok and v == 1)"#), "true");
 }
@@ -58,7 +58,7 @@ print(ok and v == 10)"#), "true");
 
 #[test]
 fn test_resume_value_len() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() local s = \"abc\"; return #s end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() local s = "abc"; return #s end)
 local ok, v = coroutine.resume(t)
 print(ok and v == 3)"#), "true");
 }
@@ -91,9 +91,9 @@ print(ok and v == 11)"#), "true");
 
 #[test]
 fn test_resume_string_payload() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return \"v\" end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() return "v" end)
 local ok, v = coroutine.resume(t)
-print(ok and v == \"v\")"#), "true");
+print(ok and v == "v")"#), "true");
 }
 
 #[test]
@@ -101,14 +101,14 @@ fn test_resume_thread_payload() {
     assert_eq!(run_lua_one(r#"local other = coroutine.create(function() return 1 end)
 local t = coroutine.create(function() return other end)
 local ok, v = coroutine.resume(t)
-print(ok and type(v) == \"thread\")"#), "true");
+print(ok and type(v) == "thread")"#), "true");
 }
 
 #[test]
 fn test_resume_status_running_to_suspended() {
     assert_eq!(run_lua_one(r#"local t = coroutine.create(function() coroutine.yield(true) end)
 local ok, v = coroutine.resume(t)
-print(ok and v == true and coroutine.status(t) == \"suspended\")"#), "true");
+print(ok and v == true and coroutine.status(t) == "suspended")"#), "true");
 }
 
 #[test]

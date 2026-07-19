@@ -1,7 +1,7 @@
 lua_print! {
     test_gsub_basic => { "local s, c = string.gsub('hello world', 'o', 'x'); print(s..' '..c)", "hellx wxrld 2" },
     test_gsub_limit => { "local s, c = string.gsub('a a a', 'a', 'b', 2); print(s..' '..c)", "b b a 2" },
-    test_gsub_capture_reference => { "local s, c = string.gsub('hello', '(.)(.)', '%2%1'); print(s)", "ehll o" },
+    test_gsub_capture_reference => { "local s, c = string.gsub('hello', '(.)(.)', '%2%1'); print(s)", "ehllo" },
     test_gsub_full_match_reference => { "local s, c = string.gsub('abc', '%a', '<%0>'); print(s)", "<a><b><c>" },
     test_gsub_function => { "local s = string.gsub('10 20', '%d+', function(x) return tonumber(x)*2 end); print(s)", "20 40" },
     test_gsub_function_multiple_captures => { "local s = string.gsub('x=10', '(%a)=(%d+)', function(k,v) return k..v end); print(s)", "x10" },

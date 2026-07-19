@@ -40,7 +40,7 @@ print(type(v))"#), "table");
 
 #[test]
 fn test_wrap_error_propagates() {
-    assert_eq!(run_lua_one(r#"local f = coroutine.wrap(function() error(\"no\") end)
+    assert_eq!(run_lua_one(r#"local f = coroutine.wrap(function() error("no") end)
 local ok, err = pcall(f)
 print(ok == false)"#), "true");
 }
@@ -79,7 +79,7 @@ print(v == false)"#), "true");
 
 #[test]
 fn test_wrap_string_return() {
-    assert_eq!(run_lua_one(r#"local f = coroutine.wrap(function() return \"ok\" end)
+    assert_eq!(run_lua_one(r#"local f = coroutine.wrap(function() return "ok" end)
 print(f())"#), "ok");
 }
 

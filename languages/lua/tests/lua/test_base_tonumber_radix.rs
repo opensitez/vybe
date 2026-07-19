@@ -110,7 +110,7 @@ fn test_tonumber_radix_edge_last() {
 
 #[test]
 fn test_tonumber_radix_randomized() {
-    assert_eq!(run_lua_one(r#"print(tonumber("17", 7) == 1)"#), "true");
+    assert_eq!(run_lua_one(r#"print(tonumber("17", 7) == nil)"#), "true");
 }
 
 

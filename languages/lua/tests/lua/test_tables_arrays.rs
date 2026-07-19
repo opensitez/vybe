@@ -16,7 +16,7 @@ lua_print! {
     test_array_concat_range => { "local t={'a','b','c','d'}; print(table.concat(t, ',', 2, 3))", "b,c" },
     test_array_concat_invalid_type => { "local t={'a', true, 'c'}; local ok = pcall(function() table.concat(t) end); print(ok)", "false" },
     test_array_concat_empty => { "local t={}; print(table.concat(t, ','))", "" },
-    test_array_concat_range_out_of_bounds => { "local t={'a'}; print(table.concat(t, ',', 2, 3))", "" },
+    test_array_concat_range_out_of_bounds => { "local t={'a'}; local ok = pcall(function() table.concat(t, ',', 2, 3) end); print(ok)", "false" },
     test_array_concat_range_reversed => { "local t={'a','b'}; print(table.concat(t, ',', 2, 1))", "" },
     test_array_move_basic => { "local t1={1,2,3}; local t2={}; table.move(t1, 1, 3, 1, t2); print(t2[1]..t2[2]..t2[3])", "123" },
     test_array_move_overlapping_forward => { "local t={1,2,3,4}; table.move(t, 1, 3, 2); print(t[1]..t[2]..t[3]..t[4])", "1123" },

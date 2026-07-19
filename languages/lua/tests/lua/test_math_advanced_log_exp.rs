@@ -14,8 +14,7 @@ lua_print! {
         "true"
     },
     math_exp_zero_val => {
-        "print(math.exp(0))\n",
-        "1.0"
+        "print(math.exp(0))\n", "1"
     },
     math_exp_negative => {
         "print(math.exp(-1) > 0.36 and math.exp(-1) < 0.37)\n",

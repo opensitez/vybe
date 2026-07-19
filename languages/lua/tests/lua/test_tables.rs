@@ -225,9 +225,9 @@ lua_print! {
         "local t = {{val=3}, {val=1}, {val=2}}\ntable.sort(t, function(a,b) return a.val < b.val end)\nprint(t[1].val .. \",\" .. t[2].val .. \",\" .. t[3].val)\n",
         "1,2,3"
     },
-    table_remove_out_of_bounds_returns_nil => {
-        "local t = {10, 20}\nprint(tostring(table.remove(t, 5)))\n",
-        "nil"
+    table_remove_out_of_bounds_raises => {
+        "local t = {10, 20}\nlocal ok = pcall(function() table.remove(t, 5) end)\nprint(ok)\n",
+        "false"
     },
     table_remove_empty_returns_nil => {
         "local t = {}\nprint(tostring(table.remove(t)))\n",

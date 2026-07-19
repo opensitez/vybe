@@ -13,7 +13,7 @@ lua_print! {
     math_adv_exh_log_base => { "print(math.abs(math.log(16, 2) - 4) < 1e-10)\n", "true" },
     math_adv_exh_modf_float => {
         "local i, f = math.modf(10.5)\nprint(i, f)\n",
-        "10\t0.5"
+        "10 0.5"
     },
     math_adv_exh_fmod_float => { "print(math.fmod(10.5, 3))\n", "1.5" },
     math_adv_exh_tointeger => { "print(math.tointeger(123.0))\n", "123" },

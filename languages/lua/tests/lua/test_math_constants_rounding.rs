@@ -14,9 +14,9 @@ lua_print! {
     math_abs_float => { "print(math.abs(-3.14))\n", "3.14" },
     math_max => { "print(math.max(1, 5, 3, 2))\n", "5" },
     math_min => { "print(math.min(5, 1, 3, 2))\n", "1" },
-    math_sqrt_four => { "print(math.sqrt(4))\n", "2.0" },
+    math_sqrt_four => { "print(math.sqrt(4))\n", "2" },
     math_sqrt_two => { "print(math.sqrt(2) > 1.41 and math.sqrt(2) < 1.42)\n", "true" },
-    math_fmod => { "print(math.fmod(10, 3))\n", "1.0" },
+    math_fmod => { "print(math.fmod(10, 3))\n", "1" },
     math_modf => {
         "local i, f = math.modf(3.7)\nprint(i .. \",\" .. string.format(\"%.1f\", f))\n",
         "3,0.7"

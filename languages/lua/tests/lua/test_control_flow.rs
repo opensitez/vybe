@@ -76,9 +76,9 @@ lua_print! {
         "if true then if false then print(1) else print(2) end end\n",
         "2"
     },
-    while_zero_never_runs_body => {
-        "local n = 0\nwhile 0 do n = n + 1 end\nprint(n)\n",
-        "0"
+    while_zero_is_truthy_until_break => {
+        "local n = 0\nwhile 0 do n = n + 1 if n == 2 then break end end\nprint(n)\n",
+        "2"
     },
     repeat_until_true_exits_after_one_body => {
         "local n = 0\nrepeat n = n + 1 until true\nprint(n)\n",
