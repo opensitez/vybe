@@ -711,6 +711,31 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `set(iterable)` / `frozenset(iterable)`. `ecma:set.fromIterable` only
+/// accepts an array or a string, so a Set argument (`frozenset({1, 2})`) or a
+/// map would yield an empty set. Normalize through `ecma:array.from` first —
+/// it materializes a set's values, a string's chars, a map's pairs, or copies
+/// an array — then build the set from that array.
+pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        call_import(chunks, current, "ecma:set", "new", 0, line);
+        return;
+    }
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    call_import(chunks, current, "ecma:set", "fromIterable", 1, line);
+}
+
+/// Set predicate methods (`issubset`/`issuperset`/`isdisjoint`) compose the
+/// matching `ecma:set` host fn, which returns a raw i32. Python needs a real
+/// `bool` so `print` renders `True`/`False`, not `1`/`0`.
+pub fn emit_set_predicate(chunks: &mut [Chunk], current: usize, host_fn: &str, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    call_import(chunks, current, "ecma:set", host_fn, 2, line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
 pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
@@ -720,36 +745,52 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
 }
 
-fn emit_remove_impl(chunks: &mut [Chunk], current: usize, line: u32) {
+fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let value = base + 1;
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+    // `isArray` returns a real bool; `!= 0` (Bool vs I32) is cross-type and
+    // always true, sending a Set down the array branch. Coerce to i32 first.
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     call_import(chunks, current, "ecma:array", "removeValue", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_else(line);
+    // `ecma:set.delete` returns a bool: whether the member was present.
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     call_import(chunks, current, "ecma:set", "delete", 2, line);
+    if raises {
+        // `set.remove(x)` raises KeyError when x is absent; `discard` does not.
+        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_EQZ, line); // 1 if NOT removed
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("", line);
+        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    } else {
+        chunks[current].emit_op(Op::DROP, line);
+    }
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
 
 pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_remove_impl(chunks, current, line);
+    emit_remove_impl(chunks, current, true, line);
 }
 
 pub fn emit_discard(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_remove_impl(chunks, current, line);
+    emit_remove_impl(chunks, current, false, line);
 }
 
 pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -765,8 +806,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::ops::emit_dyn_ne(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -848,9 +888,20 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].alloc_scratch(1);
 
     if argc == 1 {
+        // No index: `list.pop()` removes the last element, `set.pop()` removes
+        // an arbitrary member (we take the first). Sets aren't indexable, so
+        // dispatch on isArray.
         let index_slot = chunks[current].local_count;
         chunks[current].alloc_scratch(1);
+        let arr_slot = chunks[current].local_count;
+        chunks[current].alloc_scratch(1);
 
+        chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+        call_import(chunks, current, "ecma:array", "isArray", 1, line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+
+        // list.pop(): value = recv[len-1]; remove_at(recv, len-1)
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         collections::emit_len(chunks, current, line);
         core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -866,6 +917,37 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
         collections::emit_remove_at(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_else(line);
+
+        // set.pop(): materialize members; empty → KeyError; else remove first.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+        call_import(chunks, current, "ecma:array", "from", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::I32_EQ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("pop from an empty set", line);
+        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+        // v = arr[0]
+        chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+        // delete v from the set
+        chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+        call_import(chunks, current, "ecma:set", "delete", 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_end(line);
+
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         return;
     } else {

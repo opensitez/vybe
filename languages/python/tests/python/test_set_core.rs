@@ -266,3 +266,4 @@ fn set_symmetric_difference_method() {
 fn set_any_all() {
     assert_eq!(run_print("[any({0, 1}), all({1, 2})]"), "[True, True]");
 }
+

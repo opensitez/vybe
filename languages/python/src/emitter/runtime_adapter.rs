@@ -4,9 +4,9 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
-use vybe_emitter::{collections, target::Target};
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
+use vybe_emitter::{collections, reflection, target::Target};
 
 /// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.
 /// Plain containers (lists/tuples/dicts — objects with no `__type` class stamp)
@@ -23,6 +23,30 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     let a = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, b, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+
+    // Both operands sets → Python set equality: equal iff the sizes match and
+    // one is a subset of the other (element identity, order-independent). A
+    // JSON-structural compare would spuriously fail on differing insertion
+    // order (`{1,2} == {2,1}`).
+    emit_is_set(chunk, a, line);
+    emit_is_set(chunk, b, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    {
+        let size_key =
+            chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+        chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        vybe_emitter::ops::emit_dyn_eq(chunk, line); // sizes equal
+        let sub = chunk.add_import("ecma:set", "isSubsetOf");
+        chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+        chunk.emit_call(sub, 2, line);
+        chunk.emit_op(Op::I32_AND, line);
+    }
+    chunk.emit_else(line);
 
     // structural = isArray(a) OR (typeof(a)=="object" AND a != null AND
     // !hasOwn(a, "__type")) — i.e. a plain list/tuple/dict, not a class instance.
@@ -66,6 +90,7 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
     vybe_emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
+    chunk.emit_end(line); // close the set-equality outer if
 }
 
 /// Python `print(...)` — inline emitter that writes to `wasi:cli/stdout`
@@ -194,7 +219,13 @@ pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if_value(line);
     crate::emitter::datetime_adapter::emit_dt_neg(chunk, a_slot, line);
     chunk.emit_else(line);
-    emit_unary_dunder_or(chunk, a_slot, "__neg__", vybe_emitter::ops::emit_dyn_neg, line);
+    emit_unary_dunder_or(
+        chunk,
+        a_slot,
+        "__neg__",
+        vybe_emitter::ops::emit_dyn_neg,
+        line,
+    );
     chunk.emit_end(line);
 }
 
@@ -202,16 +233,40 @@ pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
 /// they denote; an object may define the matching dunder; everything else
 /// gets exactly the comparison the shared emitter already performed.
 pub fn emit_pylt(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_relational(chunks, current, "__lt__", vybe_emitter::ops::emit_dyn_lt, line);
+    emit_relational(
+        chunks,
+        current,
+        "__lt__",
+        vybe_emitter::ops::emit_dyn_lt,
+        line,
+    );
 }
 pub fn emit_pygt(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_relational(chunks, current, "__gt__", vybe_emitter::ops::emit_dyn_gt, line);
+    emit_relational(
+        chunks,
+        current,
+        "__gt__",
+        vybe_emitter::ops::emit_dyn_gt,
+        line,
+    );
 }
 pub fn emit_pyle(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_relational(chunks, current, "__le__", vybe_emitter::ops::emit_dyn_le, line);
+    emit_relational(
+        chunks,
+        current,
+        "__le__",
+        vybe_emitter::ops::emit_dyn_le,
+        line,
+    );
 }
 pub fn emit_pyge(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_relational(chunks, current, "__ge__", vybe_emitter::ops::emit_dyn_ge, line);
+    emit_relational(
+        chunks,
+        current,
+        "__ge__",
+        vybe_emitter::ops::emit_dyn_ge,
+        line,
+    );
 }
 
 fn emit_relational(
@@ -231,10 +286,50 @@ fn emit_relational(
     chunk.emit_if_value(line);
     crate::emitter::datetime_adapter::emit_dt_cmp(chunk, a_slot, b_slot, cmp, line);
     chunk.emit_else(line);
+    // `set </<=/>/>=` set → subset/superset per Python semantics. Both
+    // operands must be sets; a lone set (`{1} < 2`) is a TypeError in
+    // CPython, so mixed operands fall through to the numeric/object path.
+    emit_is_set(chunk, a_slot, line);
+    emit_is_set(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    emit_set_relational(chunk, a_slot, b_slot, dunder, line);
+    chunk.emit_else(line);
     emit_object_binop_or(chunk, a_slot, b_slot, dunder, cmp, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     // The comparison ops yield an i32; Python's `bool` is a real value.
     vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+}
+
+/// `set` ordering: `<=`→subset, `<`→proper subset, `>=`→superset,
+/// `>`→proper superset. Composes `ecma:set.isSubsetOf`/`isSupersetOf`; the
+/// proper (`<`/`>`) forms additionally require unequal sizes. Both slots hold
+/// Sets. Leaves an i32 bool on the stack.
+fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str, line: u32) {
+    let (host_fn, strict) = match dunder {
+        "__le__" => ("isSubsetOf", false),
+        "__lt__" => ("isSubsetOf", true),
+        "__ge__" => ("isSupersetOf", false),
+        "__gt__" => ("isSupersetOf", true),
+        _ => ("isSubsetOf", false),
+    };
+    let idx = chunk.add_import("ecma:set", host_fn);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(idx, 2, line); // i32 bool
+    if strict {
+        // AND size(a) != size(b)
+        let size_key =
+            chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+        chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        vybe_emitter::ops::emit_dyn_eq(chunk, line); // 1 if sizes equal
+        chunk.emit_op(Op::I32_EQZ, line); // 1 if sizes differ
+        chunk.emit_op(Op::I32_AND, line);
+    }
 }
 
 /// A user `__neg__` when the operand is an object carrying one, else
@@ -516,8 +611,7 @@ fn emit_py_named_tuple_repr(chunk: &mut Chunk, scratch: u16, line: u32) {
     let split = chunk.add_import("ecma:string", "split");
 
     let b = chunk.alloc_scratch(7);
-    let (s, inner, parts, fields, result, i, n) =
-        (b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6);
+    let (s, inner, parts, fields, result, i, n) = (b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6);
     chunk.emit_op_u16(Op::LOCAL_SET, s, line); // consume the list string
 
     // inner = s.slice(1, s.length - 1) — strip the `[` `]`.
@@ -688,7 +782,15 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
 
     // `timedelta * n`, else user `__mul__` on an object, else numeric multiply
-    emit_datetime_binop_or(chunk, a_slot, b_slot, DtOp::Mul, "__mul__", emit_f64_mul, line);
+    emit_datetime_binop_or(
+        chunk,
+        a_slot,
+        b_slot,
+        DtOp::Mul,
+        "__mul__",
+        emit_f64_mul,
+        line,
+    );
     chunk.emit_end(line); // isArray(b)
     chunk.emit_end(line); // string(b)
     chunk.emit_end(line); // string(a)
@@ -744,9 +846,8 @@ pub fn emit_issubclass(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
     // mro = sub.__mro__
     chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
-    let get = chunks[current].add_import("ecma:object", "get");
     chunks[current].emit_string_const("__mro__", line);
-    chunks[current].emit_call(get, 2, line);
+    reflection::emit_get_property_in_chunk(&mut chunks[current], line);
     // base in mro  (collections::emit_contains: [array, value] → bool)
     chunks[current].emit_op_u16(Op::LOCAL_GET, base_slot, line);
     vybe_emitter::collections::emit_contains(chunks, current, line);
@@ -759,14 +860,13 @@ pub fn emit_issubclass(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_vars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
-        let new_obj = chunk.add_import("ecma:object", "create");
         chunk.emit_op(Op::NULL, line);
+        let new_obj = chunk.add_import("ecma:object", "create");
         chunk.emit_call(new_obj, 1, line);
         return;
     }
-    let entries = chunk.add_import("ecma:object", "entries");
     let from_entries = chunk.add_import("ecma:object", "fromEntries");
-    chunk.emit_call(entries, 1, line); // [[k, v], …]
+    reflection::emit_object_view_in_chunk(chunk, reflection::ObjectKeysMode::Entries, line);
     chunk.emit_call(from_entries, 1, line); // {k: v, …}
 }
 
@@ -777,7 +877,6 @@ pub fn emit_vars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// Python-exact, which is enough for membership (`'x' in dir(obj)`).
 pub fn emit_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let keys = chunk.add_import("ecma:object", "keys");
     let new_len = chunk.add_import("vybe:js-array", "newWithLength");
     if argc == 0 {
         // `dir()` with no argument → module/local names; not modelled. Empty list.
@@ -785,17 +884,16 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_call(new_len, 1, line);
         return;
     }
-    let get = chunk.add_import("ecma:object", "get");
     let concat = chunk.add_import("ecma:array", "concat");
     let obj = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
     // instance keys
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_call(keys, 1, line);
+    reflection::emit_object_view_in_chunk(chunk, reflection::ObjectKeysMode::Own, line);
     // class keys via the `__class__` link (empty if unlinked, so keys() is valid)
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_string_const("__class__", line);
-    chunk.emit_call(get, 2, line);
+    reflection::emit_get_property_in_chunk(chunk, line);
     let cls = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, cls, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
@@ -805,7 +903,7 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_call(new_len, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
-    chunk.emit_call(keys, 1, line);
+    reflection::emit_object_view_in_chunk(chunk, reflection::ObjectKeysMode::Own, line);
     chunk.emit_end(line);
     // instance_keys.concat(class_keys)
     chunk.emit_call(concat, 2, line);
@@ -819,10 +917,7 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let v = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, v, line);
-    let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let has_own = chunk.add_import("ecma:object", "hasOwn");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
-    let get = chunk.add_import("ecma:object", "get");
 
     // if v != null (guard so hasOwn never runs on null → TypeError)
     chunk.emit_op_u16(Op::LOCAL_GET, v, line);
@@ -833,28 +928,153 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
         // if hasOwn(v, "__class__") → v.__class__ else typeof(v)
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         chunk.emit_string_const("__class__", line);
-        chunk.emit_call(has_own, 2, line);
+        reflection::emit_has_own_in_chunk(chunk, line);
         chunk.emit_call(cast_bool, 1, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         chunk.emit_string_const("__class__", line);
-        chunk.emit_call(get, 2, line);
+        reflection::emit_get_property_in_chunk(chunk, line);
         chunk.emit_else(line);
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(typeof_fn, 1, line);
+        reflection::emit_typeof_in_chunk(chunk, line);
         chunk.emit_end(line);
     }
     chunk.emit_else(line);
     {
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(typeof_fn, 1, line);
+        reflection::emit_typeof_in_chunk(chunk, line);
     }
     chunk.emit_end(line);
 }
 
-/// `a - b` with `__sub__` dispatch on object operands.
+/// Python `hasattr(obj, name)` routed through shared reflection property tests.
+pub fn emit_hasattr(chunks: &mut [Chunk], current: usize, line: u32) {
+    reflection::emit_has_in(chunks, current, line);
+}
+
+/// Python `getattr(obj, name[, default])`. The actual property access goes
+/// through shared reflection; only the optional default is Python-specific.
+pub fn emit_getattr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc <= 2 {
+        reflection::emit_get_property(chunks, current, line);
+        return;
+    }
+
+    let default_slot = chunks[current].alloc_scratch(1);
+    let name_slot = chunks[current].alloc_scratch(1);
+    let obj_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, default_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    reflection::emit_has_in(chunks, current, line);
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_call(cast_bool, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    reflection::emit_get_property(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, default_slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// Python `setattr(obj, name, value)` returns `None`; the write itself goes
+/// through shared reflection.
+pub fn emit_setattr(chunks: &mut [Chunk], current: usize, line: u32) {
+    reflection::emit_set_property(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Python `delattr(obj, name)` returns `None`; deletion is the shared object
+/// reflection operation.
+pub fn emit_delattr(chunks: &mut [Chunk], current: usize, line: u32) {
+    reflection::emit_object_op(chunks, current, reflection::ObjectOp::Delete, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Push `1` when the value in `slot` is a Set (`typeof == "object"` and its
+/// `__type` stamp is `"Set"`, which covers both `set` and `frozenset`), else
+/// `0`. Guarded by the typeof check because `STRUCT_GET` traps on primitives.
+fn emit_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let type_key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__type")));
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_string_const("Set", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line); // i32: 1 if __type == "Set"
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+}
+
+/// Python `hash(x)`. Mutable containers (`set`, `list`) are unhashable and
+/// raise `TypeError`; everything else routes to the runtime hash helper. A
+/// `dict` is a plain object here so it is not distinguished, but the common
+/// cases (`hash({1})`, `hash([1])`) are covered.
+fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+
+    emit_is_set(chunk, slot, line); // i32: 1 if set
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(is_array, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line); // i32: 1 if list
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    {
+        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        vybe_emitter::instructions::core_wasm::dup(chunk, line);
+        chunk.emit_string_const("unhashable type", line);
+        vybe_emitter::errors::emit_exception_new_finalize(chunk, "TypeError", line);
+        vybe_emitter::errors::emit_throw(chunk, line);
+    }
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    vybe_emitter::collections::emit_runtime_helper_call(chunks, current, "__vybe_hash", 1, line);
+}
+
+/// `a - b`. Python overloads `-` on sets to mean set difference (`{1,2,3} -
+/// {2} == {1,3}`); the shared compiler already routes `|`/`&`/`^` to
+/// `ecma:set` because those stay bitwise BinOps, but the walker desugars `-`
+/// to `__pysub__`, so the same set check lives here. When both operands are
+/// sets, call `ecma:set.difference`; otherwise dispatch `__sub__`/numeric.
 pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_arith_dunder(&mut chunks[current], "__sub__", emit_f64_sub, line);
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    emit_is_set(chunk, a_slot, line);
+    emit_is_set(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        let diff = chunk.add_import("ecma:set", "difference");
+        chunk.emit_call(diff, 2, line);
+    }
+    chunk.emit_else(line);
+    {
+        chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        emit_arith_dunder(chunk, "__sub__", emit_f64_sub, line);
+    }
+    chunk.emit_end(line);
 }
 
 /// `a / b` with `__truediv__` dispatch on object operands.
@@ -1277,12 +1497,9 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
-    // `callable(x)` → `typeof(x) == "function"` as a real Bool.
+    // `callable(x)` → shared reflection callable probe as a real Bool.
     if name == "python.callable" {
-        let tof = chunks[current].add_import("ecma:value", "typeof");
-        chunks[current].emit_call(tof, 1, line);
-        chunks[current].emit_string_const("function", line);
-        vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+        reflection::emit_is_callable(chunks, current, line);
         vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
         vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
@@ -1306,6 +1523,10 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             return true;
         }
         _ => {}
+    }
+    if name == "python.hash" {
+        emit_hash_guarded(chunks, current, line);
+        return true;
     }
     let global = match name {
         "python.hex" => "__vybe_pyhex",

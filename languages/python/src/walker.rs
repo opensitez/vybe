@@ -145,6 +145,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     PY_FROM_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
     PY_SYS_MODULES_BOUND.with(|b| b.set(false));
     PY_DEFINED_CLASSES.with(|m| m.borrow_mut().clear());
+    PY_DEFINED_FUNCTIONS.with(|m| m.borrow_mut().clear());
+    PY_CALLABLE_CLASSES.with(|m| m.borrow_mut().clear());
+    PY_CLASS_PARENTS.with(|m| m.borrow_mut().clear());
+    PY_CLASS_ATTRS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
@@ -280,8 +284,17 @@ fn source_uses_bytes(source: &str) -> bool {
 /// so a prelude problem can never break user compilation.
 fn parse_python_prelude(src: &str) -> Vec<Statement> {
     let preprocessed = preprocess_indentation(src);
-    let Ok(pairs) = PythonParser::parse(Rule::program, &preprocessed) else {
-        return Vec::new();
+    let pairs = match PythonParser::parse(Rule::program, &preprocessed) {
+        Ok(p) => p,
+        Err(e) => {
+            if std::env::var("VYBE_PRELUDE_DEBUG").is_ok() {
+                eprintln!("[prelude-parse-error] {e}");
+                for (i, l) in preprocessed.lines().enumerate() {
+                    eprintln!("[pp {:3}] {l}", i + 1);
+                }
+            }
+            return Vec::new();
+        }
     };
     let mut body = Vec::new();
     let mut imports = Vec::new();
@@ -872,6 +885,87 @@ class __FnmatchModule:
     def translate(self, pat):
         return __fn_translate(pat)
 fnmatch = __FnmatchModule()
+"#;
+
+/// `configparser` — a minimal INI parser. Data lives in nested dicts (dict
+/// attrs behave; string manipulation is on locals, dodging the self-attr string
+/// slice/concat bug).
+const CONFIGPARSER_PRELUDE: &str = r#"
+class ConfigParser:
+    def __init__(self, defaults=None, dict_type=None, allow_no_value=False):
+        self._sections = {}
+    def read_string(self, s, source='<string>'):
+        current = None
+        hash_c = chr(35)
+        semi_c = chr(59)
+        lbrack = chr(91)
+        lines = s.split(chr(10))
+        for line in lines:
+            t = line.strip()
+            blank = t == ''
+            comment = not blank and (t[0] == hash_c or t[0] == semi_c)
+            header = not blank and not comment and t[0] == lbrack
+            if header:
+                name = t[1:len(t) - 1]
+                secs = self._sections
+                secs[name] = {}
+                self._sections = secs
+                current = name
+            elif not blank and not comment and current is not None:
+                idx = t.find('=')
+                if idx < 0:
+                    idx = t.find(':')
+                if idx >= 0:
+                    key = t[:idx].strip()
+                    val = t[idx + 1:].strip()
+                    secs = self._sections
+                    inner = secs[current]
+                    inner[key] = val
+                    secs[current] = inner
+                    self._sections = secs
+    def read_dict(self, d):
+        for name in d:
+            target = {}
+            src = d[name]
+            for key in src:
+                target[key] = str(src[key])
+            self._sections[name] = target
+    def sections(self):
+        result = []
+        for k in self._sections:
+            result.append(k)
+        return result
+    def has_section(self, sec):
+        return sec in self._sections
+    def has_option(self, sec, opt):
+        return sec in self._sections and opt in self._sections[sec]
+    def options(self, sec):
+        result = []
+        for k in self._sections[sec]:
+            result.append(k)
+        return result
+    def get(self, sec, opt, fallback=None):
+        if sec in self._sections and opt in self._sections[sec]:
+            return self._sections[sec][opt]
+        return fallback
+    def getint(self, sec, opt):
+        return int(self._sections[sec][opt])
+    def getfloat(self, sec, opt):
+        return float(self._sections[sec][opt])
+    def getboolean(self, sec, opt):
+        v = self._sections[sec][opt].lower()
+        return v == 'true' or v == '1' or v == 'yes' or v == 'on'
+    def defaults(self):
+        return {}
+    def __getitem__(self, sec):
+        return self._sections[sec]
+    def __contains__(self, sec):
+        return sec in self._sections
+class __ConfigparserModule:
+    def __init__(self):
+        self.ConfigParser = ConfigParser
+        self.RawConfigParser = ConfigParser
+configparser = __ConfigparserModule()
 "#;
 
 const BYTES_REPR_PRELUDE: &str = r#"
@@ -1522,6 +1616,7 @@ fn walk_func_def(
     // like JavaScript. No eager list materialization (that hung on `while True`
     // generators and was semantically eager).
     let has_yield = body_has_yield(&body);
+    note_defined_function(&name);
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -1622,7 +1717,11 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         params.push(Param {
                             name,
                             type_hint: None,
-                            default: None,
+                            // An omitted `**kwargs` binds an empty dict — synthesise
+                            // the default here (frontend), so the shared default
+                            // machinery fills it and the compiler change stays in
+                            // the named-arg reorder only.
+                            default: Some(Expression::new(ExprKind::Object(Vec::new()))),
                             pass_by: PassBy::Value,
                             is_rest: false,
                             is_kwargs: true,
@@ -1668,6 +1767,34 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
             Rule::block => body_stmts = walk_block(p)?,
             _ => {}
         }
+    }
+    note_class_parents(&name, &parents);
+
+    let has_call_method = body_stmts.iter().any(|stmt| {
+        matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "__call__"
+        )
+    });
+    let mut attrs = std::collections::HashSet::new();
+    for stmt in &body_stmts {
+        match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. } => {
+                attrs.insert(name.clone());
+            }
+            StmtKind::Assign { targets, .. } => {
+                for target in targets {
+                    if let ExprKind::Ident(attr) = &target.kind {
+                        attrs.insert(attr.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    note_class_attrs(&name, attrs);
+    if has_call_method {
+        note_callable_class(&name);
     }
 
     // Convert body statements into ClassMembers
@@ -3291,6 +3418,22 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             contains
                         };
                     } else if matches!(op, BinOp::Is | BinOp::IsNot) {
+                        if let Some(eq) = py_static_getattr_member_identity(&left, &right) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
+                        if let Some(eq) = py_static_getattr_member_identity(&right, &left) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
+                        if let Some(eq) = py_type_is_builtin(&left, &right) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
+                        if let Some(eq) = py_type_is_builtin(&right, &left) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
                         // `int is float` (e.g. `1 is 1.0`) is always False: they are
                         // distinct Python types. Both literals compile to `Value::F64`
                         // (the int/float distinction isn't preserved at runtime), so
@@ -3325,14 +3468,30 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 optional: false,
                             });
                         }
+                    } else if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                        if let (Some(a), Some(b)) = (py_id_call_arg(&left), py_id_call_arg(&right))
+                        {
+                            if py_fresh_object_expr(a) && py_fresh_object_expr(b) {
+                                left = Expression::bool(op == BinOp::NotEq);
+                                continue;
+                            }
+                        }
+                        if expr_is_python_bytes(&left) && expr_is_python_bytes(&right) {
+                            left = Expression::new(ExprKind::Binary {
+                                op,
+                                left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
+                                right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
+                            });
+                        } else {
+                            left = Expression::new(ExprKind::Binary {
+                                op,
+                                left: Box::new(left.clone()),
+                                right: Box::new(right),
+                            });
+                        }
                     } else if matches!(
                         op,
-                        BinOp::Eq
-                            | BinOp::NotEq
-                            | BinOp::Lt
-                            | BinOp::Gt
-                            | BinOp::LtEq
-                            | BinOp::GtEq
+                        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
                     ) && expr_is_python_bytes(&left)
                         && expr_is_python_bytes(&right)
                     {
@@ -3657,6 +3816,23 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// True when `receiver.field` names a class defined by an injected stdlib
+/// prelude (e.g. `io.StringIO`, `configparser.ConfigParser`). Such a
+/// `module.Class(...)` must construct the bare global class rather than compile
+/// to a method call that passes the module object as the first argument.
+fn prelude_module_class(receiver: &ExprKind, field: &str) -> bool {
+    let ExprKind::Ident(module) = receiver else {
+        return false;
+    };
+    matches!(
+        (module.as_str(), field),
+        ("io", "StringIO")
+            | ("io", "BytesIO")
+            | ("configparser", "ConfigParser")
+            | ("configparser", "RawConfigParser")
+    )
+}
+
 fn note_module_alias(alias: &str, module: &str) {
     PY_MODULE_ALIASES.with(|m| {
         m.borrow_mut().insert(alias.to_string(), module.to_string());
@@ -3894,6 +4070,14 @@ thread_local! {
     // dispatch through the identical instance path as every other language.
     static PY_DEFINED_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_DEFINED_FUNCTIONS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_CALLABLE_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_CLASS_PARENTS: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_CLASS_ATTRS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 fn note_defined_class(name: &str) {
@@ -3902,6 +4086,74 @@ fn note_defined_class(name: &str) {
             m.borrow_mut().insert(name.to_string());
         });
     }
+}
+
+fn note_defined_function(name: &str) {
+    if !name.is_empty() {
+        PY_DEFINED_FUNCTIONS.with(|m| {
+            m.borrow_mut().insert(name.to_string());
+        });
+    }
+}
+
+fn is_defined_function(name: &str) -> bool {
+    PY_DEFINED_FUNCTIONS.with(|m| m.borrow().contains(name))
+}
+
+fn note_class_parents(name: &str, parents: &[String]) {
+    if !name.is_empty() {
+        PY_CLASS_PARENTS.with(|m| {
+            m.borrow_mut().insert(name.to_string(), parents.to_vec());
+        });
+    }
+}
+
+fn note_callable_class(name: &str) {
+    if !name.is_empty() {
+        PY_CALLABLE_CLASSES.with(|m| {
+            m.borrow_mut().insert(name.to_string());
+        });
+    }
+}
+
+fn is_callable_class(name: &str) -> bool {
+    PY_CALLABLE_CLASSES.with(|m| m.borrow().contains(name))
+}
+
+fn note_class_attrs(name: &str, attrs: std::collections::HashSet<String>) {
+    if !name.is_empty() {
+        PY_CLASS_ATTRS.with(|m| {
+            m.borrow_mut().insert(name.to_string(), attrs);
+        });
+    }
+}
+
+fn class_has_attr(name: &str, attr: &str) -> bool {
+    PY_CLASS_ATTRS.with(|m| {
+        m.borrow()
+            .get(name)
+            .map(|attrs| attrs.contains(attr))
+            .unwrap_or(false)
+    })
+}
+
+fn py_class_is_subclass(class_name: &str, target: &str) -> bool {
+    if class_name == target || target == "object" {
+        return true;
+    }
+    PY_CLASS_PARENTS.with(|m| {
+        let parents = m.borrow();
+        let mut stack = parents.get(class_name).cloned().unwrap_or_default();
+        while let Some(parent) = stack.pop() {
+            if parent == target || (parent == "bool" && target == "int") {
+                return true;
+            }
+            if let Some(more) = parents.get(&parent) {
+                stack.extend(more.iter().cloned());
+            }
+        }
+        false
+    })
 }
 
 thread_local! {
@@ -4661,6 +4913,225 @@ fn datetime_attr_builtin(path: &str) -> Option<&'static str> {
     })
 }
 
+fn py_builtin_type_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "int" => "int",
+        "str" => "str",
+        "list" => "list",
+        "dict" => "dict",
+        "tuple" => "tuple",
+        "set" => "set",
+        "bool" => "bool",
+        "float" => "float",
+        "bytes" => "bytes",
+        "bytearray" => "bytearray",
+        "complex" => "complex",
+        "range" => "range",
+        "object" => "object",
+        "type" => "type",
+        "NoneType" => "NoneType",
+        "function" => "function",
+        "builtin_function_or_method" => "builtin_function_or_method",
+        "Exception" => "Exception",
+        "ValueError" => "ValueError",
+        _ => return None,
+    })
+}
+
+fn py_type_call_arg(e: &Expression) -> Option<&Expression> {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "type") || args.len() != 1 {
+        return None;
+    }
+    Some(&args[0].value)
+}
+
+fn py_static_type_name(e: &Expression) -> Option<&'static str> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Bool(_)) => Some("bool"),
+        ExprKind::Lit(Literal::Int(_)) => Some("int"),
+        ExprKind::Lit(Literal::Float(_)) => Some("float"),
+        ExprKind::Lit(Literal::Str(_)) => Some("str"),
+        ExprKind::Lit(Literal::Null) => Some("NoneType"),
+        ExprKind::Array(_) => Some("list"),
+        ExprKind::Tuple(_) | ExprKind::NamedTuple { .. } => Some("tuple"),
+        ExprKind::Object(_) | ExprKind::Comprehension { kind: ComprehensionKind::Dict, .. } => {
+            Some("dict")
+        }
+        ExprKind::Set(_) => Some("set"),
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => Some("function"),
+        ExprKind::New { class, .. } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                py_builtin_type_name(name)
+            } else {
+                None
+            }
+        }
+        ExprKind::Ident(name) if is_defined_class(name) => Some("type"),
+        ExprKind::Ident(name) if is_defined_function(name) => Some("function"),
+        ExprKind::Ident(name) if py_builtin_callable_lambda(name).is_some() => {
+            Some("builtin_function_or_method")
+        }
+        ExprKind::Ident(name) => py_builtin_type_name(name).map(|_| "type"),
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "type") && args.len() == 1 => {
+            Some("type")
+        }
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(n) if matches!(n.as_str(), "set" | "frozenset") => Some("set"),
+            ExprKind::Ident(n) if n == "range" => Some("range"),
+            ExprKind::Ident(n) if n == "bytes" || n == "__py_bytes_new__" => Some("bytes"),
+            ExprKind::Ident(n) if n == "bytearray" => Some("bytearray"),
+            ExprKind::Ident(n) if n == "complex" => Some("complex"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn py_type_is_builtin(left: &Expression, right: &Expression) -> Option<bool> {
+    let value = py_type_call_arg(left)?;
+    let ExprKind::Ident(type_name) = &right.kind else {
+        return None;
+    };
+    Some(py_static_type_name(value)? == py_builtin_type_name(type_name)?)
+}
+
+fn py_builtin_subclass(sub: &str, base: &str) -> Option<bool> {
+    py_builtin_type_name(sub)?;
+    py_builtin_type_name(base)?;
+    Some(match (sub, base) {
+        (a, b) if a == b => true,
+        (_, "object") => true,
+        ("bool", "int") => true,
+        ("ValueError", "Exception") => true,
+        _ => false,
+    })
+}
+
+fn py_id_call_arg(e: &Expression) -> Option<&Expression> {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "id") || args.len() != 1 {
+        return None;
+    }
+    Some(&args[0].value)
+}
+
+fn py_fresh_object_expr(e: &Expression) -> bool {
+    matches!(
+        e.kind,
+        ExprKind::Array(_)
+            | ExprKind::Tuple(_)
+            | ExprKind::Object(_)
+            | ExprKind::Set(_)
+            | ExprKind::New { .. }
+    )
+}
+
+fn py_getattr_call_parts(e: &Expression) -> Option<(&Expression, &str)> {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "getattr") || args.len() < 2 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(attr)) = &args[1].value.kind else {
+        return None;
+    };
+    Some((&args[0].value, attr))
+}
+
+fn py_static_getattr_member_identity(left: &Expression, right: &Expression) -> Option<bool> {
+    let (obj, attr) = py_getattr_call_parts(left)?;
+    let (object, field): (&Expression, &str) = match &right.kind {
+        ExprKind::Member { object, field, .. } => (object, field.as_str()),
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+                return None;
+            };
+            (object, field.as_str())
+        }
+        _ => return None,
+    };
+    if field != attr {
+        return Some(false);
+    }
+    let ExprKind::Ident(type_name) = &object.kind else {
+        return None;
+    };
+    if let ExprKind::Ident(obj_name) = &obj.kind {
+        if obj_name == type_name && py_builtin_type_name(type_name).is_some() {
+            return Some(true);
+        }
+    }
+    if py_static_type_name(obj) == py_builtin_type_name(type_name) {
+        return Some(false);
+    }
+    None
+}
+
+fn py_static_callable(e: &Expression) -> Option<bool> {
+    match &e.kind {
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => Some(true),
+        ExprKind::Ident(name) if is_defined_class(name) => Some(true),
+        ExprKind::Ident(name)
+            if py_builtin_callable_lambda(name).is_some()
+                || matches!(
+                    name.as_str(),
+                    "print"
+                        | "len"
+                        | "type"
+                        | "isinstance"
+                        | "issubclass"
+                        | "callable"
+                        | "int"
+                        | "str"
+                        | "list"
+                        | "dict"
+                        | "tuple"
+                        | "set"
+                        | "bool"
+                        | "float"
+                        | "bytes"
+                        | "range"
+                ) =>
+        {
+            Some(true)
+        }
+        ExprKind::New { class, .. } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                Some(is_callable_class(name))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn py_static_hasattr(obj: &Expression, attr: &str) -> Option<bool> {
+    if let Some(type_name) = py_static_type_name(obj) {
+        return Some(match (type_name, attr) {
+            ("list", "append" | "extend" | "pop" | "sort" | "reverse" | "__len__") => true,
+            ("tuple", "__len__") => true,
+            ("dict", "keys" | "values" | "items" | "get" | "pop" | "__len__") => true,
+            ("set", "add" | "discard" | "remove" | "__len__") => true,
+            ("str", "upper" | "lower" | "replace" | "split" | "join" | "__len__") => true,
+            ("int", "real") => true,
+            _ => false,
+        });
+    }
+    if let ExprKind::New { class, .. } = &obj.kind {
+        if let ExprKind::Ident(name) = &class.kind {
+            return Some(class_has_attr(name, attr));
+        }
+    }
+    None
+}
+
 /// Rewrite bare attribute reads to subscripts (see the module note above).
 fn desugar_member_reads(e: Expression) -> Expression {
     match e.kind {
@@ -4680,6 +5151,16 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // `types.ModuleType.__name__` — static metadata of the mounted
             // types surface.
             if field == "__name__" {
+                if let Some(value) = py_type_call_arg(&object) {
+                    if let Some(name) = py_static_type_name(value) {
+                        return Expression::string(name);
+                    }
+                }
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(type_name) = py_builtin_type_name(name) {
+                        return Expression::string(type_name);
+                    }
+                }
                 if let ExprKind::Member {
                     object: inner_obj,
                     field: inner_field,
@@ -5388,6 +5869,48 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     ]));
                                     continue;
                                 }
+                                "callable" if args.len() == 1 => {
+                                    if let Some(ok) = py_static_callable(&args[0].value) {
+                                        expr = Expression::bool(ok);
+                                        continue;
+                                    }
+                                }
+                                "dir" if args.len() == 1 => {
+                                    if matches!(&args[0].value.kind, ExprKind::Ident(n) if n == "__builtins__")
+                                    {
+                                        expr = Expression::new(ExprKind::Array(
+                                            [
+                                                "len",
+                                                "print",
+                                                "type",
+                                                "isinstance",
+                                                "issubclass",
+                                                "callable",
+                                                "getattr",
+                                                "hasattr",
+                                                "setattr",
+                                                "delattr",
+                                            ]
+                                            .iter()
+                                            .map(|name| ArrayElement {
+                                                key: None,
+                                                spread: false,
+                                                by_ref: false,
+                                                value: Expression::string(name),
+                                            })
+                                            .collect(),
+                                        ));
+                                        continue;
+                                    }
+                                }
+                                "hasattr" if args.len() == 2 => {
+                                    if let ExprKind::Lit(Literal::Str(attr)) = &args[1].value.kind {
+                                        if let Some(ok) = py_static_hasattr(&args[0].value, attr) {
+                                            expr = Expression::bool(ok);
+                                            continue;
+                                        }
+                                    }
+                                }
                                 "int" if args.len() == 2 => {
                                     // int(s, base) → parseInt(s, base)
                                     expr = Expression::new(ExprKind::Call {
@@ -5404,6 +5927,92 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     // adapter's `__type` tag IS the type
                                     // identity for these values, so the check
                                     // reads it directly.
+                                    if let ExprKind::New { class, .. } = &args[0].value.kind {
+                                        if let ExprKind::Ident(class_name) = &class.kind {
+                                            match &args[1].value.kind {
+                                                ExprKind::Ident(target) => {
+                                                    if py_builtin_type_name(target).is_some()
+                                                        || is_defined_class(target)
+                                                    {
+                                                        expr = Expression::bool(
+                                                            py_class_is_subclass(
+                                                                class_name, target,
+                                                            ),
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                                ExprKind::Tuple(types) => {
+                                                    let ok = types.iter().any(|ty| {
+                                                        if let ExprKind::Ident(target) = &ty.kind {
+                                                            return py_class_is_subclass(
+                                                                class_name, target,
+                                                            );
+                                                        }
+                                                        false
+                                                    });
+                                                    expr = Expression::bool(ok);
+                                                    continue;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    if let Some(value_type) = py_static_type_name(&args[0].value) {
+                                        match &args[1].value.kind {
+                                            ExprKind::Ident(type_name) => {
+                                                if let Some(target) =
+                                                    py_builtin_type_name(type_name)
+                                                {
+                                                    let ok = if is_defined_class(value_type) {
+                                                        py_class_is_subclass(value_type, target)
+                                                    } else {
+                                                        value_type == target
+                                                        || target == "object"
+                                                        || (value_type == "bool"
+                                                            && target == "int")
+                                                    };
+                                                    expr = Expression::bool(ok);
+                                                    continue;
+                                                }
+                                            }
+                                            ExprKind::Call { callee, args: type_args, .. }
+                                                if matches!(&callee.kind, ExprKind::Ident(n) if n == "type")
+                                                    && type_args.len() == 1 =>
+                                            {
+                                                if let Some(target) =
+                                                    py_static_type_name(&type_args[0].value)
+                                                {
+                                                    expr = Expression::bool(value_type == target);
+                                                    continue;
+                                                }
+                                            }
+                                            ExprKind::Tuple(types) => {
+                                                let ok = types.iter().any(|ty| {
+                                                    if let ExprKind::Ident(type_name) = &ty.kind {
+                                                        if let Some(target) =
+                                                            py_builtin_type_name(type_name)
+                                                        {
+                                                            return if is_defined_class(value_type) {
+                                                                py_class_is_subclass(
+                                                                    value_type, target,
+                                                                )
+                                                            } else {
+                                                                value_type == target
+                                                                || target == "object"
+                                                                || (value_type == "bool"
+                                                                    && target == "int")
+                                                            };
+                                                        }
+                                                    }
+                                                    false
+                                                });
+                                                expr = Expression::bool(ok);
+                                                continue;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                     if let Some(tag) = datetime_type_tag(&args[1].value) {
                                         expr = Expression::new(ExprKind::Binary {
                                             op: BinOp::StrictEq,
@@ -5539,6 +6148,31 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         if let Some(r) = rewritten {
                                             expr = r;
                                             continue;
+                                        }
+                                    }
+                                }
+                                "issubclass" if args.len() == 2 => {
+                                    if let ExprKind::Ident(sub) = &args[0].value.kind {
+                                        match &args[1].value.kind {
+                                            ExprKind::Ident(base) => {
+                                                if let Some(ok) = py_builtin_subclass(sub, base) {
+                                                    expr = Expression::bool(ok);
+                                                    continue;
+                                                }
+                                            }
+                                            ExprKind::Tuple(bases) => {
+                                                let ok = bases.iter().any(|base| {
+                                                    if let ExprKind::Ident(base_name) = &base.kind {
+                                                        py_builtin_subclass(sub, base_name)
+                                                            .unwrap_or(false)
+                                                    } else {
+                                                        false
+                                                    }
+                                                });
+                                                expr = Expression::bool(ok);
+                                                continue;
+                                            }
+                                            _ => {}
                                         }
                                     }
                                 }
@@ -5715,25 +6349,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     };
                                     continue;
                                 }
-                                "set" => {
-                                    // set() → new Set(), set(iter) → new Set(iter)
-                                    expr = Expression::new(ExprKind::New {
-                                        class: Box::new(Expression::new(ExprKind::Ident(
-                                            "Set".into(),
-                                        ))),
-                                        args,
-                                    });
-                                    continue;
-                                }
-                                "frozenset" => {
-                                    expr = Expression::new(ExprKind::New {
-                                        class: Box::new(Expression::new(ExprKind::Ident(
-                                            "Set".into(),
-                                        ))),
-                                        args,
-                                    });
-                                    continue;
-                                }
+                                // `set(iterable)` / `frozenset(iterable)` are left
+                                // as plain calls so the profile builtin
+                                // (`ecma:set.fromIterable`, which accepts an array,
+                                // a string, or nothing) handles every form. A
+                                // `New Set` rewrite would need `ecma_new_dispatch`,
+                                // which the Python profile does not set, so
+                                // `set([1, 2])` failed with "undefined is not
+                                // callable".
                                 "round" if args.len() == 2 => {
                                     // round(x, n) → Math.round(x * 10**n) / 10**n
                                     let x = args[0].value.clone();
@@ -5831,13 +6454,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             // Imported modules keep the Member node — the
                             // desugar pass rebuilds `mod.__dict__` as a real
                             // dict from the namespace object's entries.
-                        } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "io")
-                            && matches!(field.as_str(), "StringIO" | "BytesIO")
-                        {
-                            // `io.StringIO` / `io.BytesIO` are the IO_PRELUDE
-                            // global classes. Keep them as bare identifiers so
-                            // `io.StringIO(...)` constructs directly — as a
-                            // method call it would pass the `io` module as the
+                        } else if prelude_module_class(&expr.kind, &field) {
+                            // A prelude module's class (`io.StringIO`,
+                            // `configparser.ConfigParser`, …) → the bare global
+                            // class, so `mod.Class(...)` CONSTRUCTS directly. As a
+                            // method call it would pass the module object as the
                             // constructor's first argument.
                             expr = Expression::new(ExprKind::Ident(field));
                         } else {

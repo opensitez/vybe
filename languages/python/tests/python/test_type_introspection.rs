@@ -95,7 +95,7 @@ fn hasattr_missing() {
 
 #[test]
 fn getattr_existing() {
-    assert_eq!(run_print("getattr([], 'append') is list.append)"), "False");
+    assert_eq!(run_print("getattr([], 'append') is list.append"), "False");
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn callable_bound_method() {
 
 #[test]
 fn getattr_class_attr() {
-    assert_eq!(run_print("getattr(str, 'upper') is str.upper)"), "True");
+    assert_eq!(run_print("getattr(str, 'upper') is str.upper"), "True");
 }
 
 #[test]
@@ -269,5 +269,5 @@ fn callable_class_instance_without_call_false() {
 
 #[test]
 fn getattr_descriptor_on_class() {
-    assert_eq!(run_print("getattr(int, 'real') is int.real)"), "True");
+    assert_eq!(run_print("getattr(int, 'real') is int.real"), "True");
 }

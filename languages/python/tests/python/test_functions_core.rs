@@ -124,6 +124,40 @@ fn function_kwargs_lookup() {
 }
 
 #[test]
+fn function_kwargs_collects_unmatched_named() {
+    assert_eq!(
+        run_python_one("def f(a, b=0, **k):\n return a + b + len(k)\nprint(f(1, x=5, y=6))\n"),
+        "3"
+    );
+}
+
+#[test]
+fn function_varargs_and_kwargs_together() {
+    assert_eq!(
+        run_python_one("def f(*a, **k):\n return len(a) + len(k)\nprint(f(1, 2, c=3))\n"),
+        "3"
+    );
+}
+
+#[test]
+fn function_fixed_varargs_kwargs() {
+    assert_eq!(
+        run_python_one(
+            "def f(x, *a, **k):\n return x + len(a) + len(k)\nprint(f(10, 1, 2, c=3))\n"
+        ),
+        "13"
+    );
+}
+
+#[test]
+fn function_empty_varargs_kwargs() {
+    assert_eq!(
+        run_python_one("def f(*a, **k):\n return len(a) + len(k)\nprint(f())\n"),
+        "0"
+    );
+}
+
+#[test]
 fn function_mixed_positional_and_kwargs() {
     assert_eq!(
         run_python_one("def f(x, y=0):\n return x + y\nprint(f(2, y=3))\n"),

@@ -21,12 +21,12 @@ macro_rules! compile_case {
 runtime_case!(
     set_add_runtime,
     "s = {1, 2}\ns.add(3)\nprint(3 in s)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_remove_runtime,
     "s = {1, 2, 3}\ns.remove(2)\nprint(2 in s)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     set_discard_missing_runtime,
@@ -41,47 +41,47 @@ runtime_case!(
 runtime_case!(
     set_copy_independent_runtime,
     "a = {1, 2}\nb = a.copy()\nb.add(3)\nprint(3 in a)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     set_update_runtime,
     "s = {1}\ns.update({2, 3})\nprint(3 in s)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_intersection_update_runtime,
     "s = {1, 2, 3}\ns.intersection_update({2, 3, 4})\nprint(1 in s)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     set_difference_update_runtime,
     "s = {1, 2, 3}\ns.difference_update({2})\nprint(2 in s)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     set_membership_runtime,
     "s = {'a', 'b'}\nprint('b' in s)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_union_operator_runtime,
     "a = {1, 2}\nb = {2, 3}\nc = a | b\nprint(3 in c)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_intersection_operator_runtime,
     "a = {1, 2}\nb = {2, 3}\nc = a & b\nprint(2 in c)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_difference_operator_runtime,
     "a = {1, 2}\nb = {2, 3}\nc = a - b\nprint(1 in c)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     set_symdiff_operator_runtime,
     "a = {1, 2}\nb = {2, 3}\nc = a ^ b\nprint(2 in c)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     set_len_after_duplicate_add_runtime,
@@ -91,7 +91,7 @@ runtime_case!(
 runtime_case!(
     set_nested_membership_runtime,
     "s = {frozenset({1, 2})}\nprint(frozenset({1, 2}) in s)\n",
-    "true"
+    "True"
 );
 
 compile_case!(frozenset_constructor_compile, "s = frozenset([1, 2, 3])\n");

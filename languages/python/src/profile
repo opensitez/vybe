@@ -136,8 +136,8 @@ range           = { emit = "common:python.range",         min_args = 1, max_args
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
-set             = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_args = 1 }
-frozenset       = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_args = 1 }
+set             = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
+frozenset       = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "common:python.enumerate",              min_args = 1, max_args = 2 }
@@ -399,10 +399,10 @@ type            = { emit = "common:python.type",              min_args = 1, max_
 isinstance      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
 issubclass      = { emit = "common:python.issubclass",              min_args = 2, max_args = 2 }
 callable        = { emit = "common:python.callable",                min_args = 1, max_args = 1 }
-hasattr         = { emit = "host:ecma:object:hasOwn",        min_args = 2, max_args = 2 }
-getattr         = { emit = "host:ecma:object:get",          min_args = 2, max_args = 3 }
-setattr         = { emit = "host:ecma:object:set",          min_args = 3, max_args = 3 }
-delattr         = { emit = "host:ecma:object:delete",       min_args = 2, max_args = 2 }
+hasattr         = { emit = "common:python.hasattr",         min_args = 2, max_args = 2 }
+getattr         = { emit = "common:python.getattr",         min_args = 2, max_args = 3 }
+setattr         = { emit = "common:python.setattr",         min_args = 3, max_args = 3 }
+delattr         = { emit = "common:python.delattr",         min_args = 2, max_args = 2 }
 id              = { emit = "common:python.id",            min_args = 1, max_args = 1 }
 hash            = { emit = "common:python.hash",          min_args = 1, max_args = 1 }
 vars            = { emit = "common:python.vars",              min_args = 0, max_args = 1 }
@@ -577,9 +577,9 @@ symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 
 intersection_update = { emit = "common:python.intersection_update", min_args = 1, max_args = 1 }
 difference_update = { emit = "common:python.difference_update", min_args = 1, max_args = 1 }
 symmetric_difference_update = { emit = "common:python.symmetric_difference_update", min_args = 1, max_args = 1 }
-issubset        = { emit = "host:ecma:set:isSubsetOf",        min_args = 1, max_args = 1 }
-issuperset      = { emit = "host:ecma:set:isSupersetOf",      min_args = 1, max_args = 1 }
-isdisjoint      = { emit = "host:ecma:set:isDisjointFrom",    min_args = 1, max_args = 1 }
+issubset        = { emit = "common:python.set_issubset",     min_args = 1, max_args = 1 }
+issuperset      = { emit = "common:python.set_issuperset",   min_args = 1, max_args = 1 }
+isdisjoint      = { emit = "common:python.set_isdisjoint",   min_args = 1, max_args = 1 }
 
 # File object methods
 read            = { emit = "host:wasi:filesystem:readFile",   min_args = 0, max_args = 1 }

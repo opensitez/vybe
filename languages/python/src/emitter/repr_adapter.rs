@@ -289,6 +289,41 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
     }
 
+    // ── set / frozenset → `{a, b, …}` (empty → `set()`) ─────────────────
+    // Sets carry `__type == "Set"` (stamped by `ecma:set`); check this BEFORE
+    // the generic class-instance branch, which would otherwise render the set
+    // as `<Set object at 0x0>`. `ecma:array.from` materializes the members in
+    // insertion order, then the list machinery renders them inside braces.
+    {
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__type", line);
+        str_const(&mut c, "Set", line);
+        vybe_emitter::ops::emit_dyn_eq(&mut c, line);
+        c.emit_if(line);
+        {
+            let set_arr = c.alloc_scratch(1);
+            lget(&mut c, value, line);
+            let from = c.add_import("ecma:array", "from");
+            c.emit_call(from, 1, line);
+            lset(&mut c, set_arr, line);
+            lget(&mut c, set_arr, line);
+            c.emit_op(Op::ARRAY_LENGTH, line);
+            lset(&mut c, n, line);
+            // empty set → `set()` (Python has no `{}` empty-set literal)
+            lget(&mut c, n, line);
+            emit_i32_const(&mut c, 0, line);
+            c.emit_op(Op::I32_EQ, line);
+            c.emit_if(line);
+            str_const(&mut c, "set()", line);
+            c.emit_op(Op::RETURN, line);
+            c.emit_end(line);
+            emit_join(&mut c, self_idx, set_arr, out, i, n, "{", "}", line);
+            lget(&mut c, out, line);
+            c.emit_op(Op::RETURN, line);
+        }
+        c.emit_end(line);
+    }
+
     // ── class instance without __repr__ → `<ClassName object at 0x0>` ────
     // A class instance carries a `__type` stamp (a plain dict does not); without
     // this it falls to the dict branch and reprs as `{}`. Known gap: a
