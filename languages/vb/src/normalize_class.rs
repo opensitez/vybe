@@ -27,9 +27,7 @@
 //!     ctor). We populate `auto_init_methods` so the shim preserves
 //!     that semantic when the direct `emit_class` path lands.
 
-use vybe_ast::{
-    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility,
-};
+use vybe_ast::{ClassMember, ClassModifiers, PropertySetter, Span, StmtKind, Visibility};
 use vybe_plugin::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
@@ -51,6 +49,7 @@ pub fn normalize_class(
     let mut instance_methods: Vec<NormalMethod> = Vec::new();
     let mut static_methods: Vec<NormalMethod> = Vec::new();
     let mut properties: Vec<NormalProperty> = Vec::new();
+    let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut constructor: Option<NormalConstructor> = None;
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
     let mut auto_init_methods: Vec<String> = Vec::new();
@@ -105,7 +104,30 @@ pub fn normalize_class(
                     auto_init_methods.push(src_name.clone());
                 }
 
-                let (canonical, special_kind) = canonicalize_method(ClassLang::Vb, src_name);
+                let (canonical, special_kind) = match src_name.as_str() {
+                    "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__mod__" | "__eq__"
+                    | "__lt__" | "__le__" | "__gt__" | "__ge__" => {
+                        canonicalize_method(ClassLang::Python, src_name)
+                    }
+                    "__getitem__" => ("getitem".to_string(), Some(SpecialMethodKind::GetItem)),
+                    "__setitem__" => ("setitem".to_string(), Some(SpecialMethodKind::SetItem)),
+                    "__call__" => ("call".to_string(), Some(SpecialMethodKind::Call)),
+                    "operator+" => ("add".to_string(), Some(SpecialMethodKind::Add)),
+                    "operator-" => ("sub".to_string(), Some(SpecialMethodKind::Sub)),
+                    "operator*" => ("mul".to_string(), Some(SpecialMethodKind::Mul)),
+                    "operator/" => ("div".to_string(), Some(SpecialMethodKind::Div)),
+                    "operator\\" => ("div".to_string(), Some(SpecialMethodKind::Div)),
+                    "operatorMod" | "operatormod" => {
+                        ("mod".to_string(), Some(SpecialMethodKind::Mod))
+                    }
+                    "operator=" => ("eq".to_string(), Some(SpecialMethodKind::Eq)),
+                    "operator<>" => ("eq".to_string(), Some(SpecialMethodKind::Eq)),
+                    "operator<" => ("lt".to_string(), Some(SpecialMethodKind::Lt)),
+                    "operator<=" => ("le".to_string(), Some(SpecialMethodKind::Le)),
+                    "operator>" => ("gt".to_string(), Some(SpecialMethodKind::Gt)),
+                    "operator>=" => ("ge".to_string(), Some(SpecialMethodKind::Ge)),
+                    _ => canonicalize_method(ClassLang::Vb, src_name),
+                };
                 let access = access_from_visibility(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
@@ -130,18 +152,26 @@ pub fn normalize_class(
                 params,
                 body,
                 base_args,
+                initializer_target,
                 ..
             } => {
-                constructor = Some(NormalConstructor {
+                let normalized = NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
-                        Some(args) => BaseCall::Explicit(
-                            args.iter()
-                                .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                .collect(),
-                        ),
+                        Some(args) => match initializer_target {
+                            vybe_ast::ConstructorInitializerTarget::Base => BaseCall::Explicit(
+                                args.iter()
+                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
+                                    .collect(),
+                            ),
+                            vybe_ast::ConstructorInitializerTarget::This => BaseCall::This(
+                                args.iter()
+                                    .map(|e| vybe_ast::Argument::positional(e.clone()))
+                                    .collect(),
+                            ),
+                        },
                         // The VB walker injects `MyBase.New()` at the start
                         // of the body when the class DECLARATION itself
                         // has an `Inherits` clause. For partial classes,
@@ -163,7 +193,9 @@ pub fn normalize_class(
                         }
                     },
                     named_name: None,
-                });
+                };
+                constructor = Some(normalized.clone());
+                constructors.push(normalized);
             }
             ClassMember::Property {
                 name: pname,
@@ -188,7 +220,7 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        m.clone(),
                     )
                 });
                 let setter_method = setter.as_ref().map(|s: &PropertySetter| {
@@ -204,7 +236,7 @@ pub fn normalize_class(
                         false,
                         false,
                         false,
-                        Modifiers::default(),
+                        m.clone(),
                     )
                 });
                 properties.push(NormalProperty {
@@ -242,7 +274,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
-        constructors: Vec::new(),
+        constructors,
         constructor,
         destructor: None, // VB `Finalize` is conventionally handled as a regular override; no first-class destructor here
         auto_init_methods,
@@ -264,6 +296,7 @@ fn access_from_visibility(v: Visibility) -> Access {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vybe_ast::Modifiers;
 
     fn dummy_span() -> Span {
         Span::default()

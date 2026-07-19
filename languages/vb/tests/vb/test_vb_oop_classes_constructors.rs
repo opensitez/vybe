@@ -26,6 +26,6 @@ use super::helpers::run_vb;
 
 #[test] fn class_generic_instantiation() { assert_eq!(run_vb("Class C(Of T)\nPublic V As T\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(Of Integer)()\nc1.V = 5\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
 #[test] fn class_generic_multiple_types() { assert_eq!(run_vb("Class C(Of T, U)\nPublic V1 As T\nPublic V2 As U\nEnd Class\nModule M\nSub Main()\nDim c1 As New C(Of Integer, String)()\nc1.V1 = 5: c1.V2 = \"A\"\nConsole.WriteLine(c1.V1 & c1.V2)\nEnd Sub\nEnd Module"), vec!["5A"]); }
-#[test] fn class_default_instance() { assert_eq!(run_vb("Module M\n' VB has default instances for Forms (My.Forms.Form1), but for normal classes it requires special attributes\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test] fn class_default_instance() { assert_eq!(run_vb("Module M\nSub Main()\n' VB has default instances for Forms (My.Forms.Form1), but for normal classes it requires special attributes\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
 #[test] fn class_empty() { assert_eq!(run_vb("Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.GetType().Name)\nEnd Sub\nEnd Module"), vec!["C"]); }
 #[test] fn class_shadowing_constructor() { assert_eq!(run_vb("Class B\nPublic Sub New(v As Integer)\nEnd Sub\nEnd Class\nClass C\nInherits B\nPublic Sub New()\nMyBase.New(1)\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1 IsNot Nothing)\nEnd Sub\nEnd Module"), vec!["True"]); }

@@ -33,6 +33,11 @@ case_sensitive = false
 # `Dim f As Boolean = True`, `f = True`, and `n > 3` behave/print as
 # `True`/`False` instead of flattening to `1`/`0` (mirrors csharp).
 materialize_bool_results = true
+# VB `+` concatenates when an operand is a String (String + String → concat),
+# and adds numerically otherwise — the same string-aware `+` as C#/Java/Dart.
+# `&` is the dedicated concat operator (BinOp::Concat); `+` still needs this so
+# `"A" + "B"` yields "AB" instead of NaN from a purely-numeric add.
+dynamic_add = true
 string_indexing = "one_based"          # Mid(), InStr() are 1-based
 array_upper_bound_inclusive = true     # Dim arr(5) means 0..5 inclusive (6 elements)
 parens_for_index = true                # arr(i) not arr[i] — () is both call and index
@@ -66,6 +71,10 @@ uses_normalize_class = true
 #   "namespace_chain"          → resolve via global namespace objects
 
 [builtins]
+
+# ── Internal helpers ─────────────────────────────────────────────────────────
+
+"__vb_object_get" = { emit = "host:ecma:object:get", min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -286,11 +295,11 @@ second       = { emit = "common:vb.second",  min_args = 1, max_args = 1 }
 # bring them back as dedicated adapters when a test demands them.
 datediff     = { emit = "noop", min_args = 3, max_args = 3 }
 datepart     = { emit = "noop", min_args = 2, max_args = 2 }
-datevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
-timevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
+datevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
+timevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 # `timeserial` removed alongside `timeserial`/`dateserial` (see DateAdd
 # comment above).
-cdate        = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
+cdate        = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 weekday      = { emit = "common:vb.weekday",                  min_args = 1, max_args = 1 }
 weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
@@ -771,8 +780,6 @@ path = "dotnet.system"
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
-
-
 
 
 

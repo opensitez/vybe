@@ -12,6 +12,44 @@ use super::helpers::run_vb;
 #[test] fn inherit_multiple_classes_fails() { assert_eq!(run_vb("Class A\nEnd Class\nClass B\nEnd Class\n' Class C: Inherits A, B ' VB only supports single inheritance\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
 #[test] fn inherit_structure_fails() { assert_eq!(run_vb("Structure S\nEnd Structure\n' Class C: Inherits S ' Cannot inherit from structure\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
 
+#[test]
+fn graphics_drawline_sequence_runs_vb() {
+    // VB benefits from the same drawing migration as C#: Graphics/Pen have no
+    // ctor global, `g.DrawLine(...)` resolves through the component descriptor
+    // and lowers inline. `Dim g As Graphics` types the receiver.
+    let out = run_vb(
+        "Imports System.Drawing\n\
+         Imports System.Windows.Forms\n\
+         Module M\nSub Main()\n\
+         Dim g As Graphics = New PictureBox().CreateGraphics()\n\
+         Dim p As New Pen(Color.Red, 2)\n\
+         g.DrawLine(p, 0, 0, 10, 10)\n\
+         Console.WriteLine(\"drew\")\n\
+         End Sub\nEnd Module",
+    );
+    assert_eq!(out, vec!["drew"]);
+}
+
+#[test]
+fn form_subclass_constructs_via_gui_host_after_ctor_removal() {
+    // `class MyForm : Form` base construction routes through the shared
+    // `try_emit_framework_control_base` (VB uses the same normalize_class →
+    // emit_class_from_ast → compile_class path as C#). Control leaves no
+    // longer emit a per-class ctor global; the host `new_Form` builds the
+    // instance and inherited properties resolve through the descriptor.
+    let out = run_vb(
+        "Imports System.Windows.Forms\n\
+         Public Class MyForm\nInherits Form\nEnd Class\n\
+         Module M\nSub Main()\n\
+         Dim f As New MyForm()\n\
+         f.Text = \"hello\"\n\
+         Console.WriteLine(f.Text)\n\
+         Console.WriteLine(f.__control_type)\n\
+         End Sub\nEnd Module",
+    );
+    assert_eq!(out, vec!["hello", "Form"]);
+}
+
 #[test] fn inherit_from_object_implicit() { assert_eq!(run_vb("Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.ToString() IsNot Nothing)\nEnd Sub\nEnd Module"), vec!["True"]); }
 #[test] fn inherit_protected_member_access() { assert_eq!(run_vb("Class B\nProtected V As Integer = 42\nEnd Class\nClass C\nInherits B\nPublic Function GetV() As Integer\nReturn V\nEnd Function\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.GetV())\nEnd Sub\nEnd Module"), vec!["42"]); }
 #[test] fn inherit_protected_member_no_access_outside() { assert_eq!(run_vb("Class B\nProtected V As Integer = 42\nEnd Class\nModule M\nSub Main()\nDim b1 As New B()\n' b1.V ' Fails\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
