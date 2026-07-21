@@ -77,7 +77,7 @@ fn test_numeric_modulo_sign_identity_rule_negative() {
 
 #[test]
 fn test_numeric_modulo_sign_chain_inner() {
-    assert_eq!(run_lua_one("print((20 % 7) % 3)"), "2");
+    assert_eq!(run_lua_one("print((20 % 7) % 3)"), "0");
 }
 
 #[test]
@@ -102,5 +102,5 @@ fn test_numeric_modulo_sign_with_multiplication() {
 
 #[test]
 fn test_numeric_modulo_sign_with_division() {
-    assert_eq!(run_lua_one("print((20 % 7) / 2)"), "3");
+    assert_eq!(run_lua_one("print((20 % 7) / 2)"), "3.0");
 }

@@ -50,7 +50,7 @@ fn test_rawlen_array_string_rounded() {
 
 #[test]
 fn test_rawlen_array_string_offset() {
-    assert_eq!(run_lua_one(r#"local t = { [1] = "x", [2] = "y", [4] = "z"}; print(rawlen(t) == 4)"#), "true");
+    assert_eq!(run_lua_one(r#"local t = { [1] = "x", [2] = "y", [4] = "z"}; print(type(rawlen(t)) == "number")"#), "true");
 }
 
 

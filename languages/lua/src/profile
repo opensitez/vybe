@@ -25,6 +25,8 @@ dynamic_add = true
 dynamic_numeric_dispatch = true
 allow_trailing_comma = true
 supports_spread_arguments = true
+for_loop_per_iteration_binding = true
+multi_value_tuple_returns = true
 
 [builtins]
 
@@ -48,6 +50,16 @@ select = { emit = "common:lua.select", min_args = 1, max_args = 255 }
 "debug.setmetatable" = { emit = "common:lua.debug_setmetatable", min_args = 2, max_args = 2 }
 "debug.getmetatable" = { emit = "common:lua.getmetatable", min_args = 1, max_args = 1 }
 "debug.getinfo" = { emit = "common:lua.debug_getinfo", min_args = 1, max_args = 2 }
+"debug.traceback" = { emit = "common:lua.debug_traceback", min_args = 0, max_args = 2 }
+"debug.getlocal" = { emit = "common:lua.debug_getlocal", min_args = 2, max_args = 3 }
+"debug.setlocal" = { emit = "common:lua.debug_setlocal", min_args = 3, max_args = 4 }
+"debug.getupvalue" = { emit = "common:lua.debug_getupvalue", min_args = 2, max_args = 2 }
+"debug.setupvalue" = { emit = "common:lua.debug_setupvalue", min_args = 3, max_args = 3 }
+"debug.upvalueid" = { emit = "common:lua.debug_upvalueid", min_args = 2, max_args = 2 }
+"debug.upvaluejoin" = { emit = "common:lua.debug_upvaluejoin", min_args = 4, max_args = 4 }
+"debug.sethook" = { emit = "common:lua.debug_sethook", min_args = 0, max_args = 4 }
+"debug.gethook" = { emit = "common:lua.debug_gethook", min_args = 0, max_args = 1 }
+"debug.type" = { emit = "common:lua.type", min_args = 1, max_args = 1 }
 "coroutine.resume" = { emit = "common:lua.coroutine_resume", min_args = 1, max_args = 255 }
 "coroutine.yield" = { emit = "common:lua.coroutine_yield", min_args = 0, max_args = 255 }
 "coroutine.status" = { emit = "common:lua.coroutine_status", min_args = 1, max_args = 1 }
@@ -58,13 +70,19 @@ select = { emit = "common:lua.select", min_args = 1, max_args = 255 }
 __lua_print = { emit = "common:lua.print", min_args = 0, max_args = 255 }
 __lua_print_row = { emit = "common:lua.print_row", min_args = 1, max_args = 1 }
 __lua_apply_row = { emit = "common:lua.apply_row", min_args = 2, max_args = 2 }
+__lua_apply_row_prefix = { emit = "common:lua.apply_row_prefix", min_args = 3, max_args = 3 }
+__lua_call = { emit = "common:lua.metamethod_call", min_args = 1, max_args = 255 }
 __lua_wrap_resume = { emit = "common:lua.coroutine_wrap_resume", min_args = 1, max_args = 255 }
 __lua_tostring = { emit = "common:lua.tostring", min_args = 1, max_args = 1 }
 __lua_error = { emit = "common:lua.error", min_args = 0, max_args = 2 }
 __lua_float_repr = { emit = "common:lua.float_repr", min_args = 1, max_args = 1 }
 __lua_multi_row = { emit = "common:lua.multi_row", min_args = 1, max_args = 1 }
+__lua_as_multi_row = { emit = "common:lua.as_multi_row", min_args = 1, max_args = 1 }
 __lua_first = { emit = "common:lua.first", min_args = 1, max_args = 1 }
+__lua_mark_rest = { emit = "common:lua.mark_rest", min_args = 2, max_args = 2 }
+__lua_debug_getinfo_static = { emit = "common:lua.debug_getinfo_static", min_args = 2, max_args = 2 }
 __lua_table_from_pairs = { emit = "common:lua.table_from_pairs", min_args = 1, max_args = 1 }
+__lua_table_pack_row = { emit = "common:lua.table_pack_row", min_args = 1, max_args = 1 }
 __lua_stdout = { emit = "common:lua.stdout", min_args = 0, max_args = 0 }
 __lua_iter_end = { emit = "common:lua.iter_end", min_args = 1, max_args = 1 }
 __lua_type = { emit = "common:lua.type", min_args = 1, max_args = 1 }
@@ -124,9 +142,10 @@ __lua_truthy = { emit = "common:lua.truthy", min_args = 1, max_args = 1 }
 "string.sub" = { emit = "common:lua.string_sub", min_args = 2, max_args = 3 }
 "string.rep" = { emit = "common:lua.string_rep", min_args = 2, max_args = 3 }
 "string.reverse" = { emit = "common:str_reverse", min_args = 1, max_args = 1 }
-"string.char" = { emit = "common:str_from_char_code", min_args = 1, max_args = 255 }
+"string.char" = { emit = "common:lua.string_char", min_args = 0, max_args = 255 }
 "string.byte" = { emit = "common:lua.string_byte", min_args = 1, max_args = 3 }
 "string.format" = { emit = "common:lua.string_format", min_args = 1, max_args = 255 }
+__lua_string_format_row = { emit = "common:lua.string_format_row", min_args = 2, max_args = 2 }
 "string.find" = { emit = "common:lua.string_find", min_args = 2, max_args = 4 }
 "string.gsub" = { emit = "common:lua.string_gsub", min_args = 3, max_args = 4 }
 "string.gmatch" = { emit = "common:lua.string_gmatch_match_all", min_args = 2, max_args = 2 }
@@ -173,6 +192,7 @@ __lua_eq = { emit = "common:lua.metamethod_eq", min_args = 2, max_args = 2 }
 __lua_ne = { emit = "common:lua.metamethod_ne", min_args = 2, max_args = 2 }
 __lua_index = { emit = "common:lua.metamethod_index", min_args = 2, max_args = 2 }
 __lua_index0 = { emit = "common:collections.get", min_args = 2, max_args = 2 }
+__lua_multi_get0 = { emit = "common:lua.multi_index0", min_args = 2, max_args = 2 }
 __lua_newindex = { emit = "common:lua.metamethod_newindex", min_args = 3, max_args = 3 }
 
 # os.* — wall clock via ecma:date + PHP strftime/getdate (see normalize.rs desugar)

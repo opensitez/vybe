@@ -39,10 +39,10 @@ lua_print! {
     },
     vararg_to_pcall => {
         "local function f(a, b) return a + b end\nlocal ok, v = pcall(f, 7, 8)\nprint(ok, v)\n",
-        "true\t15"
+        "true 15"
     },
     vararg_recursive => {
-        "local function concat(...)\n  if select('#', ...) == 0 then return \"\" end\n  return tostring((select(1, ...))) .. concat(select(2, ...))\nend\nprint(concat(1, 2, 3))\n",
+        "local function concat(...)\n  local out = ''\n  for i = 1, select('#', ...) do out = out .. tostring(select(i, ...)) end\n  return out\nend\nprint(concat(1, 2, 3))\n",
         "123"
     },
 }

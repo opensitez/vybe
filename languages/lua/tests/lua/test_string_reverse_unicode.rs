@@ -73,7 +73,7 @@ print(string.reverse(s) == "b9a")"#), "true");
 #[test]
 fn test_string_reverse_unicode_nested() {
     assert_eq!(run_lua_one(r#"local s = "a10b"
-print(string.reverse(s) == "b10a")"#), "true");
+print(string.reverse(s) == "b01a")"#), "true");
 }
 
 
@@ -87,54 +87,54 @@ print(string.reverse(s) == "b11a")"#), "true");
 #[test]
 fn test_string_reverse_unicode_guarded() {
     assert_eq!(run_lua_one(r#"local s = "a12b"
-print(string.reverse(s) == "b12a")"#), "true");
+print(string.reverse(s) == "b21a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_mapped() {
     assert_eq!(run_lua_one(r#"local s = "a13b"
-print(string.reverse(s) == "b13a")"#), "true");
+print(string.reverse(s) == "b31a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_captured() {
     assert_eq!(run_lua_one(r#"local s = "a14b"
-print(string.reverse(s) == "b14a")"#), "true");
+print(string.reverse(s) == "b41a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_edge_first() {
     assert_eq!(run_lua_one(r#"local s = "a15b"
-print(string.reverse(s) == "b15a")"#), "true");
+print(string.reverse(s) == "b51a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_edge_second() {
     assert_eq!(run_lua_one(r#"local s = "a16b"
-print(string.reverse(s) == "b16a")"#), "true");
+print(string.reverse(s) == "b61a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_edge_last() {
     assert_eq!(run_lua_one(r#"local s = "a17b"
-print(string.reverse(s) == "b17a")"#), "true");
+print(string.reverse(s) == "b71a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_randomized() {
     assert_eq!(run_lua_one(r#"local s = "a18b"
-print(string.reverse(s) == "b18a")"#), "true");
+print(string.reverse(s) == "b81a")"#), "true");
 }
 
 
 #[test]
 fn test_string_reverse_unicode_unicode_like() {
     assert_eq!(run_lua_one(r#"local s = "a19b"
-print(string.reverse(s) == "b19a")"#), "true");
+print(string.reverse(s) == "b91a")"#), "true");
 }

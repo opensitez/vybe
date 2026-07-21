@@ -27,27 +27,27 @@ fn test_numeric_floor_division_rules_integer_both_negative() {
 
 #[test]
 fn test_numeric_floor_division_rules_float_exact() {
-    assert_eq!(run_lua_one("print(10.0 // 2.0)"), "5");
+    assert_eq!(run_lua_one("print(10.0 // 2.0)"), "5.0");
 }
 
 #[test]
 fn test_numeric_floor_division_rules_float_fraction() {
-    assert_eq!(run_lua_one("print(10.0 // 3.0)"), "3");
+    assert_eq!(run_lua_one("print(10.0 // 3.0)"), "3.0");
 }
 
 #[test]
 fn test_numeric_floor_division_rules_float_negative_num() {
-    assert_eq!(run_lua_one("print(-10.0 // 3.0)"), "-4");
+    assert_eq!(run_lua_one("print(-10.0 // 3.0)"), "-4.0");
 }
 
 #[test]
 fn test_numeric_floor_division_rules_float_negative_den() {
-    assert_eq!(run_lua_one("print(10.0 // -3.0)"), "-4");
+    assert_eq!(run_lua_one("print(10.0 // -3.0)"), "-4.0");
 }
 
 #[test]
 fn test_numeric_floor_division_rules_float_both_negative() {
-    assert_eq!(run_lua_one("print(-10.0 // -3.0)"), "3");
+    assert_eq!(run_lua_one("print(-10.0 // -3.0)"), "3.0");
 }
 
 #[test]
@@ -92,10 +92,10 @@ fn test_numeric_floor_division_rules_chain() {
 
 #[test]
 fn test_numeric_floor_division_rules_zero_divisor() {
-    assert_eq!(run_lua_one("print(12 // 0)"), "inf");
+    assert_eq!(run_lua_one("print(12 // 0)"), "Infinity");
 }
 
 #[test]
 fn test_numeric_floor_division_rules_zero_divisor_negative() {
-    assert_eq!(run_lua_one("print(12 // -0)"), "-inf");
+    assert_eq!(run_lua_one("print(12 // -0)"), "-Infinity");
 }

@@ -2,7 +2,7 @@
 
 lua_print! {
     gsub_fn => {
-        "local r = string.gsub(\"hello world\", \"%a+\", string.upper)\nprint(r)\n",
+        "local r = string.gsub(\"hello world\", \"%a+\", function(w) return w:upper() end)\nprint(r)\n",
         "HELLO WORLD"
     },
     gsub_fn_captures => {
@@ -11,7 +11,7 @@ lua_print! {
     },
     gsub_fn_nil => {
         "local r = string.gsub(\"abc\", \"%a\", function(m) if m == \"b\" then return nil end return m:upper() end)\nprint(r)\n",
-        "Ab c"
+        "AbC"
     },
     gsub_fn_false => {
         "local r = string.gsub(\"abc\", \"%a\", function(m) if m == \"b\" then return false end return m:upper() end)\nprint(r)\n",

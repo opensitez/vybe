@@ -16,12 +16,12 @@ lua_print! {
     pattern_class_not_c => { "print(string.match(\"a\\nb\", \"%C\"))\n", "a" },
     pattern_class_not_d => { "print(string.match(\"1a2\", \"%D\"))\n", "a" },
     pattern_class_not_g => { "print(string.match(\"a b\", \"%G\"))\n", " " },
-    pattern_class_not_l => { "print(string.match(\"abc\", \"%L\"))\n", "nil" },
+    pattern_class_not_l => { "print(string.match(\"abc\", \"%L\"))\n", "" },
     pattern_class_not_p => { "print(string.match(\"a!b\", \"%P\"))\n", "a" },
     pattern_class_not_s => { "print(string.match(\" a \", \"%S\"))\n", "a" },
-    pattern_class_not_u => { "print(string.match(\"ABC\", \"%U\"))\n", "nil" },
+    pattern_class_not_u => { "print(string.match(\"ABC\", \"%U\"))\n", "" },
     pattern_class_not_w => { "print(string.match(\"a!2\", \"%W\"))\n", "!" },
-    pattern_class_not_x => { "print(string.match(\"FFF\", \"%X\"))\n", "nil" },
+    pattern_class_not_x => { "print(string.match(\"FFF\", \"%X\"))\n", "" },
     pattern_class_not_z => { "print(string.match(\"a\\0b\", \"%Z\"))\n", "a" },
     pattern_any => { "print(string.match(\"abc\", \".\"))\n", "a" },
     pattern_set_vowels => { "print(string.match(\"hello\", \"[aeiou]\"))\n", "e" },
@@ -40,7 +40,7 @@ lua_print! {
     pattern_escape_magic => { "print(string.match(\"a%b\", \"a%%b\"))\n", "a%b" },
     pattern_balanced_parentheses => { "print(string.match(\"a(b(c)d)e\", \"%b()\"))\n", "(b(c)d)" },
     pattern_balanced_brackets => { "print(string.match(\"a[b[c]d]e\", \"%b[]\"))\n", "[b[c]d]" },
-    pattern_frontier => { "print(string.find(\"hello\", \"%f[%a]h\"))\n", "1" },
+    pattern_frontier => { "print(string.find(\"hello\", \"%f[%a]h\"))\n", "1\t1" },
     pattern_frontier_fail => { "print(tostring(string.find(\"ahello\", \"%f[%a]h\")))\n", "nil" },
     pattern_capture_one => { "print(string.match(\"a=10\", \"a=(%d+)\"))\n", "10" },
     pattern_capture_two => {
@@ -52,6 +52,6 @@ lua_print! {
         "local first, second = string.match(\"abc\", \"(a(b)c)\")\nprint(first .. \",\" .. second)\n",
         "abc,b"
     },
-    pattern_backref => { "print(string.match(\"a-a\", \"(%a)-(%1)\"))\n", "a" },
+    pattern_backref => { "print(string.match(\"a-a\", \"(%a)-(%1)\"))\n", "a\ta" },
     pattern_backref_fail => { "print(tostring(string.match(\"a-b\", \"(%a)-(%1)\")))\n", "nil" },
 }

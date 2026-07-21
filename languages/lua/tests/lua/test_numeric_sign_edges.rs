@@ -22,7 +22,7 @@ fn test_numeric_sign_edges_double_negation() {
 
 #[test]
 fn test_numeric_sign_edges_triple_negation() {
-    assert_eq!(run_lua_one("print(-(-(-12))"), "-12");
+    assert_eq!(run_lua_one("print(-(-(-12)))"), "-12");
 }
 
 #[test]
@@ -47,22 +47,22 @@ fn test_numeric_sign_edges_multiply_negatives() {
 
 #[test]
 fn test_numeric_sign_edges_divide_positive() {
-    assert_eq!(run_lua_one("print(12 / 3)"), "4");
+    assert_eq!(run_lua_one("print(12 / 3)"), "4.0");
 }
 
 #[test]
 fn test_numeric_sign_edges_divide_negative_numerator() {
-    assert_eq!(run_lua_one("print(-12 / 3)"), "-4");
+    assert_eq!(run_lua_one("print(-12 / 3)"), "-4.0");
 }
 
 #[test]
 fn test_numeric_sign_edges_divide_negative_denominator() {
-    assert_eq!(run_lua_one("print(12 / -3)"), "-4");
+    assert_eq!(run_lua_one("print(12 / -3)"), "-4.0");
 }
 
 #[test]
 fn test_numeric_sign_edges_divide_both_negative() {
-    assert_eq!(run_lua_one("print(-12 / -3)"), "4");
+    assert_eq!(run_lua_one("print(-12 / -3)"), "4.0");
 }
 
 #[test]

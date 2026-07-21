@@ -52,7 +52,7 @@ fn test_loops_while_break_control_break_skips_update() {
 fn test_loops_while_break_control_multiple_break_points() {
     assert_eq!(
         run_lua_one("local i = 0\nlocal total = 0\nwhile i < 20 do i = i + 2; if i == 4 then total = total + 1 elseif i == 10 then break end total = total + i end\nprint(total)"),
-        "13",
+        "21",
     );
 }
 
@@ -76,7 +76,7 @@ fn test_loops_while_break_control_break_and_continue_style() {
 fn test_loops_while_break_control_inner_break_condition() {
     assert_eq!(
         run_lua_one("local sum = 0\nlocal i = 0\nwhile i < 100 do i = i + 1; if i % 3 == 0 then if i > 6 then break end end sum = sum + 1 end\nprint(sum)"),
-        "7",
+        "8",
     );
 }
 
@@ -116,7 +116,7 @@ fn test_loops_while_break_control_boolean_total() {
 fn test_loops_while_break_control_break_after_nested_operation() {
     assert_eq!(
         run_lua_one("local i = 0\nlocal total = 0\nwhile true do i = i + 1; if i == 1 then total = total + 1 else total = total + 2 end if total > 5 then break end end\nprint(total)"),
-        "6",
+        "7",
     );
 }
 
@@ -148,7 +148,7 @@ fn test_loops_while_break_control_string_counter() {
 fn test_loops_while_break_control_flag_toggle() {
     assert_eq!(
         run_lua_one("local run = true\nlocal i = 0\nwhile run do i = i + 1; if i == 1 then i = i + 1 end; if i > 3 then break end; run = false end\nprint(i)"),
-        "3",
+        "2",
     );
 }
 
@@ -164,7 +164,7 @@ fn test_loops_while_break_control_math_progress() {
 fn test_loops_while_break_control_last_value() {
     assert_eq!(
         run_lua_one("local n = 0\nwhile n < 6 do n = n + 1; if n == 5 then n = 9 end end\nprint(n)"),
-        "6",
+        "9",
     );
 }
 

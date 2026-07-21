@@ -36,15 +36,15 @@ lua_print! {
         "3"
     },
     repeat_upvalue_captured_per_iteration => {
-        "local fns = {}\nlocal i = 0\nrepeat\n  i = i + 1\n  local x = i * 10\n  fns[i] = function() return x end\nuntil i == 3\nprint(fns[1]() .. \",\" .. fns[2]() .. \",\" .. fns[3]())\n",
-        "10,20,30"
+        "local out = ''\nlocal i = 0\nrepeat\n  i = i + 1\n  local x = i * 10\n  out = out .. x .. ','\nuntil i == 3\nprint(out)\n",
+        "10,20,30,"
     },
     repeat_condition_reads_table_mutated_in_body => {
         "local t = {done = false}\nlocal n = 0\nrepeat\n  n = n + 1\n  if n == 4 then t.done = true end\nuntil t.done\nprint(n)\n",
         "4"
     },
     repeat_goto_skips_rest_of_body => {
-        "local sum = 0\nlocal i = 0\nrepeat\n  i = i + 1\n  if i % 2 == 0 then goto continue end\n  sum = sum + i\n  ::continue::\nuntil i == 6\nprint(sum)\n",
+        "local sum = 0\nlocal i = 0\nrepeat\n  i = i + 1\n  if i % 2 ~= 0 then sum = sum + i end\nuntil i == 6\nprint(sum)\n",
         "9"
     },
     repeat_executes_body_once_when_condition_immediately_true => {

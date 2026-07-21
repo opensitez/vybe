@@ -36,7 +36,7 @@ fn test_loops_for_zero_step_behavior_single_step_by_one() {
 fn test_loops_for_zero_step_behavior_default_step_guarded_by_negative_bound() {
     assert_eq!(
         run_lua_one("local count = 0\nfor i = 5, 1 do count = count + 1 end\nprint(count)"),
-        "5",
+        "0",
     );
 }
 
@@ -148,7 +148,7 @@ fn test_loops_for_zero_step_behavior_step_expression_zero_guarded() {
 fn test_loops_for_zero_step_behavior_non_zero_equivalent() {
     assert_eq!(
         run_lua_one("local total = 0\nlocal step = -1\nfor i = 10, 8, step do total = total + i end\nprint(total)"),
-        "18",
+        "27",
     );
 }
 
@@ -163,7 +163,7 @@ fn test_loops_for_zero_step_behavior_zero_step_when_limit_too_low() {
 #[test]
 fn test_loops_for_zero_step_behavior_nested_scope_skip() {
     assert_eq!(
-        run_lua_one("local total = 0\nif false then for i = 3, 1, 0 do total = total + 1 end else do total = total + 2 end\nprint(total)"),
+        run_lua_one("local total = 0\nif false then for i = 3, 1, 0 do total = total + 1 end else do total = total + 2 end end\nprint(total)"),
         "2",
     );
 }
@@ -175,4 +175,3 @@ fn test_loops_for_zero_step_behavior_zero_step_range_guarded_by_if_true() {
         "empty",
     );
 }
-

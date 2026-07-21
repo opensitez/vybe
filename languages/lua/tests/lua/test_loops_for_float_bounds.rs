@@ -4,7 +4,7 @@ use super::helpers::run_lua_one;
 fn test_loops_for_float_bounds_whole_number_representations() {
     assert_eq!(
         run_lua_one("local sum = 0\nfor i = 1.0, 7.0, 2.0 do sum = sum + i end\nprint(sum)"),
-        "12",
+        "16",
     );
 }
 
@@ -12,7 +12,7 @@ fn test_loops_for_float_bounds_whole_number_representations() {
 fn test_loops_for_float_bounds_negative_direction() {
     assert_eq!(
         run_lua_one("local sum = 0\nfor i = 7.0, 1.0, -2.0 do sum = sum + i end\nprint(sum)"),
-        "24",
+        "16",
     );
 }
 
@@ -84,7 +84,7 @@ fn test_loops_for_float_bounds_float_limit_non_integer_step() {
 fn test_loops_for_float_bounds_accumulate_string_index() {
     assert_eq!(
         run_lua_one("local out = \"\"\nfor i = 1.0, 5.0, 2.0 do out = out .. tostring(i) end\nprint(out)"),
-        "13.05.0",
+        "135",
     );
 }
 
@@ -92,7 +92,7 @@ fn test_loops_for_float_bounds_accumulate_string_index() {
 fn test_loops_for_float_bounds_stringifying_float_step() {
     assert_eq!(
         run_lua_one("local out = \"\"\nfor i = 1.0, 3.0, 1.0 do out = out .. tostring(i) .. ';' end\nprint(out)"),
-        "1.0;2.0;3.0;",
+        "1;2;3;",
     );
 }
 
@@ -124,7 +124,7 @@ fn test_loops_for_float_bounds_decimal_stride_skips_fractionals() {
 fn test_loops_for_float_bounds_float_breaks_midway() {
     assert_eq!(
         run_lua_one("local sum = 0\nfor i = 5.0, 1.0, -1.0 do if i == 3 then break end sum = sum + i end\nprint(sum)"),
-        "12",
+        "9",
     );
 }
 
@@ -132,7 +132,7 @@ fn test_loops_for_float_bounds_float_breaks_midway() {
 fn test_loops_for_float_bounds_local_step_variable() {
     assert_eq!(
         run_lua_one("local sum = 0\nlocal step = 2.0\nfor i = 1.0, 6.0, step do sum = sum + i end\nprint(sum)"),
-        "12",
+        "9",
     );
 }
 

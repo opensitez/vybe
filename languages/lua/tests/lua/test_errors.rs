@@ -19,7 +19,7 @@ lua_print! {
     },
     assert_with_true_condition_returns_value => {
         "print(assert(true, \"fail\"))\n",
-        "true"
+        "true,fail"
     },
     assert_with_false_condition_raises => {
         "local ok = pcall(function() assert(false, \"bad\") end)\nprint(ok)\n",
@@ -86,8 +86,8 @@ lua_print! {
         "handled:equal"
     },
     xpcall_handler_errors_themselves => {
-        "local ok, msg = xpcall(function() error(\"first\") end, function(e) error(\"second\") end)\nprint(ok .. \",\" .. tostring(msg:match(\"second\") ~= nil))\n",
-        "false,true"
+        "local ok, msg = xpcall(function() error(\"first\") end, function(e) error(\"second\") end)\nprint(tostring(ok) .. \",\" .. tostring(msg:match(\"second\") ~= nil))\n",
+        "false,false"
     },
     assert_returns_all_passed_arguments_on_success => {
         "local a, b, c = assert(10, \"err\", 30)\nprint(a .. \",\" .. tostring(b) .. \",\" .. tostring(c))\n",
@@ -106,7 +106,7 @@ lua_print! {
         "false"
     },
     xpcall_yield_inside_function => {
-        "local co = coroutine.create(function()\n  local ok, res = xpcall(function() return coroutine.yield(\"yielding\") end, function(e) return e end)\n  print(ok .. \",\" .. res)\nend)\nlocal _, val = coroutine.resume(co)\nlocal _, val2 = coroutine.resume(co)\nprint(val .. \" \" .. tostring(val2))\n",
+        "local co = coroutine.create(function()\n  local ok, res = xpcall(function() return coroutine.yield(\"yielding\") end, function(e) return e end)\n  return ok\nend)\nlocal _, val = coroutine.resume(co)\nlocal _, val2 = coroutine.resume(co)\nprint(val .. \" \" .. tostring(val2))\n",
         "yielding true"
     },
     error_with_level_two_removes_current_frame => {

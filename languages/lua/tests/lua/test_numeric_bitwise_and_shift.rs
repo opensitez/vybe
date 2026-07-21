@@ -67,7 +67,7 @@ fn test_numeric_bitwise_and_shift_combined() {
 
 #[test]
 fn test_numeric_bitwise_and_shift_combined_xor() {
-    assert_eq!(run_lua_one("print((5 ~ 2) << 1)"), "12");
+    assert_eq!(run_lua_one("print((5 ~ 2) << 1)"), "14");
 }
 
 #[test]

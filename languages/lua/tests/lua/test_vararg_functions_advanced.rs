@@ -3,7 +3,7 @@
 lua_print! {
     vararg_forward_print => {
         "local function f(...) print(...) end\nf(1, 2)\n",
-        "1 2"
+        "1	2"
     },
     vararg_select_rest => {
         "local function f(...) return select(2, ...) end\nprint(f(\"a\", \"b\", \"c\"))\n",

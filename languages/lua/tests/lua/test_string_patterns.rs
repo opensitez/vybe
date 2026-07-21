@@ -31,15 +31,15 @@ lua_print! {
     },
     pattern_multiple_captures => {
         "print(string.match(\"3+4\", \"(%d+)%+(%d+)\"))\n",
-        "3"
+        "3\t4"
     },
     pattern_star_matches_zero_occurrences => {
         "print(string.gsub(\"aaa\", \"a*\", \"b\"))\n",
-        "bb"
+        "bb\t2"
     },
     pattern_plus_requires_one_or_more => {
         "print(string.gsub(\"aaa\", \"a+\", \"b\"))\n",
-        "b"
+        "b\t1"
     },
     pattern_question_makes_optional => {
         "print(string.match(\"colour\", \"colou?r\"))\n",
@@ -63,11 +63,11 @@ lua_print! {
     },
     pattern_plain_find_disables_magic => {
         "print(string.find(\"a.b\", \".\", 1, true))\n",
-        "2"
+        "2\t2"
     },
     pattern_gsub_with_function_replacement => {
         "print(string.gsub(\"a1b2\", \"%d\", function(d) return #d end))\n",
-        "a1b1"
+        "a1b1\t2"
     },
     pattern_gmatch_yields_all_words => {
         "local t={}\nfor w in string.gmatch(\"one two\", \"%S+\") do t[#t+1]=w end\nprint(table.concat(t,\",\"))\n",
@@ -99,7 +99,7 @@ lua_print! {
     },
     pattern_end_of_string_anchor_z => {
         "print(string.match(\"file\\n\", \"%z\"))\n",
-        "nil"
+        ""
     },
     pattern_non_greedy_minus_suffix => {
         "print(string.match(\"aab\", \"a.-b\"))\n",
@@ -107,7 +107,7 @@ lua_print! {
     },
     pattern_find_with_start_position_skips_prefix => {
         "print(string.find(\"banana\", \"a\", 3))\n",
-        "4"
+        "4\t4"
     },
     pattern_match_returns_nil_on_failure => {
         "print(tostring(string.match(\"abc\", \"z+\")))\n",
@@ -115,7 +115,7 @@ lua_print! {
     },
     pattern_gsub_limit_replaces_prefix_only => {
         "print(string.gsub(\"aaa\", \"a\", \"b\", 2))\n",
-        "bba"
+        "bba\t2"
     },
     pattern_caret_inside_class_is_literal => {
         "print(string.match(\"^x\", \"[%^]\"))\n",
@@ -171,7 +171,7 @@ lua_print! {
     },
     pattern_gsub_replaces_all_occurrences => {
         "print(string.gsub(\"aaa\", \"a\", \"b\"))\n",
-        "bbb"
+        "bbb\t3"
     },
     pattern_find_on_hello_returns_ll_span => {
         "local s, e = string.find(\"hello\", \"ll\")\nprint(s .. \",\" .. e)\n",

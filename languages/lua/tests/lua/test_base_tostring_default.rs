@@ -2,25 +2,25 @@ use super::helpers::run_lua_one;
 
 #[test]
 fn test_tostring_default_baseline() {
-    assert_eq!(run_lua_one(r#"print(string.gsub(tostring(0),"%s+"," ")[1] ~= nil)"#), "true");
+    assert_eq!(run_lua_one(r#"print(tostring(0) == "0")"#), "true");
 }
 
 
 #[test]
 fn test_tostring_default_simple() {
-    assert_eq!(run_lua_one(r#"print(string.gsub(tostring(1),"%s+"," ")[1] ~= nil)"#), "true");
+    assert_eq!(run_lua_one(r#"print(tostring(1) == "1")"#), "true");
 }
 
 
 #[test]
 fn test_tostring_default_trimmed() {
-    assert_eq!(run_lua_one(r#"print(string.gsub(tostring(-2),"%s+"," ")[1] ~= nil)"#), "true");
+    assert_eq!(run_lua_one(r#"print(tostring(-2) == "-2")"#), "true");
 }
 
 
 #[test]
 fn test_tostring_default_decimal() {
-    assert_eq!(run_lua_one(r#"print(string.gsub(tostring(3.5),"%s+"," ")[1] ~= nil)"#), "true");
+    assert_eq!(run_lua_one(r#"print(tostring(3.5) == "3.5")"#), "true");
 }
 
 

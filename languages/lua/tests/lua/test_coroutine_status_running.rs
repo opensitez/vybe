@@ -40,7 +40,7 @@ local t1 = coroutine.create(function()
 end)
 local t2 = coroutine.create(function() coroutine.resume(t1) end)
 coroutine.resume(t2)
-print(inner_state and \"ok\" or \"no\")"#), "ok");
+print(inner_state and "ok" or "no")"#), "ok");
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn test_running_coroutine_type() {
   print(type(thread))
 end)
 coroutine.resume(t)
-print(coroutine.status(t) == \"dead\")"#), "true");
+print(coroutine.status(t) == "dead")"#), "true");
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_running_after_error() {
     assert_eq!(run_lua_one(r#"local state
 local t = coroutine.create(function()
   state = coroutine.running()
-  error(\"x\")
+  error("x")
 end)
 coroutine.resume(t)
 print(state ~= nil)"#), "true");
@@ -160,7 +160,7 @@ fn test_running_after_yield_then_resume() {
 end)
 local ok, first = coroutine.resume(t)
 local ok2, second = coroutine.resume(t, true)
-print(ok and ok2 and type(first) == \"boolean\" and second == true)"#), "true");
+print(ok and ok2 and type(first) == "boolean" and second == true)"#), "true");
 }
 
 #[test]

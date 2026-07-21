@@ -62,7 +62,7 @@ local function outer()
   return coroutine.resume(inner)
 end
 local ok, r = pcall(outer)
-print(ok and type(r) == \"boolean\")"#), "true");
+print(ok and type(r) == "boolean")"#), "true");
 }
 
 #[test]
@@ -74,23 +74,23 @@ print(ok and v == 11)"#), "true");
 
 #[test]
 fn test_create_resume_false_from_function_error() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error(\"x\") end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error("x") end)
 local ok, err = coroutine.resume(t)
 print(ok == false)"#), "true");
 }
 
 #[test]
 fn test_create_resume_nested_error_payload() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error(\"inner\") end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error("inner") end)
 local ok, err = coroutine.resume(t)
-print(ok == false and string.find(err, \"inner\") ~= nil)"#), "true");
+print(ok == false and string.find(err, "inner") ~= nil)"#), "true");
 }
 
 #[test]
 fn test_create_resume_status_running() {
     assert_eq!(run_lua_one(r#"local t = coroutine.create(function() coroutine.yield(true) end)
 local ok, v = coroutine.resume(t)
-print(type(v) == \"boolean\" and ok)
+print(type(v) == "boolean" and ok)
 "#), "true");
 }
 
@@ -104,10 +104,10 @@ print(ok and ok2 and v == 1 and v2 == 2)"#), "true");
 
 #[test]
 fn test_create_resume_after_error_status() {
-    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error(\"boom\") end)
+    assert_eq!(run_lua_one(r#"local t = coroutine.create(function() error("boom") end)
 local ok, _ = coroutine.resume(t)
 local status = coroutine.status(t)
-print(status == \"dead\")"#), "true");
+print(status == "dead")"#), "true");
 }
 
 #[test]

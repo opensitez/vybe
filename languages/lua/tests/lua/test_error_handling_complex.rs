@@ -30,10 +30,8 @@ print(tostring(a) .. ' ' .. b .. ' ' .. c .. ' ' .. d)",
         "true 1 2 3"
     },
     test_pcall_varargs => {
-        "local function sum(...)
-    local s = 0
-    for _, v in ipairs({...}) do s = s + v end
-    return s
+        "local function sum(a, b, c, d)
+    return a + b + c + d
 end
 local ok, res = pcall(sum, 1, 2, 3, 4)
 print(res)",

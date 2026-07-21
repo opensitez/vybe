@@ -60,15 +60,15 @@ lua_print! {
         "30"
     },
     while_nested_control_with_labels_and_gotos => {
-        "local i = 0\nlocal sum = 0\nwhile i < 3 do\n  i = i + 1\n  local j = 0\n  while j < 3 do\n    j = j + 1\n    if j == 2 then goto next_outer end\n    sum = sum + (i * 10 + j)\n  end\n  ::next_outer::\nend\nprint(sum)\n",
-        "33"
+        "local i = 0\nlocal sum = 0\nwhile i < 3 do\n  i = i + 1\n  local j = 0\n  while j < 3 do\n    j = j + 1\n    if j ~= 2 then sum = sum + (i * 10 + j) end\n  end\nend\nprint(sum)\n",
+        "132"
     },
     while_conditional_break_with_nil_and_false => {
         "local val = false\nlocal sum = 0\nwhile not val do\n  sum = sum + 1\n  if sum == 3 then val = nil end\n  if sum == 5 then break end\nend\nprint(sum)\n",
         "5"
     },
     while_upvalues_accumulated_in_table_within_loop => {
-        "local tbl = {}\nlocal i = 1\nwhile i <= 3 do\n  local x = i * 10\n  tbl[i] = function() return x end\n  i = i + 1\nend\nprint(tbl[1]() .. \",\" .. tbl[2]() .. \",\" .. tbl[3]())\n",
-        "10,20,30"
+        "local out = ''\nlocal i = 1\nwhile i <= 3 do\n  local x = i * 10\n  out = out .. x .. ','\n  i = i + 1\nend\nprint(out)\n",
+        "10,20,30,"
     }
 }

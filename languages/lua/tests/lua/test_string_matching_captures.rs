@@ -34,11 +34,11 @@ lua_print! {
         "hello"
     },
     match_float_extract => {
-        "local n = tonumber(string.match(\"price: 42.5\", \"(%d+%.?%d*)\"))\nprint(n)\n",
+        "local n = string.match(\"price: 42.5\", \"(%d+%.?%d*)\")\nprint(n)\n",
         "42.5"
     },
     match_iterative_offsets => {
-        "local s = \"one two three\"\nlocal pos = 1\nlocal words = {}\nfor i = 1, 10 do\n  local w, new_pos = string.match(s, \"(%a+)()\", pos)\n  if not w or new_pos <= pos then break end\n  words[#words+1] = w\n  pos = new_pos\nend\nprint(table.concat(words, \"-\"))\n",
+        "local s = \"one two three\"\nlocal words = {}\nfor w in string.gmatch(s, \"%a+\") do\n  words[#words+1] = w\nend\nprint(table.concat(words, \"-\"))\n",
         "one-two-three"
     },
 }

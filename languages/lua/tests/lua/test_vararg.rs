@@ -3,7 +3,7 @@
 lua_print! {
     vararg_forwarded_to_print => {
         "function show(...) print(...) end\nshow(1, 2, 3)\n",
-        "1 2 3"
+        "1	2	3"
     },
     select_picks_value_from_varargs => {
         "print(select(2, \"a\", \"b\", \"c\"))\n",
@@ -42,7 +42,7 @@ lua_print! {
         "2"
     },
     select_zero_returns_total_count => {
-        "print(select(0, 10, 20, 30))\n",
+        "print(select(\"#\", 10, 20, 30))\n",
         "3"
     },
     vararg_in_middle_of_expression_list_adjusted_to_one => {

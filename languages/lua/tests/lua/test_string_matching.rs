@@ -25,5 +25,5 @@ lua_print! {
     test_string_match_repetition_optional => { "local a,b = string.match('ac abc', '(ab?c) (ab?c)'); print(a..' '..b)", "ac abc" },
     test_string_match_balanced => { "print((string.match('a(b(c)d)e', '%b()')))", "(b(c)d)" },
     test_string_match_frontier => { "print((string.match('the quick brown', '%f[%w]quick%f[%W]')))", "quick" },
-    test_string_match_capture_reference => { "print((string.match('a \'b\' c', '([\'\"])(.-)%1')))", "' b" }
+    test_string_match_capture_reference => { "print((string.match(\"a 'b' c\", \"(['\\\"])(.-)%1\")))", "'\tb" }
 }

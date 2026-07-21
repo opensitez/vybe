@@ -81,13 +81,16 @@ fn test_numeric_type_mix_edges_ceil_mix() {
 }
 
 #[test]
-fn test_numeric_type_mix_edges_parse_base_zero() {
-    assert_eq!(run_lua_one("print(tonumber('010', 0))"), "10");
+fn test_numeric_type_mix_edges_reject_parse_base_zero() {
+    assert_eq!(
+        run_lua_one("local ok = pcall(function() tonumber('010', 0) end); print(ok)"),
+        "false"
+    );
 }
 
 #[test]
 fn test_numeric_type_mix_edges_parse_scientific_string() {
-    assert_eq!(run_lua_one("print(tonumber('3e1'))"), "30");
+    assert_eq!(run_lua_one("print(tonumber('3e1'))"), "30.0");
 }
 
 #[test]
@@ -97,7 +100,7 @@ fn test_numeric_type_mix_edges_float_add_integer() {
 
 #[test]
 fn test_numeric_type_mix_edges_float_times_integer() {
-    assert_eq!(run_lua_one("print(0.5 * 8)"), "4");
+    assert_eq!(run_lua_one("print(0.5 * 8)"), "4.0");
 }
 
 #[test]

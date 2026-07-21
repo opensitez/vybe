@@ -1,7 +1,13 @@
 // Lua 5.x grammar (subset) for vybe_compiler — grow incrementally with tests.
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }
-COMMENT = _{ "--" ~ (!"\n" ~ ANY)* }
+COMMENT = _{
+    "--[===[" ~ (!"]===]" ~ ANY)* ~ "]===]"
+  | "--[==[" ~ (!"]==]" ~ ANY)* ~ "]==]"
+  | "--[=[" ~ (!"]=]" ~ ANY)* ~ "]=]"
+  | "--[[" ~ (!"]]" ~ ANY)* ~ "]]"
+  | "--" ~ (!"\n" ~ ANY)*
+}
 
 // Identifiers — keywords are reserved (Python-style `!keyword` guard).
 keyword = _{

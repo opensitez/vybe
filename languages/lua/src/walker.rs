@@ -182,7 +182,11 @@ fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
     };
     Ok(StmtKind::ForIn {
         var: names.first().cloned().unwrap_or_default(),
-        key: names.get(1).cloned(),
+        key: if names.len() > 1 {
+            Some(names[1..].join("__lua_extra__"))
+        } else {
+            None
+        },
         iter,
         body: lua_scoped_body(body),
         of: true,
@@ -202,20 +206,16 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .as_str()
         .to_string();
     let (params, body) = walk_function_parts(inner.collect())?;
-    Ok(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(name),
-            type_hint: None,
-            init: Some(Expression::new(ExprKind::Lambda {
-                params,
-                body: LambdaBody::Block(body),
-                is_async: false,
-                captures: Vec::new(),
-            })),
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Let,
+    Ok(StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
     })
 }
 
@@ -239,7 +239,7 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::ELLIPSIS => params.push(Param {
-                name: "...".to_string(),
+                name: "_lua_varargs".to_string(),
                 type_hint: None,
                 default: None,
                 pass_by: PassBy::Value,
@@ -262,7 +262,7 @@ fn walk_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                 let child = p.into_inner().next().ok_or("empty param")?;
                 match child.as_rule() {
                     Rule::ELLIPSIS => params.push(Param {
-                        name: "...".to_string(),
+                        name: "_lua_varargs".to_string(),
                         type_hint: None,
                         default: None,
                         pass_by: PassBy::Value,
@@ -319,6 +319,52 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     for (i, decl) in declarations.iter_mut().enumerate() {
         if let Some(val) = values.get(i) {
             decl.init = Some(val.clone());
+        }
+    }
+    if declarations.len() > 1
+        && values.len() == 1
+        && matches!(values[0].kind, ExprKind::Call { .. })
+    {
+        let names = declarations
+            .iter()
+            .filter_map(|decl| match &decl.pattern {
+                BindingPattern::Ident(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if names.len() == declarations.len() {
+            let decls = declarations
+                .iter()
+                .map(|decl| VarDeclarator {
+                    pattern: decl.pattern.clone(),
+                    type_hint: decl.type_hint.clone(),
+                    init: None,
+                    array_bounds: decl.array_bounds.clone(),
+                    with_events: decl.with_events,
+                })
+                .collect();
+            return Ok(StmtKind::Block(vec![
+                Statement::new(StmtKind::VarDecl {
+                    declarations: decls,
+                    kind: VarDeclKind::Let,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::new(ExprKind::Destructure(
+                        DestructurePattern::Array(
+                            names
+                                .into_iter()
+                                .map(|name| {
+                                    ArrayPatternElem::Pattern(
+                                        BindingPattern::Ident(name),
+                                        None,
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    ))],
+                    value: values[0].clone(),
+                }),
+            ]));
         }
     }
     Ok(StmtKind::VarDecl {
@@ -596,20 +642,12 @@ fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
-    let mut body_with_until = body;
-    body_with_until.push(Statement::new(StmtKind::If {
+    Ok(StmtKind::DoWhile {
+        body,
         cond: cond.ok_or("missing until condition")?,
-        then_body: vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))],
-        elifs: Vec::new(),
-        else_body: None,
-    }));
-
-        Ok(StmtKind::While {
-            cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
-            body: body_with_until,
-            else_body: None,
-        })
-    }
+        until: true,
+    })
+}
 
 fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut values = Vec::new();
@@ -619,20 +657,7 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
     if values.len() > 1 {
-        let elems = values
-            .into_iter()
-            .map(|v| ArrayElement {
-                key: None,
-                value: v,
-                spread: false,
-                by_ref: false,
-            })
-            .collect();
-        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Ident("__lua_multi_row".to_string()))),
-            args: vec![Argument::positional(Expression::new(ExprKind::Array(elems)))],
-            optional: false,
-        }))))
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Tuple(values)))))
     } else {
         Ok(StmtKind::Return(values.into_iter().next()))
     }
@@ -1150,7 +1175,9 @@ fn strip_long_brackets(raw: &str) -> &str {
     let content_end = raw.len() - suffix_len;
     // Skip optional first newline per Lua spec
     let content = &raw[content_start..content_end];
-    if content.starts_with('\n') {
+    if content.starts_with("\r\n") {
+        &content[2..]
+    } else if content.starts_with('\n') {
         &content[1..]
     } else {
         content
@@ -1207,7 +1234,9 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     Rule::long_string_0 => {
                         // body_0 is atomic child inside long_string_0
                         let body = child.into_inner().next().map(|p| p.as_str()).unwrap_or("");
-                        if body.starts_with('\n') {
+                        if body.starts_with("\r\n") {
+                            body[2..].to_string()
+                        } else if body.starts_with('\n') {
                             body[1..].to_string()
                         } else {
                             body.to_string()

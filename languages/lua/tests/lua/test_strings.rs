@@ -8,14 +8,14 @@ lua_print! {
     string_sub_extracts_slice => { "print(string.sub(\"hello\", 2, 4))\n", "ell" },
     string_upper_case => { "print(string.upper(\"AbC\"))\n", "ABC" },
     string_lower_case => { "print(string.lower(\"AbC\"))\n", "abc" },
-    string_find_returns_start_index => { "print(string.find(\"banana\", \"ana\"))\n", "2" },
+    string_find_returns_start_index => { "print(string.find(\"banana\", \"ana\"))\n", "2\t4" },
     string_find_returns_nil_when_absent => {
         "print(tostring(string.find(\"abc\", \"z\")))\n",
         "nil"
     },
     string_find_plain_search_fourth_arg => {
         "print(string.find(\"a%%b\", \"%\", 1, true))\n",
-        "2"
+        "2\t2"
     },
     string_sub_with_negative_end_index => {
         "print(string.sub(\"hello\", 1, -2))\n",
@@ -41,7 +41,7 @@ lua_print! {
     },
     string_gsub_single_replacement => {
         "print(string.gsub(\"banana\", \"a\", \"A\", 1))\n",
-        "bAnana"
+        "bAnana\t1"
     },
     string_gsub_returns_replacement_count => {
         "local _,n=string.gsub(\"aaa\", \"a\", \"b\")\nprint(n)\n",
@@ -63,7 +63,7 @@ lua_print! {
     },
     string_gsub_with_table_replacement => {
         "print(string.gsub(\"a b\", \"%a\", {a=\"A\", b=\"B\"}))\n",
-        "A B"
+        "A B\t2"
     },
     string_format_hex_uppercase => { "print(string.format(\"%X\", 255))\n", "FF" },
     string_format_float_precision => { "print(string.format(\"%.1f\", 3.14))\n", "3.1" },
@@ -73,7 +73,7 @@ lua_print! {
     },
     string_pack_unpack_roundtrip_integer => {
         "local s=string.pack(\">i4\", 42)\nprint(string.unpack(\">i4\", s))\n",
-        "42"
+        "42\t5"
     },
     string_packsize_reports_byte_count => {
         "print(string.packsize(\">i4\"))\n",
@@ -81,7 +81,7 @@ lua_print! {
     },
     string_find_honors_start_position => {
         "print(string.find(\"banana\", \"a\", 3))\n",
-        "4"
+        "4\t4"
     },
     string_match_end_anchor => {
         "print(string.match(\"end\", \"d$\"))\n",
@@ -101,7 +101,7 @@ lua_print! {
     },
     string_gsub_replaces_all_when_limit_omitted => {
         "print(string.gsub(\"aaa\", \"a\", \"b\"))\n",
-        "bbb"
+        "bbb\t3"
     },
     string_gmatch_capture_groups_iterate => {
         "local s = \"\"\nfor a,b in string.gmatch(\"1=2\", \"(%d+)=(%d+)\") do s = a .. \"+\" .. b end\nprint(s)\n",
@@ -113,7 +113,7 @@ lua_print! {
     },
     gsub_removes_spaces_common_cleanup => {
         "print(string.gsub(\" a b \", \"%s+\", \" \"))\n",
-        " a b "
+        " a b \t3"
     },
     sub_checks_prefix_before_processing => {
         "local s = \"lua-5.4\"\nprint(string.sub(s, 1, 3) == \"lua\")\n",
@@ -149,7 +149,7 @@ lua_print! {
     },
     replace_first_space_with_dash => {
         "print(string.gsub(\"a b c\", \" \", \"-\", 1))\n",
-        "a-b c"
+        "a-b c\t1"
     },
     extract_file_extension_with_match => {
         "print(string.match(\"file.lua\", \"%.(%w+)$\"))\n",
@@ -196,7 +196,7 @@ lua_print! {
         "hello lua!"
     },
     tonumber_on_numeric_string_for_concat => {
-        "print(\"n=\" .. tonumber(\"42\"))\n",
+        "local n = tonumber(\"42\")\nprint(\"n=\" .. n)\n",
         "n=42"
     },
     string_byte_returns_first_char_code => {
@@ -257,19 +257,19 @@ lua_print! {
     },
     string_pack_float_roundtrip => {
         "local s = string.pack(\"f\", 1.25)\nprint(string.unpack(\"f\", s))\n",
-        "1.25"
+        "1.25\t5"
     },
     string_pack_double_roundtrip => {
         "local s = string.pack(\"d\", 1.125)\nprint(string.unpack(\"d\", s))\n",
-        "1.125"
+        "1.125\t9"
     },
     string_pack_little_endian_i2 => {
         "local s = string.pack(\"<i2\", -1000)\nprint(string.unpack(\"<i2\", s))\n",
-        "-1000"
+        "-1000\t3"
     },
     string_pack_big_endian_I2 => {
         "local s = string.pack(\">I2\", 1000)\nprint(string.unpack(\">I2\", s))\n",
-        "1000"
+        "1000\t3"
     },
     string_pack_zero_terminated_string => {
         "local s = string.pack(\"z\", \"abc\")\nprint(#s .. \" \" .. string.unpack(\"z\", s))\n",
@@ -289,6 +289,6 @@ lua_print! {
     },
     string_gsub_with_capture_references => {
         "print(string.gsub(\"10-20\", \"(%d+)-(%d+)\", \"%2/%1\"))\n",
-        "20/10"
+        "20/10\t1"
     },
 }

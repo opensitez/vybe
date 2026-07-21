@@ -7,17 +7,17 @@ fn test_numeric_unary_negate_chain_single_negation() {
 
 #[test]
 fn test_numeric_unary_negate_chain_double_negation() {
-    assert_eq!(run_lua_one("print(--8)"), "8");
+    assert_eq!(run_lua_one("print(- -8)"), "8");
 }
 
 #[test]
 fn test_numeric_unary_negate_chain_triple_negation() {
-    assert_eq!(run_lua_one("print(---8)"), "-8");
+    assert_eq!(run_lua_one("print(- - -8)"), "-8");
 }
 
 #[test]
 fn test_numeric_unary_negate_chain_quadruple_negation() {
-    assert_eq!(run_lua_one("print(----8)"), "8");
+    assert_eq!(run_lua_one("print(- - - -8)"), "8");
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn test_numeric_unary_negate_chain_negate_mul() {
 
 #[test]
 fn test_numeric_unary_negate_chain_negate_div() {
-    assert_eq!(run_lua_one("print(-(10 / 2))"), "-5");
+    assert_eq!(run_lua_one("print(-(10 / 2))"), "-5.0");
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn test_numeric_unary_negate_chain_compare() {
 
 #[test]
 fn test_numeric_unary_negate_chain_pow_wrap() {
-    assert_eq!(run_lua_one("print(-(2 ^ 3))"), "-8");
+    assert_eq!(run_lua_one("print(-(2 ^ 3))"), "-8.0");
 }
 
 #[test]
@@ -97,5 +97,5 @@ fn test_numeric_unary_negate_chain_mix_with_modulo() {
 
 #[test]
 fn test_numeric_unary_negate_chain_nested_and_composed() {
-    assert_eq!(run_lua_one("print(-(-(-(-1)))"), "1");
+    assert_eq!(run_lua_one("print(-(-(-(-1))))"), "1");
 }

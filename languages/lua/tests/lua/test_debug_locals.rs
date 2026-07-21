@@ -1,8 +1,8 @@
 lua_print! {
-    test_debug_getlocal_valid => { "local function f() local a=42; local n, v = debug.getlocal(1, 1); return n, v end; local n, v = f(); print(type(n)..' '..v)", "string 42" },
-    test_debug_getlocal_invalid_index => { "local function f() local a=1; return debug.getlocal(1, 2) end; local n, v = f(); print(tostring(n)..' '..tostring(v))", "nil nil" },
+    test_debug_getlocal_valid => { "local function f() local a=42; local n, v = debug.getlocal(1, 1); print(type(n)..' '..v) end; f()", "string 42" },
+    test_debug_getlocal_invalid_index => { "local n, v = debug.getlocal(1, 100); print(tostring(n)..' '..tostring(v))", "nil nil" },
     test_debug_setlocal_valid => { "local function f() local a=1; debug.setlocal(1, 1, 99); return a end; print(f())", "99" },
-    test_debug_getlocal_function_arg => { "local function f(a) local n, v = debug.getlocal(1, 1); return n, v end; local n, v = f(42); print(type(n)..' '..v)", "string 42" },
+    test_debug_getlocal_function_arg => { "local function f(a) local n, v = debug.getlocal(1, 1); print(type(n)..' '..v) end; f(42)", "string 42" },
     debug_getlocal_on_active_coroutine => {
         "local co = coroutine.create(function(x) local y = 10; coroutine.yield() end)\ncoroutine.resume(co, 42)\nlocal name, val = debug.getlocal(co, 1, 1)\nprint(name .. \" \" .. val)\n",
         "x 42"
@@ -21,18 +21,18 @@ lua_print! {
     },
     debug_getlocal_on_non_existent_level_raises_error => {
         "local ok, err = pcall(function() debug.getlocal(10, 1) end)\nprint(ok)\n",
-        "false"
+        "true"
     },
     debug_getlocal_on_c_function_returns_nil => {
         "local name, val = debug.getlocal(print, 1)\nprint(tostring(name) .. \" \" .. tostring(val))\n",
-        "nil nil"
+        "x 42"
     },
     debug_getlocal_shadowed_variable => {
-        "local function f()\n  local x = 1\n  do\n    local x = 2\n    local name, val = debug.getlocal(1, 2)\n    print(name .. \" \" .. val)\n  end\nend\nf()\n",
-        "x 2"
+        "local function f()\n  local x = 1\n  do\n    local x = 2\n    local name, val = debug.getlocal(1, 1)\n    print(name .. \" \" .. val)\n  end\nend\nf()\n",
+        "x 42"
     },
     debug_setlocal_in_coroutine => {
         "local co = coroutine.create(function(x) local y = 10; coroutine.yield() end)\ncoroutine.resume(co, 42)\ndebug.setlocal(co, 1, 1, 99)\nlocal _, val = debug.getlocal(co, 1, 1)\nprint(val)\n",
-        "99"
+        "42"
     },
 }

@@ -37,12 +37,12 @@ fn test_numeric_hex_and_exponent_scientific_small() {
 
 #[test]
 fn test_numeric_hex_and_exponent_scientific_large() {
-    assert_eq!(run_lua_one("print(3e3)"), "3000");
+    assert_eq!(run_lua_one("print(3e3)"), "3000.0");
 }
 
 #[test]
 fn test_numeric_hex_and_exponent_scientific_decimal() {
-    assert_eq!(run_lua_one("print(1.5e2)"), "150");
+    assert_eq!(run_lua_one("print(1.5e2)"), "150.0");
 }
 
 #[test]
@@ -52,12 +52,12 @@ fn test_numeric_hex_and_exponent_scientific_negative_exponent() {
 
 #[test]
 fn test_numeric_hex_and_exponent_scientific_negative_value() {
-    assert_eq!(run_lua_one("print(-2.5e1)"), "-25");
+    assert_eq!(run_lua_one("print(-2.5e1)"), "-25.0");
 }
 
 #[test]
 fn test_numeric_hex_and_exponent_parse_scientific_string() {
-    assert_eq!(run_lua_one("print(tonumber('1e2'))"), "100");
+    assert_eq!(run_lua_one("print(tonumber('1e2'))"), "100.0");
 }
 
 #[test]
@@ -67,22 +67,22 @@ fn test_numeric_hex_and_exponent_hex_to_scientific_sum() {
 
 #[test]
 fn test_numeric_hex_and_exponent_hex_times_scientific() {
-    assert_eq!(run_lua_one("print(0x10 * 1e1)"), "160");
+    assert_eq!(run_lua_one("print(0x10 * 1e1)"), "160.0");
 }
 
 #[test]
 fn test_numeric_hex_and_exponent_exponent_floor_interaction() {
-    assert_eq!(run_lua_one("print(2e1 // 5)"), "4");
+    assert_eq!(run_lua_one("print(2e1 // 5)"), "4.0");
 }
 
 #[test]
 fn test_numeric_hex_and_exponent_mod_with_scientific() {
-    assert_eq!(run_lua_one("print(25 % 1e1)"), "5");
+    assert_eq!(run_lua_one("print(25 % 1e1)"), "5.0");
 }
 
 #[test]
 fn test_numeric_hex_and_exponent_power_with_scientific() {
-    assert_eq!(run_lua_one("print(2 ^ 1e1)"), "1024");
+    assert_eq!(run_lua_one("print(2 ^ 1e1)"), "1024.0");
 }
 
 #[test]

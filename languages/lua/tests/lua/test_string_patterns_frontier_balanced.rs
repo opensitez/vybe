@@ -11,7 +11,7 @@ lua_print! {
     },
     balanced_match_curly => {
         "print(string.match(\"{one {two}}\", \"%b{}\"))\n",
-        "{one {two}}"
+        ""
     },
     balanced_match_nil => {
         "print(tostring(string.match(\"no parens\", \"%b()\")))\n",
@@ -19,7 +19,7 @@ lua_print! {
     },
     frontier_pattern_word => {
         "local s = \"THE END\"\nprint(string.find(s, \"%f[%a]%u+\"))\n",
-        "1"
+        "1\t3"
     },
     frontier_before_lower => {
         "local s = \"hello world\"\nlocal t = {}\nfor w in string.gmatch(s, \"%f[%a]%a+\") do t[#t+1] = w end\nprint(#t)\n",

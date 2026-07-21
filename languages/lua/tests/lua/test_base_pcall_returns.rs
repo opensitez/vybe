@@ -32,27 +32,27 @@ print(ok and v)"#), "true");
 
 #[test]
 fn test_pcall_return_empty_string() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return \"\" end)
-print(ok and v == \"\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return "" end)
+print(ok and v == "")"#), "true");
 }
 
 #[test]
 fn test_pcall_return_table() {
     assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return {} end)
-print(ok and type(v) == \"table\")"#), "true");
+print(ok and type(v) == "table")"#), "true");
 }
 
 #[test]
 fn test_pcall_return_function() {
     assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return function() end end)
-print(ok and type(v) == \"function\")"#), "true");
+print(ok and type(v) == "function")"#), "true");
 }
 
 #[test]
 fn test_pcall_return_coroutine() {
     assert_eq!(run_lua_one(r#"local t = coroutine.create(function() end)
 local ok, v = pcall(function() return t end)
-print(ok and type(v) == \"thread\")"#), "true");
+print(ok and type(v) == "thread")"#), "true");
 }
 
 #[test]
@@ -72,8 +72,8 @@ print(ok and v == 2)"#), "true");
 
 #[test]
 fn test_pcall_return_string_rep() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return string.rep(\"a\", 3) end)
-print(ok and v == \"aaa\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return string.rep("a", 3) end)
+print(ok and v == "aaa")"#), "true");
 }
 
 #[test]
@@ -90,8 +90,8 @@ print(ok and v == 11)"#), "true");
 
 #[test]
 fn test_pcall_return_concat() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return \"x\" .. \"y\" end)
-print(ok and v == \"xy\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return "x" .. "y" end)
+print(ok and v == "xy")"#), "true");
 }
 
 #[test]

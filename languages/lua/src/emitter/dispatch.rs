@@ -23,8 +23,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.string_byte" => {
             super::string_adapter::emit_lua_string_byte(chunks, current, argc, line);
         }
+        "lua.string_char" => {
+            super::string_adapter::emit_lua_string_char(chunks, current, argc, line);
+        }
         "lua.string_format" => {
             super::string_adapter::emit_lua_string_format(chunks, current, argc, line);
+        }
+        "lua.string_format_row" => {
+            super::string_adapter::emit_lua_string_format_row(chunks, current, argc, line);
         }
         "lua.string_gsub" => {
             super::string_adapter::emit_lua_string_gsub(chunks, current, argc, line);
@@ -122,6 +128,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.apply_row" => {
             super::metamethods_adapter::emit_lua_apply_row(chunks, current, argc, line);
         }
+        "lua.apply_row_prefix" => {
+            super::metamethods_adapter::emit_lua_apply_row_prefix(chunks, current, argc, line);
+        }
         "lua.truthy" => {
             super::metamethods_adapter::emit_lua_truthy(chunks, current, argc, line);
         }
@@ -155,11 +164,50 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.debug_getinfo" => {
             super::metamethods_adapter::emit_lua_debug_getinfo(chunks, current, argc, line);
         }
+        "lua.debug_getinfo_static" => {
+            super::metamethods_adapter::emit_lua_debug_getinfo_static(chunks, current, argc, line);
+        }
+        "lua.debug_traceback" => {
+            super::metamethods_adapter::emit_lua_debug_traceback(chunks, current, argc, line);
+        }
+        "lua.debug_getlocal" => {
+            super::metamethods_adapter::emit_lua_debug_getlocal(chunks, current, argc, line);
+        }
+        "lua.debug_setlocal" => {
+            super::metamethods_adapter::emit_lua_debug_setlocal(chunks, current, argc, line);
+        }
+        "lua.debug_getupvalue" => {
+            super::metamethods_adapter::emit_lua_debug_getupvalue(chunks, current, argc, line);
+        }
+        "lua.debug_setupvalue" => {
+            super::metamethods_adapter::emit_lua_debug_setupvalue(chunks, current, argc, line);
+        }
+        "lua.debug_upvalueid" => {
+            super::metamethods_adapter::emit_lua_debug_upvalueid(chunks, current, argc, line);
+        }
+        "lua.debug_upvaluejoin" => {
+            super::metamethods_adapter::emit_lua_debug_upvaluejoin(chunks, current, argc, line);
+        }
+        "lua.debug_sethook" => {
+            super::metamethods_adapter::emit_lua_debug_sethook(chunks, current, argc, line);
+        }
+        "lua.debug_gethook" => {
+            super::metamethods_adapter::emit_lua_debug_gethook(chunks, current, argc, line);
+        }
         "lua.error" => {
             super::metamethods_adapter::emit_lua_error(chunks, current, argc, line);
         }
         "lua.multi_row" => {
             super::metamethods_adapter::emit_lua_multi_row(chunks, current, argc, line);
+        }
+        "lua.multi_index0" => {
+            super::metamethods_adapter::emit_lua_multi_index0(chunks, current, argc, line);
+        }
+        "lua.as_multi_row" => {
+            super::metamethods_adapter::emit_lua_as_multi_row(chunks, current, argc, line);
+        }
+        "lua.mark_rest" => {
+            super::metamethods_adapter::emit_lua_mark_rest(chunks, current, argc, line);
         }
         "lua.table_insert" => {
             super::metamethods_adapter::emit_lua_table_insert(chunks, current, argc, line);
@@ -175,6 +223,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.table_pack" => {
             super::metamethods_adapter::emit_lua_table_pack(chunks, current, argc, line);
+        }
+        "lua.table_pack_row" => {
+            super::metamethods_adapter::emit_lua_table_pack_row(chunks, current, argc, line);
         }
         "lua.table_unpack" => {
             super::metamethods_adapter::emit_lua_table_unpack(chunks, current, argc, line);

@@ -20,7 +20,7 @@ fn test_loops_repeat_guard_runs_until_condition() {
 fn test_loops_repeat_guard_stops_on_false_guard() {
     assert_eq!(
         run_lua_one("local n = 0\nrepeat n = n + 2; if n > 7 then break end print(n) until false\nprint(n)"),
-        "10",
+        "2",
     );
 }
 
@@ -140,7 +140,7 @@ fn test_loops_repeat_guard_conditional_string() {
 fn test_loops_repeat_guard_nested_repeat() {
     assert_eq!(
         run_lua_one("local n = 0\nlocal total = 0\nrepeat\n  n = n + 1\n  local inner = 0\n  repeat\n    inner = inner + 1\n    total = total + inner\n  until inner > 1\nuntil n > 2\nprint(total)"),
-        "7",
+        "9",
     );
 }
 

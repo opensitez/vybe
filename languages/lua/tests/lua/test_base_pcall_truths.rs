@@ -14,8 +14,8 @@ print(ok and v == 10)"#), "true");
 
 #[test]
 fn test_pcall_string_returns_string() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return \"x\" end)
-print(ok and v == \"x\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return "x" end)
+print(ok and v == "x")"#), "true");
 }
 
 #[test]
@@ -32,8 +32,8 @@ print(ok and v == true)"#), "true");
 
 #[test]
 fn test_pcall_string_arg() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function(x) return x .. \"y\" end, \"x\")
-print(ok and v == \"xy\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function(x) return x .. "y" end, "x")
+print(ok and v == "xy")"#), "true");
 }
 
 #[test]
@@ -77,14 +77,14 @@ print(ok and v == nil)"#), "true");
 
 #[test]
 fn test_pcall_function_error_propagates_false() {
-    assert_eq!(run_lua_one(r#"local ok, err = pcall(function() error(\"boom\") end)
+    assert_eq!(run_lua_one(r#"local ok, err = pcall(function() error("boom") end)
 print(ok == false)"#), "true");
 }
 
 #[test]
 fn test_pcall_error_type() {
     assert_eq!(run_lua_one(r#"local ok, err = pcall(function() error(42) end)
-print(ok == false and type(err) == \"number\")"#), "true");
+print(ok == false and type(err) == "number")"#), "true");
 }
 
 #[test]
@@ -104,7 +104,7 @@ print(ok)"#), "true");
 
 #[test]
 fn test_pcall_error_from_nested() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() pcall(function() error(\"x\") end) end)
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() pcall(function() error("x") end) end)
 print(ok and v == false)"#), "true");
 }
 
@@ -132,12 +132,12 @@ print(ok and v == true)"#), "true");
 
 #[test]
 fn test_pcall_type_query() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return type(\"x\") end)
-print(ok and v == \"string\")"#), "true");
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return type("x") end)
+print(ok and v == "string")"#), "true");
 }
 
 #[test]
 fn test_pcall_string_len() {
-    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return #\"abc\" end)
+    assert_eq!(run_lua_one(r#"local ok, v = pcall(function() return #"abc" end)
 print(ok and v == 3)"#), "true");
 }

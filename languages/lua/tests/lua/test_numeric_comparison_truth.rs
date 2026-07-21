@@ -102,7 +102,7 @@ fn test_numeric_comparison_truth_power_cmp() {
 
 #[test]
 fn test_numeric_comparison_truth_float_precision() {
-    assert_eq!(run_lua_one("print(0.1 + 0.2 == 0.3)"), "true");
+    assert_eq!(run_lua_one("print(0.1 + 0.2 == 0.3)"), "false");
 }
 
 #[test]
