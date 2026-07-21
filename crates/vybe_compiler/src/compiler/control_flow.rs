@@ -359,6 +359,16 @@ impl Compiler {
     /// destructure path consumes the N raw stack values directly.
     pub(super) fn compile_call_raw(&mut self, value: &Expression) -> Result<(), String> {
         if let ExprKind::Call { callee, args, .. } = &value.kind {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if self.multi_return_arity_for_callee(callee).is_some() {
+                    self.emit_var_get(name);
+                    for arg in args {
+                        self.compile_expr(&arg.value)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    return Ok(());
+                }
+            }
             self.compile_call(callee, args)
         } else {
             self.compile_expr(value)
@@ -434,11 +444,85 @@ impl Compiler {
     /// elements unpacked; caller destructures directly off the stack.
     pub(super) fn collect_multi_return_functions(&mut self, stmts: &[Statement]) {
         for stmt in stmts {
-            if let StmtKind::FunctionDecl { name, body, .. } = &stmt.kind {
-                if let Some(arity) = uniform_tuple_return_arity(body) {
-                    let cname = self.canon(name);
-                    self.multi_return_functions.insert(cname, arity);
+            match &stmt.kind {
+                StmtKind::FunctionDecl { name, body, .. } => {
+                    if let Some(arity) = uniform_tuple_return_arity(body) {
+                        let cname = self.canon(name);
+                        self.multi_return_functions.insert(cname, arity);
+                    }
+                    self.collect_multi_return_functions(body);
                 }
+                StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                    self.collect_multi_return_functions(body);
+                }
+                StmtKind::If {
+                    then_body,
+                    elifs,
+                    else_body,
+                    ..
+                } => {
+                    self.collect_multi_return_functions(then_body);
+                    for (_, body) in elifs {
+                        self.collect_multi_return_functions(body);
+                    }
+                    if let Some(body) = else_body {
+                        self.collect_multi_return_functions(body);
+                    }
+                }
+                StmtKind::While { body, else_body, .. } => {
+                    self.collect_multi_return_functions(body);
+                    if let Some(body) = else_body {
+                        self.collect_multi_return_functions(body);
+                    }
+                }
+                StmtKind::For { init, body, .. } => {
+                    if let Some(init) = init {
+                        self.collect_multi_return_functions(std::slice::from_ref(init));
+                    }
+                    self.collect_multi_return_functions(body);
+                }
+                StmtKind::ForIn {
+                    body, else_body, ..
+                } => {
+                    self.collect_multi_return_functions(body);
+                    if let Some(body) = else_body {
+                        self.collect_multi_return_functions(body);
+                    }
+                }
+                StmtKind::DoWhile { body, .. }
+                | StmtKind::With { body, .. }
+                | StmtKind::Using { body, .. }
+                | StmtKind::Lock { body, .. } => {
+                    self.collect_multi_return_functions(body);
+                }
+                StmtKind::Try {
+                    body,
+                    catches,
+                    else_body,
+                    finally,
+                } => {
+                    self.collect_multi_return_functions(body);
+                    for catch in catches {
+                        self.collect_multi_return_functions(&catch.body);
+                    }
+                    if let Some(body) = else_body {
+                        self.collect_multi_return_functions(body);
+                    }
+                    if let Some(body) = finally {
+                        self.collect_multi_return_functions(body);
+                    }
+                }
+                StmtKind::Switch {
+                    cases, default, ..
+                } => {
+                    for case in cases {
+                        self.collect_multi_return_functions(&case.body);
+                    }
+                    if let Some(body) = default {
+                        self.collect_multi_return_functions(body);
+                    }
+                }
+                _ => {}
             }
         }
     }

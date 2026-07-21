@@ -303,6 +303,7 @@ impl Compiler {
                         }
                         self.emit_var_set(name);
                     }
+                    return Ok(());
                 } else {
                     let prefer_numeric_add = matches!(targets.as_slice(), [target] if self.expr_prefers_numeric_add(target));
                     self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;

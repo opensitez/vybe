@@ -140,7 +140,15 @@ pub fn is_control_type(name: &str) -> bool {
 
 /// Build the host fn name for "create a new control of this type".
 /// e.g. canonical "Button" → "new_Button".
+///
+/// A top-level `Form` uses `newForm`, which materialises a real form window
+/// (proper default size + `Controls`/`components` collections), rather than the
+/// generic `new_<Type>` control factory (which defaults to a tiny child-control
+/// size).
 pub fn host_fn_new_control(canonical: &str) -> String {
+    if canonical == "Form" {
+        return "newForm".to_string();
+    }
     format!("new_{}", canonical)
 }
 
