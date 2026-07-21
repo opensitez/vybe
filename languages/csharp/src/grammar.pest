@@ -430,7 +430,10 @@ switch_label = {
     | "default" ~ ":"
 }
 
-case_value_label = { "case" ~ expression ~ ":" }
+// A `[` after `case` is always a list pattern (`case [1, 2]:`), never a value —
+// the negative lookahead keeps it out of the expression path so it reaches
+// `case_pattern_label`.
+case_value_label = { "case" ~ !"[" ~ expression ~ ":" }
 case_pattern_label = { "case" ~ switch_case_pattern ~ ("when" ~ expression)? ~ ":" }
 switch_case_pattern = { pattern_clause }
 
@@ -588,7 +591,8 @@ switch_arm = {
 switch_pattern = { switch_pat_and ~ ("or" ~ switch_pat_and)* }
 switch_pat_and = { switch_pat_primary ~ ("and" ~ switch_pat_primary)* }
 switch_pat_primary = {
-    "_" ~ !(ASCII_ALPHANUMERIC | "_")
+    list_pattern
+    | "_" ~ !(ASCII_ALPHANUMERIC | "_")
     | (">=" | "<=" | ">" | "<") ~ expression
     | var_kw ~ ident_name
     // Before `type_name ~ ident_name` and the `expression` fallback: both would
@@ -608,7 +612,8 @@ pattern_clause = {
 }
 pattern_and_kw = { "and" }
 pattern_atom = {
-    null_kw                        // `is null`
+    list_pattern                   // `is [1, 2]` / `is [var a, .., var b]`
+    | null_kw                      // `is null`
     | true_kw                      // `is true`
     | false_kw                     // `is false`
     | char_literal                 // `is 'x'`
@@ -646,6 +651,13 @@ relational_pattern = { (">=" | "<=" | ">" | "<") ~ expression }
 tuple_pattern = { "(" ~ tuple_pattern_item ~ ("," ~ tuple_pattern_item)+ ~ ","? ~ ")" }
 tuple_pattern_item = { "_" ~ !(ASCII_ALPHANUMERIC | "_") | expression }
 var_pattern = { var_kw ~ ident_name }
+// C# 11 list patterns: `is [1, 2]`, `[var a, _, var b]`, slices `[.., 7]`,
+// `[1, .., 5]`, `[var head, ..var rest]`. A `slice_pattern` (`..`) may appear
+// at most once; everything else is a per-element `pattern_clause` or `_`.
+list_pattern = { "[" ~ (list_pattern_elem ~ ("," ~ list_pattern_elem)*)? ~ ","? ~ "]" }
+list_pattern_elem = { slice_pattern | list_discard | pattern_clause }
+slice_pattern = { ".." ~ (var_kw ~ ident_name)? }
+list_discard = { "_" ~ !(ASCII_ALPHANUMERIC | "_") }
 binary_relational = { relational_op ~ additive }
 relational_op = {
     shift_op | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"

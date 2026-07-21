@@ -161,6 +161,9 @@ tuple_literals_tagged = true
 "__csharp_str_pad_right"   = { emit = "common:str_pad_end",         min_args = 3, max_args = 3 }
 "__csharp_str_length"      = { emit = "common:strings.length",      min_args = 1, max_args = 1 }
 "__csharp_str_char_code_at" = { emit = "common:str_char_code_at",   min_args = 2, max_args = 2 }
+"__csharp_array_clone"     = { emit = "common:collections.clone",   min_args = 1, max_args = 1 }
+"__csharp_delegate_combine" = { emit = "common:delegates.combine",  min_args = 2, max_args = 2 }
+"__csharp_delegate_remove"  = { emit = "common:delegates.remove",   min_args = 2, max_args = 2 }
 "__csharp_to_string"       = { emit = "common:dotnet.tostring",     min_args = 1, max_args = 1 }
 
 # ── Array static methods ────────────────────────────────────────────────────
@@ -261,19 +264,10 @@ Sort          = [
     { emit = "common:dotnet.sort_with_comparator", min_args = 1, max_args = 1 },
 ]
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
-# `Count` 0-arg defers to the runtime collection registry (List<T>.Count,
-# Dict.Count, HashSet.Count are all component-model methods on the
-# respective collection types — registry knows the per-type semantics).
-# 1-arg `Count(pred)` is the LINQ overload, which the registry does NOT
-# know about — the `dotnet.linq_count_pred` overload below routes
-# through the shared LINQ adapter. The dispatch in `compiler/calls.rs`
-# treats `common:dotnet.*` value-method overloads as preempting the
-# runtime collection registry (`prefer_dotnet_adapter` discriminator).
-Count         = [
-    { emit = "common:collections.length",     min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.linq_count_pred", min_args = 1, max_args = 1 },
-]
 GetType       = { emit = "common:ref_typeof",          min_args = 0, max_args = 0 }
+# Delegate introspection: the invocation list as a plain array of handlers,
+# so `.Length` / `.Contains(h)` work off it.
+GetInvocationList = { emit = "common:delegates.invocation_list", min_args = 0, max_args = 0 }
 Equals        = { emit = "common:dyn_eq",              min_args = 1, max_args = 1 }
 
 # LINQ surface lives once in the shared .NET component resolver
@@ -403,14 +397,10 @@ module = "wasi:filesystem"
 # ────────────────────────────────────────────────────────────────────────────
 
 [array_methods]
-Where     = "__array_filter"
 ForEach   = "__array_forEach"
-Any       = "__array_some"
-All       = "__array_every"
-OrderBy   = "__array_sort_by_key"
-# `Aggregate` lives in [value_methods] → `dotnet.linq_aggregate` because
-# the C# argument order (`(seed, fn)`) is the inverse of JS `reduce(fn, init)`,
-# and the array_methods HOF dispatch can't swap args.
+# LINQ extension methods (`Where`, `Any`, `All`, `OrderBy`, `Aggregate`, ...)
+# live in the shared .NET `IEnumerable` surface, not in per-language array
+# aliases.
 # List<T> instance-method aliases — same HOF semantics, different names per
 # .NET BCL. Routes through the same compiler_common loop emitters.
 Find       = "__array_find"
@@ -471,9 +461,6 @@ use_dotnet_resolver = true
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
-
-
-
 
 
 

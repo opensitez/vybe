@@ -16,6 +16,74 @@ fn control_instance_methods_dispatch_via_descriptor() {
 }
 
 #[test]
+fn form_subclass_constructs_via_descriptor_and_inherits_properties() {
+    // `class MyForm : Form` constructed at runtime: base construction goes
+    // through the `vybe:gui` host factory (not a per-class ctor global), so
+    // the instance is a real Form — `__control_type` is "Form" and inherited
+    // properties resolve through the component descriptor.
+    let out = run_csharp(
+        r#"
+        class MyForm : Form {
+        }
+        var f = new MyForm();
+        f.Text = "hello";
+        Console.WriteLine(f.Text);
+        Console.WriteLine(f.__control_type);
+    "#,
+    );
+    assert_eq!(out, vec!["hello", "Form"]);
+}
+
+#[test]
+fn control_create_graphics_returns_graphics_handle() {
+    // Baseline probe: does `Control.CreateGraphics()` (a Body method inherited
+    // from the abstract Control) resolve on a concrete control today? Drives
+    // whether removing control-leaf ctor globals may proceed.
+    let out = run_csharp(
+        r#"
+        var pb = new PictureBox();
+        pb.Name = "art";
+        var g = pb.CreateGraphics();
+        Console.WriteLine(g == null ? "null-graphics" : "have-graphics");
+    "#,
+    );
+    assert_eq!(out, vec!["have-graphics"]);
+}
+
+#[test]
+fn graphics_drawline_sequence_runs() {
+    // A Graphics/Pen drawing sequence runs end-to-end (Graphics/Pen keep their
+    // ctor globals + drawing Body methods; the abstract ancestors Object/
+    // MarshalByRefObject are kept because a kept ctor base-constructs them).
+    let out = run_csharp(
+        r#"
+        var g = new PictureBox().CreateGraphics();
+        var p = new Pen(Color.Red, 2);
+        g.DrawLine(p, 0, 0, 10, 10);
+        Console.WriteLine("drew");
+    "#,
+    );
+    assert_eq!(out, vec!["drew"]);
+}
+
+#[test]
+fn polymorphic_declared_control_type_dispatches_via_descriptor() {
+    // A declared abstract `Control` holding a concrete `Button` (the shape a
+    // `foreach (Control c in form.Controls)` loop variable takes): method +
+    // property dispatch must resolve up the descriptor Control chain, since
+    // there's no ctor-bound thunk fallback anymore.
+    let out = run_csharp(
+        r#"
+        Control c = new Button();
+        c.Text = "poly";
+        c.Show();
+        Console.WriteLine(c.Text);
+    "#,
+    );
+    assert_eq!(out, vec!["poly"]);
+}
+
+#[test]
 fn new_button_has_properties() {
     let out = run_csharp(
         r#"

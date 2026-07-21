@@ -100,6 +100,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_extension_calls(&mut module);
     rewrite_linked_list_node_uses(&mut module.body);
     rewrite_sorted_dictionary_foreach(&mut module.body);
+    rewrite_sorted_set_foreach(&mut module.body);
+    rewrite_csharp_xml_linq_factories(&mut module.body);
     rewrite_user_defined_operator_calls(&mut module);
     Ok(module)
 }
@@ -2689,6 +2691,101 @@ fn rewrite_sorted_dictionary_foreach_in_body(
                 if let Some(else_body) = else_body {
                     let mut scoped = sorted_dicts.clone();
                     rewrite_sorted_dictionary_foreach_in_body(else_body, &mut scoped);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_sorted_set_foreach(body: &mut [Statement]) {
+    let mut sorted_sets = HashSet::new();
+    rewrite_sorted_set_foreach_in_body(body, &mut sorted_sets);
+}
+
+fn is_sorted_set_view_call(expr: &Expression, sorted_sets: &HashSet<String>) -> bool {
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if field == "GetViewBetween" {
+                if let ExprKind::Ident(name) = &object.kind {
+                    return sorted_sets.contains(name);
+                }
+            }
+        }
+    }
+    false
+}
+
+fn rewrite_sorted_set_foreach_in_body(body: &mut [Statement], sorted_sets: &mut HashSet<String>) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    let name = match &decl.pattern {
+                        BindingPattern::Ident(n) => n.clone(),
+                        _ => continue,
+                    };
+                    let hinted = decl
+                        .type_hint
+                        .as_deref()
+                        .map(|hint| hint.to_ascii_lowercase().contains("sortedset"))
+                        .unwrap_or(false);
+                    // `GetViewBetween` on a known SortedSet also yields a
+                    // SortedSet; stamp the hint so the view's Count/Min/Max
+                    // resolve through the set path rather than as a null field.
+                    let view = decl
+                        .init
+                        .as_ref()
+                        .map(|init| is_sorted_set_view_call(init, sorted_sets))
+                        .unwrap_or(false);
+                    if hinted || view {
+                        sorted_sets.insert(name);
+                    }
+                    if view && decl.type_hint.is_none() {
+                        decl.type_hint = Some("SortedSet".into());
+                    }
+                }
+            }
+            StmtKind::ForIn { iter, body, .. } => {
+                if let ExprKind::Ident(name) = &iter.kind {
+                    if sorted_sets.contains(name) {
+                        *iter = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(name)),
+                                field: "ElementsSorted".into(),
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        });
+                    }
+                }
+                let mut scoped = sorted_sets.clone();
+                rewrite_sorted_set_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                let mut scoped = sorted_sets.clone();
+                rewrite_sorted_set_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::FunctionDecl { body, .. } => {
+                let mut scoped = HashSet::new();
+                rewrite_sorted_set_foreach_in_body(body, &mut scoped);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                let mut scoped = sorted_sets.clone();
+                rewrite_sorted_set_foreach_in_body(then_body, &mut scoped);
+                for (_, elif_body) in elifs {
+                    let mut scoped = sorted_sets.clone();
+                    rewrite_sorted_set_foreach_in_body(elif_body, &mut scoped);
+                }
+                if let Some(else_body) = else_body {
+                    let mut scoped = sorted_sets.clone();
+                    rewrite_sorted_set_foreach_in_body(else_body, &mut scoped);
                 }
             }
             _ => {}
@@ -5452,6 +5549,187 @@ fn csharp_type_key(type_name: &str) -> String {
         .to_string()
 }
 
+fn is_csharp_xml_linq_type(type_name: &str) -> bool {
+    let normalized = normalize_runtime_type_name(type_name);
+    matches!(
+        normalized.rsplit('.').next().unwrap_or(normalized.as_str()),
+        "XElement" | "XDocument" | "XAttribute" | "XName"
+    )
+}
+
+fn csharp_xml_linq_property_return_type(type_name: &str, property_name: &str) -> Option<&'static str> {
+    let normalized = normalize_runtime_type_name(type_name);
+    let class_name = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
+    match (class_name, property_name) {
+        ("XDocument", "Root") => Some("XElement"),
+        ("XElement", "Name") => Some("XName"),
+        ("XElement", "Value") => Some("string"),
+        ("XAttribute", "Value") => Some("string"),
+        ("XName", "LocalName") => Some("string"),
+        ("XName", "NamespaceName") => Some("string"),
+        _ => None,
+    }
+}
+
+fn rewrite_csharp_xml_linq_factories(body: &mut [Statement]) {
+    for stmt in body {
+        rewrite_csharp_xml_linq_factories_stmt(stmt);
+    }
+}
+
+fn rewrite_csharp_xml_linq_factories_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = decl.init.as_mut() {
+                    rewrite_csharp_xml_linq_factories_expr(init);
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_csharp_xml_linq_factories_expr(expr);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_csharp_xml_linq_factories_expr(expr);
+            }
+            if let Some(cause) = cause {
+                rewrite_csharp_xml_linq_factories_expr(cause);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_csharp_xml_linq_factories_expr(cond);
+            rewrite_csharp_xml_linq_factories(then_body);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_csharp_xml_linq_factories_expr(elif_cond);
+                rewrite_csharp_xml_linq_factories(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_csharp_xml_linq_factories(else_body);
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_csharp_xml_linq_factories_expr(cond);
+            rewrite_csharp_xml_linq_factories(body);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_csharp_xml_linq_factories_stmt(init);
+            }
+            if let Some(cond) = cond {
+                rewrite_csharp_xml_linq_factories_expr(cond);
+            }
+            if let Some(update) = update {
+                rewrite_csharp_xml_linq_factories_expr(update);
+            }
+            rewrite_csharp_xml_linq_factories(body);
+        }
+        StmtKind::ForIn {
+            iter, body, ..
+        } => {
+            rewrite_csharp_xml_linq_factories_expr(iter);
+            rewrite_csharp_xml_linq_factories(body);
+        }
+        StmtKind::Block(body) => rewrite_csharp_xml_linq_factories(body),
+        StmtKind::FunctionDecl { body, .. } => rewrite_csharp_xml_linq_factories(body),
+        StmtKind::ClassDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_csharp_xml_linq_factories_stmt(stmt)
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        rewrite_csharp_xml_linq_factories(body)
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            rewrite_csharp_xml_linq_factories(getter);
+                        }
+                        if let Some(setter) = setter {
+                            rewrite_csharp_xml_linq_factories(&mut setter.body);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_csharp_xml_linq_factories_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_csharp_xml_linq_factories_expr(&mut arg.value);
+            }
+            rewrite_csharp_xml_linq_factories_expr(callee);
+            if args.len() == 1 && csharp_is_xdocument_parse_callee(callee) {
+                let xml_arg = args[0].value.clone();
+                *expr = Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("XDocument")),
+                    args: vec![Argument::positional(xml_arg)],
+                });
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_csharp_xml_linq_factories_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_csharp_xml_linq_factories_expr(object);
+            rewrite_csharp_xml_linq_factories_expr(index);
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::Ternary {
+            cond: left,
+            then: right,
+            ..
+        } => {
+            rewrite_csharp_xml_linq_factories_expr(left);
+            rewrite_csharp_xml_linq_factories_expr(right);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_csharp_xml_linq_factories_expr(target);
+            rewrite_csharp_xml_linq_factories_expr(value);
+        }
+        ExprKind::Cast { expr: inner, .. }
+        | ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Spread(inner) => rewrite_csharp_xml_linq_factories_expr(inner),
+        ExprKind::Array(elements) => {
+            for element in elements {
+                rewrite_csharp_xml_linq_factories_expr(&mut element.value);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { value, .. } = prop {
+                    rewrite_csharp_xml_linq_factories_expr(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn csharp_is_xdocument_parse_callee(callee: &Expression) -> bool {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return false;
+    };
+    field.eq_ignore_ascii_case("Parse")
+        && infer_csharp_new_type_name(object)
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("XDocument"))
+}
+
 fn csharp_operator_info<'a>(
     operators: &'a CSharpOperatorTable,
     type_name: &str,
@@ -5956,8 +6234,27 @@ fn rewrite_user_defined_operator_expr(
             }
             infer_csharp_expr_type(expr, operators, scopes)
         }
-        ExprKind::Member { object, .. } => {
-            rewrite_user_defined_operator_expr(object, operators, scopes);
+        ExprKind::Member { object, field, .. } => {
+            let object_type = rewrite_user_defined_operator_expr(object, operators, scopes)
+                .or_else(|| infer_csharp_expr_type(object, operators, scopes));
+            if let Some(object_type) = object_type.as_deref() {
+                if csharp_xml_linq_property_return_type(object_type, field).is_some() {
+                    let span = expr.span.clone();
+                    *expr = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new((**object).clone()),
+                                field: field.clone(),
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        },
+                        span,
+                    );
+                    return infer_csharp_expr_type(expr, operators, scopes);
+                }
+            }
             infer_csharp_expr_type(expr, operators, scopes)
         }
         ExprKind::Index { object, index, .. } => {
@@ -6056,6 +6353,32 @@ fn rewrite_user_defined_operator_expr(
             rewrite_user_defined_operator_expr(inner, operators, scopes);
             let method = format!("op_Explicit{}", csharp_operator_type_suffix(type_name));
             let source_type = infer_csharp_expr_type(inner, operators, scopes);
+            if type_name.eq_ignore_ascii_case("string")
+                && (source_type.as_deref().is_some_and(is_csharp_xml_linq_type)
+                    || matches!(
+                        &inner.kind,
+                        ExprKind::Call { callee, .. }
+                            if matches!(
+                                &callee.kind,
+                                ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Attribute")
+                            )
+                    ))
+            {
+                let span = expr.span.clone();
+                *expr = Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new((**inner).clone()),
+                            field: "Value".into(),
+                            null_safe: false,
+                        })),
+                        args: vec![],
+                        optional: false,
+                    },
+                    span,
+                );
+                return Some("string".into());
+            }
             let dispatch_type = if csharp_operator_info(operators, type_name, &method).is_some() {
                 Some(type_name.clone())
             } else {
@@ -8082,6 +8405,69 @@ fn make_event_accessor(method_name: &str, body: Vec<Statement>) -> ClassMember {
     )))
 }
 
+/// Inside a custom event accessor, `_backing += value` / `-= value` is delegate
+/// combine/remove (multicast), NOT numeric `+=`. The RHS being the implicit
+/// `value` handler parameter is the tell — rewrite those statements to
+/// `_backing = __csharp_delegate_combine(_backing, value)` (and `_remove`).
+/// Other statements (`_count++`, etc.) are left untouched.
+fn rewrite_event_accessor_delegate_ops(stmts: &mut [Statement]) {
+    for stmt in stmts.iter_mut() {
+        let replacement = match &stmt.kind {
+            StmtKind::CompoundAssign { target, op, value }
+                if matches!(op, CompoundOp::Add | CompoundOp::Sub)
+                    && matches!(&value.kind, ExprKind::Ident(n) if n == "value") =>
+            {
+                let builtin = if matches!(op, CompoundOp::Add) {
+                    "__csharp_delegate_combine"
+                } else {
+                    "__csharp_delegate_remove"
+                };
+                let combined = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(builtin)),
+                    args: vec![
+                        Argument::positional(target.clone()),
+                        Argument::positional(value.clone()),
+                    ],
+                    optional: false,
+                });
+                Some(StmtKind::Assign {
+                    targets: vec![target.clone()],
+                    value: combined,
+                })
+            }
+            _ => None,
+        };
+        if let Some(kind) = replacement {
+            stmt.kind = kind;
+            continue;
+        }
+        // The combine/remove may be guarded (`if (value != null) _c += value;`),
+        // so descend into nested bodies too.
+        match &mut stmt.kind {
+            StmtKind::Block(inner) => rewrite_event_accessor_delegate_ops(inner),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                rewrite_event_accessor_delegate_ops(then_body);
+                for (_, body) in elifs.iter_mut() {
+                    rewrite_event_accessor_delegate_ops(body);
+                }
+                if let Some(eb) = else_body {
+                    rewrite_event_accessor_delegate_ops(eb);
+                }
+            }
+            StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. } => rewrite_event_accessor_delegate_ops(body),
+            _ => {}
+        }
+    }
+}
+
 fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut name = String::new();
     let mut type_hint = None;
@@ -8117,10 +8503,12 @@ fn walk_event(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     if add_body.is_some() || remove_body.is_some() {
         // Custom accessors: `value` in each body is the handler param.
         CUSTOM_EVENTS.with(|s| s.borrow_mut().insert(name.clone()));
-        if let Some(b) = add_body {
+        if let Some(mut b) = add_body {
+            rewrite_event_accessor_delegate_ops(&mut b);
             members.push(make_event_accessor(&format!("add_{}", name), b));
         }
-        if let Some(b) = remove_body {
+        if let Some(mut b) = remove_body {
+            rewrite_event_accessor_delegate_ops(&mut b);
             members.push(make_event_accessor(&format!("remove_{}", name), b));
         }
     }
@@ -9879,8 +10267,8 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         );
     } else {
         let uses_entry_fields = !var.is_empty()
-            && foreach_src.contains(&format!("{}.Key", var))
-            && foreach_src.contains(&format!("{}.Value", var));
+            && (foreach_src.contains(&format!("{}.Key", var))
+                || foreach_src.contains(&format!("{}.Value", var)));
         if uses_entry_fields {
             let user_var = var.clone();
             let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
@@ -11253,8 +11641,18 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::cast_expression => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             let cast_type_pair = inner.remove(0);
+            let is_array_cast = cast_type_pair.as_str().contains('[');
             let type_name = normalize_runtime_type_name(cast_type_pair.as_str());
             let operand = walk_expression(inner.remove(0))?;
+            // `(T[])expr.Clone()` — `Array.Clone` is a shallow copy. A
+            // class-typed cast around `.Clone()` is a user ICloneable call and
+            // is left untouched; only an array-typed cast selects the array
+            // shallow-copy lowering.
+            let operand = if is_array_cast {
+                rewrite_csharp_array_clone(operand)
+            } else {
+                operand
+            };
             Ok(ExprKind::Cast {
                 expr: Box::new(operand),
                 type_name,
@@ -11719,7 +12117,15 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Vec::new()
             };
             if !generic_type_args.is_empty() {
-                args.extend(csharp_method_generic_binding_args(&generic_type_args));
+                let method_name = match &expr.kind {
+                    ExprKind::Ident(name) => Some(name.as_str()),
+                    ExprKind::Member { field, .. } => Some(field.as_str()),
+                    _ => None,
+                };
+                args.extend(csharp_method_generic_binding_args_for_method(
+                    method_name,
+                    &generic_type_args,
+                ));
             }
             // Inject default fill char for `PadLeft(n)` / `PadRight(n)` —
             // .NET defaults to space, but the value-method dispatch expects
@@ -12586,6 +12992,30 @@ fn extract_csharp_terminal_type_args(name: &str) -> Vec<String> {
     parse_csharp_generic_type_args(trimmed)
 }
 
+fn csharp_method_generic_binding_args_for_method(
+    method_name: Option<&str>,
+    type_args: &[String],
+) -> Vec<Argument> {
+    let Some(method_name) = method_name else {
+        return csharp_method_generic_binding_args(type_args);
+    };
+    if method_name == "Cast" {
+        return Vec::new();
+    }
+    if method_name == "OfType" {
+        return type_args
+            .first()
+            .map(|type_arg| {
+                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(
+                    normalize_runtime_type_name(type_arg),
+                ))))
+            })
+            .into_iter()
+            .collect();
+    }
+    csharp_method_generic_binding_args(type_args)
+}
+
 fn csharp_method_generic_binding_args(type_args: &[String]) -> Vec<Argument> {
     let mut args = Vec::new();
     for type_arg in type_args {
@@ -12906,6 +13336,15 @@ fn build_switch_primary_cond(
     {
         return build_general_pattern_cond(subject, property);
     }
+    // List pattern in a switch arm (`a switch { [1, 2] => … }`) reuses the same
+    // desugaring as under `is`.
+    if let Some(list) = pattern
+        .clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::list_pattern)
+    {
+        return build_general_pattern_cond(subject, list);
+    }
     // Relational pattern: `>= 90`, `<= 50`, `< 0`, `> 0`.
     let rel_op = if pat_src.starts_with(">=") {
         Some(BinOp::GtEq)
@@ -13022,6 +13461,18 @@ fn build_switch_pattern_binding(
                 }
                 continue;
             }
+            // `[var x, var y] => …` — a list pattern binds each captured slot.
+            if let Some(list) = inner.iter().find(|p| p.as_rule() == Rule::list_pattern) {
+                let mut declarations = Vec::new();
+                collect_pattern_var_bindings(&subject, list.clone(), &mut declarations)?;
+                if !declarations.is_empty() {
+                    return Ok(Some(Statement::new(StmtKind::VarDecl {
+                        declarations,
+                        kind: VarDeclKind::Let,
+                    })));
+                }
+                continue;
+            }
             if inner.len() >= 2
                 && inner[0].as_rule() == Rule::type_name
                 && inner[1].as_rule() == Rule::ident_name
@@ -13125,6 +13576,78 @@ fn build_switch_tuple_pattern_cond(
         });
     }
     cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span))
+}
+
+/// Split a `list_pattern` into (prefix elements, has-slice, `..var` name,
+/// suffix elements). Prefix/suffix entries are the unwrapped element contents
+/// (`pattern_clause` or `list_discard`); the `slice_pattern` is consumed here.
+#[allow(clippy::type_complexity)]
+fn split_list_pattern(
+    pattern: Pair<Rule>,
+) -> (Vec<Pair<Rule>>, bool, Option<String>, Vec<Pair<Rule>>) {
+    let mut prefix = Vec::new();
+    let mut suffix = Vec::new();
+    let mut has_slice = false;
+    let mut slice_var: Option<String> = None;
+    for elem in pattern.into_inner() {
+        if elem.as_rule() != Rule::list_pattern_elem {
+            continue;
+        }
+        let Some(inner) = elem.into_inner().next() else {
+            continue;
+        };
+        if inner.as_rule() == Rule::slice_pattern {
+            has_slice = true;
+            if let Some(id) = inner
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::ident_name)
+            {
+                slice_var = Some(id.as_str().to_string());
+            }
+        } else if has_slice {
+            suffix.push(inner);
+        } else {
+            prefix.push(inner);
+        }
+    }
+    (prefix, has_slice, slice_var, suffix)
+}
+
+/// `subject[index]`.
+fn index_expr(subject: &Expression, index: Expression) -> Expression {
+    Expression::with_span(
+        ExprKind::Index {
+            object: Box::new(subject.clone()),
+            index: Box::new(index),
+            null_safe: false,
+        },
+        subject.span.clone(),
+    )
+}
+
+/// `subject.Length`.
+fn length_expr(subject: &Expression) -> Expression {
+    Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(subject.clone()),
+            field: "Length".into(),
+            null_safe: false,
+        },
+        subject.span.clone(),
+    )
+}
+
+/// The array index of the `j`-th suffix element (0-based from the first suffix
+/// element): `subject.Length - (suffix_len - j)`.
+fn suffix_index_expr(subject: &Expression, suffix_len: usize, j: usize) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(length_expr(subject)),
+            right: Box::new(Expression::int((suffix_len - j) as i64)),
+        },
+        subject.span.clone(),
+    )
 }
 
 fn build_general_pattern_cond(
@@ -13252,6 +13775,55 @@ fn build_general_pattern_cond(
             Ok(build_switch_tuple_pattern_cond(subject, elements))
         }
         Rule::var_pattern => Ok(Expression::bool(true)),
+        Rule::list_discard => Ok(Expression::bool(true)),
+        // `x is [p0, p1, .., pk]` → `x.Length ==/>= N && x[i] matches pi ...`.
+        // A `..` slice relaxes the length to `>=` and switches the trailing
+        // elements to end-relative indexing. Discards and the slice contribute
+        // no condition beyond the length.
+        Rule::list_pattern => {
+            let (prefix, has_slice, _slice_var, suffix) = split_list_pattern(pattern);
+            let min_len = (prefix.len() + suffix.len()) as i64;
+            let mut cond = Expression::with_span(
+                ExprKind::Binary {
+                    op: if has_slice { BinOp::GtEq } else { BinOp::StrictEq },
+                    left: Box::new(length_expr(&subject)),
+                    right: Box::new(Expression::int(min_len)),
+                },
+                span.clone(),
+            );
+            for (i, inner) in prefix.iter().enumerate() {
+                if inner.as_rule() == Rule::list_discard {
+                    continue;
+                }
+                let item = index_expr(&subject, Expression::int(i as i64));
+                let sub = build_general_pattern_cond(item, inner.clone())?;
+                cond = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(cond),
+                        right: Box::new(sub),
+                    },
+                    span.clone(),
+                );
+            }
+            let suf_len = suffix.len();
+            for (j, inner) in suffix.iter().enumerate() {
+                if inner.as_rule() == Rule::list_discard {
+                    continue;
+                }
+                let item = index_expr(&subject, suffix_index_expr(&subject, suf_len, j));
+                let sub = build_general_pattern_cond(item, inner.clone())?;
+                cond = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(cond),
+                        right: Box::new(sub),
+                    },
+                    span.clone(),
+                );
+            }
+            Ok(cond)
+        }
         // `{ Kind: "err" or "fail" }` — the `or` arm of a subpattern value.
         Rule::property_pattern_value => {
             let mut cond: Option<Expression> = None;
@@ -13469,6 +14041,39 @@ fn collect_pattern_var_bindings(
                 }
             }
         }
+        // `[var a, .., var b]` binds each var to its element; `..var rest` binds
+        // the slice `subject[prefix.len .. subject.Length - suffix.len]`.
+        Rule::list_pattern => {
+            let (prefix, _has_slice, slice_var, suffix) = split_list_pattern(pattern);
+            for (i, inner) in prefix.iter().enumerate() {
+                if inner.as_rule() == Rule::list_discard {
+                    continue;
+                }
+                let item = index_expr(subject, Expression::int(i as i64));
+                collect_pattern_var_bindings(&item, inner.clone(), out)?;
+            }
+            if let Some(name) = slice_var {
+                let end = Expression::new(ExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: Box::new(length_expr(subject)),
+                    right: Box::new(Expression::int(suffix.len() as i64)),
+                });
+                let range = Expression::new(ExprKind::Range {
+                    start: Box::new(Expression::int(prefix.len() as i64)),
+                    end: Box::new(end),
+                    inclusive: false,
+                });
+                out.push(declarator(name, index_expr(subject, range)));
+            }
+            let suf_len = suffix.len();
+            for (j, inner) in suffix.iter().enumerate() {
+                if inner.as_rule() == Rule::list_discard {
+                    continue;
+                }
+                let item = index_expr(subject, suffix_index_expr(subject, suf_len, j));
+                collect_pattern_var_bindings(&item, inner.clone(), out)?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -13550,7 +14155,7 @@ fn build_general_pattern_binding(
         // `is Pair { A: var a, B: var b }` binds several names from one
         // pattern. They go in a single multi-declarator `VarDecl` rather than a
         // Block, which would scope them away from the body that reads them.
-        Rule::property_pattern => {
+        Rule::property_pattern | Rule::list_pattern => {
             let mut declarations = Vec::new();
             collect_pattern_var_bindings(&subject, pattern, &mut declarations)?;
             if declarations.is_empty() {
@@ -14451,6 +15056,30 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             }
         }
     }
+    // `dict.Keys.Count` / `dict.Values.Count` == `dict.Count`. After the
+    // zero-arity rewrite the receiver is `dict.Keys()` (a Call), so unwrap it
+    // and resolve `.Count` against the dictionary itself.
+    if name == "Count" {
+        if let ExprKind::Call { callee, args, .. } = &object.kind {
+            if args.is_empty() {
+                if let ExprKind::Member {
+                    object: inner,
+                    field,
+                    ..
+                } = &callee.kind
+                {
+                    if field == "Keys" || field == "Values" {
+                        return Expression::new(ExprKind::Member {
+                            object: inner.clone(),
+                            field: "Count".into(),
+                            null_safe: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // `expr.GetType().<Name|FullName>` — rewrite the chained access to
     // a runtime ternary on `typeof expr`. Walking happens inner-first,
     // so `expr.GetType()` is here the receiver of `.Name`. We detect
@@ -14574,6 +15203,27 @@ fn linked_list_node_index_expr(expr: &Expression) -> Option<(Expression, Express
         }
         _ => None,
     }
+}
+
+/// `arr.Clone()` (0-arg) → a shallow array copy. Applied only when the caller
+/// has already established (via an array-typed cast) that the receiver is an
+/// array, so a user class's `Clone()` is never intercepted. Non-`Clone`
+/// operands pass through unchanged.
+fn rewrite_csharp_array_clone(operand: Expression) -> Expression {
+    if let ExprKind::Call { callee, args, .. } = &operand.kind {
+        if args.is_empty() {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("Clone") {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__csharp_array_clone")),
+                        args: vec![Argument::positional((**object).clone())],
+                        optional: false,
+                    });
+                }
+            }
+        }
+    }
+    operand
 }
 
 fn rewrite_csharp_string_instance_call(
@@ -15005,6 +15655,18 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("Parse")
+            && args.len() == 1
+            && infer_csharp_new_type_name(object)
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("XDocument"))
+        {
+            return Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("XDocument")),
+                args,
+            });
+        }
+
         // `X.TryParse(s, out r)` — the `out`-param calling convention is C#
         // syntax, so normalize it in the walker: the 1-arg core resolves
         // through the common .NET surface (returning the parsed value or null)
@@ -15020,6 +15682,60 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             {
                 return rewritten;
             }
+        }
+        // `d.TryGetValue(k, out v)` → `d.ContainsKey(k) ? ((v = d[k]) != null || true)
+        //                                              : ((v = null) != null && false)`.
+        // The out-param convention is C# syntax; normalize it here using the
+        // generic `ContainsKey` + index ops (which already apply the
+        // `#ordinalignorecase` key lowering) instead of a shared-compiler
+        // intercept. `ContainsKey` is evaluated once as the ternary condition;
+        // each branch assigns the out target and yields the presence bool.
+        if field.eq_ignore_ascii_case("TryGetValue") && args.len() == 2 && args[1].by_ref {
+            let key = args[0].value.clone();
+            let out_target = args[1].value.clone();
+            let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
+            let contains = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: object.clone(),
+                    field: "ContainsKey".into(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(key.clone())],
+                optional: false,
+            });
+            let then_branch = Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::new(ExprKind::Assign {
+                        target: Box::new(out_target.clone()),
+                        value: Box::new(Expression::new(ExprKind::Index {
+                            object: object.clone(),
+                            index: Box::new(key),
+                            null_safe: false,
+                        })),
+                    })),
+                    right: Box::new(null_lit()),
+                })),
+                right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
+            });
+            let else_branch = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(Expression::new(ExprKind::Assign {
+                        target: Box::new(out_target),
+                        value: Box::new(null_lit()),
+                    })),
+                    right: Box::new(null_lit()),
+                })),
+                right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+            });
+            return Expression::new(ExprKind::Ternary {
+                cond: Box::new(contains),
+                then: Box::new(then_branch),
+                else_: Box::new(else_branch),
+            });
         }
         if let Some(rewritten) =
             rewrite_csharp_string_instance_call((**object).clone(), field, &args)
