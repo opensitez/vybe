@@ -114,6 +114,10 @@ impl Drop for PascalTestCwd {
 /// Run Pascal source with GUI host functions, return (VM, GuiState, output).
 /// Uses register_all_with_gui which creates widgets directly (no side effects).
 pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<String>>>) {
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_pascal::register);
+    }
     let module = vybe_language_pascal::parse(src).expect("Pascal parse failed");
     let profile = load_pascal_profile();
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
