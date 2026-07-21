@@ -20,17 +20,55 @@
 //!   forms reduced to bare name params.
 
 use super::{JavaParser, Rule};
-use pest::Parser;
 use pest::iterators::Pair;
+use pest::Parser;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
+use vybe_emitter::reflection as common_reflection;
+
+#[derive(Clone, Debug, Default)]
+struct JavaReflectionClassMeta {
+    parent: Option<String>,
+    interfaces: Vec<String>,
+    fields: Vec<JavaReflectionFieldMeta>,
+    methods: Vec<JavaReflectionCallableMeta>,
+    constructors: Vec<JavaReflectionCallableMeta>,
+    nested_classes: Vec<String>,
+    modifiers: i64,
+    is_interface: bool,
+    is_enum: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct JavaReflectionCallableMeta {
+    name: String,
+    param_count: usize,
+    param_types: Vec<String>,
+    return_type: Option<String>,
+    modifiers: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct JavaReflectionFieldMeta {
+    name: String,
+    type_name: Option<String>,
+    modifiers: i64,
+}
+
+const JAVA_MOD_PUBLIC: i64 = 0x0001;
+const JAVA_MOD_PRIVATE: i64 = 0x0002;
+const JAVA_MOD_PROTECTED: i64 = 0x0004;
+const JAVA_MOD_STATIC: i64 = 0x0008;
+const JAVA_MOD_FINAL: i64 = 0x0010;
+const JAVA_MOD_ABSTRACT: i64 = 0x0400;
 
 thread_local! {
     static JAVA_INTERFACE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_NESTED_TYPE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_ENUM_VALUES: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
     static JAVA_RECORD_COMPONENTS: RefCell<HashMap<String, HashSet<String>>> = RefCell::new(HashMap::new());
+    static JAVA_REFLECTION_CLASSES: RefCell<HashMap<String, JavaReflectionClassMeta>> = RefCell::new(HashMap::new());
     static JAVA_CURRENT_CLASS_STACK: RefCell<Vec<String>> = RefCell::new(Vec::new());
     // Locals declared with a PrintStream type — their method calls route
     // through the __j_* PrintStream runtime like `System.out` itself.
@@ -39,6 +77,7 @@ thread_local! {
     // route through the __j_sb_* runtime (emitter/format_runtime.rs).
     static JAVA_SB_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_DOUBLE_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_JOINER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STRING_TOKENIZER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_SCANNER_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -53,10 +92,14 @@ thread_local! {
     static JAVA_RUNNABLE_UNSAFE_TARGETS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STATIC_FIELD_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_STATIC_FIELD_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static JAVA_LOCAL_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static JAVA_FINAL_CONSTANTS: RefCell<HashMap<String, Expression>> = RefCell::new(HashMap::new());
     static JAVA_RUNNABLE_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_FUNCTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_FUNCTIONAL_TYPES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static JAVA_FUNCTIONAL_INTERFACE_METHODS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static JAVA_OPTIONAL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static JAVA_RANDOM_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_TLR_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_CHAR_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static JAVA_BYTE_ARRAY_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -89,10 +132,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_NESTED_TYPE_NAMES.with(|names| names.borrow_mut().clear());
     JAVA_ENUM_VALUES.with(|values| values.borrow_mut().clear());
     JAVA_RECORD_COMPONENTS.with(|components| components.borrow_mut().clear());
+    JAVA_REFLECTION_CLASSES.with(|classes| classes.borrow_mut().clear());
     JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow_mut().clear());
     JAVA_PRINTSTREAM_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SB_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_DOUBLE_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().clear());
@@ -107,10 +152,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow_mut().clear());
     JAVA_STATIC_FIELD_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_STATIC_FIELD_TYPES.with(|types| types.borrow_mut().clear());
+    JAVA_LOCAL_TYPES.with(|types| types.borrow_mut().clear());
+    JAVA_FINAL_CONSTANTS.with(|constants| constants.borrow_mut().clear());
     JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_FUNCTIONAL_TYPES.with(|types| types.borrow_mut().clear());
+    JAVA_FUNCTIONAL_INTERFACE_METHODS.with(|methods| methods.borrow_mut().clear());
     JAVA_OPTIONAL_VARS.with(|vars| vars.borrow_mut().clear());
+    JAVA_RANDOM_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_TLR_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_BYTE_ARRAY_VARS.with(|vars| vars.borrow_mut().clear());
@@ -192,16 +241,24 @@ pub fn parse(source: &str) -> Result<Module, String> {
     qualify_java_nested_types(&mut body);
     rewrite_java_user_tostring_calls(&mut body);
     erase_java_interface_param_hints(&mut body);
+    reject_java_direct_abstract_instantiation(&body)?;
 
-    // PrintStream/Formatter runtime (emitter/format_runtime.rs) — same
-    // pattern as the libc runtime prelude for C: platform functions as
-    // common AST, defined before the injected Main.main() call runs. It
-    // includes Java's built-in Thread class, so it must enter the normal
-    // class pass with user classes instead of being appended afterward.
-    let mut with_prelude = super::emitter::format_runtime::prelude();
-    with_prelude.append(&mut body);
-    let mut body = with_prelude;
+    // PrintStream/Formatter runtime (emitter/format_runtime.rs). Keep it
+    // available for the composite runtime pieces that have not moved to
+    // profile/common emitters yet, but do not prepend it for modules that only
+    // use direct emitter-backed helpers such as basic print/println.
+    let prelude = super::emitter::format_runtime::prelude();
+    let mut body = if java_body_references_prelude(&body, &prelude) {
+        let mut with_prelude = prelude;
+        with_prelude.append(&mut body);
+        with_prelude
+    } else {
+        body
+    };
     normalize_java_class_tree(&mut body);
+    strip_java_abstract_method_declarations(&mut body);
+    lower_java_abstract_runtime_modifiers(&mut body);
+    inject_java_static_initializer_calls(&mut body);
 
     // Java: inject a top-level call to the class's static main method.
     // Uses the same pattern as EntryPoint::Method in bundle.rs.
@@ -219,14 +276,416 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ))));
     }
 
-    reject_java_direct_abstract_instantiation(&body)?;
-
     Ok(Module {
         name: String::new(),
         language: Lang::Java,
         body,
         imports,
     })
+}
+
+fn java_body_references_prelude(body: &[Statement], prelude: &[Statement]) -> bool {
+    let names = java_prelude_top_level_names(prelude);
+    if names.is_empty() {
+        return false;
+    }
+    body.iter()
+        .any(|stmt| java_stmt_references_any_name(stmt, &names))
+}
+
+fn java_prelude_top_level_names(prelude: &[Statement]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in prelude {
+        match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. } | StmtKind::ClassDecl { name, .. } => {
+                names.insert(name.clone());
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        names.insert(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            java_expr_references_any_name(expr, names)
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            body.iter().any(|stmt| java_stmt_references_any_name(stmt, names))
+        }
+        StmtKind::ClassDecl { parents, interfaces, members, decorators, .. } => {
+            parents.iter().any(|name| names.contains(name))
+                || interfaces.iter().any(|name| names.contains(name))
+                || decorators
+                    .iter()
+                    .any(|expr| java_expr_references_any_name(expr, names))
+                || members
+                    .iter()
+                    .any(|member| java_class_member_references_any_name(member, names))
+        }
+        StmtKind::InterfaceDecl { parents, decorators, .. } => {
+            parents.iter().any(|name| names.contains(name))
+                || decorators
+                    .iter()
+                    .any(|expr| java_expr_references_any_name(expr, names))
+        }
+        StmtKind::EnumDecl { interfaces, body_members, decorators, .. } => {
+            interfaces.iter().any(|name| names.contains(name))
+                || decorators
+                    .iter()
+                    .any(|expr| java_expr_references_any_name(expr, names))
+                || body_members
+                    .iter()
+                    .any(|member| java_class_member_references_any_name(member, names))
+        }
+        StmtKind::StructDecl { interfaces, members, decorators, .. } => {
+            interfaces.iter().any(|name| names.contains(name))
+                || decorators
+                    .iter()
+                    .any(|expr| java_expr_references_any_name(expr, names))
+                || members
+                    .iter()
+                    .any(|member| java_class_member_references_any_name(member, names))
+        }
+        StmtKind::NamespaceDecl { body, .. } => {
+            body.iter().any(|stmt| java_stmt_references_any_name(stmt, names))
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.type_hint
+                .as_deref()
+                .is_some_and(|type_name| names.contains(type_name))
+                || decl
+                    .init
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+        }),
+        StmtKind::Assign { targets, value } => {
+            targets
+                .iter()
+                .any(|expr| java_expr_references_any_name(expr, names))
+                || java_expr_references_any_name(value, names)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            java_expr_references_any_name(target, names)
+                || java_expr_references_any_name(value, names)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            java_expr_references_any_name(cond, names)
+                || then_body
+                    .iter()
+                    .any(|stmt| java_stmt_references_any_name(stmt, names))
+                || elifs.iter().any(|(cond, body)| {
+                    java_expr_references_any_name(cond, names)
+                        || body
+                            .iter()
+                            .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        StmtKind::For { init, cond, update, body } => {
+            init.as_ref()
+                .is_some_and(|stmt| java_stmt_references_any_name(stmt, names))
+                || cond
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || update
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || body
+                    .iter()
+                    .any(|stmt| java_stmt_references_any_name(stmt, names))
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            java_expr_references_any_name(iter, names)
+                || body
+                    .iter()
+                    .any(|stmt| java_stmt_references_any_name(stmt, names))
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        StmtKind::While { cond, body, else_body } => {
+            java_expr_references_any_name(cond, names)
+                || body
+                    .iter()
+                    .any(|stmt| java_stmt_references_any_name(stmt, names))
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            body.iter()
+                .any(|stmt| java_stmt_references_any_name(stmt, names))
+                || java_expr_references_any_name(cond, names)
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            java_expr_references_any_name(expr, names)
+                || cases.iter().any(|case| {
+                    case.conditions
+                        .iter()
+                        .any(|condition| java_case_condition_references_any_name(condition, names))
+                        || case
+                            .body
+                            .iter()
+                            .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+                || default.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+            ..
+        } => {
+            body.iter()
+                .any(|stmt| java_stmt_references_any_name(stmt, names))
+                || catches.iter().any(|catch| {
+                    catch
+                        .body
+                        .iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+                || finally.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref()
+                .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || cause
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+        }
+        _ => false,
+    }
+}
+
+fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<String>) -> bool {
+    match member {
+        ClassMember::Field { type_hint, init, array_bounds, .. } => {
+            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+                || init
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || array_bounds.as_ref().is_some_and(|bounds| {
+                    bounds
+                        .iter()
+                        .any(|expr| java_expr_references_any_name(expr, names))
+                })
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            java_stmt_references_any_name(stmt, names)
+        }
+        ClassMember::Constructor { body, base_args, .. } => {
+            base_args.as_ref().is_some_and(|args| {
+                args.iter()
+                    .any(|expr| java_expr_references_any_name(expr, names))
+            }) || body
+                .iter()
+                .any(|stmt| java_stmt_references_any_name(stmt, names))
+        }
+        ClassMember::Property { type_hint, getter, setter, .. } => {
+            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+                || getter.as_ref().is_some_and(|body| {
+                    body.iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+                || setter.as_ref().is_some_and(|setter| {
+                    setter
+                        .body
+                        .iter()
+                        .any(|stmt| java_stmt_references_any_name(stmt, names))
+                })
+        }
+        ClassMember::Const { type_hint, value, .. } => {
+            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+                || java_expr_references_any_name(value, names)
+        }
+        ClassMember::Event { type_hint, .. } => {
+            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+        }
+    }
+}
+
+fn java_case_condition_references_any_name(
+    condition: &CaseCondition,
+    names: &HashSet<String>,
+) -> bool {
+    match condition {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            java_expr_references_any_name(expr, names)
+        }
+        CaseCondition::Range { from, to } => {
+            java_expr_references_any_name(from, names)
+                || java_expr_references_any_name(to, names)
+        }
+    }
+}
+
+fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => names.contains(name),
+        ExprKind::Call { callee, args, .. } => {
+            java_expr_references_any_name(callee, names)
+                || args
+                    .iter()
+                    .any(|arg| java_expr_references_any_name(&arg.value, names))
+        }
+        ExprKind::New { class, args } => {
+            java_expr_references_any_name(class, names)
+                || args
+                    .iter()
+                    .any(|arg| java_expr_references_any_name(&arg.value, names))
+        }
+        ExprKind::Member { object, .. } => java_expr_references_any_name(object, names),
+        ExprKind::Index { object, index, .. } => {
+            java_expr_references_any_name(object, names)
+                || java_expr_references_any_name(index, names)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            java_expr_references_any_name(left, names)
+                || java_expr_references_any_name(right, names)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::RefLoad(expr) => java_expr_references_any_name(expr, names),
+        ExprKind::Yield(Some(expr)) => java_expr_references_any_name(expr, names),
+        ExprKind::Assign { target, value } => {
+            java_expr_references_any_name(target, names)
+                || java_expr_references_any_name(value, names)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_expr_references_any_name(cond, names)
+                || java_expr_references_any_name(then, names)
+                || java_expr_references_any_name(else_, names)
+        }
+        ExprKind::Array(elems) => elems.iter().any(|elem| {
+            elem.key
+                .as_ref()
+                .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || java_expr_references_any_name(&elem.value, names)
+        }),
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => items
+            .iter()
+            .any(|expr| java_expr_references_any_name(expr, names)),
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, value }
+            | ObjectProperty::Computed { key, value } => {
+                java_expr_references_any_name(key, names)
+                    || java_expr_references_any_name(value, names)
+            }
+            ObjectProperty::Spread(expr) => java_expr_references_any_name(expr, names),
+            ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                java_stmt_references_any_name(value, names)
+            }
+            ObjectProperty::Shorthand(name) => names.contains(name),
+        }),
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => java_expr_references_any_name(expr, names),
+            LambdaBody::Block(body) => body
+                .iter()
+                .any(|stmt| java_stmt_references_any_name(stmt, names)),
+        },
+        ExprKind::NamedTuple { fields, .. } => fields
+            .iter()
+            .any(|(_, expr)| java_expr_references_any_name(expr, names)),
+        ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
+            InterpolPart::Expr(expr) => java_expr_references_any_name(expr, names),
+            InterpolPart::Formatted(expr, _) => java_expr_references_any_name(expr, names),
+            InterpolPart::Text(_) => false,
+        }),
+        ExprKind::IsType { expr, type_name } => {
+            names.contains(type_name) || java_expr_references_any_name(expr, names)
+        }
+        ExprKind::DefaultOf(type_name) => names.contains(type_name),
+        ExprKind::NullCoalesce { left, right } => {
+            java_expr_references_any_name(left, names)
+                || java_expr_references_any_name(right, names)
+        }
+        ExprKind::SuperCall { args, .. } => args
+            .iter()
+            .any(|arg| java_expr_references_any_name(&arg.value, names)),
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            java_expr_references_any_name(element, names)
+                || generators.iter().any(|generator| {
+                    java_expr_references_any_name(&generator.iter, names)
+                        || generator
+                            .conditions
+                            .iter()
+                            .any(|expr| java_expr_references_any_name(expr, names))
+                })
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            lower
+                .as_ref()
+                .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || upper
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || step
+                    .as_ref()
+                    .is_some_and(|expr| java_expr_references_any_name(expr, names))
+        }
+        ExprKind::Walrus { target, value } => {
+            java_expr_references_any_name(target, names)
+                || java_expr_references_any_name(value, names)
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            parent
+                .as_ref()
+                .is_some_and(|expr| java_expr_references_any_name(expr, names))
+                || members
+                    .iter()
+                    .any(|member| java_class_member_references_any_name(member, names))
+        }
+        ExprKind::FunctionExpr(stmt) => java_stmt_references_any_name(stmt, names),
+        ExprKind::Range { start, end, .. } => {
+            java_expr_references_any_name(start, names)
+                || java_expr_references_any_name(end, names)
+        }
+        ExprKind::StaticAccess { class, member } => {
+            java_expr_references_any_name(class, names)
+                || java_expr_references_any_name(member, names)
+        }
+        _ => false,
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -593,10 +1052,12 @@ fn walk_import(pair: &Pair<Rule>) -> Option<Import> {
 // Modifiers
 // ════════════════════════════════════════════════════════════════════════════
 
+#[derive(Clone, Copy)]
 struct ParsedModifiers {
     visibility: Visibility,
     is_static: bool,
     is_abstract: bool,
+    is_final: bool,
 }
 
 impl Default for ParsedModifiers {
@@ -605,6 +1066,7 @@ impl Default for ParsedModifiers {
             visibility: Visibility::Public,
             is_static: false,
             is_abstract: false,
+            is_final: false,
         }
     }
 }
@@ -623,6 +1085,7 @@ fn parse_modifiers(pair: &Pair<Rule>) -> ParsedModifiers {
                 Some(Rule::public_kw) => out.visibility = Visibility::Public,
                 Some(Rule::static_kw) => out.is_static = true,
                 Some(Rule::abstract_kw) => out.is_abstract = true,
+                Some(Rule::final_kw) => out.is_final = true,
                 _ => {}
             }
         }
@@ -635,6 +1098,7 @@ fn into_modifiers(pm: ParsedModifiers) -> Modifiers {
         visibility: pm.visibility,
         is_static: pm.is_static,
         is_abstract: pm.is_abstract,
+        is_readonly: pm.is_final,
         ..Modifiers::default()
     }
 }
@@ -648,6 +1112,73 @@ fn into_class_modifiers(pm: ParsedModifiers) -> ClassModifiers {
     }
 }
 
+fn java_visibility_modifier_bits(visibility: Visibility) -> i64 {
+    match visibility {
+        Visibility::Public => JAVA_MOD_PUBLIC,
+        Visibility::Private => JAVA_MOD_PRIVATE,
+        Visibility::Protected => JAVA_MOD_PROTECTED,
+        Visibility::Internal => 0,
+    }
+}
+
+fn java_parsed_modifier_bits(pm: ParsedModifiers) -> i64 {
+    let mut bits = java_visibility_modifier_bits(pm.visibility);
+    if pm.is_static {
+        bits |= JAVA_MOD_STATIC;
+    }
+    if pm.is_final {
+        bits |= JAVA_MOD_FINAL;
+    }
+    if pm.is_abstract {
+        bits |= JAVA_MOD_ABSTRACT;
+    }
+    bits
+}
+
+fn java_member_modifier_bits(modifiers: &Modifiers) -> i64 {
+    let mut bits = java_visibility_modifier_bits(modifiers.visibility);
+    if modifiers.is_static {
+        bits |= JAVA_MOD_STATIC;
+    }
+    if modifiers.is_readonly {
+        bits |= JAVA_MOD_FINAL;
+    }
+    if modifiers.is_abstract {
+        bits |= JAVA_MOD_ABSTRACT;
+    }
+    bits
+}
+
+fn java_class_modifier_bits(modifiers: &ClassModifiers) -> i64 {
+    let mut bits = java_visibility_modifier_bits(modifiers.visibility);
+    if modifiers.is_static {
+        bits |= JAVA_MOD_STATIC;
+    }
+    if modifiers.is_sealed {
+        bits |= JAVA_MOD_FINAL;
+    }
+    if modifiers.is_abstract {
+        bits |= JAVA_MOD_ABSTRACT;
+    }
+    bits
+}
+
+fn java_modifier_static_predicate(method: &str, value: &Expression) -> Option<Expression> {
+    let mask = match method {
+        "isPublic" => JAVA_MOD_PUBLIC,
+        "isPrivate" => JAVA_MOD_PRIVATE,
+        "isProtected" => JAVA_MOD_PROTECTED,
+        "isStatic" => JAVA_MOD_STATIC,
+        "isFinal" => JAVA_MOD_FINAL,
+        "isAbstract" => JAVA_MOD_ABSTRACT,
+        _ => return None,
+    };
+    let ExprKind::Lit(Literal::Int(bits)) = &value.kind else {
+        return None;
+    };
+    Some(Expression::bool((*bits & mask) != 0))
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Class
 // ════════════════════════════════════════════════════════════════════════════
@@ -658,13 +1189,16 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut interfaces: Vec<String> = Vec::new();
     let mut members: Vec<ClassMember> = Vec::new();
     let mut class_modifiers = ClassModifiers::default();
+    let mut class_modifier_bits = JAVA_MOD_PUBLIC;
 
     let mut inner = pair.into_inner().peekable();
 
     // modifiers
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::modifiers) {
         let mp = inner.next().unwrap();
-        class_modifiers = into_class_modifiers(parse_modifiers(&mp));
+        let parsed = parse_modifiers(&mp);
+        class_modifier_bits = java_parsed_modifier_bits(parsed);
+        class_modifiers = into_class_modifiers(parsed);
     }
     // "class" keyword matched as ident_name in grammar — next ident is the name
     if let Some(n) = inner.next() {
@@ -717,6 +1251,21 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
             inject_java_exception_stamps(&name, &chain, &mut members);
         }
     }
+
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        classes.borrow_mut().insert(
+            name.clone(),
+            java_reflection_meta(
+                &name,
+                parents.first().cloned(),
+                interfaces.clone(),
+                &members,
+                false,
+                false,
+                class_modifier_bits,
+            ),
+        );
+    });
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -880,7 +1429,7 @@ fn walk_class_body_with_owner(
                 ))));
             }
             Rule::static_initializer | Rule::instance_initializer => {
-                // treat as method named __init_block__
+                let is_static = p.as_rule() == Rule::static_initializer;
                 let body: Vec<Statement> = p
                     .into_inner()
                     .filter_map(|b| {
@@ -892,13 +1441,19 @@ fn walk_class_body_with_owner(
                     })
                     .flatten()
                     .collect();
+                let mut modifiers = Modifiers::default();
+                modifiers.is_static = is_static;
                 members.push(ClassMember::Method(Box::new(Statement::new(
                     StmtKind::FunctionDecl {
-                        name: "__init_block__".to_string(),
+                        name: if is_static {
+                            "__static_init_block__".to_string()
+                        } else {
+                            "__init_block__".to_string()
+                        },
                         params: vec![],
                         return_type: None,
                         body,
-                        modifiers: Modifiers::default(),
+                        modifiers,
                         handles: vec![],
                         is_async: false,
                         is_generator: false,
@@ -1084,6 +1639,26 @@ fn walk_field(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     Ok(fields)
 }
 
+fn java_single_abstract_interface_method(members: &[ClassMember]) -> Option<String> {
+    let mut abstract_methods = members.iter().filter_map(|member| {
+        let ClassMember::Method(func) = member else {
+            return None;
+        };
+        let StmtKind::FunctionDecl {
+            name,
+            body,
+            modifiers,
+            ..
+        } = &func.kind
+        else {
+            return None;
+        };
+        (!modifiers.is_static && body.is_empty()).then(|| name.clone())
+    });
+    let method = abstract_methods.next()?;
+    abstract_methods.next().is_none().then_some(method)
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Interface
 // ════════════════════════════════════════════════════════════════════════════
@@ -1139,6 +1714,27 @@ fn walk_interface(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        let modifier_bits = java_parsed_modifier_bits(pm) | JAVA_MOD_ABSTRACT;
+        classes.borrow_mut().insert(
+            name.clone(),
+            java_reflection_meta(
+                &name,
+                parents.first().cloned(),
+                vec![],
+                &members,
+                true,
+                false,
+                modifier_bits,
+            ),
+        );
+    });
+    if let Some(method_name) = java_single_abstract_interface_method(&members) {
+        JAVA_FUNCTIONAL_INTERFACE_METHODS.with(|methods| {
+            methods.borrow_mut().insert(name.clone(), method_name);
+        });
+    }
+
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -1168,6 +1764,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     let mut enum_members: Vec<EnumMember> = Vec::new();
     let mut member_ctor_args: Vec<Vec<Argument>> = Vec::new();
+    let mut member_overrides: Vec<(String, Vec<ClassMember>)> = Vec::new();
     let mut interfaces: Vec<String> = Vec::new();
     let mut body_members: Vec<ClassMember> = Vec::new();
 
@@ -1185,20 +1782,25 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     if ev.as_rule() == Rule::enum_value {
                         let mut val_name = String::new();
                         let mut args: Vec<Argument> = Vec::new();
+                        let mut overrides: Vec<ClassMember> = Vec::new();
                         for x in ev.into_inner() {
                             match x.as_rule() {
                                 Rule::ident_name => val_name = x.as_str().to_string(),
                                 Rule::argument_list => args = walk_arguments(x)?,
+                                Rule::class_body => overrides = walk_class_body(x)?,
                                 _ => {}
                             }
                         }
                         if !val_name.is_empty() {
                             enum_members.push(EnumMember {
-                                name: val_name,
+                                name: val_name.clone(),
                                 value: None,
                                 constructor_args: args.iter().map(|a| a.value.clone()).collect(),
                             });
                             member_ctor_args.push(args);
+                            if !overrides.is_empty() {
+                                member_overrides.push((val_name, overrides));
+                            }
                         }
                     }
                 }
@@ -1218,6 +1820,8 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
+
+    apply_java_enum_constant_method_overrides(&name, &mut body_members, &member_overrides);
 
     JAVA_ENUM_VALUES.with(|values| {
         values.borrow_mut().insert(
@@ -1409,10 +2013,31 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         });
     }
 
+    let enum_member_names: Vec<String> = enum_members
+        .iter()
+        .map(|member| member.name.clone())
+        .collect();
+    qualify_java_enum_intrinsics_in_members(&mut body_members, &name, &enum_member_names);
+
     // JLS §8.9: nested enum types are implicitly static — never capture an
     // outer instance (no `__java_outer` ctor param).
     let mut modifiers = into_class_modifiers(pm);
     modifiers.is_static = true;
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        let modifier_bits = java_parsed_modifier_bits(pm) | JAVA_MOD_STATIC | JAVA_MOD_FINAL;
+        classes.borrow_mut().insert(
+            name.clone(),
+            java_reflection_meta(
+                &name,
+                Some("Enum".to_string()),
+                interfaces.clone(),
+                &body_members,
+                false,
+                true,
+                modifier_bits,
+            ),
+        );
+    });
     Ok(StmtKind::ClassDecl {
         name,
         parents: vec![],
@@ -1421,6 +2046,359 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers,
         decorators: vec![],
     })
+}
+
+fn qualify_java_enum_intrinsics_in_members(
+    members: &mut [ClassMember],
+    enum_name: &str,
+    enum_members: &[String],
+) {
+    for member in members {
+        match member {
+            ClassMember::Constructor { body, .. } => {
+                qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members);
+            }
+            ClassMember::Method(method) => {
+                if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                    qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn qualify_java_enum_intrinsics_in_stmts(
+    stmts: &mut [Statement],
+    enum_name: &str,
+    enum_members: &[String],
+) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => {
+                qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members)
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        qualify_java_enum_intrinsics_in_expr(init, enum_name, enum_members);
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                for target in targets {
+                    qualify_java_enum_intrinsics_in_expr(target, enum_name, enum_members);
+                }
+                qualify_java_enum_intrinsics_in_expr(value, enum_name, enum_members);
+            }
+            StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+                qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                qualify_java_enum_intrinsics_in_expr(cond, enum_name, enum_members);
+                qualify_java_enum_intrinsics_in_stmts(then_body, enum_name, enum_members);
+                for (elif_cond, elif_body) in elifs {
+                    qualify_java_enum_intrinsics_in_expr(elif_cond, enum_name, enum_members);
+                    qualify_java_enum_intrinsics_in_stmts(elif_body, enum_name, enum_members);
+                }
+                if let Some(else_body) = else_body {
+                    qualify_java_enum_intrinsics_in_stmts(else_body, enum_name, enum_members);
+                }
+            }
+            StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+                qualify_java_enum_intrinsics_in_expr(cond, enum_name, enum_members);
+                qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members);
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    qualify_java_enum_intrinsics_in_stmts(
+                        std::slice::from_mut(init),
+                        enum_name,
+                        enum_members,
+                    );
+                }
+                if let Some(cond) = cond {
+                    qualify_java_enum_intrinsics_in_expr(cond, enum_name, enum_members);
+                }
+                if let Some(update) = update {
+                    qualify_java_enum_intrinsics_in_expr(update, enum_name, enum_members);
+                }
+                qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members);
+            }
+            StmtKind::ForIn {
+                iter,
+                body,
+                else_body,
+                ..
+            } => {
+                qualify_java_enum_intrinsics_in_expr(iter, enum_name, enum_members);
+                qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members);
+                if let Some(else_body) = else_body {
+                    qualify_java_enum_intrinsics_in_stmts(else_body, enum_name, enum_members);
+                }
+            }
+            StmtKind::Block(body) => {
+                qualify_java_enum_intrinsics_in_stmts(body, enum_name, enum_members)
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members);
+                for case in cases {
+                    for condition in &mut case.conditions {
+                        match condition {
+                            CaseCondition::Value(value) => {
+                                qualify_java_enum_intrinsics_in_expr(value, enum_name, enum_members);
+                            }
+                            CaseCondition::Range { from, to } => {
+                                qualify_java_enum_intrinsics_in_expr(from, enum_name, enum_members);
+                                qualify_java_enum_intrinsics_in_expr(to, enum_name, enum_members);
+                            }
+                            CaseCondition::Comparison { expr, .. } => {
+                                qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members);
+                            }
+                        }
+                    }
+                    qualify_java_enum_intrinsics_in_stmts(
+                        &mut case.body,
+                        enum_name,
+                        enum_members,
+                    );
+                }
+                if let Some(default) = default {
+                    qualify_java_enum_intrinsics_in_stmts(default, enum_name, enum_members);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn qualify_java_enum_intrinsics_in_expr(
+    expr: &mut Expression,
+    enum_name: &str,
+    enum_members: &[String],
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "values" && args.is_empty() {
+                    *expr = Expression::new(ExprKind::Array(
+                        enum_members
+                            .iter()
+                            .map(|member| ArrayElement {
+                                key: None,
+                                value: Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::ident(enum_name)),
+                                    field: member.clone(),
+                                    null_safe: false,
+                                }),
+                                spread: false,
+                                by_ref: false,
+                            })
+                            .collect(),
+                    ));
+                    return;
+                }
+                if name == "valueOf" {
+                    *callee = Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(enum_name)),
+                        field: name.clone(),
+                        null_safe: false,
+                    }));
+                }
+            }
+            qualify_java_enum_intrinsics_in_expr(callee, enum_name, enum_members);
+            for arg in args {
+                qualify_java_enum_intrinsics_in_expr(&mut arg.value, enum_name, enum_members);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            qualify_java_enum_intrinsics_in_expr(object, enum_name, enum_members)
+        }
+        ExprKind::Index { object, index, .. } => {
+            if let Some(member) = java_enum_values_constant_index_member(object, index, enum_members)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(enum_name)),
+                        field: "__j_enum_value_of".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(Expression::string(&member))],
+                    optional: false,
+                });
+                return;
+            }
+            qualify_java_enum_intrinsics_in_expr(object, enum_name, enum_members);
+            qualify_java_enum_intrinsics_in_expr(index, enum_name, enum_members);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            qualify_java_enum_intrinsics_in_expr(left, enum_name, enum_members);
+            qualify_java_enum_intrinsics_in_expr(right, enum_name, enum_members);
+        }
+        ExprKind::Unary { expr, .. } => {
+            qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members)
+        }
+        ExprKind::Assign { target, value } => {
+            qualify_java_enum_intrinsics_in_expr(target, enum_name, enum_members);
+            qualify_java_enum_intrinsics_in_expr(value, enum_name, enum_members);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            qualify_java_enum_intrinsics_in_expr(cond, enum_name, enum_members);
+            qualify_java_enum_intrinsics_in_expr(then, enum_name, enum_members);
+            qualify_java_enum_intrinsics_in_expr(else_, enum_name, enum_members);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                qualify_java_enum_intrinsics_in_expr(&mut elem.value, enum_name, enum_members);
+            }
+        }
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                qualify_java_enum_intrinsics_in_expr(&mut arg.value, enum_name, enum_members);
+            }
+        }
+        ExprKind::Sequence(items) => {
+            for item in items {
+                qualify_java_enum_intrinsics_in_expr(item, enum_name, enum_members);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn java_enum_values_constant_index_member(
+    object: &Expression,
+    index: &Expression,
+    enum_members: &[String],
+) -> Option<String> {
+    let index = match &index.kind {
+        ExprKind::Lit(Literal::Int(value)) => *value,
+        ExprKind::Lit(Literal::Float(value)) if value.fract() == 0.0 => *value as i64,
+        _ => return None,
+    };
+    if index < 0 {
+        return None;
+    }
+    let values_call = match &object.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "values")
+        }
+        ExprKind::Ident(name) => name == "values",
+        _ => false,
+    };
+    if !values_call {
+        return None;
+    }
+    enum_members.get(index as usize).cloned()
+}
+
+fn apply_java_enum_constant_method_overrides(
+    enum_name: &str,
+    body_members: &mut Vec<ClassMember>,
+    member_overrides: &[(String, Vec<ClassMember>)],
+) {
+    let mut methods: HashMap<String, Vec<(String, Box<Statement>)>> = HashMap::new();
+    for (constant_name, overrides) in member_overrides {
+        for member in overrides {
+            if let ClassMember::Method(method) = member {
+                if let StmtKind::FunctionDecl { name, params, .. } = &method.kind {
+                    if params.is_empty() {
+                        methods
+                            .entry(name.clone())
+                            .or_default()
+                            .push((constant_name.clone(), method.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    for (method_name, overrides) in methods {
+        let mut installed = false;
+        for member in body_members.iter_mut() {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl {
+                name,
+                body,
+                modifiers,
+                ..
+            } = &mut method.kind
+            else {
+                continue;
+            };
+            if *name != method_name || modifiers.is_static {
+                continue;
+            }
+            let original_body = body.clone();
+            *body = java_enum_override_dispatch_body(enum_name, &overrides, Some(original_body));
+            installed = true;
+            break;
+        }
+        if !installed {
+            let dispatch_body = java_enum_override_dispatch_body(enum_name, &overrides, None);
+            body_members.push(ClassMember::Method(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: method_name,
+                    params: vec![],
+                    return_type: None,
+                    body: dispatch_body,
+                    modifiers: Modifiers::default(),
+                    handles: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                },
+            ))));
+        }
+    }
+}
+
+fn java_enum_override_dispatch_body(
+    enum_name: &str,
+    overrides: &[(String, Box<Statement>)],
+    fallback: Option<Vec<Statement>>,
+) -> Vec<Statement> {
+    let mut body = Vec::new();
+    for (constant_name, method) in overrides {
+        let override_body = match &method.kind {
+            StmtKind::FunctionDecl { body, .. } => body.clone(),
+            _ => vec![Statement::new(StmtKind::Return(Some(Expression::null())))],
+        };
+        body.push(Statement::new(StmtKind::If {
+            cond: java_binary(
+                BinOp::Eq,
+                Expression::new(ExprKind::This),
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(enum_name)),
+                    field: constant_name.clone(),
+                    null_safe: false,
+                }),
+            ),
+            then_body: override_body,
+            elifs: vec![],
+            else_body: None,
+        }));
+    }
+    body.extend(
+        fallback.unwrap_or_else(|| vec![Statement::new(StmtKind::Return(Some(Expression::null())))]),
+    );
+    body
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1841,6 +2819,19 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             declarations.push(walk_var_declarator(p, type_hint.clone())?);
         }
     }
+    if is_final {
+        JAVA_FINAL_CONSTANTS.with(|constants| {
+            let mut constants = constants.borrow_mut();
+            for decl in &declarations {
+                let BindingPattern::Ident(name) = &decl.pattern else {
+                    continue;
+                };
+                if let Some(init) = &decl.init {
+                    constants.insert(name.clone(), init.clone());
+                }
+            }
+        });
+    }
 
     Ok(StmtKind::VarDecl { declarations, kind })
 }
@@ -1861,6 +2852,12 @@ fn walk_var_declarator(
         }
     }
 
+    if let Some(hint) = type_hint.as_deref() {
+        JAVA_LOCAL_TYPES.with(|types| {
+            types.borrow_mut().insert(name.clone(), hint.to_string());
+        });
+    }
+
     // StringBuilder/StringBuffer locals — route their method calls
     // through the __j_sb_* runtime.
     if type_hint
@@ -1874,6 +2871,14 @@ fn walk_var_declarator(
         .is_some_and(|hint| java_type_simple_name(hint) == "String")
     {
         JAVA_STRING_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint.as_deref().is_some_and(|hint| {
+        matches!(
+            java_type_simple_name(hint),
+            "double" | "Double" | "float" | "Float"
+        )
+    }) {
+        JAVA_DOUBLE_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
     if type_hint
         .as_deref()
@@ -1902,6 +2907,7 @@ fn walk_var_declarator(
     if type_hint
         .as_deref()
         .is_some_and(|hint| java_type_simple_name(hint) == "Runnable")
+        && init.as_ref().is_some_and(java_initializer_is_functional_value)
     {
         JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
         JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
@@ -1913,6 +2919,7 @@ fn walk_var_declarator(
     if type_hint
         .as_deref()
         .is_some_and(java_is_functional_interface_type)
+        && init.as_ref().is_some_and(java_initializer_is_functional_value)
     {
         JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
         if let Some(hint) = type_hint.as_deref() {
@@ -1928,13 +2935,19 @@ fn walk_var_declarator(
     }
     if type_hint
         .as_deref()
+        .is_some_and(|hint| java_type_is_random(Some(hint)))
+    {
+        JAVA_RANDOM_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
+    }
+    if type_hint
+        .as_deref()
         .is_some_and(|hint| hint.contains("ThreadLocalRandom"))
     {
         JAVA_TLR_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
     if type_hint
         .as_deref()
-        .is_some_and(|hint| hint.replace(' ', "").contains("char[]"))
+        .is_some_and(|hint| hint.replace(' ', "") == "char[]")
     {
         JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
@@ -2020,13 +3033,13 @@ fn walk_var_declarator(
     }
 
     // `java.io.PrintStream ps = …` — route ps's print/append/format calls
-    // through the __j_* PrintStream runtime, same as `System.out`.
+    // through the direct __java_* emitter path, same as `System.out`.
     if type_hint
         .as_deref()
         .is_some_and(|hint| hint.contains("PrintStream"))
     {
         JAVA_PRINTSTREAM_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
-        // `= System.out` evaluates to the __j_out identity sentinel so
+        // `= System.out` evaluates to the __java_out identity sentinel so
         // `ps.append("x") == ps` holds (JLS: append/format return this).
         if let Some(expr) = &init {
             if matches!(
@@ -2034,7 +3047,7 @@ fn walk_var_declarator(
                 ExprKind::Member { object, field, .. }
                     if field == "out" && matches!(&object.kind, ExprKind::Ident(n) if n == "System")
             ) {
-                init = Some(Expression::ident("__j_out"));
+                init = Some(Expression::string("__java_out"));
             }
         }
     }
@@ -2046,6 +3059,11 @@ fn walk_var_declarator(
                 args: vec![Argument::positional(value)],
                 optional: false,
             }))
+        } else if matches!(
+            java_type_simple_name(hint),
+            "byte" | "Byte" | "short" | "Short" | "int" | "Integer" | "long" | "Long"
+        ) {
+            Some(java_char_numeric_cast_expr(value))
         } else {
             Some(value)
         };
@@ -2108,6 +3126,17 @@ fn walk_var_declarator(
         array_bounds: None,
         with_events: false,
     })
+}
+
+fn java_initializer_is_functional_value(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => true,
+        ExprKind::Cast { expr, .. } => java_initializer_is_functional_value(expr),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(java_initializer_is_functional_value),
+        _ => false,
+    }
 }
 
 fn walk_initializer(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -2292,18 +3321,25 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::final_kw) {
         inner.next();
     }
-    // type_ref or var_kw — skip either
-    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref)
-        || inner.peek().map(|p| p.as_rule()) == Some(Rule::var_kw)
-    {
+    let type_hint = if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_ref) {
+        Some(extract_ref_name(&inner.next().unwrap()))
+    } else if inner.peek().map(|p| p.as_rule()) == Some(Rule::var_kw) {
         inner.next();
-    }
+        None
+    } else {
+        None
+    };
 
     let var = inner
         .next()
         .ok_or("for-each: missing var")?
         .as_str()
         .to_string();
+    if let Some(type_hint) = type_hint {
+        JAVA_LOCAL_TYPES.with(|types| {
+            types.borrow_mut().insert(var.clone(), type_hint);
+        });
+    }
     let iter = walk_expr_inner(&mut inner)?;
     let body = walk_body_inner(&mut inner)?;
 
@@ -2321,7 +3357,7 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
-    let switch_expr = walk_expr_inner(&mut inner)?;
+    let switch_expr = java_switch_discriminant_expr(walk_expr_inner(&mut inner)?);
     let value_name = format!("__java_switch_value_{}_{}", span.start_line, span.start_col);
     let matched_name = format!(
         "__java_switch_matched_{}_{}",
@@ -2456,6 +3492,34 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Block(lowered))
 }
 
+fn java_switch_discriminant_expr(expr: Expression) -> Expression {
+    let is_char_source = match &expr.kind {
+        ExprKind::Lit(Literal::Char(_)) => true,
+        ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
+        ExprKind::Ident(name) => JAVA_LOCAL_TYPES.with(|types| {
+            types
+                .borrow()
+                .get(name)
+                .is_some_and(|ty| java_type_simple_name(ty) == "char")
+        }),
+        ExprKind::Index { .. } => true,
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Member { field, .. } if field == "charAt"
+        ),
+        _ => false,
+    };
+    if is_char_source {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_char_ord")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    } else {
+        expr
+    }
+}
+
 struct JavaSwitchArm {
     labels: Vec<JavaSwitchLabel>,
     body: Vec<Statement>,
@@ -2495,7 +3559,10 @@ enum JavaSwitchLabel {
 }
 
 fn java_switch_label_expr(label: JavaSwitchLabel) -> JavaSwitchLabel {
-    label
+    match label {
+        JavaSwitchLabel::Value(value) => JavaSwitchLabel::Value(java_char_numeric_cast_expr(value)),
+        other => other,
+    }
 }
 
 fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
@@ -2521,6 +3588,12 @@ fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
                     }
                     value = Some(expr);
                 } else {
+                    if let Some(constant) =
+                        JAVA_FINAL_CONSTANTS.with(|constants| constants.borrow().get(text).cloned())
+                    {
+                        value = Some(constant);
+                        continue;
+                    }
                     // Bare enum constant labels (`case ON:`) qualify to
                     // `Mode.ON` — class-shaped enums have no compile-time
                     // member table to resolve bare names against.
@@ -2986,7 +4059,13 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
                 let mut types: Vec<String> = Vec::new();
                 while ci.peek().map(|x| x.as_rule()) == Some(Rule::type_ref) {
-                    types.push(extract_ref_name(&ci.next().unwrap()));
+                    let ty = extract_ref_name(&ci.next().unwrap());
+                    let ty = if ty.starts_with("java.") {
+                        java_type_simple_name(&ty).to_string()
+                    } else {
+                        ty
+                    };
+                    types.push(ty);
                 }
                 let var_name = ci.next().map(|p| p.as_str().to_string());
                 let catch_body = ci
@@ -3110,19 +4189,36 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             if let (Some(cast_type), Some(operand)) = (cast_type, ci.next()) {
                 let expr = walk_expression(operand)?;
                 let ty = cast_type.as_str();
-                if let Some(callee) = java_numeric_cast_fn(ty) {
+                let simple_ty = java_type_simple_name(ty);
+                if matches!(simple_ty, "int" | "Integer") {
+                    Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_i32")),
+                        args: vec![Argument::positional(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__java_trunc_cast")),
+                            args: vec![Argument::positional(expr)],
+                            optional: false,
+                        }))],
+                        optional: false,
+                    }))
+                } else if matches!(simple_ty, "double" | "Double" | "float" | "Float") {
                     Ok(Expression::new(ExprKind::Cast {
-                        type_name: java_type_simple_name(ty).to_string(),
+                        type_name: simple_ty.to_string(),
+                        expr: Box::new(expr),
+                    }))
+                } else if simple_ty == "char" {
+                    Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_from_char_code")),
+                        args: vec![Argument::positional(java_char_numeric_cast_expr(expr))],
+                        optional: false,
+                    }))
+                } else if let Some(callee) = java_numeric_cast_fn(ty) {
+                    Ok(Expression::new(ExprKind::Cast {
+                        type_name: simple_ty.to_string(),
                         expr: Box::new(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(callee)),
                             args: vec![Argument::positional(expr)],
                             optional: false,
                         })),
-                    }))
-                } else if java_type_simple_name(ty) == "char" {
-                    Ok(Expression::new(ExprKind::Cast {
-                        type_name: "char".to_string(),
-                        expr: Box::new(expr),
                     }))
                 } else {
                     Ok(expr)
@@ -3247,8 +4343,8 @@ fn java_binary_with_string_concat(op: BinOp, left: Expression, right: Expression
         })
     } else {
         let effective_op = if op == BinOp::Div
-            && is_java_integral_arithmetic_expr(&left)
-            && is_java_integral_arithmetic_expr(&right)
+            && !is_java_double_arithmetic_expr(&left)
+            && !is_java_double_arithmetic_expr(&right)
         {
             BinOp::IDiv
         } else {
@@ -3283,31 +4379,6 @@ fn is_java_string_concat_operand(expr: &Expression) -> bool {
     }
 }
 
-fn is_java_integral_arithmetic_expr(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::Lit(Literal::Int(_)) => true,
-        ExprKind::Lit(Literal::Float(_)) => false,
-        ExprKind::Member { object, field, .. } => {
-            matches!(&object.kind, ExprKind::Ident(name) if name == "Integer" || name == "Long")
-                && matches!(field.as_str(), "MAX_VALUE" | "MIN_VALUE" | "SIZE" | "BYTES")
-        }
-        ExprKind::Call { callee, .. } => matches!(
-            &callee.kind,
-            ExprKind::Ident(name)
-                if matches!(name.as_str(), "__j_i32" | "__java_trunc_cast")
-        ),
-        ExprKind::Unary { expr, .. } => is_java_integral_arithmetic_expr(expr),
-        ExprKind::Binary {
-            op, left, right, ..
-        } => {
-            !matches!(op, BinOp::Div)
-                && is_java_integral_arithmetic_expr(left)
-                && is_java_integral_arithmetic_expr(right)
-        }
-        _ => false,
-    }
-}
-
 fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Member { object, field, .. } => {
@@ -3329,6 +4400,9 @@ fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
 fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Ident(name) => {
+            JAVA_DOUBLE_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+        }
         ExprKind::Member { object, field, .. } => {
             matches!(
                 java_expr_dotted_name(object).as_deref(),
@@ -3413,6 +4487,104 @@ fn java_numeric_width_fn(ty: &str) -> Option<&'static str> {
         "byte" | "Byte" => Some("__j_byte"),
         "short" | "Short" => Some("__j_short"),
         _ => None,
+    }
+}
+
+fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::Lit(Literal::Char(_)) => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_char_ord")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        }),
+        ExprKind::Lit(Literal::Str(ref value)) if value.chars().count() == 1 => {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__java_char_ord")),
+                args: vec![Argument::positional(expr)],
+                optional: false,
+            })
+        }
+        ExprKind::Binary { op, left, right } => Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(java_char_numeric_cast_expr(*left)),
+            right: Box::new(java_char_numeric_cast_expr(*right)),
+        }),
+        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_char_ord")),
+            args: vec![Argument::positional(Expression::new(ExprKind::Index {
+                object,
+                index,
+                null_safe,
+            }))],
+            optional: false,
+        }),
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_string_concat")
+                && args.len() == 2 =>
+        {
+            let mut args = args.into_iter();
+            let left = args.next().expect("left").value;
+            let right = args.next().expect("right").value;
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(java_char_numeric_cast_expr(left)),
+                right: Box::new(java_char_numeric_cast_expr(right)),
+            })
+        }
+        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
+            op,
+            expr: Box::new(java_char_numeric_cast_expr(*expr)),
+        }),
+        _ => expr,
+    }
+}
+
+fn java_expr_is_char_numeric_source(expr: &Expression, local_types: &HashMap<String, String>) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Char(_)) => true,
+        ExprKind::Ident(name) => local_types
+            .get(name)
+            .is_some_and(|ty| java_type_simple_name(ty) == "char"),
+        ExprKind::Index { .. } => true,
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Member { field, .. } if field == "charAt"
+        ),
+        ExprKind::Cast { type_name, .. } => java_type_simple_name(type_name) == "char",
+        _ => false,
+    }
+}
+
+fn java_expr_is_string_value(expr: &Expression, local_types: &HashMap<String, String>) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => value.chars().count() != 1,
+        ExprKind::Ident(name) => {
+            local_types
+                .get(name)
+                .is_some_and(|ty| java_type_simple_name(ty) == "String")
+                || JAVA_STRING_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+        }
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name) if name == "__java_string_concat"
+        ),
+        ExprKind::Cast { type_name, .. } => java_type_simple_name(type_name) == "String",
+        _ => false,
+    }
+}
+
+fn java_cast_char_numeric_operand(
+    expr: Expression,
+    local_types: &HashMap<String, String>,
+) -> Expression {
+    if java_expr_is_char_numeric_source(&expr, local_types) {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_char_ord")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    } else {
+        java_char_numeric_cast_expr(expr)
     }
 }
 
@@ -3524,6 +4696,26 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 }
 
+fn java_inner_new_receiver_type(receiver: &Expression) -> Option<String> {
+    match &receiver.kind {
+        ExprKind::Ident(name) => JAVA_LOCAL_TYPES.with(|types| types.borrow().get(name).cloned()),
+        ExprKind::New { class, .. } => java_expr_dotted_name(class),
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                let receiver_type = java_inner_new_receiver_type(object)?;
+                java_class_method_return_type(&receiver_type, field)
+            } else {
+                None
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            let owner = java_inner_new_receiver_type(object)?;
+            java_class_field_type(&owner, field)
+        }
+        _ => None,
+    }
+}
+
 fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let mut current = walk_expression(inner.next().ok_or("chain: empty")?)?;
@@ -3536,6 +4728,41 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
             chain
         };
         match chain.as_rule() {
+            Rule::inner_new_suffix => {
+                let mut ci = chain.into_inner().peekable();
+                let class_name = ci
+                    .next()
+                    .map(|p| extract_ref_name(&p))
+                    .unwrap_or_else(|| "Object".to_string());
+                if ci.peek().map(|x| x.as_rule()) == Some(Rule::type_args) {
+                    ci.next();
+                }
+                let mut args = if let Some(al) = ci.next() {
+                    if al.as_rule() == Rule::argument_list {
+                        walk_arguments(al)?
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+                let owner_type = java_inner_new_receiver_type(&current);
+                let qualified = owner_type
+                    .as_deref()
+                    .map(|owner| {
+                        if class_name.contains('.') {
+                            class_name.clone()
+                        } else {
+                            format!("{owner}.{class_name}")
+                        }
+                    })
+                    .unwrap_or_else(|| class_name.clone());
+                args.insert(0, Argument::positional(current));
+                current = Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(&qualified)),
+                    args,
+                });
+            }
             Rule::method_call_suffix => {
                 let mut ci = chain.into_inner().peekable();
                 if ci.peek().map(|x| x.as_rule()) == Some(Rule::type_args) {
@@ -3614,6 +4841,14 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                     continue;
                 }
                 if let ExprKind::Ident(name) = &current.kind {
+                    if let Some(callee) = java_dotted_static_call_name(name) {
+                        current = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(callee)),
+                            args,
+                            optional: false,
+                        });
+                        continue;
+                    }
                     if matches!(name.as_str(), "wait" | "notify" | "notifyAll") {
                         current = normalise_method_call(
                             Expression::new(ExprKind::This),
@@ -3633,6 +4868,15 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
     Ok(current)
+}
+
+fn java_dotted_static_call_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Executors.newFixedThreadPool" | "java.util.concurrent.Executors.newFixedThreadPool" => {
+            "__j_exec_new"
+        }
+        _ => return None,
+    })
 }
 
 fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
@@ -3696,9 +4940,9 @@ fn java_calendar_constant_expr(object: &Expression, field: &str) -> Option<Expre
     }
 }
 
-/// Build the `__j_*` runtime call for one PrintStream write
-/// (`emitter/format_runtime.rs`). Every runtime fn returns the
-/// `__j_out` sentinel, so these calls chain like real `PrintStream`.
+/// Build one PrintStream write. Basic print/println are profile/common
+/// emitters; append/format still use the legacy `__j_*` runtime until those
+/// composite formatting pieces are migrated too.
 fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
     let build = |name: &str, args: Vec<Argument>| {
         Expression::new(ExprKind::Call {
@@ -3713,7 +4957,7 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
             .unwrap_or_else(|| Argument::positional(Expression::string("")))
     };
     match method {
-        "println" => build("__j_println", vec![java_print_arg(first_or_empty(args))]),
+        "println" => build("__java_println", vec![java_print_arg(first_or_empty(args))]),
         "append" if args.len() == 3 => {
             // append(csq, start, end) → write csq.substring(start, end)
             let mut it = args.into_iter();
@@ -3729,16 +4973,17 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
                 args: vec![start, end],
                 optional: false,
             });
-            build("__j_print", vec![Argument::positional(sub)])
+            build("__java_print", vec![Argument::positional(sub)])
         }
-        "print" | "append" => build("__j_print", vec![java_print_arg(first_or_empty(args))]),
+        "print" => build("__java_print", vec![java_print_arg(first_or_empty(args))]),
+        "append" => build("__java_print", vec![java_print_arg(first_or_empty(args))]),
         // printf | format
         _ => {
             let mut it = args.into_iter();
-            let fmt = it
+            let mut fmt = it
                 .next()
                 .unwrap_or_else(|| Argument::positional(Expression::string("")));
-            let rest: Vec<ArrayElement> = it
+            let mut rest: Vec<ArrayElement> = it
                 .map(|arg| ArrayElement {
                     key: None,
                     value: arg.value,
@@ -3746,8 +4991,9 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
                     by_ref: false,
                 })
                 .collect();
+            java_rewrite_printstream_format_literal(&mut fmt.value, &mut rest);
             build(
-                "__j_printf",
+                "__java_printf",
                 vec![
                     fmt,
                     Argument::positional(Expression::new(ExprKind::Array(rest))),
@@ -3757,8 +5003,110 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
     }
 }
 
+fn java_rewrite_printstream_format_literal(fmt: &mut Expression, args: &mut [ArrayElement]) {
+    let ExprKind::Lit(Literal::Str(text)) = &mut fmt.kind else {
+        return;
+    };
+
+    if text == "%,d" {
+        *text = "%s".to_string();
+        if let Some(first) = args.first_mut() {
+            first.value = java_call(
+                Expression::ident("__java_format_grouped_int"),
+                vec![first.value.clone()],
+            );
+        }
+        return;
+    }
+    if text == "%e" || text == "%E" {
+        let helper = if text == "%E" {
+            "__java_format_exp_upper"
+        } else {
+            "__java_format_exp_lower"
+        };
+        *text = "%s".to_string();
+        if let Some(first) = args.first_mut() {
+            first.value = java_call(Expression::ident(helper), vec![first.value.clone()]);
+        }
+        return;
+    }
+
+    *text = text
+        .replace("%n", "\n")
+        .replace("%b", "%s")
+        .replace("%g", "%.5f");
+}
+
 /// Normalise Java-specific call patterns to a compiler-friendly shape.
 fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argument>) -> Expression {
+    let receiver = java_reflection_indexed_token(&receiver).unwrap_or(receiver);
+
+    if let Some(interface_name) = java_interface_super_receiver(&receiver) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: java_interface_default_method_name(&interface_name, &method),
+                null_safe: false,
+            })),
+            args,
+            optional: false,
+        });
+    }
+
+    if args.is_empty() {
+        if method == "getName" {
+            if let Some(name) = java_reflection_token_name(&receiver) {
+                return Expression::string(&name);
+            }
+        }
+        if method == "getParameterCount" {
+            if let Some(count) = java_reflection_token_param_count(&receiver) {
+                return Expression::int(count as i64);
+            }
+        }
+        if method == "getType" {
+            if let Some(type_name) = java_reflection_token_type_name(&receiver) {
+                return Expression::string(&type_name);
+            }
+        }
+        if method == "getReturnType" {
+            if let Some(type_name) = java_reflection_token_return_type_name(&receiver) {
+                return Expression::string(&type_name);
+            }
+        }
+        if method == "getParameterTypes" {
+            if let Some(types) = java_reflection_token_param_types(&receiver) {
+                return java_string_array_expr(types);
+            }
+        }
+        if method == "getModifiers" {
+            if let Some(modifiers) = java_reflection_token_modifiers(&receiver) {
+                return Expression::int(modifiers);
+            }
+        }
+        if method == "setAccessible" {
+            if java_reflection_token_kind(&receiver).is_some() {
+                return Expression::null();
+            }
+        }
+    }
+
+    if let Some(expr) = java_reflection_token_operation(&receiver, &method, &args) {
+        return expr;
+    }
+
+    if args.len() == 1
+        && java_member_chain_ends_with(&receiver, "Modifier")
+        && matches!(
+            method.as_str(),
+            "isPublic" | "isPrivate" | "isProtected" | "isStatic" | "isFinal" | "isAbstract"
+        )
+    {
+        if let Some(expr) = java_modifier_static_predicate(&method, &args[0].value) {
+            return expr;
+        }
+    }
+
     if method == "isInstance" && args.len() == 1 {
         if let ExprKind::Lit(Literal::Str(type_name)) = &receiver.kind {
             if java_builtin_class_is_instance_type(type_name) {
@@ -3779,10 +5127,9 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     }
 
     // PrintStream writes (JLS java.io.PrintStream): `System.out`, a
-    // PrintStream-typed local, or a chained write (`….append(x).format(…)`
-    // — every __j_* runtime fn returns the __j_out sentinel, so chains
-    // flatten to Sequence[prior write, this write]). All route through
-    // the __j_* line-buffer runtime (emitter/format_runtime.rs).
+    // PrintStream-typed local, or a chained write (`….append(x).format(…)`).
+    // Basic print/println route through profile emitters; formatter/append
+    // still route through the legacy runtime.
     if matches!(
         method.as_str(),
         "println" | "print" | "printf" | "format" | "append"
@@ -3793,17 +5140,18 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             }
             ExprKind::Ident(name) => {
                 name == "__j_out"
+                    || name == "__java_out"
                     || JAVA_PRINTSTREAM_VARS.with(|vars| vars.borrow().contains(name.as_str()))
             }
             ExprKind::Call { callee, .. } => matches!(
                 &callee.kind,
-                ExprKind::Ident(n) if matches!(n.as_str(), "__j_print" | "__j_println" | "__j_printf")
+                ExprKind::Ident(n) if matches!(n.as_str(), "__j_print" | "__j_println" | "__j_printf" | "__java_print" | "__java_println" | "__java_printf")
             ),
             ExprKind::Sequence(items) => matches!(
                 items.last().map(|e| &e.kind),
                 Some(ExprKind::Call { callee, .. }) if matches!(
                     &callee.kind,
-                    ExprKind::Ident(n) if matches!(n.as_str(), "__j_print" | "__j_println" | "__j_printf")
+                    ExprKind::Ident(n) if matches!(n.as_str(), "__j_print" | "__j_println" | "__j_printf" | "__java_print" | "__java_println" | "__java_printf")
                 )
             ),
             _ => false,
@@ -3936,11 +5284,109 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     let functional_call_result_receiver = matches!(receiver.kind, ExprKind::Call { .. })
         && java_functional_result_method(method.as_str());
     if (java_functional_receiver(&receiver) || functional_call_result_receiver)
-        && java_functional_method(method.as_str())
+        && java_functional_receiver_method(&receiver, method.as_str())
     {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Sequence(vec![receiver]))),
             args,
+            optional: false,
+        });
+    }
+
+    if java_list_result_receiver(&receiver) {
+        if let Some(internal) = java_list_method_name(method.as_str(), args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_map_result_receiver(&receiver) {
+        if let Some(internal) = java_map_method_name(method.as_str()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_spliterator_receiver(&receiver) {
+        if let Some(internal) = java_spliterator_method_name(method.as_str(), args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_runtime_receiver(&receiver) {
+        if let Some(internal) = java_runtime_method_name(method.as_str(), args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_process_builder_receiver(&receiver) {
+        if method == "command" && !args.is_empty() {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_pb_command_set")),
+                args: vec![
+                    Argument::positional(receiver),
+                    Argument::positional(java_args_to_array(&args)),
+                ],
+                optional: false,
+            });
+        }
+        if let Some(internal) = java_process_builder_method_name(method.as_str(), args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_process_receiver(&receiver) {
+        if let Some(internal) = java_process_method_name(method.as_str(), args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if java_file_receiver(&receiver) && method == "getPath" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_file_get_path")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if java_redirect_receiver(&receiver) && method == "type" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_pb_redirect_type")),
+            args: vec![Argument::positional(receiver)],
             optional: false,
         });
     }
@@ -3962,6 +5408,40 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 
     if let ExprKind::Ident(name) = &receiver.kind {
         if let Some((class_name, type_name)) = java_current_static_field_type(name) {
+            if java_type_is_list_like(Some(&type_name)) {
+                if let Some(internal) = java_list_method_name(&method, args.len()) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+            if java_type_is_queue_or_deque(Some(&type_name)) {
+                if let Some(internal) =
+                    java_queue_method_name(Some(&type_name), &method, args.len())
+                {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
             if java_type_is_semaphore(Some(&type_name)) {
                 if let Some(internal) = java_semaphore_method_name(&method) {
                     let mut call_args =
@@ -3977,6 +5457,113 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         optional: false,
                     });
                 }
+            }
+            if java_type_is_count_down_latch(Some(&type_name)) {
+                if let Some(internal) = java_count_down_latch_method_name(&method, args.len()) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+            if java_type_is_future_task(Some(&type_name)) {
+                if let Some(internal) = java_future_task_method_name(&method, args.len()) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+            if java_type_is_executor_service(Some(&type_name)) {
+                if let Some(internal) = java_executor_method_name(&method, args.len()) {
+                    let mut call_args =
+                        vec![Argument::positional(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&class_name)),
+                            field: name.clone(),
+                            null_safe: false,
+                        }))];
+                    call_args.extend(args);
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(internal)),
+                        args: call_args,
+                        optional: false,
+                    });
+                }
+            }
+        }
+    }
+
+    if java_type_is_list_like(java_static_field_type(&receiver).as_deref()) {
+        if let Some(internal) = java_list_method_name(&method, args.len()) {
+            let mut call_args = vec![Argument::positional(receiver)];
+            call_args.extend(args);
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(internal)),
+                args: call_args,
+                optional: false,
+            });
+        }
+    }
+
+    if let Some(type_name) = java_static_field_type(&receiver) {
+        if java_type_is_queue_or_deque(Some(&type_name)) {
+            if let Some(internal) = java_queue_method_name(Some(&type_name), &method, args.len()) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+        if java_type_is_count_down_latch(Some(&type_name)) {
+            if let Some(internal) = java_count_down_latch_method_name(&method, args.len()) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+        if java_type_is_future_task(Some(&type_name)) {
+            if let Some(internal) = java_future_task_method_name(&method, args.len()) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
+            }
+        }
+        if java_type_is_executor_service(Some(&type_name)) {
+            if let Some(internal) = java_executor_method_name(&method, args.len()) {
+                let mut call_args = vec![Argument::positional(receiver)];
+                call_args.extend(args);
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(internal)),
+                    args: call_args,
+                    optional: false,
+                });
             }
         }
     }
@@ -4033,21 +5620,24 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     let tlr_receiver = match &receiver.kind {
         ExprKind::Ident(n) => JAVA_TLR_VARS.with(|vars| vars.borrow().contains(n.as_str())),
         ExprKind::Call { callee, .. } => {
-            matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_tlr_current")
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__java_random_new")
         }
         _ => false,
     };
-    if tlr_receiver {
+    if tlr_receiver || java_random_receiver(&receiver) {
         let prelude_fn = match method.as_str() {
-            "nextInt" => Some("__j_tlr_next_int"),
-            "nextLong" => Some("__j_tlr_next_long"),
-            "nextDouble" => Some("__j_tlr_next_double"),
-            "nextFloat" => Some("__j_tlr_next_float"),
-            "nextBoolean" => Some("__j_tlr_next_bool"),
-            "nextGaussian" => Some("__j_tlr_next_gaussian"),
-            "ints" => Some("__j_tlr_ints"),
-            "longs" => Some("__j_tlr_longs"),
-            "doubles" => Some("__j_tlr_doubles"),
+            "setSeed" => Some("__java_random_set_seed"),
+            "nextInt" => Some("__java_random_next_int"),
+            "nextLong" => Some("__java_random_next_long"),
+            "nextDouble" => Some("__java_random_next_double"),
+            "nextFloat" => Some("__java_random_next_float"),
+            "nextBoolean" => Some("__java_random_next_boolean"),
+            "nextGaussian" => Some("__java_random_next_double"),
+            "split" => Some("__java_random_split"),
+            "ints" => Some("__java_random_ints"),
+            "longs" => Some("__java_random_longs"),
+            "doubles" => Some("__java_random_doubles"),
+            "nextBytes" => Some("__java_random_next_bytes"),
             _ => None,
         };
         if let Some(prelude_fn) = prelude_fn {
@@ -4359,6 +5949,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 optional: false,
             });
         }
+    }
+
+    if method == "isParallel" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__j_stream_is_parallel")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
     }
 
     if method == "compareTo"
@@ -4783,6 +6381,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 ExprKind::Ident(n) if matches!(
                     n.as_str(),
                     "__j_url_new" | "__j_url_ctx" | "__j_url_make" | "__j_url_parse"
+                        | "__j_uri_new"
+                        | "__j_uri_make3"
+                        | "__j_uri_make7"
+                        | "__j_uri_normalize"
+                        | "__j_uri_resolve"
+                        | "__j_uri_relativize"
                 )
             ),
             _ => false,
@@ -4802,7 +6406,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "getFile" => Some("__j_url_file"),
                 "getAuthority" | "getRawAuthority" => Some("__j_url_authority"),
                 "getUserInfo" | "getRawUserInfo" => Some("__j_url_user_info"),
-                "toString" | "toExternalForm" => Some("__j_url_to_string"),
+                "getSchemeSpecificPart" | "getRawSchemeSpecificPart" => Some("__j_uri_ssp"),
+                "isAbsolute" => Some("__j_uri_is_absolute"),
+                "isOpaque" => Some("__j_uri_is_opaque"),
+                "normalize" => Some("__j_uri_normalize"),
+                "resolve" => Some("__j_uri_resolve"),
+                "relativize" => Some("__j_uri_relativize"),
+                "compareTo" => Some("__j_uri_compare_to"),
+                "toString" | "toExternalForm" | "toASCIIString" => Some("__j_url_to_string"),
                 "equals" => Some("__j_url_equals"),
                 "hashCode" => Some("__j_url_hash"),
                 "sameFile" => Some("__j_url_same_file"),
@@ -4938,6 +6549,28 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
+    if let Some(type_name) = java_expr_dotted_name(&receiver) {
+        if java_type_simple_name(&type_name) == "URI" {
+            if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
+                return expr;
+            }
+        }
+        if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_stream_support_stream")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_runtime_get")),
+                args,
+                optional: false,
+            });
+        }
+    }
+
     // `List.remove(int)` and `List.remove(Object)` are distinct Java overloads.
     // The boxed form is explicit in the parsed tree, so preserve that distinction
     // before profile dispatch erases the receiver type.
@@ -5067,10 +6700,29 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         if type_name == "ThreadLocalRandom" {
             if method == "current" && args.is_empty() {
                 return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__j_tlr_current")),
+                    callee: Box::new(Expression::ident("__java_random_new")),
                     args,
                     optional: false,
                 });
+            }
+        }
+        if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_stream_support_stream")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_runtime_get")),
+                args,
+                optional: false,
+            });
+        }
+        if java_type_simple_name(&type_name) == "URI" {
+            if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
+                return expr;
             }
         }
         if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
@@ -5160,6 +6812,9 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
     if let ExprKind::Ident(ref type_name) = receiver.kind {
         if is_java_type_or_util(type_name) {
+            if type_name == "Class" && method == "forName" && args.len() == 1 {
+                return args[0].value.clone();
+            }
             if let Some(expr) = java_functional_static_call(type_name, method.as_str(), &args) {
                 return expr;
             }
@@ -5195,10 +6850,29 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             if type_name == "ThreadLocalRandom" {
                 if method == "current" && args.is_empty() {
                     return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__j_tlr_current")),
+                        callee: Box::new(Expression::ident("__java_random_new")),
                         args,
                         optional: false,
                     });
+                }
+            }
+            if java_type_simple_name(type_name) == "StreamSupport" && method == "stream" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_stream_support_stream")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_simple_name(type_name) == "Runtime" && method == "getRuntime" {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_runtime_get")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_simple_name(type_name) == "URI" {
+                if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
+                    return expr;
                 }
             }
             if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
@@ -5332,6 +7006,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     optional: false,
                 });
             }
+            if java_type_base_simple_name(&type_name) == "Executors"
+                && method == "newFixedThreadPool"
+            {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_exec_new")),
+                    args,
+                    optional: false,
+                });
+            }
+            if java_type_base_simple_name(&type_name) == "Modifier" && args.len() == 1 {
+                if let Some(expr) = java_modifier_static_predicate(&method, &args[0].value) {
+                    return expr;
+                }
+            }
             let dotted = format!("{}.{}", type_name, method);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(&dotted)),
@@ -5342,9 +7030,21 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     }
 
     if let ExprKind::Ident(ref type_name) = receiver.kind {
+        if java_type_base_simple_name(type_name) == "Modifier" && args.len() == 1 {
+            if let Some(expr) = java_modifier_static_predicate(&method, &args[0].value) {
+                return expr;
+            }
+        }
         if type_name == "BigInteger" && method == "valueOf" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_bigint")),
+                args,
+                optional: false,
+            });
+        }
+        if type_name == "Executors" && method == "newFixedThreadPool" {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__j_exec_new")),
                 args,
                 optional: false,
             });
@@ -5359,7 +7059,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         });
     }
 
-    if method == "formatted" {
+    if method == "formatted" && java_string_method_receiver(&receiver) {
         let mut format_args = Vec::with_capacity(args.len() + 1);
         format_args.push(Argument::positional(receiver));
         format_args.extend(args);
@@ -5378,6 +7078,42 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return java_comparator_then_comparing(receiver, args[0].value.clone());
     }
 
+    if method == "getClass" && args.is_empty() {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__java_object_get_class")),
+            args: vec![Argument::positional(receiver)],
+            optional: false,
+        });
+    }
+
+    if args.is_empty() && java_is_class_token_expr(&receiver) {
+        if let Some(expr) = java_class_token_noarg_method(&receiver, method.as_str()) {
+            return expr;
+        }
+        let callee = match method.as_str() {
+            "getName" => Some("__java_class_name"),
+            "getSimpleName" => Some("__java_class_simple_name"),
+            _ => None,
+        };
+        if let Some(callee) = callee {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(callee)),
+                args: vec![Argument::positional(receiver)],
+                optional: false,
+            });
+        }
+    }
+
+    if let Some(expr) = java_class_token_method(&receiver, method.as_str(), &args) {
+        return expr;
+    }
+
+    if method == "isAssignableFrom" && args.len() == 1 {
+        if let Some(expr) = java_class_assignable_from_expr(&receiver, &args[0].value) {
+            return expr;
+        }
+    }
+
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
@@ -5387,6 +7123,604 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         args,
         optional: false,
     })
+}
+
+fn java_reflection_meta(
+    class_name: &str,
+    parent: Option<String>,
+    interfaces: Vec<String>,
+    members: &[ClassMember],
+    is_interface: bool,
+    is_enum: bool,
+    class_modifiers: i64,
+) -> JavaReflectionClassMeta {
+    let mut fields = Vec::new();
+    let mut methods = Vec::new();
+    let mut constructors = Vec::new();
+    let mut nested_classes = Vec::new();
+
+    for member in members {
+        match member {
+            ClassMember::Field {
+                name,
+                type_hint,
+                modifiers,
+                ..
+            } => {
+                if !name.starts_with("__") {
+                    fields.push(JavaReflectionFieldMeta {
+                        name: name.clone(),
+                        type_name: type_hint.clone(),
+                        modifiers: java_member_modifier_bits(modifiers),
+                    });
+                }
+            }
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    params,
+                    return_type,
+                    modifiers,
+                    ..
+                } = &stmt.kind
+                {
+                    if !name.starts_with("__") {
+                        methods.push(JavaReflectionCallableMeta {
+                            name: name.clone(),
+                            param_count: params.len(),
+                            param_types: params
+                                .iter()
+                                .map(|param| {
+                                    param
+                                        .type_hint
+                                        .clone()
+                                        .unwrap_or_else(|| "Object".to_string())
+                                })
+                                .collect(),
+                            return_type: return_type.clone(),
+                            modifiers: java_member_modifier_bits(modifiers),
+                        });
+                    }
+                }
+            }
+            ClassMember::Constructor {
+                params, visibility, ..
+            } => {
+                constructors.push(JavaReflectionCallableMeta {
+                    name: class_name.to_string(),
+                    param_count: params.len(),
+                    param_types: params
+                        .iter()
+                        .map(|param| {
+                            param
+                                .type_hint
+                                .clone()
+                                .unwrap_or_else(|| "Object".to_string())
+                        })
+                        .collect(),
+                    return_type: None,
+                    modifiers: java_visibility_modifier_bits(*visibility),
+                });
+            }
+            ClassMember::NestedType(stmt) => {
+                if let StmtKind::ClassDecl { name, .. }
+                | StmtKind::EnumDecl { name, .. }
+                | StmtKind::InterfaceDecl { name, .. } = &stmt.kind
+                {
+                    nested_classes.push(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    JavaReflectionClassMeta {
+        parent,
+        interfaces,
+        fields,
+        methods,
+        constructors,
+        nested_classes,
+        modifiers: class_modifiers,
+        is_interface,
+        is_enum,
+    }
+}
+
+fn java_string_method_receiver(receiver: &Expression) -> bool {
+    matches!(&receiver.kind, ExprKind::Lit(Literal::Str(_)))
+        || matches!(&receiver.kind, ExprKind::Ident(n) if JAVA_STRING_VARS.with(|vars| vars.borrow().contains(n.as_str())))
+        || matches!(&receiver.kind, ExprKind::New { class, .. } if matches!(&class.kind, ExprKind::Ident(name) if name == "String"))
+        || matches!(&receiver.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_string_value_of" || name == "__j_sb_to_string"))
+}
+
+fn java_interface_super_receiver(receiver: &Expression) -> Option<String> {
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe: false,
+    } = &receiver.kind
+    else {
+        return None;
+    };
+    if field != "super" {
+        return None;
+    }
+    let ExprKind::Ident(interface_name) = &object.kind else {
+        return None;
+    };
+    JAVA_INTERFACE_NAMES.with(|names| {
+        names
+            .borrow()
+            .contains(interface_name)
+            .then(|| interface_name.clone())
+    })
+}
+
+fn java_reflection_class_meta(name: &str) -> Option<JavaReflectionClassMeta> {
+    let simple = java_type_simple_name(name);
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        let classes = classes.borrow();
+        classes.get(name).or_else(|| classes.get(simple)).cloned()
+    })
+}
+
+fn java_class_token_method(
+    receiver: &Expression,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let class_name = java_class_token_name(receiver)?;
+    let meta = java_reflection_class_meta(&class_name);
+    match method {
+        "getDeclaredFields" | "getFields" if args.is_empty() => Some(java_string_array_expr(
+            meta.map(|m| m.fields.into_iter().map(|field| field.name).collect())
+                .unwrap_or_default(),
+        )),
+        "getDeclaredMethods" | "getMethods" if args.is_empty() => {
+            Some(java_reflection_callable_array_expr(
+                meta.map(|m| m.methods).unwrap_or_default(),
+                common_reflection::MEMBER_KIND_METHOD,
+                &class_name,
+            ))
+        }
+        "getDeclaredConstructors" | "getConstructors" if args.is_empty() => {
+            Some(java_reflection_callable_array_expr(
+                meta.map(|m| m.constructors).unwrap_or_default(),
+                common_reflection::MEMBER_KIND_CONSTRUCTOR,
+                &class_name,
+            ))
+        }
+        "getInterfaces" if args.is_empty() => Some(java_string_array_expr(
+            meta.map(|m| m.interfaces).unwrap_or_default(),
+        )),
+        "getDeclaredClasses" | "getClasses" if args.is_empty() => Some(java_string_array_expr(
+            meta.map(|m| m.nested_classes).unwrap_or_default(),
+        )),
+        "getDeclaredField" | "getField" if args.len() == 1 => {
+            let name = java_string_literal(&args[0].value)?;
+            let type_name = meta
+                .as_ref()
+                .and_then(|m| m.fields.iter().find(|field| field.name == name))
+                .and_then(|field| field.type_name.clone());
+            let modifiers = meta
+                .as_ref()
+                .and_then(|m| m.fields.iter().find(|field| field.name == name))
+                .map(|field| field.modifiers)
+                .unwrap_or(JAVA_MOD_PUBLIC);
+            Some(java_reflection_token_expr(
+                common_reflection::MEMBER_KIND_FIELD,
+                &class_name,
+                name,
+                0,
+                type_name,
+                None,
+                Vec::new(),
+                modifiers,
+            ))
+        }
+        "getDeclaredMethod" | "getMethod" if !args.is_empty() => {
+            let name = java_string_literal(&args[0].value)?;
+            let requested_count = args.len().saturating_sub(1);
+            let param_count = meta
+                .as_ref()
+                .and_then(|m| {
+                    m.methods
+                        .iter()
+                        .find(|method| method.name == name && method.param_count == requested_count)
+                })
+                .map(|method| method.param_count)
+                .unwrap_or(requested_count);
+            let method_meta = meta.as_ref().and_then(|m| {
+                m.methods
+                    .iter()
+                    .find(|method| method.name == name && method.param_count == param_count)
+            });
+            Some(java_reflection_token_expr(
+                common_reflection::MEMBER_KIND_METHOD,
+                &class_name,
+                name,
+                param_count,
+                None,
+                method_meta.and_then(|method| method.return_type.clone()),
+                method_meta
+                    .map(|method| method.param_types.clone())
+                    .unwrap_or_default(),
+                method_meta
+                    .map(|method| method.modifiers)
+                    .unwrap_or(JAVA_MOD_PUBLIC),
+            ))
+        }
+        "getDeclaredConstructor" | "getConstructor" => {
+            let requested_count = args.len();
+            let param_count = meta
+                .as_ref()
+                .and_then(|m| {
+                    m.constructors
+                        .iter()
+                        .find(|ctor| ctor.param_count == requested_count)
+                })
+                .map(|ctor| ctor.param_count)
+                .unwrap_or(requested_count);
+            let ctor_meta = meta.as_ref().and_then(|m| {
+                m.constructors
+                    .iter()
+                    .find(|ctor| ctor.param_count == param_count)
+            });
+            Some(java_reflection_token_expr(
+                common_reflection::MEMBER_KIND_CONSTRUCTOR,
+                &class_name,
+                ctor_meta
+                    .map(|ctor| ctor.name.as_str())
+                    .unwrap_or(java_type_simple_name(&class_name)),
+                param_count,
+                None,
+                None,
+                ctor_meta
+                    .map(|ctor| ctor.param_types.clone())
+                    .unwrap_or_default(),
+                ctor_meta
+                    .map(|ctor| ctor.modifiers)
+                    .unwrap_or(JAVA_MOD_PUBLIC),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn java_string_array_expr(values: Vec<String>) -> Expression {
+    common_reflection::string_array_expr(values)
+}
+
+fn java_reflection_callable_array_expr(
+    values: Vec<JavaReflectionCallableMeta>,
+    kind: &str,
+    owner: &str,
+) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value: java_reflection_token_expr(
+                    kind,
+                    owner,
+                    &value.name,
+                    value.param_count,
+                    None,
+                    value.return_type,
+                    value.param_types,
+                    value.modifiers,
+                ),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn java_reflection_indexed_token(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Index { object, index, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Array(elems) = &object.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Int(index)) = &index.kind else {
+        return None;
+    };
+    let index = usize::try_from(*index).ok()?;
+    elems.get(index).map(|elem| elem.value.clone())
+}
+
+fn java_reflection_token_expr(
+    kind: &str,
+    owner: &str,
+    name: &str,
+    param_count: usize,
+    type_name: Option<String>,
+    return_type: Option<String>,
+    param_types: Vec<String>,
+    modifiers: i64,
+) -> Expression {
+    common_reflection::member_token_expr(
+        kind,
+        owner,
+        name,
+        param_count,
+        type_name,
+        return_type,
+        param_types,
+        modifiers,
+    )
+}
+
+fn java_reflection_token_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        _ => common_reflection::member_token(expr).map(|token| token.name),
+    }
+}
+
+fn java_reflection_token(expr: &Expression) -> Option<common_reflection::MemberToken> {
+    common_reflection::member_token(expr)
+}
+
+fn java_reflection_token_param_count(expr: &Expression) -> Option<usize> {
+    java_reflection_token(expr).map(|token| token.param_count)
+}
+
+fn java_reflection_token_type_name(expr: &Expression) -> Option<String> {
+    java_reflection_token(expr).and_then(|token| token.type_name)
+}
+
+fn java_reflection_token_return_type_name(expr: &Expression) -> Option<String> {
+    java_reflection_token(expr).and_then(|token| token.return_type)
+}
+
+fn java_reflection_token_param_types(expr: &Expression) -> Option<Vec<String>> {
+    java_reflection_token(expr).map(|token| token.param_types)
+}
+
+fn java_reflection_token_modifiers(expr: &Expression) -> Option<i64> {
+    java_reflection_token(expr).map(|token| token.modifiers)
+}
+
+fn java_reflection_token_kind(expr: &Expression) -> Option<String> {
+    java_reflection_token(expr).map(|token| token.kind)
+}
+
+fn java_reflection_token_operation(
+    receiver: &Expression,
+    method: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let token = java_reflection_token(receiver)?;
+    match (token.kind.as_str(), method) {
+        (common_reflection::MEMBER_KIND_FIELD, "get") if args.len() == 1 => {
+            Some(Expression::new(ExprKind::Member {
+                object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
+                field: token.name,
+                null_safe: false,
+            }))
+        }
+        (common_reflection::MEMBER_KIND_FIELD, "set") if args.len() == 2 => {
+            Some(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
+                    field: token.name,
+                    null_safe: false,
+                })),
+                value: Box::new(args[1].value.clone()),
+            }))
+        }
+        (common_reflection::MEMBER_KIND_METHOD, "invoke") if !args.is_empty() => {
+            let call_args = java_reflection_call_args(&args[1..]);
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
+                    field: token.name,
+                    null_safe: false,
+                })),
+                args: call_args.into_iter().map(Argument::positional).collect(),
+                optional: false,
+            }))
+        }
+        (common_reflection::MEMBER_KIND_CONSTRUCTOR, "newInstance") => {
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(java_type_simple_name(&token.owner))),
+                args: java_reflection_call_args(args)
+                    .into_iter()
+                    .map(Argument::positional)
+                    .collect(),
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn java_reflection_target_expr(owner: &str, target: &Expression) -> Expression {
+    if matches!(target.kind, ExprKind::Lit(Literal::Null)) {
+        Expression::ident(java_type_simple_name(owner))
+    } else {
+        target.clone()
+    }
+}
+
+fn java_reflection_call_args(args: &[Argument]) -> Vec<Expression> {
+    if args.len() == 1 {
+        if let ExprKind::Array(elems) = &args[0].value.kind {
+            return elems.iter().map(|elem| elem.value.clone()).collect();
+        }
+    }
+    args.iter().map(|arg| arg.value.clone()).collect()
+}
+
+fn java_class_token_noarg_method(receiver: &Expression, method: &str) -> Option<Expression> {
+    let class_name = java_class_token_name(receiver)?;
+    match method {
+        "getCanonicalName" | "getTypeName" => Some(Expression::string(&class_name)),
+        "getPackageName" => Some(Expression::string(&java_class_package_name(&class_name))),
+        "getModifiers" => Some(Expression::int(
+            java_reflection_class_meta(&class_name)
+                .map(|meta| meta.modifiers)
+                .unwrap_or(JAVA_MOD_PUBLIC),
+        )),
+        "isArray" => Some(Expression::bool(class_name.ends_with("[]"))),
+        "isPrimitive" => Some(Expression::bool(java_class_name_is_primitive(&class_name))),
+        "isInterface" => Some(Expression::bool(java_class_name_is_interface(&class_name))),
+        "isEnum" => Some(Expression::bool(java_class_name_is_enum(&class_name))),
+        "getComponentType" => Some(
+            class_name
+                .strip_suffix("[]")
+                .map(Expression::string)
+                .unwrap_or_else(Expression::null),
+        ),
+        "getSuperclass" => Some(
+            java_class_super_name(&class_name)
+                .map(|name| Expression::string(&name))
+                .unwrap_or_else(Expression::null),
+        ),
+        _ => None,
+    }
+}
+
+fn java_class_package_name(name: &str) -> String {
+    let name = name.strip_suffix("[]").unwrap_or(name);
+    name.rsplit_once('.')
+        .map(|(package, _)| package.to_string())
+        .unwrap_or_default()
+}
+
+fn java_class_assignable_from_expr(receiver: &Expression, arg: &Expression) -> Option<Expression> {
+    let target = java_class_token_name(receiver)?;
+    let source = java_class_token_name(arg)?;
+    Some(Expression::bool(java_class_is_assignable_from(
+        &target, &source,
+    )))
+}
+
+fn java_class_token_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_object_get_class") => {
+            args.first().and_then(|arg| match &arg.value.kind {
+                ExprKind::New { class, .. } => java_expr_dotted_name(class),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn java_class_name_is_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double" | "void"
+    )
+}
+
+fn java_class_name_is_interface(name: &str) -> bool {
+    let simple = java_type_simple_name(name);
+    java_reflection_class_meta(name).is_some_and(|meta| meta.is_interface)
+        || matches!(
+            simple,
+            "List"
+                | "Collection"
+                | "Set"
+                | "Map"
+                | "Runnable"
+                | "Comparable"
+                | "Serializable"
+                | "Cloneable"
+        )
+}
+
+fn java_class_name_is_enum(name: &str) -> bool {
+    let simple = java_type_simple_name(name);
+    java_reflection_class_meta(name).is_some_and(|meta| meta.is_enum)
+        || JAVA_ENUM_VALUES.with(|values| values.borrow().contains_key(simple))
+}
+
+fn java_class_super_name(name: &str) -> Option<String> {
+    if java_class_name_is_primitive(name)
+        || java_class_name_is_interface(name)
+        || matches!(java_type_simple_name(name), "Object")
+    {
+        return None;
+    }
+    if name.ends_with("[]") {
+        return Some("Object".to_string());
+    }
+    let simple = java_type_simple_name(name);
+    java_reflection_class_meta(name)
+        .and_then(|meta| meta.parent)
+        .or_else(|| {
+            if matches!(
+                simple,
+                "String"
+                    | "Integer"
+                    | "Long"
+                    | "Short"
+                    | "Byte"
+                    | "Float"
+                    | "Double"
+                    | "Boolean"
+                    | "Character"
+                    | "StringBuilder"
+            ) {
+                Some("Object".to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn java_class_is_assignable_from(target: &str, source: &str) -> bool {
+    if target == source || java_type_simple_name(target) == java_type_simple_name(source) {
+        return true;
+    }
+    if java_type_simple_name(target) == "Object" && !java_class_name_is_primitive(source) {
+        return true;
+    }
+    let target_simple = java_type_simple_name(target).to_string();
+    let mut current = Some(source.to_string());
+    while let Some(name) = current {
+        if java_type_simple_name(&name) == target_simple {
+            return true;
+        }
+        current = java_class_super_name(&name);
+    }
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        let classes = classes.borrow();
+        classes
+            .get(source)
+            .or_else(|| classes.get(java_type_simple_name(source)))
+            .is_some_and(|meta| {
+                meta.interfaces
+                    .iter()
+                    .any(|iface| java_type_simple_name(iface) == target_simple)
+            })
+    })
+}
+
+fn java_is_class_token_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) => true,
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__java_object_get_class"
+                        | "__java_class_name"
+                        | "__java_class_simple_name"
+                        | "__java_enum_set_get_class"
+                        | "__j_props_class"
+                )
+        ),
+        _ => false,
+    }
 }
 
 fn java_expr_dotted_name(expr: &Expression) -> Option<String> {
@@ -5456,6 +7790,30 @@ fn java_thread_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
         args,
         optional: false,
     }))
+}
+
+fn java_uri_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
+    if method != "create" || args.len() != 1 {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__j_uri_new")),
+        args,
+        optional: false,
+    }))
+}
+
+fn java_args_to_array(args: &[Argument]) -> Expression {
+    Expression::new(ExprKind::Array(
+        args.iter()
+            .map(|arg| ArrayElement {
+                key: None,
+                value: arg.value.clone(),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
 }
 
 fn java_boolean_parse_call(args: Vec<Argument>) -> Expression {
@@ -5704,6 +8062,8 @@ fn java_qualified_static_type(expr: &Expression) -> Option<String> {
         || parts.starts_with(&["java", "util", "concurrent"])
         || parts.starts_with(&["java", "lang"])
         || parts.starts_with(&["java", "math"])
+        || parts.starts_with(&["java", "net"])
+        || parts.starts_with(&["java", "nio"])
         || parts.starts_with(&["java", "text"])
         || parts.starts_with(&["java", "time"]))
     {
@@ -5809,6 +8169,11 @@ fn java_is_functional_interface_type(type_name: &str) -> bool {
             | "BooleanSupplier"
     ) || type_name.contains("java.util.function.")
         || type_name.contains("java.util.concurrent.Callable")
+        || JAVA_FUNCTIONAL_INTERFACE_METHODS.with(|methods| {
+            methods
+                .borrow()
+                .contains_key(simple.split('<').next().unwrap_or(simple))
+        })
 }
 
 fn java_functional_receiver(receiver: &Expression) -> bool {
@@ -5866,6 +8231,23 @@ fn java_functional_method(method: &str) -> bool {
             | "call"
             | "run"
     )
+}
+
+fn java_functional_receiver_method(receiver: &Expression, method: &str) -> bool {
+    if java_functional_method(method) {
+        return true;
+    }
+    let Some(type_name) = java_functional_type_of(receiver) else {
+        return false;
+    };
+    let simple = java_type_simple_name(&type_name);
+    let simple = simple.split('<').next().unwrap_or(simple);
+    JAVA_FUNCTIONAL_INTERFACE_METHODS.with(|methods| {
+        methods
+            .borrow()
+            .get(simple)
+            .is_some_and(|expected| expected == method)
+    })
 }
 
 fn java_functional_result_method(method: &str) -> bool {
@@ -6086,6 +8468,8 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "TimeZone"
             | "Calendar"
             | "GregorianCalendar"
+            | "URI"
+            | "URL"
             | "Arrays"
             | "List"
             | "Set"
@@ -6097,12 +8481,21 @@ fn is_java_type_or_util(name: &str) -> bool {
             | "LongStream"
             | "DoubleStream"
             | "Stream"
+            | "StreamSupport"
             | "Collectors"
             | "System"
             | "Thread"
             | "ThreadLocalRandom"
+            | "Executors"
+            | "FutureTask"
+            | "Executor"
+            | "ExecutorService"
             | "Runtime"
+            | "Process"
+            | "ProcessBuilder"
+            | "File"
             | "Class"
+            | "Modifier"
             | "Comparator"
             | "Function"
             | "BiFunction"
@@ -6229,14 +8622,43 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
-                // java.net.URL / java.net.URI → the WHATWG-parsed object
-                // (web:url) the __j_url_* prelude getters read. Arity picks
-                // the java constructor form: (spec), (context, spec), or
-                // (protocol, host, port, file).
+                // java.net.URI needs to represent opaque and relative strings
+                // as well as WHATWG-parsed hierarchical URLs.
+                if matches!(class_name.as_str(), "URI" | "java.net.URI") {
+                    let ctor = match args.len() {
+                        3 => "__j_uri_make3",
+                        7 => "__j_uri_make7",
+                        _ => "__j_uri_new",
+                    };
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(ctor)),
+                        args,
+                        optional: false,
+                    }));
+                }
                 if matches!(
                     class_name.as_str(),
-                    "URL" | "URI" | "java.net.URL" | "java.net.URI"
+                    "ProcessBuilder" | "java.lang.ProcessBuilder"
                 ) {
+                    let args = vec![Argument::positional(java_args_to_array(&args))];
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_pb_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(class_name.as_str(), "File" | "java.io.File") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_file_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                // java.net.URL → the WHATWG-parsed object (web:url) the
+                // __j_url_* prelude getters read. Arity picks the java
+                // constructor form: (spec), (context, spec), or
+                // (protocol, host, port, file).
+                if matches!(class_name.as_str(), "URL" | "java.net.URL") {
                     let (ctor, args) = match args.len() {
                         2 => ("__j_url_ctx", args),
                         3 => {
@@ -6403,6 +8825,28 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
+                if matches!(java_type_base_simple_name(&class_name), "CountDownLatch") {
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_latch_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
+                if matches!(java_type_base_simple_name(&class_name), "FutureTask") {
+                    let mut args = args;
+                    let has_preset = args.len() >= 2;
+                    if args.len() == 1 {
+                        args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                            Literal::Undefined,
+                        ))));
+                    }
+                    args.push(Argument::positional(Expression::bool(has_preset)));
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_future_task_new")),
+                        args,
+                        optional: false,
+                    }));
+                }
                 return Ok(Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident(&class_name)),
                     args,
@@ -6545,6 +8989,13 @@ fn java_anonymous_root_class(class_name: &str) -> bool {
 }
 
 fn erase_java_interface_param_hints(body: &mut [Statement]) {
+    erase_java_interface_param_hints_with_types(body, &mut HashMap::new());
+}
+
+fn erase_java_interface_param_hints_with_types(
+    body: &mut [Statement],
+    concrete_locals: &mut HashMap<String, String>,
+) {
     for stmt in body {
         match &mut stmt.kind {
             StmtKind::FunctionDecl {
@@ -6560,7 +9011,52 @@ fn erase_java_interface_param_hints(body: &mut [Statement]) {
                 {
                     *return_type = None;
                 }
-                erase_java_interface_param_hints(body);
+                erase_java_interface_param_hints_with_types(body, &mut HashMap::new());
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        erase_java_interface_hints_expr(init);
+                    }
+                    let inferred_type = decl
+                        .init
+                        .as_ref()
+                        .and_then(|init| java_concrete_initializer_type(init, concrete_locals));
+                    let is_interface_hint = decl
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(java_anonymous_interface_target);
+                    if is_interface_hint {
+                        decl.type_hint = inferred_type.clone();
+                    }
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if is_interface_hint
+                            && decl
+                                .init
+                                .as_ref()
+                                .is_some_and(|init| java_initializer_is_class_object(init, concrete_locals))
+                        {
+                            JAVA_FUNCTIONAL_VARS.with(|vars| {
+                                vars.borrow_mut().remove(name);
+                            });
+                            JAVA_FUNCTIONAL_TYPES.with(|types| {
+                                types.borrow_mut().remove(name);
+                            });
+                        }
+                        if let Some(type_name) = inferred_type.or_else(|| decl.type_hint.clone()) {
+                            concrete_locals.insert(name.clone(), type_name);
+                        }
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value } => {
+                for target in targets {
+                    erase_java_interface_hints_expr(target);
+                }
+                erase_java_interface_hints_expr(value);
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                erase_java_interface_hints_expr(expr);
             }
             StmtKind::ClassDecl { members, .. }
             | StmtKind::StructDecl { members, .. }
@@ -6572,23 +9068,119 @@ fn erase_java_interface_param_hints(body: &mut [Statement]) {
                     match member {
                         ClassMember::Constructor { params, body, .. } => {
                             erase_java_interface_params(params);
-                            erase_java_interface_param_hints(body);
+                            erase_java_interface_param_hints_with_types(body, &mut HashMap::new());
                         }
                         ClassMember::Method(method) => {
-                            erase_java_interface_param_hints(std::slice::from_mut(method));
+                            erase_java_interface_param_hints_with_types(
+                                std::slice::from_mut(method),
+                                &mut HashMap::new(),
+                            );
                         }
                         ClassMember::NestedType(nested) => {
-                            erase_java_interface_param_hints(std::slice::from_mut(nested));
+                            erase_java_interface_param_hints_with_types(
+                                std::slice::from_mut(nested),
+                                &mut HashMap::new(),
+                            );
                         }
                         _ => {}
                     }
                 }
             }
             StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
-                erase_java_interface_param_hints(stmts);
+                erase_java_interface_param_hints_with_types(stmts, &mut concrete_locals.clone());
             }
             _ => {}
         }
+    }
+}
+
+fn java_initializer_is_class_object(
+    expr: &Expression,
+    concrete_locals: &HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::New { .. } => true,
+        ExprKind::Cast { expr, .. } => java_initializer_is_class_object(expr, concrete_locals),
+        ExprKind::Ident(name) => concrete_locals.contains_key(name),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|expr| java_initializer_is_class_object(expr, concrete_locals)),
+        _ => false,
+    }
+}
+
+fn java_concrete_initializer_type(
+    expr: &Expression,
+    concrete_locals: &HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            _ => None,
+        },
+        ExprKind::Cast { expr, .. } => java_concrete_initializer_type(expr, concrete_locals),
+        ExprKind::Ident(name) => concrete_locals.get(name).cloned(),
+        ExprKind::Sequence(items) => items
+            .last()
+            .and_then(|expr| java_concrete_initializer_type(expr, concrete_locals)),
+        _ => None,
+    }
+}
+
+fn erase_java_interface_hints_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Cast { expr: inner, type_name }
+            if java_anonymous_interface_target(type_name) =>
+        {
+            *expr = (**inner).clone();
+        }
+        ExprKind::Call { callee, args, .. } => {
+            erase_java_interface_hints_expr(callee);
+            for arg in args {
+                erase_java_interface_hints_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Member { object, .. } => erase_java_interface_hints_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            erase_java_interface_hints_expr(object);
+            erase_java_interface_hints_expr(index);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            erase_java_interface_hints_expr(left);
+            erase_java_interface_hints_expr(right);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            erase_java_interface_hints_expr(expr);
+        }
+        ExprKind::Assign { target, value } => {
+            erase_java_interface_hints_expr(target);
+            erase_java_interface_hints_expr(value);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            erase_java_interface_hints_expr(cond);
+            erase_java_interface_hints_expr(then);
+            erase_java_interface_hints_expr(else_);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                erase_java_interface_hints_expr(&mut elem.value);
+            }
+        }
+        ExprKind::New { class, args } => {
+            erase_java_interface_hints_expr(class);
+            for arg in args {
+                erase_java_interface_hints_expr(&mut arg.value);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            erase_java_interface_hints_expr(class);
+            erase_java_interface_hints_expr(member);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => erase_java_interface_hints_expr(expr),
+            LambdaBody::Block(stmts) => erase_java_interface_param_hints(stmts),
+        },
+        _ => {}
     }
 }
 
@@ -6600,6 +9192,76 @@ fn erase_java_interface_params(params: &mut [Param]) {
             .is_some_and(java_anonymous_interface_target)
         {
             param.type_hint = None;
+        }
+    }
+}
+
+fn strip_java_abstract_method_declarations(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::EnumDecl {
+                body_members: members,
+                ..
+            } => {
+                members.retain(|member| !java_is_abstract_method_declaration(member));
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        strip_java_abstract_method_declarations(std::slice::from_mut(nested));
+                    }
+                }
+            }
+            StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+                strip_java_abstract_method_declarations(stmts);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn java_is_abstract_method_declaration(member: &ClassMember) -> bool {
+    let ClassMember::Method(method) = member else {
+        return false;
+    };
+    let StmtKind::FunctionDecl {
+        body, modifiers, ..
+    } = &method.kind
+    else {
+        return false;
+    };
+    body.is_empty() && !modifiers.is_static
+}
+
+fn lower_java_abstract_runtime_modifiers(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { members, modifiers, .. } => {
+                modifiers.is_abstract = false;
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        lower_java_abstract_runtime_modifiers(std::slice::from_mut(nested));
+                    }
+                }
+            }
+            StmtKind::StructDecl { members, .. } => {
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        lower_java_abstract_runtime_modifiers(std::slice::from_mut(nested));
+                    }
+                }
+            }
+            StmtKind::EnumDecl { body_members, .. } => {
+                for member in body_members {
+                    if let ClassMember::NestedType(nested) = member {
+                        lower_java_abstract_runtime_modifiers(std::slice::from_mut(nested));
+                    }
+                }
+            }
+            StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+                lower_java_abstract_runtime_modifiers(stmts);
+            }
+            _ => {}
         }
     }
 }
@@ -7044,9 +9706,9 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
 
     if obj_name == "System.out" && matches!(method.as_str(), "print" | "println") {
         let callee = if method == "println" {
-            "__j_println"
+            "__java_println"
         } else {
-            "__j_print"
+            "__java_print"
         };
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -8322,6 +10984,7 @@ fn qualify_java_nested_types_stmt(stmt: &mut Statement, owner: Option<&str>) {
             let current_name = name.clone();
             let owner_fields = java_instance_field_names(members);
             let owner_static_fields = java_static_field_names(members);
+            let owner_static_field_inits = java_static_field_inits(members);
             let owner_methods = java_instance_method_names(members);
             for member in &mut *members {
                 if let ClassMember::NestedType(nested) = member {
@@ -8335,6 +10998,7 @@ fn qualify_java_nested_types_stmt(stmt: &mut Statement, owner: Option<&str>) {
                         nested,
                         &current_name,
                         &owner_static_fields,
+                        &owner_static_field_inits,
                     );
                     adapt_java_inner_class(nested, &current_name, &owner_fields, &owner_methods);
                 }
@@ -8406,6 +11070,39 @@ fn java_static_field_names(members: &[ClassMember]) -> HashSet<String> {
         .collect()
 }
 
+fn java_static_field_inits(members: &[ClassMember]) -> HashMap<String, Expression> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name,
+                init: Some(init),
+                modifiers,
+                ..
+            } if modifiers.is_static && java_static_field_init_is_inlineable(init) => {
+                Some((name.clone(), init.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn java_static_field_init_is_inlineable(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(_) => true,
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            java_static_field_init_is_inlineable(expr)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            java_static_field_init_is_inlineable(left) && java_static_field_init_is_inlineable(right)
+        }
+        ExprKind::Array(elems) => elems
+            .iter()
+            .all(|elem| java_static_field_init_is_inlineable(&elem.value)),
+        _ => false,
+    }
+}
+
 fn java_instance_method_names(members: &[ClassMember]) -> HashSet<String> {
     members
         .iter()
@@ -8462,6 +11159,18 @@ fn adapt_java_inner_class(
         return;
     }
 
+    let inner_fields = java_instance_field_names(members);
+    let visible_owner_fields: HashSet<String> = owner_fields
+        .difference(&inner_fields)
+        .cloned()
+        .collect();
+
+    let abstract_without_outer_refs = modifiers.is_abstract
+        && !java_inner_class_needs_outer(members, owner_name, &visible_owner_fields, owner_methods);
+    if abstract_without_outer_refs {
+        return;
+    }
+
     if !members.iter().any(|member| {
         matches!(
             member,
@@ -8481,30 +11190,69 @@ fn adapt_java_inner_class(
         );
     }
 
+    let mut outer_field_inits = Vec::new();
+    for member in members.iter_mut() {
+        let ClassMember::Field {
+            name,
+            init,
+            modifiers,
+            ..
+        } = member
+        else {
+            continue;
+        };
+        if modifiers.is_static {
+            continue;
+        }
+        let Some(init_expr) = init else {
+            continue;
+        };
+        rewrite_java_inner_outer_refs_expr(
+            init_expr,
+            owner_name,
+            &visible_owner_fields,
+            owner_methods,
+        );
+        if java_expr_reads_java_outer(init_expr) {
+            let value = init_expr.clone();
+            *init = None;
+            outer_field_inits.push(java_inner_field_init_assign_stmt(name, value));
+        }
+    }
+
     let mut saw_constructor = false;
     for member in members.iter_mut() {
         match member {
             ClassMember::Constructor { params, body, .. } => {
                 saw_constructor = true;
                 java_prepend_outer_constructor_param(params, body, owner_name);
+                java_insert_inner_field_inits(body, &outer_field_inits);
+                rewrite_java_inner_outer_refs_stmts(
+                    body,
+                    owner_name,
+                    &visible_owner_fields,
+                    owner_methods,
+                );
             }
             ClassMember::Method(stmt) => {
-                rewrite_java_inner_outer_refs_stmt(stmt, owner_name, owner_fields, owner_methods);
-            }
-            ClassMember::Field {
-                init: Some(init), ..
-            } => {
-                rewrite_java_inner_outer_refs_expr(init, owner_name, owner_fields, owner_methods);
+                rewrite_java_inner_outer_refs_stmt(
+                    stmt,
+                    owner_name,
+                    &visible_owner_fields,
+                    owner_methods,
+                );
             }
             _ => {}
         }
     }
 
     if !saw_constructor {
+        let mut body = vec![java_outer_assign_stmt()];
+        body.extend(outer_field_inits);
         members.push(ClassMember::Constructor {
             name: None,
             params: vec![java_outer_param(owner_name)],
-            body: vec![java_outer_assign_stmt()],
+            body,
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
@@ -8512,10 +11260,155 @@ fn adapt_java_inner_class(
     }
 }
 
+fn java_inner_class_needs_outer(
+    members: &[ClassMember],
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) -> bool {
+    members.iter().any(|member| match member {
+        ClassMember::Field {
+            init: Some(init),
+            modifiers,
+            ..
+        } if !modifiers.is_static => java_expr_needs_java_outer(
+            init,
+            owner_name,
+            owner_fields,
+            owner_methods,
+        ),
+        ClassMember::Constructor { body, .. } => body.iter().any(|stmt| {
+            java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
+        }),
+        ClassMember::Method(stmt) => {
+            java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
+        }
+        _ => false,
+    })
+}
+
+fn java_stmt_needs_java_outer(
+    stmt: &Statement,
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) -> bool {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => body
+            .iter()
+            .any(|stmt| java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)),
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.init.as_ref().is_some_and(|init| {
+                java_expr_needs_java_outer(init, owner_name, owner_fields, owner_methods)
+            })
+        }),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            java_expr_needs_java_outer(expr, owner_name, owner_fields, owner_methods)
+        }
+        StmtKind::Assign { targets, value } => {
+            java_expr_needs_java_outer(value, owner_name, owner_fields, owner_methods)
+                || targets.iter().any(|target| {
+                    java_expr_needs_java_outer(target, owner_name, owner_fields, owner_methods)
+                })
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            java_expr_needs_java_outer(target, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(value, owner_name, owner_fields, owner_methods)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            java_expr_needs_java_outer(cond, owner_name, owner_fields, owner_methods)
+                || then_body.iter().any(|stmt| {
+                    java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
+                })
+                || elifs.iter().any(|(cond, body)| {
+                    java_expr_needs_java_outer(cond, owner_name, owner_fields, owner_methods)
+                        || body.iter().any(|stmt| {
+                            java_stmt_needs_java_outer(
+                                stmt,
+                                owner_name,
+                                owner_fields,
+                                owner_methods,
+                            )
+                        })
+                })
+                || else_body.as_ref().is_some_and(|body| {
+                    body.iter().any(|stmt| {
+                        java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
+                    })
+                })
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            java_expr_needs_java_outer(cond, owner_name, owner_fields, owner_methods)
+                || body.iter().any(|stmt| {
+                    java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
+                })
+        }
+        _ => false,
+    }
+}
+
+fn java_expr_needs_java_outer(
+    expr: &Expression,
+    owner_name: &str,
+    owner_fields: &HashSet<String>,
+    owner_methods: &HashSet<String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => owner_fields.contains(name),
+        ExprKind::Call { callee, args, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if owner_methods.contains(name))
+                || java_expr_needs_java_outer(callee, owner_name, owner_fields, owner_methods)
+                || args.iter().any(|arg| {
+                    java_expr_needs_java_outer(&arg.value, owner_name, owner_fields, owner_methods)
+                })
+        }
+        ExprKind::Member { object, field, .. } => {
+            (field == "this" && java_expr_dotted_name(object).as_deref() == Some(owner_name))
+                || java_expr_needs_java_outer(object, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Index { object, index, .. } => {
+            java_expr_needs_java_outer(object, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(index, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            java_expr_needs_java_outer(left, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(right, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            java_expr_needs_java_outer(expr, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Assign { target, value } => {
+            java_expr_needs_java_outer(target, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(value, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_expr_needs_java_outer(cond, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(then, owner_name, owner_fields, owner_methods)
+                || java_expr_needs_java_outer(else_, owner_name, owner_fields, owner_methods)
+        }
+        ExprKind::Array(elems) => elems.iter().any(|elem| {
+            java_expr_needs_java_outer(&elem.value, owner_name, owner_fields, owner_methods)
+        }),
+        ExprKind::New { class, args } => {
+            java_expr_needs_java_outer(class, owner_name, owner_fields, owner_methods)
+                || args.iter().any(|arg| {
+                    java_expr_needs_java_outer(&arg.value, owner_name, owner_fields, owner_methods)
+                })
+        }
+        _ => false,
+    }
+}
+
 fn rewrite_java_outer_static_refs_nested(
     nested: &mut Statement,
     owner_name: &str,
     owner_static_fields: &HashSet<String>,
+    owner_static_field_inits: &HashMap<String, Expression>,
 ) {
     let StmtKind::ClassDecl { members, .. } = &mut nested.kind else {
         return;
@@ -8525,16 +11418,36 @@ fn rewrite_java_outer_static_refs_nested(
             ClassMember::Field {
                 init: Some(init), ..
             } => {
-                rewrite_java_outer_static_refs_expr(init, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_expr(
+                    init,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
             ClassMember::Constructor { body, .. } => {
-                rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_stmts(
+                    body,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
             ClassMember::Method(stmt) => {
-                rewrite_java_outer_static_refs_stmt(stmt, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_stmt(
+                    stmt,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
             ClassMember::NestedType(nested) => {
-                rewrite_java_outer_static_refs_nested(nested, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_nested(
+                    nested,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
             _ => {}
         }
@@ -8545,30 +11458,66 @@ fn rewrite_java_outer_static_refs_stmt(
     stmt: &mut Statement,
     owner_name: &str,
     owner_static_fields: &HashSet<String>,
+    owner_static_field_inits: &HashMap<String, Expression>,
 ) {
     match &mut stmt.kind {
         StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
-            rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_stmts(
+                body,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_java_outer_static_refs_expr(init, owner_name, owner_static_fields);
+                    rewrite_java_outer_static_refs_expr(
+                        init,
+                        owner_name,
+                        owner_static_fields,
+                        owner_static_field_inits,
+                    );
                 }
             }
         }
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            rewrite_java_outer_static_refs_expr(expr, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                expr,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         StmtKind::Assign { targets, value } => {
-            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                value,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
             for target in targets {
-                rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_expr(
+                    target,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                value,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                target,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         StmtKind::If {
             cond,
@@ -8576,19 +11525,83 @@ fn rewrite_java_outer_static_refs_stmt(
             elifs,
             else_body,
         } => {
-            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_stmts(then_body, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                cond,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_stmts(
+                then_body,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
             for (elif_cond, elif_body) in elifs {
-                rewrite_java_outer_static_refs_expr(elif_cond, owner_name, owner_static_fields);
-                rewrite_java_outer_static_refs_stmts(elif_body, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_expr(
+                    elif_cond,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
+                rewrite_java_outer_static_refs_stmts(
+                    elif_body,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
             if let Some(else_body) = else_body {
-                rewrite_java_outer_static_refs_stmts(else_body, owner_name, owner_static_fields);
+                rewrite_java_outer_static_refs_stmts(
+                    else_body,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
             }
         }
         StmtKind::While { cond, body, .. } => {
-            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_stmts(body, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                cond,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_stmts(
+                body,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            rewrite_java_outer_static_refs_stmts(
+                body,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            for catch in catches {
+                rewrite_java_outer_static_refs_stmts(
+                    &mut catch.body,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
+            }
+            if let Some(finally) = finally {
+                rewrite_java_outer_static_refs_stmts(
+                    finally,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
+            }
         }
         _ => {}
     }
@@ -8598,9 +11611,15 @@ fn rewrite_java_outer_static_refs_stmts(
     stmts: &mut [Statement],
     owner_name: &str,
     owner_static_fields: &HashSet<String>,
+    owner_static_field_inits: &HashMap<String, Expression>,
 ) {
     for stmt in stmts {
-        rewrite_java_outer_static_refs_stmt(stmt, owner_name, owner_static_fields);
+        rewrite_java_outer_static_refs_stmt(
+            stmt,
+            owner_name,
+            owner_static_fields,
+            owner_static_field_inits,
+        );
     }
 }
 
@@ -8608,48 +11627,127 @@ fn rewrite_java_outer_static_refs_expr(
     expr: &mut Expression,
     owner_name: &str,
     owner_static_fields: &HashSet<String>,
+    owner_static_field_inits: &HashMap<String, Expression>,
 ) {
     match &mut expr.kind {
         ExprKind::Ident(name) if owner_static_fields.contains(name) => {
             let field = name.clone();
-            expr.kind = ExprKind::Member {
-                object: Box::new(Expression::ident(owner_name)),
-                field,
-                null_safe: false,
-            };
+            if let Some(init) = owner_static_field_inits.get(&field) {
+                *expr = init.clone();
+            } else {
+                expr.kind = ExprKind::StaticAccess {
+                class: Box::new(Expression::ident(owner_name)),
+                member: Box::new(Expression::ident(&field)),
+                };
+            }
+        }
+        ExprKind::Member { object, field, .. }
+            if java_expr_dotted_name(object).as_deref() == Some(owner_name)
+                && owner_static_fields.contains(field) =>
+        {
+            let field = field.clone();
+            if let Some(init) = owner_static_field_inits.get(&field) {
+                *expr = init.clone();
+            } else {
+                expr.kind = ExprKind::StaticAccess {
+                class: Box::new(Expression::ident(owner_name)),
+                member: Box::new(Expression::ident(&field)),
+                };
+            }
         }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_java_outer_static_refs_expr(callee, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                callee,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
             for arg in args {
                 rewrite_java_outer_static_refs_expr(
                     &mut arg.value,
                     owner_name,
                     owner_static_fields,
+                    owner_static_field_inits,
                 );
             }
         }
         ExprKind::Member { object, .. } => {
-            rewrite_java_outer_static_refs_expr(object, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                object,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_java_outer_static_refs_expr(object, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(index, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                object,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                index,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_java_outer_static_refs_expr(left, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(right, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                left,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                right,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Unary { expr: inner, .. } => {
-            rewrite_java_outer_static_refs_expr(inner, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                inner,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Assign { target, value } => {
-            rewrite_java_outer_static_refs_expr(target, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(value, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                target,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                value,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_java_outer_static_refs_expr(cond, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(then, owner_name, owner_static_fields);
-            rewrite_java_outer_static_refs_expr(else_, owner_name, owner_static_fields);
+            rewrite_java_outer_static_refs_expr(
+                cond,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                then,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
+            rewrite_java_outer_static_refs_expr(
+                else_,
+                owner_name,
+                owner_static_fields,
+                owner_static_field_inits,
+            );
         }
         ExprKind::Array(elems) => {
             for elem in elems {
@@ -8657,9 +11755,28 @@ fn rewrite_java_outer_static_refs_expr(
                     &mut elem.value,
                     owner_name,
                     owner_static_fields,
+                    owner_static_field_inits,
                 );
             }
         }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(inner) => {
+                rewrite_java_outer_static_refs_expr(
+                    inner,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
+            }
+            LambdaBody::Block(stmts) => {
+                rewrite_java_outer_static_refs_stmts(
+                    stmts,
+                    owner_name,
+                    owner_static_fields,
+                    owner_static_field_inits,
+                );
+            }
+        },
         _ => {}
     }
 }
@@ -8706,6 +11823,38 @@ fn java_outer_assign_stmt() -> Statement {
         })],
         value: Expression::ident("__java_outer"),
     })
+}
+
+fn java_inner_field_init_assign_stmt(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: name.to_string(),
+            null_safe: false,
+        })],
+        value,
+    })
+}
+
+fn java_insert_inner_field_inits(body: &mut Vec<Statement>, field_inits: &[Statement]) {
+    if field_inits.is_empty() {
+        return;
+    }
+    let insert_at = if matches!(
+        body.first().map(|stmt| &stmt.kind),
+        Some(StmtKind::Assign { targets, .. })
+            if matches!(
+                targets.first().map(|target| &target.kind),
+                Some(ExprKind::Member { field, .. }) if field == "__java_outer"
+            )
+    ) {
+        1
+    } else {
+        0
+    };
+    for (offset, stmt) in field_inits.iter().cloned().enumerate() {
+        body.insert(insert_at + offset, stmt);
+    }
 }
 
 fn java_outer_expr() -> Expression {
@@ -9095,6 +12244,90 @@ fn rewrite_java_inner_outer_refs_expr(
     }
 }
 
+fn java_expr_reads_java_outer(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => name == "__java_outer",
+        ExprKind::Member { object, field, .. } => {
+            field == "__java_outer" || java_expr_reads_java_outer(object)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            java_expr_reads_java_outer(callee)
+                || args
+                    .iter()
+                    .any(|arg| java_expr_reads_java_outer(&arg.value))
+        }
+        ExprKind::Index { object, index, .. } => {
+            java_expr_reads_java_outer(object) || java_expr_reads_java_outer(index)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            java_expr_reads_java_outer(left) || java_expr_reads_java_outer(right)
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => java_expr_reads_java_outer(expr),
+        ExprKind::Assign { target, value } => {
+            java_expr_reads_java_outer(target) || java_expr_reads_java_outer(value)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            java_expr_reads_java_outer(cond)
+                || java_expr_reads_java_outer(then)
+                || java_expr_reads_java_outer(else_)
+        }
+        ExprKind::Array(elems) => elems
+            .iter()
+            .any(|elem| java_expr_reads_java_outer(&elem.value)),
+        ExprKind::New { class, args } => {
+            java_expr_reads_java_outer(class)
+                || args
+                    .iter()
+                    .any(|arg| java_expr_reads_java_outer(&arg.value))
+        }
+        ExprKind::StaticAccess { class, member } => {
+            java_expr_reads_java_outer(class) || java_expr_reads_java_outer(member)
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => java_expr_reads_java_outer(expr),
+            LambdaBody::Block(stmts) => stmts.iter().any(java_stmt_reads_java_outer),
+        },
+        _ => false,
+    }
+}
+
+fn java_stmt_reads_java_outer(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            body.iter().any(java_stmt_reads_java_outer)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(java_expr_reads_java_outer)),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => java_expr_reads_java_outer(expr),
+        StmtKind::Assign { targets, value } => {
+            java_expr_reads_java_outer(value) || targets.iter().any(java_expr_reads_java_outer)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            java_expr_reads_java_outer(target) || java_expr_reads_java_outer(value)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            java_expr_reads_java_outer(cond)
+                || then_body.iter().any(java_stmt_reads_java_outer)
+                || elifs.iter().any(|(cond, body)| {
+                    java_expr_reads_java_outer(cond) || body.iter().any(java_stmt_reads_java_outer)
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(java_stmt_reads_java_outer))
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            java_expr_reads_java_outer(cond) || body.iter().any(java_stmt_reads_java_outer)
+        }
+        _ => false,
+    }
+}
+
 fn rewrite_java_user_tostring_calls(body: &mut [Statement]) {
     let mut tostring_classes = HashSet::new();
     collect_java_tostring_classes(body, &mut tostring_classes);
@@ -9302,6 +12535,21 @@ fn rewrite_java_tostring_stmts(
                         _ => None,
                     })
                     .collect();
+                let method_return_types: HashMap<String, String> = members
+                    .iter()
+                    .filter_map(|member| match member {
+                        ClassMember::Method(method) => match &method.kind {
+                            StmtKind::FunctionDecl {
+                                name,
+                                params,
+                                return_type: Some(return_type),
+                                ..
+                            } if params.is_empty() => Some((format!("{name}()"), return_type.clone())),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect();
                 JAVA_STATIC_FIELD_VARS.with(|vars| {
                     let mut vars = vars.borrow_mut();
                     for member in members.iter() {
@@ -9340,6 +12588,11 @@ fn rewrite_java_tostring_stmts(
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone())),
                             );
+                            local_types.extend(
+                                method_return_types
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), ty.clone())),
+                            );
                             rewrite_java_tostring_stmts(
                                 body,
                                 tostring_classes,
@@ -9359,6 +12612,11 @@ fn rewrite_java_tostring_stmts(
                                     .collect();
                                 local_types.extend(
                                     field_types
+                                        .iter()
+                                        .map(|(name, ty)| (name.clone(), ty.clone())),
+                                );
+                                local_types.extend(
+                                    method_return_types
                                         .iter()
                                         .map(|(name, ty)| (name.clone(), ty.clone())),
                                 );
@@ -10045,7 +13303,7 @@ fn rewrite_java_tostring_expr(
             // (java.io.PrintStream). Wrap args whose static type is a user
             // class with toString or an enum constant (JLS §8.9.3 toString).
             if let ExprKind::Ident(fn_name) = &callee.kind {
-                if matches!(fn_name.as_str(), "__j_println" | "__j_print") {
+                if matches!(fn_name.as_str(), "__j_println" | "__j_print" | "__java_println" | "__java_print") {
                     for arg in &mut *args {
                         if java_print_arg_needs_tostring(
                             &arg.value,
@@ -10055,15 +13313,22 @@ fn rewrite_java_tostring_expr(
                             locals,
                         ) {
                             let receiver = arg.value.clone();
-                            arg.value = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::new(ExprKind::Member {
-                                    object: Box::new(receiver),
-                                    field: "tostring".to_string(),
-                                    null_safe: false,
-                                })),
-                                args: vec![],
-                                optional: false,
-                            });
+                            arg.value = java_tostring_call(receiver);
+                        }
+                    }
+                }
+                if fn_name == "__java_string_concat" {
+                    for arg in &mut *args {
+                        if java_expr_enum_type(
+                            &arg.value,
+                            enum_values,
+                            current_class,
+                            locals,
+                        )
+                        .is_some()
+                        {
+                            let receiver = arg.value.clone();
+                            arg.value = java_tostring_call(receiver);
                         }
                     }
                 }
@@ -10277,6 +13542,21 @@ fn rewrite_java_tostring_expr(
                             return;
                         }
                     }
+                    if java_type_is_list_like(locals.get(name).map(String::as_str)) {
+                        if let Some(internal) = java_list_method_name(field, args.len()) {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            let receiver = java_static_field_receiver(object, current_class)
+                                .unwrap_or_else(|| (**object).clone());
+                            new_args.push(Argument::positional(receiver));
+                            new_args.extend(args.iter().cloned());
+                            *expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(internal)),
+                                args: new_args,
+                                optional: false,
+                            });
+                            return;
+                        }
+                    }
                     if java_type_is_map(locals.get(name).map(String::as_str)) {
                         if java_type_simple_name(
                             locals.get(name).map(String::as_str).unwrap_or_default(),
@@ -10433,17 +13713,11 @@ fn rewrite_java_tostring_expr(
                         }
                     }
                     if java_type_is_queue_or_deque(locals.get(name).map(String::as_str)) {
-                        let internal = match field.as_str() {
-                            "add" | "offer" => Some("__java_queue_add"),
-                            "poll" | "remove" if args.is_empty() => Some("__java_queue_poll"),
-                            "peek" | "element" => Some("__java_queue_peek"),
-                            "getFirst" | "peekFirst" => Some("__java_stack_first_element"),
-                            "getLast" | "peekLast" => Some("__java_stack_last_element"),
-                            "push" => Some("__java_deque_push"),
-                            "pop" => Some("__java_deque_pop"),
-                            "remove" if args.len() == 1 => Some("__java_set_remove"),
-                            _ => None,
-                        };
+                        let internal = java_queue_method_name(
+                            locals.get(name).map(String::as_str),
+                            field,
+                            args.len(),
+                        );
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -10535,6 +13809,11 @@ fn rewrite_java_tostring_expr(
                 }
                 if field == "toString"
                     && java_expr_has_user_tostring(object, tostring_classes, current_class, locals)
+                {
+                    *field = "tostring".to_string();
+                }
+                if field == "toString"
+                    && java_expr_enum_type(object, enum_values, current_class, locals).is_some()
                 {
                     *field = "tostring".to_string();
                 }
@@ -11075,21 +14354,310 @@ fn java_type_is_hashtable(type_name: Option<&str>) -> bool {
     java_type_simple_name(type_name) == "Hashtable"
 }
 
+fn java_type_is_list_like(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let simple = java_type_simple_name(type_name);
+    let simple = simple.split('<').next().unwrap_or(simple);
+    if !type_name.contains('.') && java_user_defined_type(simple) {
+        return false;
+    }
+    matches!(
+        simple,
+        "List" | "ArrayList" | "LinkedList" | "CopyOnWriteArrayList" | "Vector"
+    )
+}
+
+fn java_user_defined_type(simple: &str) -> bool {
+    JAVA_REFLECTION_CLASSES.with(|classes| classes.borrow().contains_key(simple))
+        || JAVA_INTERFACE_NAMES.with(|names| names.borrow().contains(simple))
+        || JAVA_ENUM_VALUES.with(|values| values.borrow().contains_key(simple))
+}
+
+fn java_list_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "add" if argc == 1 || argc == 2 => "__java_list_add",
+        "addIfAbsent" if argc == 1 => "__java_copy_on_write_add_if_absent",
+        "size" if argc == 0 => "__java_list_size",
+        "remove" if argc == 1 => "__java_list_remove",
+        "containsAll" if argc == 1 => "__java_list_contains_all",
+        "equals" if argc == 1 => "__java_list_equals",
+        "indexOf" if argc == 1 => "__java_list_index_of",
+        "spliterator" if argc == 0 => "__j_spliterator_from_array",
+        _ => return None,
+    })
+}
+
+fn java_type_is_spliterator(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let simple = java_type_simple_name(type_name);
+    simple.split('<').next().unwrap_or(simple) == "Spliterator"
+}
+
+fn java_type_is_random(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    matches!(
+        java_type_simple_name(type_name),
+        "Random" | "SplittableRandom" | "ThreadLocalRandom"
+    )
+}
+
+fn java_random_receiver(receiver: &Expression) -> bool {
+    match &receiver.kind {
+        ExprKind::Ident(name) => JAVA_RANDOM_VARS.with(|vars| vars.borrow().contains(name.as_str())),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_random_new")
+        }
+        _ => false,
+    }
+}
+
+fn java_list_result_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_command_get")
+    )
+}
+
+fn java_map_result_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_environment")
+    )
+}
+
+fn java_spliterator_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_spliterator_from_array")
+    )
+}
+
+fn java_spliterator_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "estimateSize" if argc == 0 => "__j_spliterator_estimate_size",
+        "tryAdvance" if argc == 1 => "__j_spliterator_try_advance",
+        "forEachRemaining" if argc == 1 => "__j_spliterator_for_each_remaining",
+        "characteristics" if argc == 0 => "__j_spliterator_characteristics",
+        "trySplit" if argc == 0 => "__j_spliterator_try_split",
+        "getComparator" if argc == 0 => "__j_spliterator_get_comparator",
+        _ => return None,
+    })
+}
+
+fn java_spliterator_constant(name: &str) -> Option<i64> {
+    Some(match name {
+        "DISTINCT" => 0x0001,
+        "SORTED" => 0x0004,
+        "ORDERED" => 0x0010,
+        "SIZED" => 0x0040,
+        "NONNULL" => 0x0100,
+        "IMMUTABLE" => 0x0400,
+        "CONCURRENT" => 0x1000,
+        "SUBSIZED" => 0x4000,
+        _ => return None,
+    })
+}
+
+fn java_type_is_runtime(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|type_name| {
+            let simple = java_type_simple_name(type_name);
+            simple.split('<').next().unwrap_or(simple) == "Runtime"
+        })
+        .unwrap_or(false)
+}
+
+fn java_runtime_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_runtime_get")
+    )
+}
+
+fn java_runtime_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "availableProcessors" if argc == 0 => "__j_runtime_processors",
+        "freeMemory" if argc == 0 => "__j_runtime_free_memory",
+        "totalMemory" if argc == 0 => "__j_runtime_total_memory",
+        "maxMemory" if argc == 0 => "__j_runtime_max_memory",
+        "gc" if argc == 0 => "__j_runtime_noop",
+        "runFinalization" if argc == 0 => "__j_runtime_noop",
+        _ => return None,
+    })
+}
+
+fn java_type_is_process_builder(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|type_name| {
+            let simple = java_type_simple_name(type_name);
+            simple.split('<').next().unwrap_or(simple) == "ProcessBuilder"
+        })
+        .unwrap_or(false)
+}
+
+fn java_process_builder_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_new")
+    )
+}
+
+fn java_process_builder_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "command" if argc == 0 => "__j_pb_command_get",
+        "command" if argc >= 1 => "__j_pb_command_set",
+        "directory" if argc == 0 => "__j_pb_directory_get",
+        "directory" if argc == 1 => "__j_pb_directory_set",
+        "redirectErrorStream" if argc == 0 => "__j_pb_redirect_error_stream_get",
+        "redirectErrorStream" if argc == 1 => "__j_pb_redirect_error_stream_set",
+        "environment" if argc == 0 => "__j_pb_environment",
+        "inheritIO" if argc == 0 => "__j_pb_inherit_io",
+        "redirectInput" if argc == 0 => "__j_pb_redirect_input_get",
+        "redirectOutput" if argc == 0 => "__j_pb_redirect_output_get",
+        "redirectOutput" if argc == 1 => "__j_pb_redirect_output_set",
+        "redirectError" if argc == 0 => "__j_pb_redirect_error_get",
+        "start" if argc == 0 => "__j_pb_start",
+        _ => return None,
+    })
+}
+
+fn java_type_is_process(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|type_name| {
+            let simple = java_type_simple_name(type_name);
+            simple.split('<').next().unwrap_or(simple) == "Process"
+        })
+        .unwrap_or(false)
+}
+
+fn java_process_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_pb_start")
+    )
+}
+
+fn java_process_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "waitFor" if argc == 0 => "__j_process_wait_for",
+        "isAlive" if argc == 0 => "__j_process_is_alive",
+        "getInputStream" if argc == 0 => "__j_process_input_stream",
+        "exitValue" if argc == 0 => "__j_process_exit_value",
+        "destroy" if argc == 0 => "__j_process_destroy",
+        _ => return None,
+    })
+}
+
+fn java_type_is_file(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|type_name| {
+            let simple = java_type_simple_name(type_name);
+            simple.split('<').next().unwrap_or(simple) == "File"
+        })
+        .unwrap_or(false)
+}
+
+fn java_file_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if matches!(name.as_str(), "__j_file_new" | "__j_pb_directory_get"))
+    )
+}
+
+fn java_type_is_redirect(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|type_name| {
+            let simple = java_type_simple_name(type_name);
+            simple.split('<').next().unwrap_or(simple) == "Redirect"
+        })
+        .unwrap_or(false)
+}
+
+fn java_redirect_receiver(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if matches!(
+                name.as_str(),
+                "__j_pb_redirect"
+                    | "__j_pb_redirect_input_get"
+                    | "__j_pb_redirect_output_get"
+                    | "__j_pb_redirect_error_get"
+            ))
+    )
+}
+
 fn java_type_is_queue_or_deque(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
         return false;
     };
     matches!(
         java_type_simple_name(type_name),
-        "Queue" | "Deque" | "ArrayDeque" | "LinkedList"
+        "Queue" | "Deque" | "ArrayDeque" | "LinkedList" | "LinkedBlockingQueue"
     )
+}
+
+fn java_type_is_linked_blocking_queue(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_simple_name(type_name) == "LinkedBlockingQueue"
+}
+
+fn java_queue_method_name(
+    type_name: Option<&str>,
+    method: &str,
+    argc: usize,
+) -> Option<&'static str> {
+    let is_blocking_queue = java_type_is_linked_blocking_queue(type_name);
+    Some(if is_blocking_queue {
+        match method {
+            "add" if argc == 1 => "__java_blocking_queue_add",
+            "offer" if argc == 1 || argc == 3 => "__java_blocking_queue_offer",
+            "put" if argc == 1 => "__java_blocking_queue_put",
+            "take" if argc == 0 => "__java_blocking_queue_take",
+            "poll" if argc == 0 || argc == 2 => "__java_blocking_queue_poll",
+            "remove" if argc == 0 => "__java_queue_remove_checked",
+            "peek" if argc == 0 => "__java_queue_peek",
+            "element" if argc == 0 => "__java_queue_element_checked",
+            "remove" if argc == 1 => "__java_set_remove",
+            _ => return None,
+        }
+    } else {
+        match method {
+            "add" | "offer" if argc == 1 => "__java_queue_add",
+            "poll" if argc == 0 => "__java_queue_poll",
+            "remove" if argc == 0 => "__java_queue_remove_checked",
+            "peek" if argc == 0 => "__java_queue_peek",
+            "element" if argc == 0 => "__java_queue_element_checked",
+            "getFirst" | "peekFirst" if argc == 0 => "__java_stack_first_element",
+            "getLast" | "peekLast" if argc == 0 => "__java_stack_last_element",
+            "push" if argc == 1 => "__java_deque_push",
+            "pop" if argc == 0 => "__java_deque_pop",
+            "remove" if argc == 1 => "__java_set_remove",
+            _ => return None,
+        }
+    })
 }
 
 fn java_type_is_semaphore(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
         return false;
     };
-    java_type_simple_name(type_name) == "Semaphore"
+    java_type_base_simple_name(type_name) == "Semaphore"
 }
 
 fn java_semaphore_method_name(method: &str) -> Option<&'static str> {
@@ -11102,6 +14670,64 @@ fn java_semaphore_method_name(method: &str) -> Option<&'static str> {
         "hasQueuedThreads" => "__java_semaphore_has_queued",
         "getQueueLength" => "__java_semaphore_queue_length",
         "isFair" => "__java_semaphore_is_fair",
+        _ => return None,
+    })
+}
+
+fn java_type_is_count_down_latch(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_base_simple_name(type_name) == "CountDownLatch"
+}
+
+fn java_count_down_latch_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "countDown" if argc == 0 => "__j_latch_count_down",
+        "getCount" if argc == 0 => "__j_latch_get_count",
+        "await" if argc == 0 => "__j_latch_await",
+        "await" if argc == 2 => "__j_latch_await_timeout",
+        _ => return None,
+    })
+}
+
+fn java_type_is_future_task(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    java_type_base_simple_name(type_name) == "FutureTask"
+}
+
+fn java_future_task_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "run" if argc == 0 => "__j_future_task_run",
+        "get" if argc == 0 || argc == 2 => "__j_future_task_get",
+        "cancel" if argc == 1 => "__j_future_task_cancel",
+        "isDone" if argc == 0 => "__j_future_task_is_done",
+        "isCancelled" if argc == 0 => "__j_future_task_is_cancelled",
+        "runAndReset" if argc == 0 => "__j_future_task_run_and_reset",
+        _ => return None,
+    })
+}
+
+fn java_type_is_executor_service(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    matches!(
+        java_type_base_simple_name(type_name),
+        "ExecutorService" | "Executor"
+    )
+}
+
+fn java_executor_method_name(method: &str, argc: usize) -> Option<&'static str> {
+    Some(match method {
+        "submit" if argc == 1 => "__j_exec_submit",
+        "execute" if argc == 1 => "__j_exec_execute",
+        "shutdown" if argc == 0 => "__j_exec_shutdown",
+        "shutdownNow" if argc == 0 => "__j_exec_shutdown_now",
+        "isShutdown" if argc == 0 => "__j_exec_is_shutdown",
+        "awaitTermination" if argc == 2 => "__j_exec_await",
         _ => return None,
     })
 }
@@ -11260,6 +14886,7 @@ fn java_builtin_class_is_instance_type(type_name: &str) -> bool {
             | "Character"
             | "Object"
             | "Class"
+            | "StringBuilder"
             | "Comparable"
             | "Serializable"
             | "Cloneable"
@@ -11609,6 +15236,14 @@ fn java_type_simple_name(type_name: &str) -> &str {
     type_name.rsplit('.').next().unwrap_or(type_name)
 }
 
+fn java_type_base_simple_name(type_name: &str) -> &str {
+    java_type_simple_name(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim()
+}
+
 fn java_print_arg_needs_tostring(
     arg: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
@@ -11619,25 +15254,158 @@ fn java_print_arg_needs_tostring(
     if java_expr_has_user_tostring(arg, tostring_classes, current_class, locals) {
         return true;
     }
-    // Enum constant access: `Season.SPRING`
-    if let ExprKind::Member { object, field, .. } = &arg.kind {
-        if let ExprKind::Ident(type_name) = &object.kind {
-            if let Some(members) = enum_values.get(type_name) {
-                return members.iter().any(|m| m == field);
-            }
-        }
-    }
-    // `EnumType.valueOf(x)` result (already renamed to the synthesized static).
-    if let ExprKind::Call { callee, .. } = &arg.kind {
-        if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if field == "__j_enum_value_of" {
-                if let ExprKind::Ident(type_name) = &object.kind {
-                    return enum_values.contains_key(type_name);
+    java_expr_enum_type(arg, enum_values, current_class, locals).is_some()
+}
+
+fn java_tostring_call(receiver: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver),
+            field: "tostring".to_string(),
+            null_safe: false,
+        })),
+        args: vec![],
+        optional: false,
+    })
+}
+
+fn java_expr_enum_type(
+    expr: &Expression,
+    enum_values: &std::collections::HashMap<String, Vec<String>>,
+    current_class: Option<&str>,
+    locals: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(type_hint) = locals.get(name) {
+                let simple = java_type_simple_name(type_hint);
+                if enum_values.contains_key(simple) {
+                    return Some(simple.to_string());
                 }
             }
+            None
         }
+        ExprKind::Member { object, field, .. } => {
+            if let ExprKind::Ident(type_name) = &object.kind {
+                let simple = java_type_simple_name(type_name);
+                if enum_values
+                    .get(simple)
+                    .is_some_and(|members| members.iter().any(|m| m == field))
+                {
+                    return Some(simple.to_string());
+                }
+            }
+            None
+        }
+        ExprKind::Index { object, .. } => {
+            if let ExprKind::Call { callee, args, .. } = &object.kind {
+                if args.is_empty() {
+                    if let ExprKind::Member {
+                        object: enum_object,
+                        field,
+                        ..
+                    } = &callee.kind
+                    {
+                        if field == "values" {
+                            if let ExprKind::Ident(type_name) = &enum_object.kind {
+                                let simple = java_type_simple_name(type_name);
+                                if enum_values.contains_key(simple) {
+                                    return Some(simple.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Member { object, field, .. } => {
+                if field == "__j_enum_value_of" {
+                    if let ExprKind::Ident(type_name) = &object.kind {
+                        let simple = java_type_simple_name(type_name);
+                        if enum_values.contains_key(simple) {
+                            return Some(simple.to_string());
+                        }
+                    }
+                }
+                let receiver_type = match &object.kind {
+                    ExprKind::Ident(type_name) if enum_values.contains_key(type_name.as_str()) => {
+                        Some(type_name.clone())
+                    }
+                    _ => java_expr_enum_type(object, enum_values, current_class, locals),
+                };
+                if let Some(receiver_type) = receiver_type {
+                    if let Some(return_type) = java_class_method_return_type(&receiver_type, field)
+                    {
+                        let simple = java_type_simple_name(&return_type);
+                        if enum_values.contains_key(simple) {
+                            return Some(simple.to_string());
+                        }
+                    }
+                }
+                if args.is_empty() {
+                    let dotted = java_expr_dotted_name(object)?;
+                    let key = format!("{dotted}.{field}()");
+                    if let Some(type_hint) = locals.get(&key) {
+                        let simple = java_type_simple_name(type_hint);
+                        if enum_values.contains_key(simple) {
+                            return Some(simple.to_string());
+                        }
+                    }
+                }
+                None
+            }
+            ExprKind::Ident(name) if args.is_empty() => {
+                let key = format!("{name}()");
+                if let Some(type_hint) = locals.get(&key) {
+                    let simple = java_type_simple_name(type_hint);
+                    if enum_values.contains_key(simple) {
+                        return Some(simple.to_string());
+                    }
+                }
+                if let Some(class_name) = current_class {
+                    let key = format!("{class_name}.{name}()");
+                    if let Some(type_hint) = locals.get(&key) {
+                        let simple = java_type_simple_name(type_hint);
+                        if enum_values.contains_key(simple) {
+                            return Some(simple.to_string());
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        },
+        _ => None,
     }
-    false
+}
+
+fn java_class_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
+    let simple = java_type_simple_name(class_name);
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        classes
+            .borrow()
+            .get(simple)
+            .and_then(|meta| {
+                meta.methods
+                    .iter()
+                    .find(|method| method.name == method_name)
+                    .and_then(|method| method.return_type.clone())
+            })
+    })
+}
+
+fn java_class_field_type(class_name: &str, field_name: &str) -> Option<String> {
+    let simple = java_type_simple_name(class_name);
+    JAVA_REFLECTION_CLASSES.with(|classes| {
+        classes.borrow().get(simple).and_then(|meta| {
+            meta.fields
+                .iter()
+                .find(|field| field.name == field_name)
+                .and_then(|field| field.type_name.clone())
+        })
+    })
 }
 
 fn java_expr_has_user_tostring(
@@ -11665,10 +15433,66 @@ fn normalize_java_class_tree(body: &mut [Statement]) {
     let mut class_members = HashMap::new();
     let mut class_parents = HashMap::new();
     collect_java_class_member_names(body, &mut class_members, &mut class_parents);
+    install_java_interface_default_methods(body, &class_members, &class_parents);
+    class_members.clear();
+    class_parents.clear();
+    collect_java_class_member_names(body, &mut class_members, &mut class_parents);
     normalize_java_class_tree_with_members(body, &class_members, &class_parents);
     let mut locals = std::collections::HashSet::new();
     lower_java_anonymous_class_captures_tree(body, &mut locals);
     normalize_java_anonymous_class_tree(body, &class_members);
+}
+
+fn inject_java_static_initializer_calls(body: &mut Vec<Statement>) {
+    let mut class_names = Vec::new();
+    collect_java_static_initializer_classes(body, &mut class_names);
+    if class_names.is_empty() {
+        return;
+    }
+    let calls = class_names.into_iter().map(|class_name| {
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(&class_name)),
+                field: "__static_init_block__".to_string(),
+                null_safe: false,
+            })),
+            args: vec![],
+            optional: false,
+        })))
+    });
+    body.extend(calls);
+}
+
+fn collect_java_static_initializer_classes(body: &[Statement], out: &mut Vec<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. } => {
+                if members.iter().any(|member| {
+                    matches!(
+                        member,
+                        ClassMember::Method(method)
+                            if matches!(&method.kind, StmtKind::FunctionDecl { name, .. } if name == "__static_init_block__")
+                    )
+                }) {
+                    out.push(name.clone());
+                }
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_static_initializer_classes(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
+            StmtKind::EnumDecl { body_members, .. } => {
+                for member in body_members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_java_static_initializer_classes(std::slice::from_ref(nested), out);
+                    }
+                }
+            }
+            StmtKind::Block(stmts) => collect_java_static_initializer_classes(stmts, out),
+            _ => {}
+        }
+    }
 }
 
 fn collect_java_class_member_names(
@@ -11681,11 +15505,33 @@ fn collect_java_class_member_names(
             StmtKind::ClassDecl {
                 name,
                 parents,
+                interfaces,
                 members,
+                modifiers,
                 ..
             } => {
+                let is_interface =
+                    JAVA_INTERFACE_NAMES.with(|names| names.borrow().contains(name.as_str()));
+                let is_enum =
+                    JAVA_ENUM_VALUES.with(|values| values.borrow().contains_key(name.as_str()));
+                JAVA_REFLECTION_CLASSES.with(|classes| {
+                    classes.borrow_mut().insert(
+                        name.clone(),
+                        java_reflection_meta(
+                            name,
+                            parents.first().cloned(),
+                            interfaces.clone(),
+                            members,
+                            is_interface,
+                            is_enum,
+                            java_class_modifier_bits(modifiers),
+                        ),
+                    );
+                });
                 out.insert(name.clone(), JavaClassMemberNames::from_members(members));
-                parents_out.insert(name.clone(), parents.clone());
+                let mut inherited = parents.clone();
+                inherited.extend(interfaces.iter().cloned());
+                parents_out.insert(name.clone(), inherited);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
                         collect_java_class_member_names(
@@ -11731,13 +15577,16 @@ fn normalize_java_class_tree_with_members(
             StmtKind::ClassDecl {
                 name,
                 parents,
+                interfaces,
                 members,
                 ..
             } => {
                 let mut names = class_members.get(name).cloned().unwrap_or_default();
+                let mut inherited = parents.clone();
+                inherited.extend(interfaces.iter().cloned());
                 merge_java_inherited_member_names(
                     &mut names,
-                    parents,
+                    &inherited,
                     class_members,
                     class_parents,
                 );
@@ -11804,6 +15653,144 @@ fn merge_java_inherited_member_names(
             stack.extend(parent_parents.iter().cloned());
         }
     }
+}
+
+fn install_java_interface_default_methods(
+    body: &mut [Statement],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    class_parents: &std::collections::HashMap<String, Vec<String>>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                interfaces,
+                members,
+                ..
+            } => {
+                let is_interface = JAVA_INTERFACE_NAMES.with(|names| names.borrow().contains(name));
+                if !is_interface {
+                    let mut implemented = parents.clone();
+                    implemented.extend(interfaces.iter().cloned());
+                    let mut defaults = Vec::new();
+                    collect_java_interface_default_methods(
+                        &implemented,
+                        class_members,
+                        class_parents,
+                        &mut std::collections::HashSet::new(),
+                        &mut defaults,
+                    );
+                    append_missing_java_interface_defaults(members, defaults);
+                }
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        install_java_interface_default_methods(
+                            std::slice::from_mut(nested),
+                            class_members,
+                            class_parents,
+                        );
+                    }
+                }
+            }
+            StmtKind::Block(stmts) => {
+                install_java_interface_default_methods(stmts, class_members, class_parents);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_java_interface_default_methods(
+    interfaces: &[String],
+    class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
+    class_parents: &std::collections::HashMap<String, Vec<String>>,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<ClassMember>,
+) {
+    for interface in interfaces {
+        let is_interface = JAVA_INTERFACE_NAMES.with(|names| names.borrow().contains(interface));
+        if !is_interface || !seen.insert(interface.clone()) {
+            continue;
+        }
+        if let Some(parents) = class_parents.get(interface) {
+            collect_java_interface_default_methods(
+                parents,
+                class_members,
+                class_parents,
+                seen,
+                out,
+            );
+        }
+        if let Some(names) = class_members.get(interface) {
+            for method in &names.default_methods {
+                let original = (**method).clone();
+                if let Some(method_name) = java_function_decl_name(&original) {
+                    let mut hidden = original.clone();
+                    java_rename_function_decl(
+                        &mut hidden,
+                        &java_interface_default_method_name(interface, &method_name),
+                    );
+                    out.push(ClassMember::Method(Box::new(hidden)));
+                }
+                out.push(ClassMember::Method(Box::new(original)));
+            }
+        }
+    }
+}
+
+fn append_missing_java_interface_defaults(
+    members: &mut Vec<ClassMember>,
+    defaults: Vec<ClassMember>,
+) {
+    if defaults.is_empty() {
+        return;
+    }
+    let mut existing = java_instance_method_names(members);
+    for default_method in defaults {
+        let Some(name) = java_class_method_name(&default_method) else {
+            continue;
+        };
+        if existing.insert(name) {
+            members.push(default_method);
+        }
+    }
+}
+
+fn java_class_method_name(member: &ClassMember) -> Option<String> {
+    let ClassMember::Method(func) = member else {
+        return None;
+    };
+    java_function_decl_name(func).and_then(|name| {
+        let StmtKind::FunctionDecl { modifiers, .. } = &func.kind else {
+            return None;
+        };
+        (!modifiers.is_static).then_some(name)
+    })
+}
+
+fn java_function_decl_name(func: &Statement) -> Option<String> {
+    let StmtKind::FunctionDecl {
+        name, modifiers, ..
+    } = &func.kind
+    else {
+        return None;
+    };
+    (!modifiers.is_static).then(|| name.clone())
+}
+
+fn java_rename_function_decl(func: &mut Statement, renamed: &str) {
+    if let StmtKind::FunctionDecl { name, .. } = &mut func.kind {
+        *name = renamed.to_string();
+    }
+}
+
+fn java_interface_default_method_name(interface: &str, method: &str) -> String {
+    let interface = java_type_simple_name(interface)
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    format!("__java_default_{interface}_{method}")
 }
 
 fn normalize_java_anonymous_class_tree(
@@ -13071,6 +17058,7 @@ struct JavaClassMemberNames {
     field_types: HashMap<String, String>,
     methods: std::collections::HashSet<String>,
     static_methods: std::collections::HashSet<String>,
+    default_methods: Vec<Box<Statement>>,
     instance_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
     static_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
 }
@@ -13126,6 +17114,18 @@ impl JavaClassMemberNames {
                 _ => None,
             })
             .collect();
+        let default_methods = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Method(func) => match &func.kind {
+                    StmtKind::FunctionDecl {
+                        body, modifiers, ..
+                    } if !modifiers.is_static && !body.is_empty() => Some(func.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
         let instance_overloads = java_collect_overload_targets(members, false);
         let static_overloads = java_collect_overload_targets(members, true);
         Self {
@@ -13133,6 +17133,7 @@ impl JavaClassMemberNames {
             field_types,
             methods,
             static_methods,
+            default_methods,
             instance_overloads,
             static_overloads,
         }
@@ -13662,11 +17663,23 @@ fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             java_rewrite_spawned_thread_sleep_expr(callee);
-            for arg in args {
+            for arg in &mut *args {
                 java_rewrite_spawned_thread_sleep_expr(&mut arg.value);
             }
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_thread_sleep") {
                 *callee = Box::new(Expression::ident("__java_thread_sleep"));
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "put" && args.len() == 1 {
+                    let mut new_args = Vec::with_capacity(2);
+                    new_args.push(Argument::positional((**object).clone()));
+                    new_args.extend(args.iter().cloned());
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__java_blocking_queue_put")),
+                        args: new_args,
+                        optional: false,
+                    });
+                }
             }
         }
         ExprKind::Lambda { body, .. } => match body {
@@ -13881,7 +17894,17 @@ fn normalize_java_stmts(
                         }
                     }
                     collect_binding_names(&decl.pattern, locals);
-                    collect_binding_types(&decl.pattern, decl.type_hint.as_deref(), local_types);
+                    let restored_type = match (&decl.pattern, decl.type_hint.as_deref()) {
+                        (BindingPattern::Ident(name), None) => {
+                            JAVA_LOCAL_TYPES.with(|types| types.borrow().get(name).cloned())
+                        }
+                        _ => None,
+                    };
+                    collect_binding_types(
+                        &decl.pattern,
+                        decl.type_hint.as_deref().or(restored_type.as_deref()),
+                        local_types,
+                    );
                 }
             }
             StmtKind::Assign { targets, value } => {
@@ -13897,6 +17920,23 @@ fn normalize_java_stmts(
                     local_types,
                     false,
                 );
+                if let Some(target) = targets.first() {
+                    if matches!(
+                        target,
+                        Expression {
+                            kind: ExprKind::Ident(name),
+                            ..
+                        } if local_types.get(name).is_some_and(|ty| {
+                            matches!(
+                                java_type_simple_name(ty),
+                                "byte" | "Byte" | "short" | "Short" | "int" | "Integer" | "long" | "Long"
+                            )
+                        })
+                    ) && java_expr_is_char_numeric_source(value, local_types)
+                    {
+                        *value = java_cast_char_numeric_operand(value.clone(), local_types);
+                    }
+                }
                 for target in &mut *targets {
                     normalize_java_expr(
                         target,
@@ -14020,6 +18060,109 @@ fn normalize_java_stmts(
                     );
                 }
             }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                let mut loop_locals = locals.clone();
+                let mut loop_local_types = local_types.clone();
+                if let Some(init_stmt) = init.as_mut() {
+                    normalize_java_stmts(
+                        std::slice::from_mut(init_stmt.as_mut()),
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut loop_locals,
+                        &mut loop_local_types,
+                    );
+                }
+                if let Some(cond) = cond {
+                    normalize_java_expr(
+                        cond,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &loop_locals,
+                        &loop_local_types,
+                        false,
+                    );
+                }
+                if let Some(update) = update {
+                    normalize_java_expr(
+                        update,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &loop_locals,
+                        &loop_local_types,
+                        false,
+                    );
+                }
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut loop_locals,
+                    &mut loop_local_types,
+                );
+            }
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                ..
+            } => {
+                normalize_java_expr(
+                    iter,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                let mut loop_locals = locals.clone();
+                let mut loop_local_types = local_types.clone();
+                loop_locals.insert(var.clone());
+                if let Some(type_hint) =
+                    JAVA_LOCAL_TYPES.with(|types| types.borrow().get(var).cloned())
+                {
+                    loop_local_types.insert(var.clone(), type_hint);
+                }
+                if let Some(key) = key {
+                    loop_locals.insert(key.clone());
+                }
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut loop_locals,
+                    &mut loop_local_types,
+                );
+            }
             StmtKind::While { cond, body, .. } => {
                 normalize_java_expr(
                     cond,
@@ -14044,6 +18187,137 @@ fn normalize_java_stmts(
                     &mut locals.clone(),
                     &mut local_types.clone(),
                 );
+            }
+            StmtKind::DoWhile { body, cond, .. } => {
+                normalize_java_stmts(
+                    body,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    &mut locals.clone(),
+                    &mut local_types.clone(),
+                );
+                normalize_java_expr(
+                    cond,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
+                normalize_java_expr(
+                    expr,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
+                if java_expr_is_char_numeric_source(expr, local_types) {
+                    *expr = java_cast_char_numeric_operand(expr.clone(), local_types);
+                }
+                for case in cases {
+                    for condition in &mut case.conditions {
+                        match condition {
+                            CaseCondition::Value(value) => {
+                                normalize_java_expr(
+                                    value,
+                                    fields,
+                                    methods,
+                                    static_methods,
+                                    static_overloads,
+                                    class_members,
+                                    current_class,
+                                    locals,
+                                    local_types,
+                                    false,
+                                );
+                                *value = java_char_numeric_cast_expr(value.clone());
+                            }
+                            CaseCondition::Range { from, to } => {
+                                normalize_java_expr(
+                                    from,
+                                    fields,
+                                    methods,
+                                    static_methods,
+                                    static_overloads,
+                                    class_members,
+                                    current_class,
+                                    locals,
+                                    local_types,
+                                    false,
+                                );
+                                normalize_java_expr(
+                                    to,
+                                    fields,
+                                    methods,
+                                    static_methods,
+                                    static_overloads,
+                                    class_members,
+                                    current_class,
+                                    locals,
+                                    local_types,
+                                    false,
+                                );
+                            }
+                            CaseCondition::Comparison { expr, .. } => {
+                                normalize_java_expr(
+                                    expr,
+                                    fields,
+                                    methods,
+                                    static_methods,
+                                    static_overloads,
+                                    class_members,
+                                    current_class,
+                                    locals,
+                                    local_types,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                    normalize_java_stmts(
+                        &mut case.body,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
+                }
+                if let Some(default) = default {
+                    normalize_java_stmts(
+                        default,
+                        fields,
+                        methods,
+                        static_methods,
+                        static_overloads,
+                        class_members,
+                        current_class,
+                        &mut locals.clone(),
+                        &mut local_types.clone(),
+                    );
+                }
             }
             StmtKind::Block(body) => {
                 normalize_java_stmts(
@@ -14244,7 +18518,7 @@ fn normalize_java_expr(
             }
             if matches!(
                 &callee.kind,
-                ExprKind::Ident(name) if matches!(name.as_str(), "__j_print" | "__j_println")
+                ExprKind::Ident(name) if matches!(name.as_str(), "__j_print" | "__j_println" | "__java_print" | "__java_println")
             ) {
                 if let Some(first) = args.get_mut(0) {
                     *first = java_print_arg(first.clone());
@@ -14254,15 +18528,22 @@ fn normalize_java_expr(
                 && args.len() == 1
             {
                 if let ExprKind::Ident(thread_name) = &args[0].value.kind {
-                    let unsafe_target = JAVA_THREAD_UNSAFE_TARGETS
-                        .with(|targets| targets.borrow().contains(thread_name));
-                    if unsafe_target {
-                        return;
-                    }
                     if let Some(mut target) = JAVA_THREAD_TARGETS
                         .with(|targets| targets.borrow().get(thread_name).cloned())
                     {
                         target = java_resolve_runnable_target(target);
+                        normalize_java_expr(
+                            &mut target,
+                            fields,
+                            methods,
+                            static_methods,
+                            static_overloads,
+                            class_members,
+                            current_class,
+                            locals,
+                            local_types,
+                            false,
+                        );
                         java_rewrite_spawned_thread_sleep_expr(&mut target);
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__java_thread_start_with")),
@@ -14274,6 +18555,18 @@ fn normalize_java_expr(
                 }
             }
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                if java_expr_dotted_name(object)
+                    .as_deref()
+                    .is_some_and(|name| java_type_simple_name(name) == "Executors")
+                    && field == "newFixedThreadPool"
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_exec_new")),
+                        args: args.iter().cloned().collect(),
+                        optional: false,
+                    });
+                    return;
+                }
                 if let Some(type_name) = java_expr_dotted_name(object) {
                     if let Some(class_names) = java_lookup_class_members(class_members, &type_name)
                     {
@@ -14294,6 +18587,18 @@ fn normalize_java_expr(
                         }
                     }
                 }
+                normalize_java_expr(
+                    object,
+                    fields,
+                    methods,
+                    static_methods,
+                    static_overloads,
+                    class_members,
+                    current_class,
+                    locals,
+                    local_types,
+                    false,
+                );
                 if let Some(receiver_type) = java_overload_receiver_type(object, local_types) {
                     if let Some(class_names) =
                         java_lookup_class_members(class_members, &receiver_type)
@@ -14330,8 +18635,168 @@ fn normalize_java_expr(
                         return;
                     }
                 }
+                if java_type_is_count_down_latch(java_receiver_type(object, local_types).as_deref())
+                {
+                    if let Some(internal) = java_count_down_latch_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_future_task(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_future_task_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_executor_service(java_receiver_type(object, local_types).as_deref())
+                {
+                    if let Some(internal) = java_executor_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_queue_or_deque(java_receiver_type(object, local_types).as_deref()) {
+                    let receiver_type = java_receiver_type(object, local_types);
+                    if let Some(internal) =
+                        java_queue_method_name(receiver_type.as_deref(), field, args.len())
+                    {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_list_like(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_list_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_spliterator(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_spliterator_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_runtime(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_runtime_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_process_builder(java_receiver_type(object, local_types).as_deref())
+                {
+                    if field == "command" && !args.is_empty() {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__j_pb_command_set")),
+                            args: vec![
+                                Argument::positional((**object).clone()),
+                                Argument::positional(java_args_to_array(args)),
+                            ],
+                            optional: false,
+                        });
+                        return;
+                    }
+                    if let Some(internal) = java_process_builder_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_process(java_receiver_type(object, local_types).as_deref()) {
+                    if let Some(internal) = java_process_method_name(field, args.len()) {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(Argument::positional((**object).clone()));
+                        new_args.extend(args.iter().cloned());
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident(internal)),
+                            args: new_args,
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+                if java_type_is_file(java_receiver_type(object, local_types).as_deref())
+                    && field == "getPath"
+                    && args.is_empty()
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_file_get_path")),
+                        args: vec![Argument::positional((**object).clone())],
+                        optional: false,
+                    });
+                    return;
+                }
+                if java_type_is_redirect(java_receiver_type(object, local_types).as_deref())
+                    && field == "type"
+                    && args.is_empty()
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_pb_redirect_type")),
+                        args: vec![Argument::positional((**object).clone())],
+                        optional: false,
+                    });
+                    return;
+                }
             }
             if let ExprKind::Ident(name) = &callee.kind {
+                if let Some(internal) = java_dotted_static_call_name(name) {
+                    *callee = Box::new(Expression::ident(internal));
+                    return;
+                }
                 if methods.contains(name) && !locals.contains(name) {
                     let method = name.clone();
                     callee.kind = ExprKind::Member {
@@ -14378,7 +18843,25 @@ fn normalize_java_expr(
                 false,
             );
         }
-        ExprKind::Member { object, .. } => {
+        ExprKind::Member { object, field, .. } => {
+            if let Some(class_name) = java_expr_dotted_name(object) {
+                if java_type_simple_name(&class_name) == "Spliterator" {
+                    if let Some(value) = java_spliterator_constant(field) {
+                        *expr = Expression::int(value);
+                        return;
+                    }
+                }
+                if class_name.ends_with("ProcessBuilder.Redirect") {
+                    if matches!(field.as_str(), "PIPE" | "INHERIT" | "DISCARD") {
+                        *expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__j_pb_redirect")),
+                            args: vec![Argument::positional(Expression::string(field))],
+                            optional: false,
+                        });
+                        return;
+                    }
+                }
+            }
             if let Some(type_name) = java_qualified_static_type(object) {
                 if type_name.contains('.') {
                     *object = Box::new(Expression::ident(&type_name));
@@ -14424,7 +18907,7 @@ fn normalize_java_expr(
                 false,
             );
         }
-        ExprKind::Binary { left, right, .. } => {
+        ExprKind::Binary { op, left, right } => {
             normalize_java_expr(
                 left,
                 fields,
@@ -14449,8 +18932,44 @@ fn normalize_java_expr(
                 local_types,
                 false,
             );
+            if *op == BinOp::Add
+                && (java_expr_is_string_value(left, local_types)
+                    || java_expr_is_string_value(right, local_types))
+            {
+                let new_left = (**left).clone();
+                let new_right = (**right).clone();
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__java_string_concat")),
+                    args: vec![
+                        Argument::positional(new_left),
+                        Argument::positional(new_right),
+                    ],
+                    optional: false,
+                });
+                return;
+            }
+            let has_char_numeric_operand = java_expr_is_char_numeric_source(left, local_types)
+                || java_expr_is_char_numeric_source(right, local_types);
+            if matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Mod
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr
+                    | BinOp::UShr
+            ) && (*op != BinOp::Add || has_char_numeric_operand)
+            {
+                *left = Box::new(java_cast_char_numeric_operand((**left).clone(), local_types));
+                *right = Box::new(java_cast_char_numeric_operand((**right).clone(), local_types));
+            }
         }
-        ExprKind::Unary { expr: inner, .. } => {
+        ExprKind::Unary { op, expr: inner } => {
             normalize_java_expr(
                 inner,
                 fields,
@@ -14463,6 +18982,34 @@ fn normalize_java_expr(
                 local_types,
                 is_assignment_target,
             );
+            if matches!(op, UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec)
+                && matches!(&inner.kind, ExprKind::Ident(name) if local_types.get(name).is_some_and(|ty| java_type_simple_name(ty) == "char"))
+            {
+                let delta = if matches!(op, UnaryOp::PreDec | UnaryOp::PostDec) {
+                    -1
+                } else {
+                    1
+                };
+                let target = (**inner).clone();
+                let value = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__j_from_char_code")),
+                    args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__java_char_ord")),
+                            args: vec![Argument::positional(target.clone())],
+                            optional: false,
+                        })),
+                        right: Box::new(Expression::int(delta)),
+                    }))],
+                    optional: false,
+                });
+                *expr = Expression::new(ExprKind::Assign {
+                    target: Box::new(target),
+                    value: Box::new(value),
+                });
+                return;
+            }
             rewrite_java_this_field_update(expr);
         }
         ExprKind::Assign { target, value } => {
@@ -14478,6 +19025,19 @@ fn normalize_java_expr(
                 local_types,
                 false,
             );
+            if matches!(
+                &target.kind,
+                ExprKind::Ident(name)
+                    if local_types.get(name).is_some_and(|ty| {
+                        matches!(
+                            java_type_simple_name(ty),
+                            "byte" | "Byte" | "short" | "Short" | "int" | "Integer" | "long" | "Long"
+                        )
+                    })
+            ) && java_expr_is_char_numeric_source(value, local_types)
+            {
+                **value = java_cast_char_numeric_operand((**value).clone(), local_types);
+            }
             normalize_java_expr(
                 target,
                 fields,
@@ -14579,6 +19139,51 @@ fn normalize_java_expr(
                     &mut lambda_locals,
                     &mut lambda_types,
                 ),
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            normalize_java_expr(
+                class,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            normalize_java_expr(
+                member,
+                fields,
+                methods,
+                static_methods,
+                static_overloads,
+                class_members,
+                current_class,
+                locals,
+                local_types,
+                false,
+            );
+            if let (Some(class_name), ExprKind::Ident(member_name)) =
+                (java_expr_dotted_name(class), &member.kind)
+            {
+                let member_name = member_name.clone();
+                if java_type_simple_name(&class_name) == "Spliterator" {
+                    if let Some(value) = java_spliterator_constant(&member_name) {
+                        *expr = Expression::int(value);
+                    }
+                }
+                if class_name.ends_with("ProcessBuilder.Redirect")
+                    && matches!(member_name.as_str(), "PIPE" | "INHERIT" | "DISCARD")
+                {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__j_pb_redirect")),
+                        args: vec![Argument::positional(Expression::string(&member_name))],
+                        optional: false,
+                    });
+                }
             }
         }
         _ => {}

@@ -19,6 +19,8 @@ pub mod instant_adapter;
 pub mod list_adapter;
 pub mod math_adapter;
 pub mod optional_adapter;
+pub mod random_adapter;
+pub mod reflection_adapter;
 pub mod stream_adapter;
 pub mod string_adapter;
 pub mod uuid_adapter;

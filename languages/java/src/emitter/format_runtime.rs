@@ -268,6 +268,11 @@ fn char_at(s: Expression, i: Expression) -> Expression {
 /// The whole prelude, prepended to every Java compilation unit by the
 /// walker (same as the libc runtime for C).
 pub fn prelude() -> Vec<Statement> {
+    static CACHE: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(build_prelude).clone()
+}
+
+fn build_prelude() -> Vec<Statement> {
     let mut out = Vec::new();
 
     // PrintStream identity sentinel + pending-line buffer.
@@ -2821,6 +2826,7 @@ pub fn prelude() -> Vec<Statement> {
     ));
 
     out.append(&mut monitor_fns());
+    out.append(&mut process_fns());
     out.append(&mut objects_fns());
     out.append(&mut properties_fns());
     out.append(&mut base64_fns());
@@ -2830,6 +2836,7 @@ pub fn prelude() -> Vec<Statement> {
     out.append(&mut thread_fns());
     out.append(&mut regex_fns());
     out.append(&mut url_fns());
+    out.append(&mut spliterator_fns());
     out.push(sprintf_fn());
     out
 }
@@ -2863,6 +2870,240 @@ fn monitor_fns() -> Vec<Statement> {
             }),
         ],
     ));
+    out
+}
+
+fn process_fns() -> Vec<Statement> {
+    let mut out = Vec::new();
+
+    out.push(var_decl(
+        "__j_runtime_singleton",
+        obj_props(vec![("__kind", str_lit("Runtime"))]),
+    ));
+    out.push(function_stmt(
+        "__j_runtime_get",
+        vec![],
+        vec![ret(ident("__j_runtime_singleton"))],
+    ));
+    out.push(function_stmt(
+        "__j_runtime_processors",
+        vec!["rt"],
+        vec![ret(int_lit(1))],
+    ));
+    out.push(function_stmt(
+        "__j_runtime_free_memory",
+        vec!["rt"],
+        vec![ret(int_lit(0))],
+    ));
+    out.push(function_stmt(
+        "__j_runtime_total_memory",
+        vec!["rt"],
+        vec![ret(int_lit(1))],
+    ));
+    out.push(function_stmt(
+        "__j_runtime_max_memory",
+        vec!["rt"],
+        vec![ret(int_lit(1))],
+    ));
+    out.push(function_stmt(
+        "__j_runtime_noop",
+        vec!["rt"],
+        vec![ret(null_lit())],
+    ));
+    out.push(function_stmt(
+        "__j_file_new",
+        vec!["path"],
+        vec![ret(obj_props(vec![
+            ("__kind", str_lit("File")),
+            ("path", to_str(ident("path"))),
+        ]))],
+    ));
+    out.push(function_stmt(
+        "__j_file_get_path",
+        vec!["file"],
+        vec![ret(fld("file", "path"))],
+    ));
+    out.push(var_decl(
+        "__j_pb_redirect_pipe",
+        obj_props(vec![
+            ("__kind", str_lit("Redirect")),
+            ("name", str_lit("PIPE")),
+        ]),
+    ));
+    out.push(var_decl(
+        "__j_pb_redirect_inherit",
+        obj_props(vec![
+            ("__kind", str_lit("Redirect")),
+            ("name", str_lit("INHERIT")),
+        ]),
+    ));
+    out.push(var_decl(
+        "__j_pb_redirect_discard",
+        obj_props(vec![
+            ("__kind", str_lit("Redirect")),
+            ("name", str_lit("DISCARD")),
+        ]),
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect",
+        vec!["kind"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, to_str(ident("kind")), str_lit("INHERIT")),
+                vec![ret(ident("__j_pb_redirect_inherit"))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, to_str(ident("kind")), str_lit("DISCARD")),
+                vec![ret(ident("__j_pb_redirect_discard"))],
+                None,
+            ),
+            ret(ident("__j_pb_redirect_pipe")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_type",
+        vec!["redirect"],
+        vec![ret(fld("redirect", "name"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_new",
+        vec!["cmd"],
+        vec![
+            var_decl("actual", ident("cmd")),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::Eq, fld("cmd", "length"), int_lit(1)),
+                    binary(
+                        BinOp::NotEq,
+                        member(index_expr(ident("cmd"), int_lit(0)), "length"),
+                        undefined_lit(),
+                    ),
+                ),
+                vec![assign(
+                    ident("actual"),
+                    index_expr(ident("cmd"), int_lit(0)),
+                )],
+                None,
+            ),
+            ret(obj_props(vec![
+                ("__kind", str_lit("ProcessBuilder")),
+                ("cmd", ident("actual")),
+                ("dir", null_lit()),
+                ("env", new_expr("HashMap", vec![])),
+                ("redirectErrorStream", bool_lit(false)),
+                ("redirectInput", ident("__j_pb_redirect_pipe")),
+                ("redirectOutput", ident("__j_pb_redirect_pipe")),
+                ("redirectError", ident("__j_pb_redirect_pipe")),
+            ])),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_pb_command_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "cmd"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_command_set",
+        vec!["pb", "cmd"],
+        vec![assign(fld("pb", "cmd"), ident("cmd")), ret(ident("pb"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_directory_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "dir"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_directory_set",
+        vec!["pb", "dir"],
+        vec![assign(fld("pb", "dir"), ident("dir")), ret(ident("pb"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_error_stream_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "redirectErrorStream"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_error_stream_set",
+        vec!["pb", "value"],
+        vec![
+            assign(fld("pb", "redirectErrorStream"), ident("value")),
+            ret(ident("pb")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_pb_environment",
+        vec!["pb"],
+        vec![ret(fld("pb", "env"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_inherit_io",
+        vec!["pb"],
+        vec![ret(ident("pb"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_input_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "redirectInput"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_output_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "redirectOutput"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_output_set",
+        vec!["pb", "redirect"],
+        vec![
+            assign(fld("pb", "redirectOutput"), ident("redirect")),
+            ret(ident("pb")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_pb_redirect_error_get",
+        vec!["pb"],
+        vec![ret(fld("pb", "redirectError"))],
+    ));
+    out.push(function_stmt(
+        "__j_pb_start",
+        vec!["pb"],
+        vec![ret(obj_props(vec![
+            ("__kind", str_lit("Process")),
+            ("exit", int_lit(0)),
+            ("alive", bool_lit(false)),
+            ("input", obj_lit()),
+        ]))],
+    ));
+    out.push(function_stmt(
+        "__j_process_wait_for",
+        vec!["p"],
+        vec![
+            assign(fld("p", "alive"), bool_lit(false)),
+            ret(fld("p", "exit")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_process_is_alive",
+        vec!["p"],
+        vec![ret(fld("p", "alive"))],
+    ));
+    out.push(function_stmt(
+        "__j_process_input_stream",
+        vec!["p"],
+        vec![ret(fld("p", "input"))],
+    ));
+    out.push(function_stmt(
+        "__j_process_exit_value",
+        vec!["p"],
+        vec![ret(fld("p", "exit"))],
+    ));
+    out.push(function_stmt(
+        "__j_process_destroy",
+        vec!["p"],
+        vec![assign(fld("p", "alive"), bool_lit(false)), ret(null_lit())],
+    ));
+
     out
 }
 
@@ -3470,6 +3711,11 @@ fn url_fns() -> Vec<Statement> {
         vec![
             var_decl("u", call("__j_url_parse", vec![ident("spec")])),
             assign(fld("u", "__spec"), to_str(ident("spec"))),
+            assign(
+                fld("u", "__scheme"),
+                call("__j_url_protocol", vec![ident("u")]),
+            ),
+            assign(fld("u", "__opaque"), bool_lit(false)),
             ret(ident("u")),
         ],
     ));
@@ -3557,6 +3803,143 @@ fn url_fns() -> Vec<Statement> {
             ),
             assign(fld("u", "__path"), ident("path")),
             ret(ident("u")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_uri_new",
+        vec!["spec"],
+        vec![
+            assign(ident("spec"), to_str(ident("spec"))),
+            var_decl(
+                "scheme_sep",
+                call_expr(member(ident("spec"), "indexOf"), vec![str_lit("://")]),
+            ),
+            if_stmt(
+                binary(BinOp::GtEq, ident("scheme_sep"), int_lit(0)),
+                vec![ret(call("__j_url_new", vec![ident("spec")]))],
+                None,
+            ),
+            var_decl(
+                "colon",
+                call_expr(member(ident("spec"), "indexOf"), vec![str_lit(":")]),
+            ),
+            if_stmt(
+                binary(BinOp::GtEq, ident("colon"), int_lit(0)),
+                vec![ret(obj_props(vec![
+                    ("__spec", ident("spec")),
+                    (
+                        "__scheme",
+                        call_expr(
+                            member(ident("spec"), "substring"),
+                            vec![int_lit(0), ident("colon")],
+                        ),
+                    ),
+                    (
+                        "__ssp",
+                        call_expr(
+                            member(ident("spec"), "substring"),
+                            vec![add(ident("colon"), int_lit(1))],
+                        ),
+                    ),
+                    ("__opaque", bool_lit(true)),
+                    ("href", ident("spec")),
+                    (
+                        "protocol",
+                        add(
+                            call_expr(
+                                member(ident("spec"), "substring"),
+                                vec![int_lit(0), ident("colon")],
+                            ),
+                            str_lit(":"),
+                        ),
+                    ),
+                    ("hostname", str_lit("")),
+                    ("host", str_lit("")),
+                    ("port", str_lit("")),
+                    ("pathname", str_lit("")),
+                    ("search", str_lit("")),
+                    ("hash", str_lit("")),
+                    ("username", str_lit("")),
+                    ("password", str_lit("")),
+                ]))],
+                None,
+            ),
+            ret(obj_props(vec![
+                ("__spec", ident("spec")),
+                ("__scheme", null_lit()),
+                ("__ssp", ident("spec")),
+                ("__opaque", bool_lit(false)),
+                ("href", ident("spec")),
+                ("protocol", str_lit("")),
+                ("hostname", str_lit("")),
+                ("host", str_lit("")),
+                ("port", str_lit("")),
+                ("pathname", ident("spec")),
+                ("search", str_lit("")),
+                ("hash", str_lit("")),
+                ("username", str_lit("")),
+                ("password", str_lit("")),
+            ])),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_uri_make3",
+        vec!["scheme", "host", "path"],
+        vec![ret(call(
+            "__j_uri_new",
+            vec![add(
+                add(
+                    add(to_str(ident("scheme")), str_lit("://")),
+                    to_str(ident("host")),
+                ),
+                to_str(ident("path")),
+            )],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_uri_make7",
+        vec!["scheme", "user", "host", "port", "path", "query", "frag"],
+        vec![
+            var_decl("spec", add(to_str(ident("scheme")), str_lit("://"))),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::NotEq, ident("user"), null_lit()),
+                    binary(BinOp::NotEq, to_str(ident("user")), str_lit("")),
+                ),
+                vec![assign(
+                    ident("spec"),
+                    add(add(ident("spec"), to_str(ident("user"))), str_lit("@")),
+                )],
+                None,
+            ),
+            assign(ident("spec"), add(ident("spec"), to_str(ident("host")))),
+            if_stmt(
+                binary(BinOp::GtEq, ident("port"), int_lit(0)),
+                vec![assign(
+                    ident("spec"),
+                    add(add(ident("spec"), str_lit(":")), to_str(ident("port"))),
+                )],
+                None,
+            ),
+            assign(ident("spec"), add(ident("spec"), to_str(ident("path")))),
+            if_stmt(
+                binary(BinOp::NotEq, ident("query"), null_lit()),
+                vec![assign(
+                    ident("spec"),
+                    add(add(ident("spec"), str_lit("?")), to_str(ident("query"))),
+                )],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::NotEq, ident("frag"), null_lit()),
+                vec![assign(
+                    ident("spec"),
+                    add(add(ident("spec"), str_lit("#")), to_str(ident("frag"))),
+                )],
+                None,
+            ),
+            ret(call("__j_uri_new", vec![ident("spec")])),
         ],
     ));
     // equals / hashCode / sameFile — java compares the URL text.
@@ -3809,10 +4192,263 @@ fn url_fns() -> Vec<Statement> {
         ],
     ));
     out.push(function_stmt(
+        "__j_uri_is_absolute",
+        vec!["u"],
+        vec![ret(binary(BinOp::NotEq, fld("u", "__scheme"), null_lit()))],
+    ));
+    out.push(function_stmt(
+        "__j_uri_is_opaque",
+        vec!["u"],
+        vec![ret(binary(BinOp::Eq, fld("u", "__opaque"), bool_lit(true)))],
+    ));
+    out.push(function_stmt(
+        "__j_uri_ssp",
+        vec!["u"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, fld("u", "__opaque"), bool_lit(true)),
+                vec![ret(fld("u", "__ssp"))],
+                None,
+            ),
+            var_decl("s", call("__j_url_to_string", vec![ident("u")])),
+            var_decl(
+                "i",
+                call_expr(member(ident("s"), "indexOf"), vec![str_lit(":")]),
+            ),
+            if_stmt(
+                binary(BinOp::GtEq, ident("i"), int_lit(0)),
+                vec![ret(call_expr(
+                    member(ident("s"), "substring"),
+                    vec![add(ident("i"), int_lit(1))],
+                ))],
+                None,
+            ),
+            ret(ident("s")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_uri_normalize",
+        vec!["u"],
+        vec![ret(call(
+            "__j_uri_new",
+            vec![call("__j_url_to_string", vec![ident("u")])],
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_uri_resolve",
+        vec!["base", "rel"],
+        vec![
+            if_stmt(
+                call("__j_uri_is_absolute", vec![ident("rel")]),
+                vec![ret(ident("rel"))],
+                None,
+            ),
+            ret(call(
+                "__j_uri_new",
+                vec![member(
+                    call(
+                        "__j_url_parse",
+                        vec![
+                            call("__j_url_to_string", vec![ident("rel")]),
+                            fld("base", "href"),
+                        ],
+                    ),
+                    "href",
+                )],
+            )),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_uri_relativize",
+        vec!["base", "target"],
+        vec![
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(
+                        BinOp::Eq,
+                        fld("base", "__scheme"),
+                        fld("target", "__scheme"),
+                    ),
+                    binary(BinOp::Eq, fld("base", "host"), fld("target", "host")),
+                ),
+                vec![
+                    var_decl("p", fld("target", "pathname")),
+                    var_decl(
+                        "slash",
+                        call_expr(member(ident("p"), "lastIndexOf"), vec![str_lit("/")]),
+                    ),
+                    if_stmt(
+                        binary(BinOp::GtEq, ident("slash"), int_lit(0)),
+                        vec![ret(call(
+                            "__j_uri_new",
+                            vec![add(
+                                str_lit("../"),
+                                call_expr(
+                                    member(ident("p"), "substring"),
+                                    vec![add(ident("slash"), int_lit(1))],
+                                ),
+                            )],
+                        ))],
+                        None,
+                    ),
+                ],
+                None,
+            ),
+            ret(ident("target")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_uri_compare_to",
+        vec!["a", "b"],
+        vec![
+            var_decl("as", call("__j_url_to_string", vec![ident("a")])),
+            var_decl("bs", call("__j_url_to_string", vec![ident("b")])),
+            if_stmt(
+                binary(BinOp::Eq, ident("as"), ident("bs")),
+                vec![ret(int_lit(0))],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Lt, ident("as"), ident("bs")),
+                vec![ret(int_lit(-1))],
+                None,
+            ),
+            ret(int_lit(1)),
+        ],
+    ));
+    out.push(function_stmt(
         "__j_url_to_string",
         vec!["u"],
         vec![ret(fld("u", "href"))],
     ));
+    out
+}
+
+fn spliterator_fns() -> Vec<Statement> {
+    let mut out = Vec::new();
+
+    out.push(function_stmt(
+        "__j_spliterator_from_array",
+        vec!["arr"],
+        vec![ret(obj_props(vec![
+            ("__items", ident("arr")),
+            ("__index", int_lit(0)),
+            ("__end", member(ident("arr"), "length")),
+        ]))],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_estimate_size",
+        vec!["sp"],
+        vec![ret(sub(fld("sp", "__end"), fld("sp", "__index")))],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_try_advance",
+        vec!["sp", "fn"],
+        vec![
+            if_stmt(
+                binary(BinOp::GtEq, fld("sp", "__index"), fld("sp", "__end")),
+                vec![ret(bool_lit(false))],
+                None,
+            ),
+            var_decl(
+                "value",
+                index_expr(fld("sp", "__items"), fld("sp", "__index")),
+            ),
+            assign(fld("sp", "__index"), add(fld("sp", "__index"), int_lit(1))),
+            stmt(StmtKind::Expr(call_expr(ident("fn"), vec![ident("value")]))),
+            ret(bool_lit(true)),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_for_each_remaining",
+        vec!["sp", "fn"],
+        vec![
+            while_stmt(
+                binary(BinOp::Lt, fld("sp", "__index"), fld("sp", "__end")),
+                vec![
+                    var_decl(
+                        "value",
+                        index_expr(fld("sp", "__items"), fld("sp", "__index")),
+                    ),
+                    assign(fld("sp", "__index"), add(fld("sp", "__index"), int_lit(1))),
+                    stmt(StmtKind::Expr(call_expr(ident("fn"), vec![ident("value")]))),
+                ],
+            ),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_characteristics",
+        vec!["sp"],
+        vec![
+            // ORDERED | SIZED | NONNULL | SUBSIZED
+            ret(int_lit(0x0010 + 0x0040 + 0x0100 + 0x4000)),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_try_split",
+        vec!["sp"],
+        vec![
+            var_decl(
+                "remaining",
+                call("__j_spliterator_estimate_size", vec![ident("sp")]),
+            ),
+            if_stmt(
+                binary(BinOp::LtEq, ident("remaining"), int_lit(1)),
+                vec![ret(null_lit())],
+                None,
+            ),
+            var_decl("start", fld("sp", "__index")),
+            var_decl(
+                "mid",
+                add(
+                    ident("start"),
+                    call_expr(
+                        member(ident("Math"), "floor"),
+                        vec![div(ident("remaining"), int_lit(2))],
+                    ),
+                ),
+            ),
+            assign(fld("sp", "__index"), ident("mid")),
+            ret(obj_props(vec![
+                ("__items", fld("sp", "__items")),
+                ("__index", ident("start")),
+                ("__end", ident("mid")),
+            ])),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_spliterator_get_comparator",
+        vec!["sp"],
+        vec![ret(null_lit())],
+    ));
+    out.push(function_stmt(
+        "__j_stream_support_stream",
+        vec!["sp", "parallel"],
+        vec![
+            var_decl(
+                "arr",
+                call_expr(
+                    member(fld("sp", "__items"), "slice"),
+                    vec![fld("sp", "__index"), fld("sp", "__end")],
+                ),
+            ),
+            assign(fld("arr", "__parallel"), ident("parallel")),
+            assign(fld("sp", "__index"), fld("sp", "__end")),
+            ret(ident("arr")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_stream_is_parallel",
+        vec!["stream"],
+        vec![ret(binary(
+            BinOp::Eq,
+            fld("stream", "__parallel"),
+            bool_lit(true),
+        ))],
+    ));
+
     out
 }
 
@@ -5759,6 +6395,18 @@ fn thread_fns() -> Vec<Statement> {
                 vec![ret(call_expr(ident("r"), vec![]))],
                 None,
             ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::Eq, typeof_expr(ident("r")), str_lit("object")),
+                    binary(BinOp::StrictNotEq, fld("r", "job"), undefined_lit()),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("r")]))),
+                    ret(null_lit()),
+                ],
+                None,
+            ),
             ret(call_member(ident("r"), "run", vec![])),
         ],
     ));
@@ -5906,6 +6554,295 @@ fn thread_fns() -> Vec<Statement> {
             assign(fld("__j_current_thread", "interrupted"), bool_lit(false)),
             ret(ident("v")),
         ],
+    ));
+
+    out.push(function_stmt(
+        "__j_callable_call",
+        vec!["r"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, ident("r"), null_lit()),
+                vec![ret(null_lit())],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, typeof_expr(ident("r")), str_lit("function")),
+                vec![ret(call_expr(ident("r"), vec![]))],
+                None,
+            ),
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::Eq, typeof_expr(ident("r")), str_lit("object")),
+                    binary(BinOp::StrictNotEq, member(ident("r"), "job"), undefined_lit()),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("r")]))),
+                    ret(null_lit()),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::NotEq, member(ident("r"), "call"), undefined_lit()),
+                vec![ret(call_member(ident("r"), "call", vec![]))],
+                None,
+            ),
+            ret(call("__j_runnable_run", vec![ident("r")])),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_latch_new",
+        vec!["count"],
+        vec![
+            var_decl("l", obj()),
+            assign(fld("l", "count"), ident("count")),
+            ret(ident("l")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_latch_count_down",
+        vec!["l"],
+        vec![
+            if_stmt(
+                binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
+                vec![assign(fld("l", "count"), sub(fld("l", "count"), int_lit(1)))],
+                None,
+            ),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_latch_get_count",
+        vec!["l"],
+        vec![ret(fld("l", "count"))],
+    ));
+    out.push(function_stmt(
+        "__j_latch_await",
+        vec!["l"],
+        vec![
+            if_stmt(
+                binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
+                vec![stmt(StmtKind::Expr(call("__java_thread_sleep", vec![int_lit(5)])))],
+                None,
+            ),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_latch_await_timeout",
+        vec!["l", "time", "unit"],
+        vec![ret(binary(BinOp::LtEq, fld("l", "count"), int_lit(0)))],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_new",
+        vec!["job", "result", "hasPreset"],
+        vec![
+            var_decl("f", obj()),
+            assign(fld("f", "job"), ident("job")),
+            assign(fld("f", "preset"), ident("result")),
+            assign(fld("f", "hasPreset"), ident("hasPreset")),
+            assign(fld("f", "done"), bool_lit(false)),
+            assign(fld("f", "cancelled"), bool_lit(false)),
+            assign(fld("f", "result"), null_lit()),
+            assign(fld("f", "error"), null_lit()),
+            ret(ident("f")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_run",
+        vec!["f"],
+        vec![
+            if_stmt(
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::Eq, fld("f", "done"), bool_lit(true)),
+                    binary(BinOp::Eq, fld("f", "cancelled"), bool_lit(true)),
+                ),
+                vec![ret(null_lit())],
+                None,
+            ),
+            stmt(StmtKind::Try {
+                body: vec![if_stmt(
+                    binary(BinOp::Eq, fld("f", "hasPreset"), bool_lit(true)),
+                    vec![
+                        stmt(StmtKind::Expr(call("__j_runnable_run", vec![fld("f", "job")]))),
+                        assign(fld("f", "result"), fld("f", "preset")),
+                    ],
+                    Some(vec![assign(
+                        fld("f", "result"),
+                        call("__j_callable_call", vec![fld("f", "job")]),
+                    )]),
+                )],
+                catches: vec![CatchClause {
+                    types: vec!["Exception".to_string(), "Throwable".to_string()],
+                    var_name: Some("e".to_string()),
+                    stack_var: None,
+                    body: vec![assign(fld("f", "error"), ident("e"))],
+                    when_clause: None,
+                }],
+                else_body: None,
+                finally: Some(vec![assign(fld("f", "done"), bool_lit(true))]),
+            }),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_get",
+        vec!["f", "time", "unit"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, fld("f", "cancelled"), bool_lit(true)),
+                vec![stmt(StmtKind::Throw {
+                    expr: Some(call(
+                        "__j_exc",
+                        vec![
+                            str_lit("CancellationException"),
+                            arr(vec![
+                                str_lit("CancellationException"),
+                                str_lit("RuntimeException"),
+                                str_lit("Exception"),
+                                str_lit("Throwable"),
+                            ]),
+                            str_lit("cancelled"),
+                            undefined_lit(),
+                        ],
+                    )),
+                    cause: None,
+                })],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::Eq, fld("f", "done"), bool_lit(false)),
+                vec![stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("f")])) )],
+                None,
+            ),
+            if_stmt(
+                binary(BinOp::NotEq, fld("f", "error"), null_lit()),
+                vec![stmt(StmtKind::Throw {
+                    expr: Some(call(
+                        "__j_exc",
+                        vec![
+                            str_lit("ExecutionException"),
+                            arr(vec![
+                                str_lit("ExecutionException"),
+                                str_lit("Exception"),
+                                str_lit("Throwable"),
+                            ]),
+                            str_lit("execution failed"),
+                            fld("f", "error"),
+                        ],
+                    )),
+                    cause: None,
+                })],
+                None,
+            ),
+            ret(fld("f", "result")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_cancel",
+        vec!["f", "mayInterrupt"],
+        vec![
+            if_stmt(
+                binary(BinOp::Eq, fld("f", "done"), bool_lit(false)),
+                vec![
+                    assign(fld("f", "cancelled"), bool_lit(true)),
+                    assign(fld("f", "done"), bool_lit(true)),
+                ],
+                None,
+            ),
+            ret(fld("f", "cancelled")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_is_done",
+        vec!["f"],
+        vec![ret(binary(BinOp::Eq, fld("f", "done"), bool_lit(true)))],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_is_cancelled",
+        vec!["f"],
+        vec![ret(binary(
+            BinOp::Eq,
+            fld("f", "cancelled"),
+            bool_lit(true),
+        ))],
+    ));
+    out.push(function_stmt(
+        "__j_future_task_run_and_reset",
+        vec!["f"],
+        vec![
+            assign(fld("f", "done"), bool_lit(false)),
+            assign(fld("f", "cancelled"), bool_lit(false)),
+            assign(fld("f", "error"), null_lit()),
+            assign(fld("f", "done"), bool_lit(false)),
+            ret(bool_lit(true)),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_exec_new",
+        vec!["size"],
+        vec![
+            var_decl("p", obj()),
+            assign(fld("p", "shutdown"), bool_lit(false)),
+            assign(fld("p", "size"), ident("size")),
+            ret(ident("p")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_exec_submit",
+        vec!["p", "job"],
+        vec![
+            if_stmt(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::Eq, typeof_expr(ident("job")), str_lit("object")),
+                    binary(BinOp::StrictNotEq, member(ident("job"), "job"), undefined_lit()),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("job")]))),
+                    ret(ident("job")),
+                ],
+                None,
+            ),
+            var_decl(
+                "f",
+                call(
+                    "__j_future_task_new",
+                    vec![ident("job"), undefined_lit(), bool_lit(false)],
+                ),
+            ),
+            stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("f")]))),
+            ret(ident("f")),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_exec_execute",
+        vec!["p", "job"],
+        vec![
+            stmt(StmtKind::Expr(call("__j_exec_submit", vec![ident("p"), ident("job")]))),
+            ret(null_lit()),
+        ],
+    ));
+    out.push(function_stmt(
+        "__j_exec_shutdown",
+        vec!["p"],
+        vec![assign(fld("p", "shutdown"), bool_lit(true)), ret(null_lit())],
+    ));
+    out.push(function_stmt(
+        "__j_exec_is_shutdown",
+        vec!["p"],
+        vec![ret(binary(BinOp::Eq, fld("p", "shutdown"), bool_lit(true)))],
+    ));
+    out.push(function_stmt(
+        "__j_exec_await",
+        vec!["p", "time", "unit"],
+        vec![ret(bool_lit(true))],
+    ));
+    out.push(function_stmt(
+        "__j_exec_shutdown_now",
+        vec!["p"],
+        vec![assign(fld("p", "shutdown"), bool_lit(true)), ret(arr_lit())],
     ));
 
     out.push(function_stmt(

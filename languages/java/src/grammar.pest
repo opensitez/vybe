@@ -423,12 +423,14 @@ primary_chain = {
 }
 
 chain_suffix = {
-    method_call_suffix
+    inner_new_suffix
+    | method_call_suffix
     | call_suffix
     | member_access_suffix
     | index_suffix
 }
 
+inner_new_suffix = { "." ~ "new" ~ type_ref ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 method_call_suffix  = { "." ~ type_args? ~ ident_name ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 call_suffix         = { type_args? ~ "(" ~ argument_list? ~ ")" }
 member_access_suffix = { "." ~ ident_or_keyword }

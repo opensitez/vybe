@@ -9,6 +9,7 @@ use vybe_emitter::{
     functions::create_function_chunk,
     heap,
     instructions::{core_wasm, host},
+    sorted_collection,
 };
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -105,16 +106,16 @@ fn emit_sublist_increment_to(
     set_object_prop_from_local(chunks, current, list, SUBLIST_TO_KEY, next, line);
 }
 
-const COMPARATOR_KEY: &str = "__java_comparator";
+const COMPARATOR_KEY: &str = sorted_collection::COMPARATOR_KEY;
 const IMMUTABLE_MAP_KEY: &str = "__java_immutable_map";
 const IMMUTABLE_LIST_KEY: &str = "__java_immutable_list";
-const SET_COLLECTION_KEY: &str = "__java_set_collection";
+const SET_COLLECTION_KEY: &str = sorted_collection::SET_COLLECTION_KEY;
 const SUBLIST_KEY: &str = "__java_sublist";
 const SUBLIST_PARENT_KEY: &str = "__java_sublist_parent";
 const SUBLIST_FROM_KEY: &str = "__java_sublist_from";
 const SUBLIST_TO_KEY: &str = "__java_sublist_to";
-const DESCENDING_MAP_KEY: &str = "__java_descending_map";
-const DESCENDING_SET_KEY: &str = "__java_descending_set";
+const DESCENDING_MAP_KEY: &str = sorted_collection::DESCENDING_MAP_KEY;
+const DESCENDING_SET_KEY: &str = sorted_collection::DESCENDING_SET_KEY;
 const ACCESS_ORDER_MAP_KEY: &str = "__java_access_order_map";
 const IDENTITY_MAP_KEY: &str = "__java_identity_map";
 const CONCURRENT_MAP_KEY: &str = "__java_concurrent_map";
@@ -127,43 +128,16 @@ const JAVA_THREAD_ALIVE_KEY: &str = "alive";
 const IDENTITY_KEY_PROP: &str = "__java_identity_key";
 const IDENTITY_NEXT_KEY: &str = "__java_identity_next";
 const VECTOR_CAPACITY_KEY: &str = "__java_vector_capacity";
+const BLOCKING_QUEUE_CAPACITY_KEY: &str = "__java_blocking_queue_capacity";
 const ENUM_ITEMS_KEY: &str = "__java_enum_items";
 const ENUM_INDEX_KEY: &str = "__java_enum_index";
 
 fn emit_comparator(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
-    get(&mut chunks[current], value, line);
-    chunks[current].emit_string_const(COMPARATOR_KEY, line);
-    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    sorted_collection::emit_comparator(chunks, current, value, line);
 }
 
 fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
-    let comparator = chunks[current].alloc_scratch(1);
-    emit_comparator(chunks, current, value, line);
-    set(&mut chunks[current], comparator, line);
-    get(&mut chunks[current], comparator, line);
-    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
-    chunks[current].emit_string_const("function", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], value, line);
-    get(&mut chunks[current], comparator, line);
-    collections::emit_sort_with_comparator(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], value, line);
-    collections::emit_sort(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], value, line);
-    chunks[current].emit_string_const(DESCENDING_SET_KEY, line);
-    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], value, line);
-    collections::emit_reverse(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
+    sorted_collection::emit_sort_if_ordered(chunks, current, value, line);
 }
 
 fn emit_java_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
@@ -205,14 +179,7 @@ pub fn emit_mark_immutable_list(chunks: &mut [Chunk], current: usize, line: u32)
 }
 
 pub fn emit_mark_set_collection(chunks: &mut [Chunk], current: usize, line: u32) {
-    let list = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], list, line);
-    get(&mut chunks[current], list, line);
-    chunks[current].emit_string_const(SET_COLLECTION_KEY, line);
-    chunks[current].emit_bool_const(true, line);
-    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
-    get(&mut chunks[current], list, line);
+    sorted_collection::emit_mark_set_collection(chunks, current, line);
 }
 
 pub fn emit_set_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -508,31 +475,7 @@ pub fn emit_sorted_collection_new(
     map: bool,
     line: u32,
 ) {
-    let comparator = chunks[current].alloc_scratch(1);
-    if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
-    }
-    set(&mut chunks[current], comparator, line);
-    if map {
-        collections::emit_map_new(chunks, current, line);
-    } else {
-        collections::emit_array_new(chunks, current, 0, line);
-    }
-    let collection = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], collection, line);
-    get(&mut chunks[current], collection, line);
-    chunks[current].emit_string_const(COMPARATOR_KEY, line);
-    get(&mut chunks[current], comparator, line);
-    host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
-    if !map {
-        get(&mut chunks[current], collection, line);
-        chunks[current].emit_string_const(SET_COLLECTION_KEY, line);
-        chunks[current].emit_bool_const(true, line);
-        host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
-        chunks[current].emit_op(Op::DROP, line);
-    }
-    get(&mut chunks[current], collection, line);
+    sorted_collection::emit_sorted_collection_new(chunks, current, argc, map, line);
 }
 
 pub fn emit_priority_queue_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2748,24 +2691,7 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_sorted_add(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(1);
-    let list = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], value, line);
-    set(&mut chunks[current], list, line);
-    get(&mut chunks[current], list, line);
-    get(&mut chunks[current], value, line);
-    collections::emit_contains(chunks, current, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_bool_const(false, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], list, line);
-    get(&mut chunks[current], value, line);
-    collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    emit_sort_if_ordered(chunks, current, list, line);
-    chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_end(line);
+    sorted_collection::emit_sorted_add(chunks, current, line);
 }
 
 pub fn emit_priority_add(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2980,6 +2906,280 @@ pub fn emit_hashtable_elements(chunks: &mut [Chunk], current: usize, line: u32) 
     emit_enumeration_from_array(chunks, current, line);
 }
 
+fn emit_set_blocking_queue_capacity(
+    chunks: &mut [Chunk],
+    current: usize,
+    queue: u16,
+    capacity: u16,
+    line: u32,
+) {
+    set_object_prop_from_local(
+        chunks,
+        current,
+        queue,
+        BLOCKING_QUEUE_CAPACITY_KEY,
+        capacity,
+        line,
+    );
+}
+
+fn emit_get_blocking_queue_capacity(chunks: &mut [Chunk], current: usize, queue: u16, line: u32) {
+    get_object_prop(chunks, current, queue, BLOCKING_QUEUE_CAPACITY_KEY, line);
+}
+
+pub fn emit_copy_on_write_list_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        collections::emit_array_new(chunks, current, 0, line);
+    } else {
+        collections::emit_clone(chunks, current, line);
+    }
+}
+
+pub fn emit_linked_blocking_queue_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    let capacity = chunks[current].alloc_scratch(1);
+    if argc == 0 {
+        collections::emit_array_new(chunks, current, 0, line);
+        set(&mut chunks[current], queue, line);
+        chunks[current].emit_i32_const(i32::MAX, line);
+        set(&mut chunks[current], capacity, line);
+    } else {
+        let arg = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], arg, line);
+        get(&mut chunks[current], arg, line);
+        host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+        chunks[current].emit_if_value(line);
+        get(&mut chunks[current], arg, line);
+        collections::emit_clone(chunks, current, line);
+        set(&mut chunks[current], queue, line);
+        chunks[current].emit_i32_const(i32::MAX, line);
+        set(&mut chunks[current], capacity, line);
+        chunks[current].emit_else(line);
+        collections::emit_array_new(chunks, current, 0, line);
+        set(&mut chunks[current], queue, line);
+        get(&mut chunks[current], arg, line);
+        set(&mut chunks[current], capacity, line);
+        chunks[current].emit_end(line);
+    }
+    emit_set_blocking_queue_capacity(chunks, current, queue, capacity, line);
+    get(&mut chunks[current], queue, line);
+}
+
+pub fn emit_blocking_queue_remaining_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], queue, line);
+    emit_get_blocking_queue_capacity(chunks, current, queue, line);
+    get(&mut chunks[current], queue, line);
+    collections::emit_len(chunks, current, line);
+    emit_dyn_sub(chunks, current, line);
+}
+
+pub fn emit_blocking_queue_offer(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    throw_on_full: bool,
+    line: u32,
+) {
+    if argc > 2 {
+        for _ in 2..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+    }
+    let value = chunks[current].alloc_scratch(1);
+    let queue = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], queue, line);
+    get(&mut chunks[current], queue, line);
+    collections::emit_len(chunks, current, line);
+    emit_get_blocking_queue_capacity(chunks, current, queue, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], queue, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    if throw_on_full {
+        emit_java_exception_throw(chunks, current, "IllegalStateException", line);
+    } else {
+        chunks[current].emit_bool_const(false, line);
+    }
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_blocking_queue_put(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let queue = chunks[current].alloc_scratch(1);
+    let done = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], queue, line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], done, line);
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let outer = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], queue, line);
+    collections::emit_len(chunks, current, line);
+    emit_get_blocking_queue_capacity(chunks, current, queue, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], queue, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], done, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_f64_const(1.0, line);
+    vybe_emitter::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], done, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_blocking_queue_take(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    let result = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], queue, line);
+    chunks[current].emit_op(Op::NULL, line);
+    set(&mut chunks[current], result, line);
+    let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
+    let outer = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], queue, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], queue, line);
+    emit_poll(chunks, current, false, line);
+    set(&mut chunks[current], result, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_f64_const(1.0, line);
+    vybe_emitter::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], result, line);
+}
+
+pub fn emit_blocking_queue_poll(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        for _ in 1..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+    }
+    emit_queue_poll(chunks, current, line);
+}
+
+pub fn emit_queue_remove_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_queue_poll(chunks, current, line);
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_java_exception_throw(chunks, current, "java.util.NoSuchElementException", line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], value, line);
+}
+
+pub fn emit_queue_element_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_peek(chunks, current, false, line);
+    let value = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_java_exception_throw(chunks, current, "java.util.NoSuchElementException", line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], value, line);
+}
+
+pub fn emit_blocking_queue_drain_to(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let max = if argc >= 3 {
+        let slot = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+    let dest = chunks[current].alloc_scratch(1);
+    let queue = chunks[current].alloc_scratch(1);
+    let moved = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], dest, line);
+    set(&mut chunks[current], queue, line);
+    emit_throw_if_immutable_list(chunks, current, dest, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], moved, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], queue, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    if let Some(max) = max {
+        get(&mut chunks[current], moved, line);
+        get(&mut chunks[current], max, line);
+        vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_br_if(1, line);
+    }
+    get(&mut chunks[current], dest, line);
+    get(&mut chunks[current], queue, line);
+    emit_poll(chunks, current, false, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], moved, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], moved, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_patch);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], moved, line);
+}
+
+pub fn emit_copy_on_write_add_if_absent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let list = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_contains(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_queue_poll(chunks: &mut [Chunk], current: usize, line: u32) {
     let queue = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], queue, line);
@@ -3041,19 +3241,7 @@ pub fn emit_poll(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
 }
 
 pub fn emit_sorted_end(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
-    let collection = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], collection, line);
-    emit_sort_if_ordered(chunks, current, collection, line);
-    get(&mut chunks[current], collection, line);
-    if last {
-        get(&mut chunks[current], collection, line);
-        collections::emit_len(chunks, current, line);
-        core_wasm::i32_const(&mut chunks[current], line, 1);
-        chunks[current].emit_op(Op::I32_SUB, line);
-    } else {
-        core_wasm::i32_const(&mut chunks[current], line, 0);
-    }
-    collections::emit_get(chunks, current, line);
+    sorted_collection::emit_sorted_end(chunks, current, last, line);
 }
 
 pub fn emit_sorted_bound(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
@@ -3137,65 +3325,8 @@ pub fn emit_sorted_descending_set(chunks: &mut [Chunk], current: usize, line: u3
 }
 
 pub fn emit_sorted_set_range_view(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
-    let upper = if mode == 0 || mode == 1 {
-        let slot = chunks[current].alloc_scratch(1);
-        set(&mut chunks[current], slot, line);
-        Some(slot)
-    } else {
-        None
-    };
-    let lower = if mode == 0 || mode == 2 {
-        let slot = chunks[current].alloc_scratch(1);
-        set(&mut chunks[current], slot, line);
-        Some(slot)
-    } else {
-        None
-    };
-    let list = chunks[current].alloc_scratch(1);
-    let out = chunks[current].alloc_scratch(1);
-    let index = chunks[current].alloc_scratch(1);
-    let len = chunks[current].alloc_scratch(1);
-    let value = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], list, line);
-    emit_sort_if_ordered(chunks, current, list, line);
-    collections::emit_array_new(chunks, current, 0, line);
-    set(&mut chunks[current], out, line);
-    get(&mut chunks[current], list, line);
-    collections::emit_len(chunks, current, line);
-    set(&mut chunks[current], len, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    set(&mut chunks[current], index, line);
-
-    let outer = chunks[current].emit_block(line);
-    let (loop_id, _) = chunks[current].emit_loop_s(line);
-    get(&mut chunks[current], index, line);
-    get(&mut chunks[current], len, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-    get(&mut chunks[current], list, line);
-    get(&mut chunks[current], index, line);
-    collections::emit_get(chunks, current, line);
-    set(&mut chunks[current], value, line);
-    emit_range_condition(chunks, current, value, lower, upper, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], out, line);
-    get(&mut chunks[current], value, line);
-    collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], index, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
-    set(&mut chunks[current], index, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_id);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(outer);
-    get(&mut chunks[current], out, line);
-    emit_mark_set_collection(chunks, current, line);
+    // Java `subSet`/`headSet` use a half-open upper bound (`key < upper`).
+    sorted_collection::emit_sorted_set_range_view(chunks, current, mode, false, line);
 }
 
 pub fn emit_sorted_map_key(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
@@ -3244,34 +3375,7 @@ pub fn emit_sorted_map_key(chunks: &mut [Chunk], current: usize, last: bool, lin
 }
 
 pub fn emit_sorted_map_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
-    let map = chunks[current].alloc_scratch(1);
-    let keys = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], map, line);
-    get(&mut chunks[current], map, line);
-    host::emit(&mut chunks[current], "ecma:map", "keys", 1, line);
-    set(&mut chunks[current], keys, line);
-    emit_comparator(chunks, current, map, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], keys, line);
-    collections::emit_sort(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_else(line);
-    get(&mut chunks[current], keys, line);
-    emit_comparator(chunks, current, map, line);
-    collections::emit_sort_with_comparator(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], map, line);
-    chunks[current].emit_string_const(DESCENDING_MAP_KEY, line);
-    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    get(&mut chunks[current], keys, line);
-    collections::emit_reverse(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    get(&mut chunks[current], keys, line);
+    sorted_collection::emit_sorted_map_key_set(chunks, current, line);
 }
 
 pub fn emit_sorted_map_descending_key_set(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3406,20 +3510,7 @@ fn emit_bound_condition(
     mode: u8,
     line: u32,
 ) {
-    get(&mut chunks[current], key, line);
-    get(&mut chunks[current], bound, line);
-    match mode {
-        0 => {
-            vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-            vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-        }
-        1 => {
-            vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
-            vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-        }
-        2 => vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line),
-        _ => vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line),
-    }
+    sorted_collection::emit_bound_condition(chunks, current, key, bound, mode, line);
 }
 
 fn emit_map_entry_from_key(chunks: &mut [Chunk], current: usize, map: u16, key: u16, line: u32) {
@@ -3512,42 +3603,8 @@ fn emit_range_condition(
     upper: Option<u16>,
     line: u32,
 ) {
-    if let Some(lower) = lower {
-        get(&mut chunks[current], key, line);
-        get(&mut chunks[current], lower, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-        vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if_value(line);
-        emit_upper_condition(chunks, current, key, upper, line);
-        chunks[current].emit_else(line);
-        chunks[current].emit_bool_const(false, line);
-        chunks[current].emit_end(line);
-    } else {
-        emit_upper_condition(chunks, current, key, upper, line);
-    }
-}
-
-fn emit_upper_condition(
-    chunks: &mut [Chunk],
-    current: usize,
-    key: u16,
-    upper: Option<u16>,
-    line: u32,
-) {
-    if let Some(upper) = upper {
-        get(&mut chunks[current], key, line);
-        get(&mut chunks[current], upper, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if_value(line);
-        chunks[current].emit_bool_const(true, line);
-        chunks[current].emit_else(line);
-        chunks[current].emit_bool_const(false, line);
-        chunks[current].emit_end(line);
-    } else {
-        chunks[current].emit_bool_const(true, line);
-    }
+    // Java map range views use a half-open upper bound (`key < upper`).
+    sorted_collection::emit_range_condition(chunks, current, key, lower, upper, false, line);
 }
 
 pub fn emit_add_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -3619,6 +3676,11 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
     vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
     set(&mut chunks[current], changed, line);
 
     get(&mut chunks[current], list, line);
@@ -3673,9 +3735,14 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
     let index = chunks[current].alloc_scratch(1);
     let list = chunks[current].alloc_scratch(1);
+    let removed = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], index, line);
     set(&mut chunks[current], list, line);
     emit_throw_if_immutable_list(chunks, current, list, line);
+    get(&mut chunks[current], list, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], removed, line);
     emit_is_sublist(chunks, current, list, line);
     chunks[current].emit_if_value(line);
     emit_sublist_parent(chunks, current, list, line);
@@ -3687,6 +3754,8 @@ pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], index, line);
     collections::emit_remove_at(chunks, current, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], removed, line);
 }
 
 pub fn emit_remove_value_checked(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3698,6 +3767,12 @@ pub fn emit_remove_value_checked(chunks: &mut [Chunk], current: usize, line: u32
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], value, line);
     collections::emit_remove_value(chunks, current, line);
+}
+
+pub fn emit_iterator_remove_unsupported(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    emit_java_exception_throw(chunks, current, "UnsupportedOperationException", line);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3754,6 +3829,62 @@ pub fn emit_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_retain_all(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_filter_members(chunks, current, line, true);
+}
+
+pub fn emit_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
+    let source = chunks[current].alloc_scratch(1);
+    let target = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let ok = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], source, line);
+    set(&mut chunks[current], target, line);
+    chunks[current].emit_bool_const(true, line);
+    set(&mut chunks[current], ok, line);
+    get(&mut chunks[current], source, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], index, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    get(&mut chunks[current], source, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], value, line);
+    get(&mut chunks[current], target, line);
+    get(&mut chunks[current], value, line);
+    collections::emit_contains(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    set(&mut chunks[current], ok, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    get(&mut chunks[current], index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], ok, line);
+}
+
+pub fn emit_list_equals(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_sequence_equal(chunks, current, line);
 }
 
 pub fn emit_remove_if(chunks: &mut [Chunk], current: usize, line: u32) {

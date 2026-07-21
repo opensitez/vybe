@@ -12,33 +12,72 @@ use vybe_bytecode::opcode::Op;
 use vybe_emitter::instructions::{core_wasm, host};
 use vybe_emitter::{collections, strings};
 
+fn emit_stdout_text(chunk: &mut Chunk, line: u32) {
+    let text_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    host::emit(chunk, "wasi:cli/stdout", "get-stdout", 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    host::emit(
+        chunk,
+        "wasi:io/streams",
+        "[method]output-stream.blocking-write-and-flush",
+        2,
+        line,
+    );
+}
+
+fn emit_print_stream_sentinel(chunk: &mut Chunk, line: u32) {
+    chunk.emit_string_const("__java_out", line);
+}
+
+fn emit_java_exp(chunks: &mut [Chunk], current: usize, upper: bool, line: u32) {
+    chunks[current].emit_i32_const(6, line);
+    let to_exp = chunks[current].add_import("ecma:number", "toExponential");
+    chunks[current].emit_call(to_exp, 2, line);
+    if upper {
+        let to_upper = chunks[current].add_import("ecma:string", "toUpperCase");
+        chunks[current].emit_call(to_upper, 1, line);
+    }
+
+    let (plus, plus_padded, minus, minus_padded) = if upper {
+        ("E+", "E+0", "E-", "E-0")
+    } else {
+        ("e+", "e+0", "e-", "e-0")
+    };
+    chunks[current].emit_string_const(plus, line);
+    chunks[current].emit_string_const(plus_padded, line);
+    strings::emit_replace(&mut chunks[current], line);
+    chunks[current].emit_string_const(minus, line);
+    chunks[current].emit_string_const(minus_padded, line);
+    strings::emit_replace(&mut chunks[current], line);
+}
+
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
         // ── Print ──────────────────────────────────────────────────────────
+        "java.println" => {
+            if argc == 0 {
+                chunks[current].emit_string_const("", line);
+            } else {
+                let to_str = chunks[current].add_import("ecma:string", "String");
+                chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
+                chunks[current].emit(1, line);
+            }
+            host::emit(&mut chunks[current], "wasi:logging/logging", "log", 1, line);
+            emit_print_stream_sentinel(&mut chunks[current], line);
+        }
         "java.print_no_newline" => {
+            if argc == 0 {
+                chunks[current].emit_string_const("", line);
+            }
             // Real WASI stdout (the old target, `wasi:cli.print`, never
             // existed as a host fn). Import tables are PER CHUNK —
             // register on the chunk whose CALL_IMPORT indexes them.
             let to_str = chunks[current].add_import("ecma:string", "String");
             chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
             chunks[current].emit(1, line);
-            let text_slot = chunks[current].alloc_scratch(1);
-            chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
-            host::emit(
-                &mut chunks[current],
-                "wasi:cli/stdout",
-                "get-stdout",
-                0,
-                line,
-            );
-            chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
-            host::emit(
-                &mut chunks[current],
-                "wasi:io/streams",
-                "[method]output-stream.blocking-write-and-flush",
-                2,
-                line,
-            );
+            emit_stdout_text(&mut chunks[current], line);
+            emit_print_stream_sentinel(&mut chunks[current], line);
         }
         "java.identity" => {}
         "java.field_set" => {
@@ -78,7 +117,61 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.printf" => {
             vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
-            host::emit(&mut chunks[current], "wasi:logging/logging", "log", 1, line);
+            emit_stdout_text(&mut chunks[current], line);
+            emit_print_stream_sentinel(&mut chunks[current], line);
+        }
+        "java.printf_array" => {
+            vybe_emitter::sprintf::emit_sprintf_from_array(chunks, current, line);
+            emit_stdout_text(&mut chunks[current], line);
+            emit_print_stream_sentinel(&mut chunks[current], line);
+        }
+        "java.format_grouped_int" => {
+            let to_locale = chunks[current].add_import("ecma:number", "toLocaleString");
+            chunks[current].emit_call(to_locale, 1, line);
+        }
+        "java.format_exp_lower" => {
+            emit_java_exp(chunks, current, false, line);
+        }
+        "java.format_exp_upper" => {
+            emit_java_exp(chunks, current, true, line);
+        }
+
+        // ── Random helpers ────────────────────────────────────────────────
+        "java.random_new" => {
+            super::random_adapter::emit_new(chunks, current, argc, line);
+        }
+        "java.random_set_seed" => {
+            super::random_adapter::emit_set_seed(chunks, current, line);
+        }
+        "java.random_next_int" => {
+            super::random_adapter::emit_next_int(chunks, current, argc, line);
+        }
+        "java.random_next_long" => {
+            super::random_adapter::emit_next_long(chunks, current, line);
+        }
+        "java.random_next_boolean" => {
+            super::random_adapter::emit_next_bool(chunks, current, line);
+        }
+        "java.random_next_float" => {
+            super::random_adapter::emit_next_float(chunks, current, line);
+        }
+        "java.random_next_double" => {
+            super::random_adapter::emit_next_double(chunks, current, line);
+        }
+        "java.random_next_bytes" => {
+            super::random_adapter::emit_next_bytes(chunks, current, line);
+        }
+        "java.random_split" => {
+            super::random_adapter::emit_split(chunks, current, line);
+        }
+        "java.random_ints" => {
+            super::random_adapter::emit_ints(chunks, current, argc, line);
+        }
+        "java.random_longs" => {
+            super::random_adapter::emit_longs(chunks, current, argc, line);
+        }
+        "java.random_doubles" => {
+            super::random_adapter::emit_doubles(chunks, current, argc, line);
         }
 
         // ── String helpers ─────────────────────────────────────────────────
@@ -646,6 +739,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.class_is_instance" => {
             super::class_adapter::emit_is_instance(chunks, current, line);
         }
+        "java.class_name" => {
+            super::reflection_adapter::emit_class_name(chunks, current, line);
+        }
+        "java.class_simple_name" => {
+            super::reflection_adapter::emit_class_simple_name(chunks, current, line);
+        }
+        "java.object_get_class" => {
+            super::reflection_adapter::emit_object_get_class(chunks, current, line);
+        }
         "java.zone_offset_of_hours" => {
             super::instant_adapter::emit_zone_offset_hours(chunks, current, line);
         }
@@ -1122,6 +1224,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.mutable_list_of" => {
             collections::emit_array_new(chunks, current, argc as u16, line);
         }
+        "java.copy_on_write_list_new" => {
+            super::list_adapter::emit_copy_on_write_list_new(chunks, current, argc, line);
+        }
+        "java.linked_blocking_queue_new" => {
+            super::list_adapter::emit_linked_blocking_queue_new(chunks, current, argc, line);
+        }
         "java.vector_new" => {
             super::list_adapter::emit_vector_new(chunks, current, argc, line);
         }
@@ -1176,6 +1284,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.add" => {
             super::list_adapter::emit_add(chunks, current, argc, line);
+        }
+        "java.copy_on_write_add_if_absent" => {
+            super::list_adapter::emit_copy_on_write_add_if_absent(chunks, current, line);
+        }
+        "java.iterator_remove_unsupported" => {
+            super::list_adapter::emit_iterator_remove_unsupported(chunks, current, line);
+        }
+        "java.blocking_queue_add" => {
+            super::list_adapter::emit_blocking_queue_offer(chunks, current, argc, true, line);
+        }
+        "java.blocking_queue_offer" => {
+            super::list_adapter::emit_blocking_queue_offer(chunks, current, argc, false, line);
+        }
+        "java.blocking_queue_put" => {
+            super::list_adapter::emit_blocking_queue_put(chunks, current, line);
+        }
+        "java.blocking_queue_take" => {
+            super::list_adapter::emit_blocking_queue_take(chunks, current, line);
+        }
+        "java.blocking_queue_poll" => {
+            super::list_adapter::emit_blocking_queue_poll(chunks, current, argc, line);
+        }
+        "java.queue_remove_checked" => {
+            super::list_adapter::emit_queue_remove_checked(chunks, current, line);
+        }
+        "java.queue_element_checked" => {
+            super::list_adapter::emit_queue_element_checked(chunks, current, line);
+        }
+        "java.blocking_queue_remaining_capacity" => {
+            super::list_adapter::emit_blocking_queue_remaining_capacity(chunks, current, line);
+        }
+        "java.blocking_queue_drain_to" => {
+            super::list_adapter::emit_blocking_queue_drain_to(chunks, current, argc, line);
         }
         "java.sorted_add" => {
             super::list_adapter::emit_sorted_add(chunks, current, line);
@@ -1291,6 +1432,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.list_contains" => {
             collections::emit_contains(chunks, current, line);
+        }
+        "java.list_contains_all" => {
+            super::list_adapter::emit_contains_all(chunks, current, line);
+        }
+        "java.list_equals" => {
+            super::list_adapter::emit_list_equals(chunks, current, line);
         }
         "java.sub_list" => {
             super::list_adapter::emit_sub_list(chunks, current, line);
