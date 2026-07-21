@@ -140,8 +140,7 @@ instr = { folded_instr | plain_instr }
 // lookahead so it stops at the sub-block that must follow.
 folded_instr = {
     "(" ~ "if"  ~ id? ~ block_type* ~ (!then_block ~ !else_block ~ instr)* ~ then_block ~ else_block? ~ ")"
-  | "(" ~ "try" ~ id? ~ block_type* ~ (!catch_block ~ !catch_all_block ~ instr)* ~ catch_block+ ~ catch_all_block? ~ ")"
-  | "(" ~ "try" ~ id? ~ block_type* ~ (!catch_all_block ~ instr)* ~ catch_all_block ~ ")"
+  | "(" ~ "try_table" ~ id? ~ block_type* ~ try_clause* ~ instr* ~ ")"
   | "(" ~ "block" ~ id? ~ block_type* ~ instr* ~ ")"
   | "(" ~ "loop"  ~ id? ~ block_type* ~ instr* ~ ")"
   | "(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"
@@ -149,8 +148,17 @@ folded_instr = {
 
 then_block      = { "(" ~ "then"      ~ instr* ~ ")" }
 else_block      = { "(" ~ "else"      ~ instr* ~ ")" }
-catch_block     = { "(" ~ "catch"     ~ index  ~ instr* ~ ")" }
-catch_all_block = { "(" ~ "catch_all" ~ instr* ~ ")" }
+
+// Canonical exception-handling (WASM 3.0): a `try_table` names, per clause, a
+// tag and a branch LABEL that a matching thrown exception transfers to. `_ref`
+// clauses additionally push the caught `exnref`; `catch_all*` match any tag.
+// Longest keyword first so `catch_all_ref` isn't shadowed by `catch`/`catch_all`.
+try_clause = {
+    "(" ~ "catch_all_ref" ~ index ~ ")"
+  | "(" ~ "catch_all"     ~ index ~ ")"
+  | "(" ~ "catch_ref"     ~ index ~ index ~ ")"
+  | "(" ~ "catch"         ~ index ~ index ~ ")"
+}
 
 // Plain (non-folded) instruction
 plain_instr = { instr_name ~ instr_arg* }
@@ -168,9 +176,8 @@ instr_name = @{
   | "return_call_indirect" | "return_call_ref" | "return_call"
   | "call_indirect" | "call_ref" | "call"
   | "return" | "unreachable" | "nop"
-    // ── Exceptions proposal ───────────────────────────────────────────────
-  | "try" | "catch_all" | "catch" | "delegate" | "unwind"
-  | "throw" | "rethrow"
+    // ── Exception handling (canonical, WASM 3.0) ──────────────────────────
+  | "try_table" | "throw_ref" | "throw"
     // ── Parametric ────────────────────────────────────────────────────────
   | "select" | "drop"
     // ── Variable ──────────────────────────────────────────────────────────
@@ -423,6 +430,7 @@ data_field = {
 
 data_mode = {
     "(" ~ "memory" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
+  | "(" ~ "memory" ~ index ~ ")" ~ folded_instr
   | "(" ~ "offset" ~ instr* ~ ")"
   | folded_instr
 }
