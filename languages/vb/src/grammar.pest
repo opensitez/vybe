@@ -13,7 +13,7 @@ line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 
 // Program structure
 program = { SOI ~ line* ~ EOI }
-line = _{ imports_statement | option_directive | statement_line | attribute_line | NEWLINE | COMMENT }
+line = _{ xml_namespace_imports_statement | imports_statement | option_directive | attribute_line | statement_line | NEWLINE | COMMENT }
 option_directive = { ^"Option" ~ (^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off") ~ (NEWLINE | EOI) }
 statement_line = {
     (
@@ -32,6 +32,7 @@ attribute_line = _{ (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEW
 //           Imports IO = System.IO  (alias)
 imports_alias = { identifier ~ "=" }
 imports_statement = { ^"Imports" ~ imports_alias? ~ type_name ~ (NEWLINE | EOI | ":") }
+xml_namespace_imports_statement = { ^"Imports" ~ "<" ~ xml_attribute ~ ">" ~ (NEWLINE | EOI | ":") }
 
 // Statements
 statement = _{
@@ -92,12 +93,13 @@ statement = _{
     | expression_statement
 }
 dim_new_keyword = { ^"New" }
-array_rank_spec = { "(" ~ array_bounds? ~ ")" }
+array_rank_spec = { "(" ~ (array_bounds | array_rank_commas)? ~ ")" }
+array_rank_commas = { ","+ }
 dim_declaration_part = {
     identifier ~
     array_rank_spec* ~
     (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
-    ("=" ~ (array_literal | expression))?
+    ("=" ~ expression)?
 }
 
 dim_statement = {
@@ -122,7 +124,7 @@ yield_statement = { ^"Yield" ~ expression? }
 
 // Array support
 array_bounds = { expression ~ ("," ~ expression)* }
-array_literal = { "{" ~ (expression ~ ("," ~ expression)*)? ~ "}" }
+array_literal = { "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 
 // Control flow
 single_line_if_statement = {
@@ -165,7 +167,7 @@ for_statement = {
     ^"For" ~ identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression ~ ^"To" ~ expression ~ (^"Step" ~ expression)?
     ~ (for_inline_body | for_block_body)
 }
-for_inline_body = _{ ":" ~ statement ~ (":" ~ statement)* ~ ":" ~ for_end }
+for_inline_body = _{ ":" ~ !for_end ~ statement ~ (":" ~ !for_end ~ statement)* ~ ":" ~ for_end }
 for_block_body = _{ (NEWLINE | EOI) ~ (!for_end ~ line)* ~ for_end }
 for_end = { ^"Next" ~ identifier? }
 
@@ -173,7 +175,7 @@ for_each_statement = {
     ^"For" ~ ^"Each" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression
     ~ (for_each_inline_body | for_each_block_body)
 }
-for_each_inline_body = _{ ":" ~ statement ~ (":" ~ statement)* ~ ":" ~ for_end }
+for_each_inline_body = _{ ":" ~ !for_end ~ statement ~ (":" ~ !for_end ~ statement)* ~ ":" ~ for_end }
 for_each_block_body = _{ (NEWLINE | EOI) ~ (!for_end ~ line)* ~ for_end }
 
 while_statement = {
@@ -289,7 +291,7 @@ line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifie
 
 // Procedure declarations
 // sub_modifier covers: Public, Private, Protected, Friend, Overrides, Overloads, Shared, etc.
-sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"Shadows" }
+sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"Widening" | ^"Narrowing" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"Shadows" }
 sub_modifier = _{ visibility_modifier | sub_modifier_keyword | async_kw }
 sub_name = { identifier | member_identifier | ^"New" }
 function_name = { identifier | member_identifier }
@@ -320,7 +322,7 @@ operator_decl = {
     sub_modifier* ~ ^"Operator" ~ operator_symbol ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
     ~ (operator_inline_body | operator_block_body | abstract_body)
 }
-operator_symbol = { "<>" | ">=" | "<=" | "=" | "+" | "-" | "*" | "/" | "\\" | ^"Mod" | ">" | "<" }
+operator_symbol = { ^"IsTrue" | ^"IsFalse" | ^"CType" | "<>" | ">=" | "<=" | "=" | "+" | "-" | "*" | "/" | "\\" | ^"Mod" | ^"Not" | ">" | "<" }
 operator_inline_body = { ":" ~ (statement ~ ":")* ~ operator_end }
 operator_block_body = { (NEWLINE | EOI) ~ (!operator_end ~ line)* ~ operator_end }
 operator_end = { ^"End" ~ ^"Operator" }
@@ -394,8 +396,8 @@ structure_decl = {
     visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
     ~ (structure_inline_body | structure_block_body)
 }
-structure_member = _{ property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | field_line | dim_line | NEWLINE | COMMENT }
-structure_inline_clause = _{ implements_statement | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | field_decl | dim_statement }
+structure_member = _{ property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
+structure_inline_clause = _{ implements_statement | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | field_decl | dim_statement | enum_decl }
 structure_inline_body = _{ (":" ~ structure_end) | (":" ~ structure_inline_clause ~ (":" ~ structure_inline_clause)* ~ ":" ~ structure_end) }
 structure_block_body = _{ (NEWLINE | EOI) ~ implements_line? ~ (!structure_end ~ structure_member)* ~ structure_end }
 structure_end = { ^"End" ~ ^"Structure" }
@@ -419,19 +421,19 @@ delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI
 
 // Enum declarations
 enum_decl = {
-    attribute_line* ~ (^"Public" | ^"Private" | ^"Friend")? ~ ^"Enum" ~ identifier
+    attribute_line* ~ (^"Public" | ^"Private" | ^"Friend")? ~ ^"Enum" ~ identifier ~ (^"As" ~ type_name)?
     ~ (enum_inline_body | enum_block_body)
 }
 enum_inline_body = _{ ":" ~ (enum_member_inline ~ ":")* ~ enum_end }
-enum_member_inline = { identifier ~ ("=" ~ expression)? }
+enum_member_inline = { member_identifier ~ ("=" ~ expression)? }
 enum_block_body = _{ (NEWLINE | EOI) ~ (!enum_end ~ (enum_member | NEWLINE | COMMENT))* ~ enum_end }
-enum_member = { identifier ~ ("=" ~ expression)? ~ (NEWLINE | EOI) }
+enum_member = { member_identifier ~ ("=" ~ expression)? ~ (NEWLINE | EOI) }
 enum_end = { ^"End" ~ ^"Enum" }
 
 // Field declarations: now support Friend, WithEvents, and dotted type names
 withevents_keyword = { ^"WithEvents" }
 field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyword }
-field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
+field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")?)? ~ ("=" ~ expression)? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
 default_keyword = { ^"Default" }
@@ -536,10 +538,12 @@ primary = _{
     | gettype_expression
     | typeof_expression
     | cast_expression
+    | anonymous_new_expression
     | new_expression
     | literal
     | lambda_expression
     | if_expression
+    | aggregate_expression
     | query_expression
     | xml_literal
     | me_member_call
@@ -554,6 +558,7 @@ primary = _{
     | member_access
     | addressof_expr
     | identifier
+    | member_identifier
     | "(" ~ expression ~ ")"
 }
 
@@ -571,21 +576,28 @@ cast_member_call = { cast_expression ~ member_chain+ }
 // Inline If expression: If(cond, true, false) or If(value, default)
 if_expression = { ^"If" ~ "(" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" }
 
+aggregate_expression = { ^"Aggregate" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ^"Into" ~ aggregate_call ~ ("," ~ aggregate_call)* }
+aggregate_call = { identifier ~ "(" ~ argument_list? ~ ")" }
+
 // New expression: supports dotted identifiers like New System.Windows.Forms.Button()
 // Also supports generic types like New List(Of String), New Dictionary(Of String, Integer)
 // Also supports array initializers: New Task() {task1, task2}
 // Also supports collection initializers: New List(Of T) From { expr, ... }
 // Also supports object initializers: New Type() With { .Prop = expr, ... }
+anonymous_new_expression = { "New" ~ WHITESPACE* ~ with_initializer }
 new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer | array_literal)? }
 from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
-member_initializer = { "." ~ member_identifier ~ "=" ~ expression }
+key_initializer_modifier = { ^"Key" }
+member_initializer = { key_initializer_modifier? ~ "." ~ member_identifier ~ "=" ~ expression }
 
 call_expression = { identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
 member_chain_invoke = { "(" ~ argument_list? ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
+member_chain_xml_descendant_axis = { "..." ~ "<" ~ xml_name ~ ">" }
+member_chain_xml_child_axis = { "." ~ "<" ~ xml_name ~ ">" }
 member_chain_access = { "." ~ member_identifier }
-member_chain = { member_chain_invoke | member_chain_call | member_chain_access }
+member_chain = { member_chain_xml_descendant_axis | member_chain_xml_child_axis | member_chain_invoke | member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
 call_statement = {
     call_keyword? ~ (
@@ -664,22 +676,31 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 call_keyword = @{ ^"Call" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // ── LINQ Query Syntax ──
-query_expression = { from_clause ~ query_body }
+query_expression = { from_clause ~ NEWLINE* ~ query_body }
 from_clause = { ^"From" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ("," ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression)* }
-query_body = { query_operator* ~ select_or_group_clause }
-query_operator = { where_clause | order_by_clause | let_clause }
+query_body = { (query_operator ~ NEWLINE*)* ~ select_or_group_clause }
+query_operator = { group_join_query_clause | join_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | let_clause | group_by_query_clause }
 
 where_clause = { ^"Where" ~ expression }
 order_by_clause = { ^"Order" ~ ^"By" ~ ordering ~ ("," ~ ordering)* }
 ordering = { expression ~ (^"Ascending" | ^"Descending")? }
-let_clause = { ^"Let" ~ identifier ~ "=" ~ expression }
+skip_while_clause = { ^"Skip" ~ ^"While" ~ expression }
+take_while_clause = { ^"Take" ~ ^"While" ~ expression }
+skip_clause = { ^"Skip" ~ expression }
+take_clause = { ^"Take" ~ expression }
+let_clause = { ^"Let" ~ let_binding ~ ("," ~ let_binding)* }
+let_binding = { identifier ~ "=" ~ expression }
+group_by_query_clause = { ^"Group" ~ ^"By" ~ group_key ~ ("," ~ group_key)* ~ ^"Into" ~ identifier }
+group_key = { (identifier ~ "=")? ~ expression }
+join_query_clause = { ^"Join" ~ (!NEWLINE ~ ANY)* }
+group_join_query_clause = { ^"Group" ~ ^"Join" ~ (!NEWLINE ~ ANY)* }
 
 select_or_group_clause = { select_clause | group_clause }
 select_clause = { ^"Select" ~ expression ~ ("," ~ expression)* }
@@ -699,12 +720,14 @@ xml_name = @{ (ASCII_ALPHA | "_" | ":") ~ (ASCII_ALPHANUMERIC | "_" | ":" | "-" 
 xml_attribute = { xml_name ~ "=" ~ (string_literal | xml_embedded_expression) }
 xml_content = {
     xml_element
+    | xml_comment
     | xml_cdata
     | xml_embedded_expression
     | xml_text
 }
 
 xml_text = @{ (!("<" | "<%=") ~ ANY)+ }
+xml_comment = { "<!--" ~ (!"-->" ~ ANY)* ~ "-->" }
 xml_cdata = { "<![CDATA[" ~ (!"]]>" ~ ANY)* ~ "]]>" }
 xml_embedded_expression = { "<%=" ~ expression ~ "%>" }
 

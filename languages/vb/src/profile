@@ -75,6 +75,7 @@ uses_normalize_class = true
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 "__vb_object_get" = { emit = "host:ecma:object:get", min_args = 2, max_args = 2 }
+"__vb_err_raise" = { emit = "throw", min_args = 1, max_args = 3 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -406,6 +407,12 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 "xdocument.load"   = { emit = "host:web:dom-parser:load",      min_args = 1, max_args = 1 }
 "xml.save"         = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
 "xdocument.save"   = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
+__vb_xml_node_name = { emit = "common:xml.node_name",          min_args = 1, max_args = 1 }
+__vb_xml_name      = { emit = "common:xml.name",               min_args = 3, max_args = 3 }
+__vb_xml_local     = { emit = "common:xml.local",              min_args = 1, max_args = 1 }
+__vb_xml_namespace = { emit = "common:xml.namespace",          min_args = 1, max_args = 1 }
+__vb_xml_qualified = { emit = "common:xml.qualified",          min_args = 1, max_args = 1 }
+__vb_xml_elements  = { emit = "host:web:dom-parser:getElementsByTagName", min_args = 2, max_args = 2 }
 # VB Regex.* — .NET pattern-first convention; same arg shape as PHP/Python.
 # `Regex.IsMatch(pat, str)` and `Regex.Match(pat, str)` route to ECMA-262
 # RegExp directly (test/exec accept string-as-pattern as first arg).
@@ -550,11 +557,7 @@ remove        = { emit = "common:dotnet.array_remove_value",  min_args = 1, max_
 removeat      = { emit = "common:dotnet.array_remove_at",     min_args = 1, max_args = 1 }
 insert        = { emit = "common:dotnet.array_insert",        min_args = 2, max_args = 2 }
 clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
-# 0-arg: defer to runtime collection registry. 1-arg: LINQ Count(pred).
-count         = [
-    { emit = "common:collections.length",     min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.linq_count_pred", min_args = 1, max_args = 1 },
-]
+count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 sort          = { emit = "common:dotnet.sort_in_place", min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toarray       = { emit = "host:ecma:array:slice",      min_args = 0, max_args = 0 }
@@ -780,11 +783,6 @@ path = "dotnet.system"
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
-
-
-
-
-
 
 
 

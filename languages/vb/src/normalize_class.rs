@@ -105,10 +105,11 @@ pub fn normalize_class(
                 }
 
                 let (canonical, special_kind) = match src_name.as_str() {
-                    "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__mod__" | "__eq__"
-                    | "__lt__" | "__le__" | "__gt__" | "__ge__" => {
+                    "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__mod__" | "__neg__"
+                    | "__eq__" | "__lt__" | "__le__" | "__gt__" | "__ge__" => {
                         canonicalize_method(ClassLang::Python, src_name)
                     }
+                    "__bitnot__" => ("not".to_string(), Some(SpecialMethodKind::Not)),
                     "__getitem__" => ("getitem".to_string(), Some(SpecialMethodKind::GetItem)),
                     "__setitem__" => ("setitem".to_string(), Some(SpecialMethodKind::SetItem)),
                     "__call__" => ("call".to_string(), Some(SpecialMethodKind::Call)),
