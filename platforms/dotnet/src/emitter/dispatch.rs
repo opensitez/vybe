@@ -2,9 +2,38 @@
 //! language module; the common dispatcher delegates here).
 
 use vybe_emitter::instructions::core_wasm;
-use vybe_bytecode::Chunk;
+use vybe_bytecode::{Chunk, Value};
+use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
+
+/// `Control.CreateGraphics()` — construct a `Graphics` (via its registered
+/// class global) stamped with the receiver control's `__control_name`, so
+/// drawings route to the control's canvas. This mirrors the former
+/// `CONTROL_CREATE_GRAPHICS` method Body, but is emitted at the call site
+/// through the component descriptor (`MethodBody::Common`) rather than a
+/// ctor-bound thunk: control leaves no longer emit a per-class ctor chunk,
+/// so a host-constructed control must resolve `CreateGraphics` here.
+///
+/// Stack on entry: `[control]`; on exit: `[graphics]`.
+fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
+    let name_key = chunk.add_constant(Value::String(Arc::from("__control_name")));
+    // Construct Graphics via its host factory (its descriptor constructor
+    // backing) rather than a class global — Graphics no longer emits a ctor
+    // global now that its methods resolve through the descriptor.
+    let graphics_new = chunk.add_import("vybe:gui", "graphicsNew");
+    let name_slot = chunk.alloc_scratch(1);
+    // Stash the control's name (consuming the control), then build a fresh
+    // Graphics and copy the name onto it.
+    chunk.emit_op_u16(Op::STRUCT_GET, name_key, line); // [name]
+    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line); // []
+    chunk.emit_op_u16(Op::CALL_IMPORT, graphics_new, line); // [graphics]
+    chunk.emit(0, line); // argc
+    core_wasm::dup(chunk, line); // [graphics, graphics]
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line); // [graphics, graphics, name]
+    chunk.emit_op_u16(Op::STRUCT_SET, name_key, line); // [graphics, graphics]
+    chunk.emit_op(Op::DROP, line); // [graphics]
+}
 
 /// VB `Choose(idx, v1, v2, ..., vN)` — variadic 1-indexed selector.
 /// Packs the trailing values into an array, then `ARRAY_GET array[idx-1]`.
@@ -34,6 +63,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         return true;
     }
     match name {
+        "dotnet.control_create_graphics" => {
+            emit_control_create_graphics(&mut chunks[current], line);
+        }
+        // Drawing methods (Graphics/Pen/Brush) lower their `Body` op sequence
+        // inline at the call site, reusing the same MethodOp table that builds
+        // a thunk chunk — no per-class ctor chunk binds a thunk anymore.
+        drawing if drawing.starts_with("dotnet.drawing.") => {
+            let method = &drawing["dotnet.drawing.".len()..];
+            match crate::emitter::classes::drawing::drawing_method_body(method) {
+                Some(ops) => crate::emitter::classes::builder::emit_body_inline(
+                    &mut chunks[current],
+                    ops,
+                    argc,
+                    line,
+                ),
+                None => return false,
+            }
+        }
         "dotnet.dns_get_host_addresses" => {
             crate::emitter::core::sockets_adapter::emit_dns_get_host_addresses(
                 chunks, current, line,
@@ -261,6 +308,95 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
 
+        // ── .NET LINQ-to-XML adapter ────────────────────────────────
+        // Tree operations compose `web:dom-parser`; XName operations delegate
+        // to `vybe_emitter::xml` inside the adapter.
+        "dotnet.xml_xelement_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.xml_xattribute_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xattribute_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.xml_xdocument_new" => {
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.xml_xdocument_parse" => {
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_parse(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xdocument_root" => {
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_root(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_name" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_name(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_value" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_to_string" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_to_string(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_element" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_element(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_child_elements" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_child_elements(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_elements" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_elements(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_attribute" => {
+            crate::emitter::core::xml_linq_adapter::emit_xml_attribute(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_attribute_value" => {
+            crate::emitter::core::xml_linq_adapter::emit_attribute_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_add" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_add(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_remove" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_remove(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_replace_nodes" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_replace_nodes(
+                chunks, current, line,
+            )
+        }
+        "dotnet.xml_xelement_set_attribute_value" => {
+            crate::emitter::core::xml_linq_adapter::emit_xelement_set_attribute_value(
+                chunks, current, line,
+            )
+        }
+
         // ── .NET System.Array static-method adapter ─────────────────
         // `Clear` / `Copy` / `Resize` / `Sort` lower to bundled stdlib
         // chunks (`__vybe_*` globals) composing `ecma:array.*`
@@ -323,6 +459,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.task_wait" => {
             crate::emitter::core::thread_adapter::emit_task_wait(chunks, current, line)
         }
+        "dotnet.task_from_result" => {
+            crate::emitter::core::thread_adapter::emit_task_from_result(chunks, current, line)
+        }
+        "dotnet.task_when_all" => {
+            crate::emitter::core::thread_adapter::emit_task_when_all(chunks, current, argc, line)
+        }
+        "dotnet.task_when_any" => {
+            crate::emitter::core::thread_adapter::emit_task_when_any(chunks, current, argc, line)
+        }
+        "dotnet.task_continue_with" => {
+            crate::emitter::core::thread_adapter::emit_task_continue_with(chunks, current, line)
+        }
         "dotnet.hashset_set_equals" => {
             crate::emitter::core::collections_adapter::emit_hashset_set_equals(
                 chunks, current, line,
@@ -353,10 +501,78 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.linked_list_first" => {
+            crate::emitter::core::collections_adapter::emit_linked_list_first(
+                chunks, current, line,
+            )
+        }
+        "dotnet.vb_collection_new" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_new(
+                chunks, current, line,
+            )
+        }
+        "dotnet.vb_collection_add" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_add(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.vb_collection_item" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_item(
+                chunks, current, line,
+            )
+        }
+        "dotnet.vb_collection_count" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_count(
+                chunks, current, line,
+            )
+        }
+        "dotnet.vb_collection_contains" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_contains(
+                chunks, current, line,
+            )
+        }
+        "dotnet.vb_collection_remove" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_remove(
+                chunks, current, line,
+            )
+        }
         "dotnet.sorted_dictionary_entries" => {
             crate::emitter::core::collections_adapter::emit_sorted_dictionary_entries(
                 chunks, current, line,
             )
+        }
+
+        // ── Sorted collections (SortedSet / SortedDictionary) ────────
+        // Both keep their `ecma:set` / `ecma:map` backing (so membership,
+        // mutation and set-algebra reuse the host ops); only the ordered reads
+        // are adapted through the shared sorted core in
+        // `vybe_emitter::sorted_collection`, which is also Java's TreeSet/TreeMap
+        // engine. A SortedSet spreads to a sorted array for Min/Max/GetViewBetween
+        // and ElementsSorted; a SortedDictionary sorts its key/value/entry views.
+        "dotnet.sorted_set_min" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_min(chunks, current, line)
+        }
+        "dotnet.sorted_set_max" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_max(chunks, current, line)
+        }
+        "dotnet.sorted_set_elements" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_elements(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_set_view_between" => {
+            crate::emitter::core::collections_adapter::emit_sorted_set_view_between(
+                chunks, current, line,
+            )
+        }
+        "dotnet.sorted_map_keys" => {
+            vybe_emitter::sorted_collection::emit_sorted_map_key_set(chunks, current, line)
+        }
+        "dotnet.sorted_map_values" => {
+            vybe_emitter::sorted_collection::emit_sorted_map_values(chunks, current, line)
+        }
+        "dotnet.sorted_map_entries" => {
+            vybe_emitter::sorted_collection::emit_sorted_map_entries(chunks, current, line)
         }
 
         // ── .NET TimeSpan factory adapters ──────────────────────────
@@ -769,6 +985,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_last" => {
             crate::emitter::core::linq_adapter::emit_linq_last(chunks, current, line)
         }
+        "dotnet.linq_last_or_default" => {
+            crate::emitter::core::linq_adapter::emit_linq_last_or_default(chunks, current, line)
+        }
         "dotnet.linq_skip" => {
             crate::emitter::core::linq_adapter::emit_linq_skip(chunks, current, line)
         }
@@ -789,6 +1008,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_distinct" => {
             crate::emitter::core::linq_adapter::emit_linq_distinct(chunks, current, line)
         }
+        "dotnet.linq_distinct_comparer" => {
+            crate::emitter::core::linq_adapter::emit_linq_distinct_comparer(chunks, current, line)
+        }
         "dotnet.linq_distinct_by" => {
             crate::emitter::core::linq_adapter::emit_linq_distinct_by(chunks, current, line)
         }
@@ -799,6 +1021,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_sequence_equal(
                 chunks, current, line,
             )
+        }
+        "dotnet.linq_all" => {
+            crate::emitter::core::linq_adapter::emit_linq_all(chunks, current, line)
         }
         "dotnet.linq_count_pred" => {
             crate::emitter::core::linq_adapter::emit_linq_count_pred(chunks, current, line)
@@ -825,8 +1050,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.linq_to_dictionary_key" => {
+            crate::emitter::core::linq_adapter::emit_linq_to_dictionary_key(
+                chunks, current, line,
+            )
+        }
+        "dotnet.linq_to_lookup" => {
+            crate::emitter::core::linq_adapter::emit_linq_to_lookup(chunks, current, line)
+        }
         "dotnet.linq_zip" => {
             crate::emitter::core::linq_adapter::emit_linq_zip(chunks, current, line)
+        }
+        "dotnet.linq_concat" => {
+            crate::emitter::core::linq_adapter::emit_linq_concat(chunks, current, line)
+        }
+        "dotnet.linq_union" => {
+            crate::emitter::core::linq_adapter::emit_linq_union(chunks, current, line)
+        }
+        "dotnet.linq_intersect" => {
+            crate::emitter::core::linq_adapter::emit_linq_intersect(chunks, current, line)
+        }
+        "dotnet.linq_except" => {
+            crate::emitter::core::linq_adapter::emit_linq_except(chunks, current, line)
+        }
+        "dotnet.linq_of_type" => {
+            crate::emitter::core::linq_adapter::emit_linq_of_type(chunks, current, line)
         }
         "dotnet.linq_element_at" => {
             crate::emitter::core::linq_adapter::emit_linq_element_at(chunks, current, line)
@@ -860,6 +1108,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_sum" => {
             crate::emitter::core::linq_adapter::emit_linq_sum(chunks, current, line)
         }
+        "dotnet.linq_sum_selector" => {
+            crate::emitter::core::linq_adapter::emit_linq_sum_selector(chunks, current, line)
+        }
         "dotnet.linq_count" => {
             crate::emitter::core::linq_adapter::emit_linq_count(chunks, current, line)
         }
@@ -868,6 +1119,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.linq_any" => {
             crate::emitter::core::linq_adapter::emit_linq_any(chunks, current, line)
+        }
+        "dotnet.linq_any_pred" => {
+            crate::emitter::core::linq_adapter::emit_linq_any_pred(chunks, current, line)
         }
         "dotnet.linq_contains" => {
             crate::emitter::core::linq_adapter::emit_linq_contains(chunks, current, line)
@@ -893,6 +1147,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.linq_default_if_empty" => {
             crate::emitter::core::linq_adapter::emit_linq_default_if_empty(chunks, current, line)
         }
+        "dotnet.linq_default_if_empty_value" => {
+            crate::emitter::core::linq_adapter::emit_linq_default_if_empty_value(
+                chunks, current, line,
+            )
+        }
 
         // ── Static Array.* helpers — same dotnet/core home as LINQ ──
         "dotnet.array_reverse" => {
@@ -914,6 +1173,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.array_find_all" => {
             crate::emitter::core::array_adapter::emit_array_find_all(chunks, current, line)
+        }
+        "dotnet.array_binary_search" => {
+            crate::emitter::core::array_adapter::emit_array_binary_search(chunks, current, line)
         }
         "dotnet.array_convert_all" => {
             crate::emitter::core::array_adapter::emit_array_convert_all(
@@ -1122,6 +1384,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_else(line);
             chunk.emit_f64_const(0.0, line);
             chunk.emit_end(line);
+        }
+        "dotnet.concurrent_queue_try_dequeue" => {
+            chunks[current].emit_op(Op::DROP, line);
+            vybe_emitter::collections::emit_shift(chunks, current, line);
+        }
+        "dotnet.concurrent_stack_try_pop" => {
+            chunks[current].emit_op(Op::DROP, line);
+            vybe_emitter::collections::emit_pop(chunks, current, line);
+        }
+        "dotnet.concurrent_queue_try_peek" | "dotnet.concurrent_stack_try_peek" => {
+            chunks[current].emit_op(Op::DROP, line);
+            chunks[current].emit_i32_const(0, line);
+            vybe_emitter::collections::emit_get(chunks, current, line);
         }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
 

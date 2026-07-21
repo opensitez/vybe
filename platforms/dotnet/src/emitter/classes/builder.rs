@@ -213,7 +213,7 @@ pub fn build_method_thunk_chunk(
             chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::Body(ops) => {
-            compile_body(&mut chunk, ops, body_imports, method.arity, line);
+            compile_body_offset(&mut chunk, ops, body_imports, method.arity, 0, false, line);
         }
     }
 
@@ -228,17 +228,57 @@ pub fn build_method_thunk_chunk(
 /// [`super::collect_body_imports`] and `chunks[0].add_import` so the
 /// builder doesn't have to touch the imports vec.
 ///
-/// Slot layout (matches the rest of the builder):
-/// - slot 0 = `this`
-/// - slots 1..=arity-1 = user args
-fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity: u8, line: u32) {
+/// Emit a `MethodTarget::Body` sequence INLINE at a call site.
+///
+/// The receiver and user args are on the stack (`[this, arg1, …, argN]`,
+/// `argc = arity`). They're spilled into `alloc_scratch(argc)` slots and the
+/// body's `this`/arg reads are offset there, so the exact same `MethodOp`
+/// table that builds a thunk chunk also lowers at a call site — control-leaf
+/// drawing objects resolve `g.DrawLine(…)` through the component descriptor
+/// (`MethodBody::Common`) with no per-class ctor chunk to bind a thunk. The
+/// method's result value is left on the stack.
+pub fn emit_body_inline(chunk: &mut Chunk, ops: &[MethodOp], argc: u8, line: u32) {
+    // Resolve every CallHost target's import index on THIS chunk, in the order
+    // the ops appear (the same order `compile_body_offset` consumes them).
+    let targets = collect_body_call_targets(ops);
+    let mut imports = Vec::with_capacity(targets.len());
+    for (module, fn_name) in targets {
+        imports.push(chunk.add_import(module, fn_name));
+    }
+    // Spill [this, arg1..argN] (top = argN) into base+0..base+argc-1.
+    let base = chunk.alloc_scratch(argc as u16);
+    for slot in (0..argc as u16).rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, base + slot, line);
+    }
+    compile_body_offset(chunk, ops, &imports, argc, base, true, line);
+}
+
+/// Compile a `MethodTarget::Body` sequence into bytecode.
+///
+/// `base_slot` is where `this` lives; arg N lives in `base_slot + N`. For a
+/// thunk chunk that's slot 0 (params); for an inline call-site emit it's the
+/// scratch base the receiver+args were spilled to. When `inline` is true,
+/// `Return` leaves the result on the stack instead of emitting `Op::RETURN`
+/// (returning would exit the *caller's* function).
+///
+/// `body_imports` is the per-`CallHost`-op import index, in the order the ops
+/// appear in `ops`.
+fn compile_body_offset(
+    chunk: &mut Chunk,
+    ops: &[MethodOp],
+    body_imports: &[u16],
+    arity: u8,
+    base_slot: u16,
+    inline: bool,
+    line: u32,
+) {
     let mut import_cursor = 0usize;
     let mut returned = false;
 
     for op in ops {
         match *op {
             MethodOp::PushThis => {
-                chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
             }
             MethodOp::PushArg(n) => {
                 debug_assert!(
@@ -248,11 +288,11 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                     arity,
                     arity - 1
                 );
-                // arg N (1-indexed after `this`) lives in slot N.
-                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
+                // arg N (1-indexed after `this`) lives in slot base+N.
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
             }
             MethodOp::PushThisField(field) => {
-                chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
@@ -263,7 +303,7 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                     n,
                     arity
                 );
-                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
                 chunk.emit_op_u16(Op::STRUCT_GET, key, line);
             }
@@ -274,7 +314,7 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                     n,
                     arity
                 );
-                chunk.emit_op_u16(Op::LOCAL_GET, n as u16, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
                 chunk.emit_op_u16(Op::STRUCT_GET, k1, line);
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
@@ -381,17 +421,24 @@ fn compile_body(chunk: &mut Chunk, ops: &[MethodOp], body_imports: &[u16], arity
                 core_wasm::dup(chunk, line);
             }
             MethodOp::Return => {
-                chunk.emit_op(Op::RETURN, line);
+                // Inline at a call site: the result value is already on the
+                // stack — emitting RETURN would exit the *caller*. Just stop.
+                if !inline {
+                    chunk.emit_op(Op::RETURN, line);
+                }
                 returned = true;
                 break;
             }
         }
     }
 
-    // Safety net: if the body didn't end in `Return`, emit `null + return`.
+    // Safety net: if the body didn't end in `Return`, ensure a result. Inline
+    // leaves a null on the stack (the method's value); the thunk path returns.
     if !returned {
         chunk.emit_op(Op::NULL, line);
-        chunk.emit_op(Op::RETURN, line);
+        if !inline {
+            chunk.emit_op(Op::RETURN, line);
+        }
     }
 }
 

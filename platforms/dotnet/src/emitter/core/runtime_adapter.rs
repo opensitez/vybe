@@ -10,7 +10,7 @@ use vybe_bytecode::Value;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
-        let to_str = chunks[0].add_import("ecma:string", "String");
+        let to_str = chunks[current].add_import("ecma:string", "String");
         chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
         chunks[current].emit(argc, line);
         return true;

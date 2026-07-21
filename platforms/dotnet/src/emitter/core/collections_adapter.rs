@@ -5,6 +5,9 @@ use vybe_bytecode::{Chunk, Value};
 
 use vybe_emitter::collections;
 
+const VB_COLLECTION_ITEMS: &str = "__dotnet_vb_collection_items";
+const VB_COLLECTION_KEYS: &str = "__dotnet_vb_collection_keys";
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,
@@ -13,7 +16,13 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module, name);
+    // Register on the chunk that EMITS the call, not chunk[0]. The VM's
+    // `resolve_chunk_import` checks the executing chunk's own import table
+    // first, so a chunk[0] (global) index baked into a function chunk resolves
+    // to a wrong LOCAL import whenever it falls within that chunk's table —
+    // which is exactly what happened once the .NET prelude stopped padding
+    // chunk[0]'s import prefix. A local index always resolves correctly.
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
 }
@@ -24,6 +33,32 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
     }
     base
+}
+
+fn emit_string_const(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {
+    let idx = chunks[current].add_constant(Value::String(Arc::from(value)));
+    chunks[current].emit_op_u16(Op::CONST, idx, line);
+}
+
+fn emit_get_field(chunks: &mut [Chunk], current: usize, object_slot: u16, field: &str, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    emit_string_const(chunks, current, field, line);
+    collections::emit_get(chunks, current, line);
+}
+
+fn emit_set_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    object_slot: u16,
+    field: &str,
+    value_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    emit_string_const(chunks, current, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -428,6 +463,53 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
 }
 
+/// `SortedSet<T>.ElementsSorted()` — spread the `ecma:set` receiver to an array
+/// and sort it ascending via the shared sorted core. Backs the `foreach`
+/// rewrite so iteration observes ascending order. Stack: `[set]` -> `[array]`.
+pub fn emit_sorted_set_elements(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr = chunks[current].alloc_scratch(1);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    collections::emit_sort(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+}
+
+/// `SortedSet<T>.Min` / `.Max` — spread the `ecma:set` receiver to a sorted array
+/// via the shared sorted core and take the first / last element. (LINQ's
+/// `Min`/`Max` return null over an `ecma:set`, so the ordered reads are adapted
+/// explicitly.) Stack: `[set]` -> `[element]`.
+pub fn emit_sorted_set_min(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_iter_values(chunks, current, line);
+    vybe_emitter::sorted_collection::emit_sorted_end(chunks, current, false, line);
+}
+
+pub fn emit_sorted_set_max(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_iter_values(chunks, current, line);
+    vybe_emitter::sorted_collection::emit_sorted_end(chunks, current, true, line);
+}
+
+/// `SortedSet<T>.GetViewBetween(low, high)` — spread the `ecma:set` receiver to a
+/// sorted array, take the inclusive `[low, high]` range via the shared sorted
+/// core, then rebuild the view as an `ecma:set` so the view's own methods
+/// (`Count`/`Min`/`Max`/...) resolve through the set surface.
+/// Stack: `[set, low, high]` -> `[set_view]`.
+pub fn emit_sorted_set_view_between(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let low = base + 1;
+    let high = base + 2;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, low, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, high, line);
+    // mode 0 = both bounds; inclusive upper for .NET GetViewBetween.
+    vybe_emitter::sorted_collection::emit_sorted_set_range_view(chunks, current, 0, true, line);
+    call_import(chunks, current, "ecma:set", "new", 1, line);
+}
+
 pub fn emit_linked_list_add_first(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
@@ -443,6 +525,74 @@ pub fn emit_linked_list_add_last(chunks: &mut [Chunk], current: usize, line: u32
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
+}
+
+fn emit_linked_list_node_from_index(
+    chunks: &mut [Chunk],
+    current: usize,
+    list_slot: u16,
+    index_slot: u16,
+    include_next: bool,
+    line: u32,
+) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let value_key = chunks[current].add_constant(Value::String(Arc::from("Value")));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let lower_value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, lower_value_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    if include_next {
+        let next_index_slot = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, next_index_slot, line);
+
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, next_index_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+        collections::emit_len(chunks, current, line);
+        vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        emit_linked_list_node_from_index(chunks, current, list_slot, next_index_slot, false, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_end(line);
+        let next_key = chunks[current].add_constant(Value::String(Arc::from("Next")));
+        chunks[current].emit_op_u16(Op::STRUCT_SET, next_key, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+}
+
+pub fn emit_linked_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 1, line);
+    let list = base;
+    let index_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);
+    collections::emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    emit_linked_list_node_from_index(chunks, current, list, index_slot, true, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -475,4 +625,102 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
+}
+
+pub fn emit_vb_collection_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    let object = base;
+    let items = base + 1;
+    let keys = base + 2;
+
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+
+    collections::emit_map_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+
+    emit_set_field(chunks, current, object, VB_COLLECTION_ITEMS, items, line);
+    emit_set_field(chunks, current, object, VB_COLLECTION_KEYS, keys, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object, line);
+}
+
+pub fn emit_vb_collection_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let recv = base;
+    let value = base + 1;
+
+    emit_get_field(chunks, current, recv, VB_COLLECTION_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    if argc >= 3 {
+        let key = base + 2;
+        emit_get_field(chunks, current, recv, VB_COLLECTION_KEYS, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        collections::emit_set(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_vb_collection_item(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let key = base + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if(line);
+    emit_get_field(chunks, current, recv, VB_COLLECTION_KEYS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_get_field(chunks, current, recv, VB_COLLECTION_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_vb_collection_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 1, line);
+    emit_get_field(chunks, current, base, VB_COLLECTION_ITEMS, line);
+    collections::emit_len(chunks, current, line);
+}
+
+pub fn emit_vb_collection_contains(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    emit_get_field(chunks, current, base, VB_COLLECTION_KEYS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+}
+
+pub fn emit_vb_collection_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let key = base + 1;
+    let value_slot = chunks[current].alloc_scratch(1);
+
+    emit_get_field(chunks, current, recv, VB_COLLECTION_KEYS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    emit_get_field(chunks, current, recv, VB_COLLECTION_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_remove_value(chunks, current, line);
+
+    emit_get_field(chunks, current, recv, VB_COLLECTION_KEYS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
 }

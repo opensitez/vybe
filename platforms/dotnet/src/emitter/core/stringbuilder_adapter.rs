@@ -472,7 +472,7 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
 /// §22.1.3.18). The .NET `StringBuilder.Replace` always does
 /// replace-all (no first-only variant) — matches `replaceAll` exactly.
 pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, line: u32) {
-    let replace_idx = chunks[0].add_import("ecma:string", "replaceAll");
+    let replace_idx = chunks[current].add_import("ecma:string", "replaceAll");
     let chunk = &mut chunks[current];
     let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
     let new_slot = reserve_slot(chunk);

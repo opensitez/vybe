@@ -211,9 +211,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("collections.new".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    // .NET returns the match index, or the bitwise complement of
+                    // the insertion point (`~i`, i.e. a negative) when absent —
+                    // `indexOf` can't express the miss case, so use the shared
+                    // comparison-ordered search.
                     "BinarySearch",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "indexOf")),
+                    MethodBody::Common("dotnet.array_binary_search".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ConvertAll",
@@ -234,6 +238,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Find",
                     2,
                     MethodBody::HostCall(HostTarget::new("ecma:array", "find")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FindAll",
+                    2,
+                    MethodBody::Common("dotnet.array_find_all".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "FindIndex",
@@ -442,6 +451,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     2,
                     MethodBody::Common("delegates.remove".into()),
                 )),
+        ),
+        // `EventArgs.Empty` — the canonical empty event payload. Handlers that
+        // carry no data (`EventHandler`) pass it as a non-null placeholder; an
+        // empty object satisfies every use that doesn't read a field off it.
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("EventArgs").with_method(MethodDef::static_method(
+                "Empty",
+                0,
+                MethodBody::Common("object.new".into()),
+            )),
         ),
         DotnetClassExport::new(
             "dotnet.System",

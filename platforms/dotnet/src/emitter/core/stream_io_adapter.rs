@@ -53,7 +53,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 /// `new StreamReader(path)` — load file into a `__content` string and
 /// initialise `__pos = 0`. Stack: `[path]` → `[reader]`.
 pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let read_idx = chunks[0].add_import("node:fs", "readFileSync");
+    let read_idx = chunks[current].add_import("node:fs", "readFileSync");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
@@ -324,7 +324,7 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
 /// `writer.Flush()` / `writer.Close()` — `node:fs.writeFileSync(__path, __buf)`.
 /// Stack: `[writer]` → `[null]`.
 pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32) {
-    let write_idx = chunks[0].add_import("node:fs", "writeFileSync");
+    let write_idx = chunks[current].add_import("node:fs", "writeFileSync");
     let chunk = &mut chunks[current];
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
     let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
@@ -347,7 +347,7 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
 /// `reader.Close()` / `writer.Close()` — no-op for readers, flush for writers.
 /// Stack: `[stream]` → `[null]`.
 pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
-    let write_idx = chunks[0].add_import("node:fs", "writeFileSync");
+    let write_idx = chunks[current].add_import("node:fs", "writeFileSync");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));

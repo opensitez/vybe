@@ -57,7 +57,7 @@ fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line
 /// `__addresses` field is the already-collected array of IP strings;
 /// we just `STRUCT_GET` it to drain.
 pub fn emit_dns_get_host_addresses(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let resolve_idx = chunks[0].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
+    let resolve_idx = chunks[current].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
     chunks[current].emit(1, line);
     let addrs_key = chunks[current].add_constant(Value::String(Arc::from("__addresses")));
@@ -77,7 +77,7 @@ pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u3
 ///
 /// Stack: `[]` → `[string]`
 pub fn emit_dns_get_host_name(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("node:os", "hostname");
+    let idx = chunks[current].add_import("node:os", "hostname");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(0, line);
 }
@@ -105,7 +105,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
 
     // 1. Create socket
-    let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
@@ -122,7 +122,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_host_port_string(chunk, host_slot, port_slot, line);
     // Stack: [socket, null, "host:port"]
 
-    let connect_idx = chunks[0].add_import("wasi:sockets/tcp", "start-connect");
+    let connect_idx = chunks[current].add_import("wasi:sockets/tcp", "start-connect");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, connect_idx, line);
     chunks[current].emit(3, line);
     chunks[current].emit_op(Op::DROP, line); // discard connect result
@@ -142,7 +142,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 /// .NET callers feed into `New StreamReader(stream)` /
 /// `New StreamWriter(stream)`.
 pub fn emit_tcp_client_get_stream(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/tcp", "finish-connect");
+    let idx = chunks[current].add_import("wasi:sockets/tcp", "finish-connect");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
 }
@@ -151,7 +151,7 @@ pub fn emit_tcp_client_get_stream(chunks: &mut Vec<Chunk>, current: usize, line:
 ///
 /// Stack: `[client]` → `[null]` (void return)
 pub fn emit_tcp_client_close(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/tcp", "shutdown");
+    let idx = chunks[current].add_import("wasi:sockets/tcp", "shutdown");
     push_const(&mut chunks[current], Value::String(Arc::from("both")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(2, line);
@@ -176,7 +176,7 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx = chunks[0].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
@@ -193,28 +193,28 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     vybe_emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
     vybe_emitter::ops::emit_dyn_add(chunk, line);
-    let bind_idx = chunks[0].add_import("wasi:sockets/tcp", "start-bind");
+    let bind_idx = chunks[current].add_import("wasi:sockets/tcp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // finish-bind — synchronous, just acknowledges
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let fbind_idx = chunks[0].add_import("wasi:sockets/tcp", "finish-bind");
+    let fbind_idx = chunks[current].add_import("wasi:sockets/tcp", "finish-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, fbind_idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // start-listen
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let listen_idx = chunks[0].add_import("wasi:sockets/tcp", "start-listen");
+    let listen_idx = chunks[current].add_import("wasi:sockets/tcp", "start-listen");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, listen_idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // finish-listen
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let flisten_idx = chunks[0].add_import("wasi:sockets/tcp", "finish-listen");
+    let flisten_idx = chunks[current].add_import("wasi:sockets/tcp", "finish-listen");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, flisten_idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -235,7 +235,7 @@ pub fn emit_tcp_listener_start(_chunks: &mut Vec<Chunk>, _current: usize, _line:
 ///
 /// Stack: `[listener]` → `[null]`
 pub fn emit_tcp_listener_stop(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/tcp", "shutdown");
+    let idx = chunks[current].add_import("wasi:sockets/tcp", "shutdown");
     push_const(&mut chunks[current], Value::String(Arc::from("both")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(2, line);
@@ -253,7 +253,7 @@ pub fn emit_tcp_listener_stop(chunks: &mut Vec<Chunk>, current: usize, line: u32
 /// (non-blocking mode). For .NET semantics we want just the socket;
 /// extract index 0.
 pub fn emit_tcp_listener_accept(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let accept_idx = chunks[0].add_import("wasi:sockets/tcp", "accept");
+    let accept_idx = chunks[current].add_import("wasi:sockets/tcp", "accept");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, accept_idx, line);
     chunks[current].emit(1, line);
     // Result on stack: [array_of_3] | null
@@ -268,7 +268,7 @@ pub fn emit_tcp_listener_accept(chunks: &mut Vec<Chunk>, current: usize, line: u
 ///
 /// Stack: `[listener]` → `[bool]`
 pub fn emit_tcp_listener_pending(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/tcp", "is-listening");
+    let idx = chunks[current].add_import("wasi:sockets/tcp", "is-listening");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
 }
@@ -283,7 +283,7 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx = chunks[0].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
+    let create_idx = chunks[current].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
@@ -300,13 +300,13 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     vybe_emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
     vybe_emitter::ops::emit_dyn_add(chunk, line);
-    let bind_idx = chunks[0].add_import("wasi:sockets/udp", "start-bind");
+    let bind_idx = chunks[current].add_import("wasi:sockets/udp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    let fbind_idx = chunks[0].add_import("wasi:sockets/udp", "finish-bind");
+    let fbind_idx = chunks[current].add_import("wasi:sockets/udp", "finish-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, fbind_idx, line);
     chunks[current].emit(1, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -323,7 +323,7 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 /// `udp.stream`; we wrap the call into a single emit for caller
 /// simplicity.
 pub fn emit_udp_send(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/udp", "stream");
+    let idx = chunks[current].add_import("wasi:sockets/udp", "stream");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(5, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -334,7 +334,7 @@ pub fn emit_udp_send(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 ///
 /// Stack: `[client]` → `[bytes]`
 pub fn emit_udp_receive(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:sockets/udp", "stream");
+    let idx = chunks[current].add_import("wasi:sockets/udp", "stream");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
 }

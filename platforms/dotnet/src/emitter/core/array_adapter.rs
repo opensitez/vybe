@@ -251,6 +251,97 @@ pub fn emit_array_find_all(chunks: &mut [Chunk], current: usize, line: u32) {
     );
 }
 
+/// `Array.BinarySearch(arr, value)` — .NET returns the index of `value` in
+/// the sorted `arr`, or the bitwise complement of the insertion point (`~i`,
+/// a negative) when it is absent. The shared `collections.binary_search`
+/// delegates to `indexOf`, which can only signal a miss with `-1` and so
+/// loses the insertion point — drive a spec-correct scan here instead.
+/// Stack: `[arr, value]` → `[i32]`.
+pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let arr_slot = chunk.alloc_scratch(6);
+    let value_slot = arr_slot + 1;
+    let i_slot = arr_slot + 2;
+    let len_slot = arr_slot + 3;
+    let result_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+
+    // Stash args (value on top).
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+
+    // len = arr.length
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    // i = 0
+    core_wasm::i32_const(chunk, line, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    // result = ~len (value sorts after every element → insertion point == len)
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_neg(chunk, line);
+    core_wasm::i32_const(chunk, line, -1);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    let block_p = chunk.emit_block(line);
+    let (loop_p, _) = chunk.emit_loop_s(line);
+
+    // while i < len — else break, keeping result = ~len
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    chunk.emit_br_if(1, line);
+
+    // elem = arr[i]
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    // if elem == value { result = i; break }  (br 2: if → loop → block)
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_br(2, line);
+    chunk.emit_end(line);
+
+    // if elem > value { result = ~i; break }  (insertion point is i)
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    vybe_emitter::ops::emit_dyn_neg(chunk, line);
+    core_wasm::i32_const(chunk, line, -1);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_br(2, line);
+    chunk.emit_end(line);
+
+    // i++
+    chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunk.emit_i32_const(1, line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    chunk.emit_br(0, line);
+    chunk.emit_end(line); // loop
+    chunk.patch_loop(loop_p);
+    chunk.emit_end(line); // block
+    chunk.patch_block(block_p);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 /// `Array.ConvertAll(arr, selector)` → `arr.map(selector)`. Stack: `[arr, fn]` → `[array]`.
 pub fn emit_array_convert_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = alloc_locals(&mut chunks[current], 4);

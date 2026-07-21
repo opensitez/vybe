@@ -65,6 +65,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         constructor_class(
             "dotnet.System.Drawing",
+            "HatchBrush",
+            "vybe:gui",
+            "hatchBrushNew",
+        ),
+        constructor_class(
+            "dotnet.System.Drawing",
+            "LinearGradientBrush",
+            "vybe:gui",
+            "linearGradientBrushNew",
+        ),
+        constructor_class(
+            "dotnet.System.Drawing",
             "Color",
             "vybe:gui",
             "colorFromName",

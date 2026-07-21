@@ -249,6 +249,16 @@ impl MethodTarget {
     pub const fn body(ops: &'static [MethodOp]) -> Self {
         MethodTarget::Body(ops)
     }
+
+    /// True if this body is a pure no-op (`return null`) — e.g.
+    /// `SuspendLayout`/`ResumeLayout`/`PerformLayout`. These resolve through
+    /// the profile's `noop` value-method, so no emitted thunk is needed.
+    pub fn is_noop(&self) -> bool {
+        matches!(
+            self,
+            MethodTarget::Body([MethodOp::PushConstNull, MethodOp::Return])
+        )
+    }
 }
 
 /// One operation in a [`MethodTarget::Body`] template.

@@ -20,7 +20,7 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 /// NaN, throw `Error("Input string was not in a correct format.")`
 /// (the .NET `FormatException` message). Stack: `[s]` → `[i32]`.
 pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
-    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
     chunk.emit(1, line);
@@ -53,7 +53,7 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
 /// .NET's zero-on-failure out value with a `|| ((r = 0) == null)` fallback.
 /// Stack: `[s]` → `[i32 | null]`.
 pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
-    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
     chunk.emit(1, line);
@@ -75,7 +75,7 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// `double.Parse(s)` — `Number(s)` with NaN guard. Stack: `[s]` → `[f64]`.
 pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
-    let number_idx = chunks[0].add_import("ecma:number", "Number");
+    let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
     chunk.emit(1, line);

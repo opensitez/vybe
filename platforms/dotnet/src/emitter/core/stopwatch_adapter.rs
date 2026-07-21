@@ -31,7 +31,7 @@ fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
 }
 
 fn emit_monotonic_now(chunks: &mut [Chunk], current: usize, line: u32) {
-    let idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "now");
+    let idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(0u8, line);
 }

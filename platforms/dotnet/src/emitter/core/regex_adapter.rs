@@ -48,7 +48,7 @@ pub fn emit_regex_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 }
 
 pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
-    let test_idx = chunks[0].add_import("ecma:regexp", "test");
+    let test_idx = chunks[current].add_import("ecma:regexp", "test");
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
@@ -64,7 +64,7 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
-    let replace_idx = chunks[0].add_import("ecma:regexp", "replaceAll");
+    let replace_idx = chunks[current].add_import("ecma:regexp", "replaceAll");
     let chunk = &mut chunks[current];
     let replacement_slot = reserve_slot(chunk);
     let input_slot = reserve_slot(chunk);
@@ -84,7 +84,7 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_regex_split(chunks: &mut [Chunk], current: usize, line: u32) {
-    let split_idx = chunks[0].add_import("ecma:regexp", "split");
+    let split_idx = chunks[current].add_import("ecma:regexp", "split");
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
@@ -101,7 +101,7 @@ pub fn emit_regex_split(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
-    let exec_idx = chunks[0].add_import("ecma:regexp", "exec");
+    let exec_idx = chunks[current].add_import("ecma:regexp", "exec");
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
@@ -140,7 +140,7 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_regex_matches(chunks: &mut [Chunk], current: usize, line: u32) {
-    let match_all_idx = chunks[0].add_import("ecma:regexp", "matchAll");
+    let match_all_idx = chunks[current].add_import("ecma:regexp", "matchAll");
     let chunk = &mut chunks[current];
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);

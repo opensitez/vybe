@@ -9,7 +9,7 @@ fn call_import(
     argc: u8,
     line: u32,
 ) {
-    let idx = chunks[0].add_import(module, name);
+    let idx = chunks[current].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);
 }

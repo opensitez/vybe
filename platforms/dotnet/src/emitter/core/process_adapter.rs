@@ -130,7 +130,7 @@ pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
 /// Stack on entry: `[arg]` (string or ProcessStartInfo)
 /// Stack on exit:  `[Process { HasExited, ExitCode, __type }]`
 pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let spawn_idx = chunks[0].add_import("node:child_process", "spawnSync");
+    let spawn_idx = chunks[current].add_import("node:child_process", "spawnSync");
     let chunk = &mut chunks[current];
     let filename_key = chunk.add_constant(Value::String(Arc::from(FILENAME_KEY)));
     let args_key = chunk.add_constant(Value::String(Arc::from(ARGUMENTS_KEY)));
@@ -246,7 +246,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 ///
 /// Stack on entry: `[]` ; Stack on exit: `[process_info]`
 pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let pid_idx = chunks[0].add_import("node:process", "pid");
+    let pid_idx = chunks[current].add_import("node:process", "pid");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let pid_key = chunk.add_constant(Value::String(Arc::from("pid")));

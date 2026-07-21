@@ -87,24 +87,55 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
     };
 
     for prop in class.properties {
-        out = out.with_property(PropertyDef::new(*prop).with_setter(HostTarget::new(
-            "vybe:gui",
-            vybe_emitter::gui::HOST_FN_SET_PROPERTY,
-        )));
+        out = out.with_property(
+            PropertyDef::new(*prop)
+                .with_setter(HostTarget::new(
+                    "vybe:gui",
+                    vybe_emitter::gui::HOST_FN_SET_PROPERTY,
+                ))
+                .with_getter(HostTarget::new(
+                    "vybe:gui",
+                    vybe_emitter::gui::HOST_FN_GET_PROPERTY,
+                )),
+        );
     }
 
     for method in class.methods {
-        if let MethodTarget::Host { module, fn_name } = method.target {
-            let param_count = if method.arity > 0 {
-                method.arity - 1
-            } else {
-                0
-            };
-            out = out.with_method(MethodDef::new(
-                method.name,
-                param_count,
-                MethodBody::HostCall(HostTarget::new(module, fn_name)),
-            ));
+        let param_count = method.arity.saturating_sub(1);
+        match method.target {
+            MethodTarget::Host { module, fn_name } => {
+                out = out.with_method(MethodDef::new(
+                    method.name,
+                    param_count,
+                    MethodBody::HostCall(HostTarget::new(module, fn_name)),
+                ));
+            }
+            // `CreateGraphics` is a non-trivial method Body (construct a
+            // Graphics stamped with the control's name). Model it as a shared
+            // dotnet emitter so it resolves through the descriptor at the call
+            // site — control leaves no longer emit a ctor chunk to bind it.
+            // No-op Body methods (SuspendLayout/…) are left to the profile's
+            // `noop` value-method, and other Body methods stay ctor-bound.
+            MethodTarget::Body(_) if method.name == "CreateGraphics" => {
+                out = out.with_method(MethodDef::new(
+                    method.name,
+                    param_count,
+                    MethodBody::Common("dotnet.control_create_graphics".to_string()),
+                ));
+            }
+            // Drawing Body methods (Graphics/Pen/Brush: DrawLine, FillRectangle,
+            // transforms, …) resolve through the descriptor and lower inline at
+            // the call site via `builder::emit_body_inline` — the drawing object
+            // needs no ctor-bound thunk. No-op Body methods fall through to the
+            // profile's `noop` value-method.
+            MethodTarget::Body(_) if !method.target.is_noop() => {
+                out = out.with_method(MethodDef::new(
+                    method.name,
+                    param_count,
+                    MethodBody::Common(format!("dotnet.drawing.{}", method.name)),
+                ));
+            }
+            _ => {}
         }
     }
 

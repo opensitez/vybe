@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use super::component_classes_common::{common_constructor_class, constructor_class};
+use super::component_classes_common::constructor_class;
 use vybe_bytecode::component_model::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
 };
@@ -347,12 +347,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryDequeue",
                     1,
-                    MethodBody::Common("collections.shift".into()),
+                    MethodBody::Common("dotnet.concurrent_queue_try_dequeue".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     1,
-                    MethodBody::Common("collections.get".into()),
+                    MethodBody::Common("dotnet.concurrent_queue_try_peek".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
@@ -375,9 +375,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("collections.pop".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "TryPop",
+                    1,
+                    MethodBody::Common("dotnet.concurrent_stack_try_pop".into()),
+                ))
+                .with_method(MethodDef::new(
                     "TryPeek",
                     0,
                     MethodBody::Common("collections.get".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryPeek",
+                    1,
+                    MethodBody::Common("dotnet.concurrent_stack_try_peek".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
@@ -385,6 +395,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("collections.length".into()),
                 )),
         ),
+        // `SortedDictionary<K,V>` keeps the `ecma:map` backing (so lookup /
+        // insert / removal stay O(1) and order-independent) and sorts its
+        // Keys / Values / entry views at read time via the shared sorted core.
+        // Natural ordering falls out of the shared functions' null-comparator
+        // path, so no comparator needs to be stored.
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("SortedDictionary")
@@ -414,12 +429,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Keys",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "keys")),
+                    MethodBody::Common("dotnet.sorted_map_keys".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Values",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "values")),
+                    MethodBody::Common("dotnet.sorted_map_values".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EntriesSorted",
+                    0,
+                    MethodBody::Common("dotnet.sorted_map_entries".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
@@ -430,8 +450,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Count",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "size")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetValueOrDefault",
+                    1,
+                    MethodBody::Common("dotnet.dict_get_value_or_default".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetValueOrDefault",
+                    2,
+                    MethodBody::Common("dotnet.dict_get_value_or_default".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryGetValue",
+                    2,
+                    MethodBody::Common("dotnet.dict_try_get_value".into()),
                 )),
         ),
+        // `SortedSet<T>` keeps the `ecma:set` backing (so Add / Contains /
+        // Remove / Count and the whole set-algebra surface reuse the same host
+        // set ops as `HashSet`). Only the ordered reads are adapted: `foreach`
+        // is rewritten to `ElementsSorted()` and `GetViewBetween` spreads the
+        // set to a sorted array, both via the shared sorted core, then the view
+        // is rebuilt as a set so its own methods resolve through the set path.
         DotnetClassExport::new(
             "dotnet.System.Collections.Generic",
             ClassType::new("SortedSet")
@@ -465,6 +506,76 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Clear",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:set", "clear")),
+                ))
+                .with_method(MethodDef::new(
+                    "UnionWith",
+                    1,
+                    MethodBody::Common("dotnet.hashset_union_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IntersectWith",
+                    1,
+                    MethodBody::Common("dotnet.hashset_intersect_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ExceptWith",
+                    1,
+                    MethodBody::Common("dotnet.hashset_except_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SymmetricExceptWith",
+                    1,
+                    MethodBody::Common("dotnet.hashset_symmetric_except_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsSubsetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_subset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsSupersetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_superset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Overlaps",
+                    1,
+                    MethodBody::Common("dotnet.hashset_overlaps".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SetEquals",
+                    1,
+                    MethodBody::Common("dotnet.hashset_set_equals".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsProperSubsetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_proper_subset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsProperSupersetOf",
+                    1,
+                    MethodBody::Common("dotnet.hashset_is_proper_superset_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Min",
+                    0,
+                    MethodBody::Common("dotnet.sorted_set_min".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Max",
+                    0,
+                    MethodBody::Common("dotnet.sorted_set_max".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ElementsSorted",
+                    0,
+                    MethodBody::Common("dotnet.sorted_set_elements".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetViewBetween",
+                    2,
+                    MethodBody::Common("dotnet.sorted_set_view_between".into()),
                 )),
         ),
         constructor_class(
@@ -491,6 +602,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Find",
                     1,
                     MethodBody::Common("dotnet.linked_list_find".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "First",
+                    0,
+                    MethodBody::Common("dotnet.linked_list_first".into()),
                 ))
                 .with_method(MethodDef::new(
                     "InsertAtRaw",
@@ -639,7 +755,41 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 )),
         ),
         constructor_class("dotnet.System.Collections", "Hashtable", "ecma:map", "new"),
-        common_constructor_class("dotnet.System.Collections", "Collection", "collections.new"),
+        DotnetClassExport::new(
+            "dotnet.System.Collections",
+            ClassType::new("Collection")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.vb_collection_new"))
+                .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.vb_collection_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Add",
+                    2,
+                    MethodBody::Common("dotnet.vb_collection_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Item",
+                    1,
+                    MethodBody::Common("dotnet.vb_collection_item".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Count",
+                    0,
+                    MethodBody::Common("dotnet.vb_collection_count".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Contains",
+                    1,
+                    MethodBody::Common("dotnet.vb_collection_contains".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Remove",
+                    1,
+                    MethodBody::Common("dotnet.vb_collection_remove".into()),
+                )),
+        ),
     ]
 }
 

@@ -49,7 +49,16 @@ pub enum InstanceMethodTarget {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstancePropertyTarget {
-    Host { module: String, func: String },
+    /// A host-backed property accessor. `key` is `Some(PascalName)` when the
+    /// target is the *generic* `vybe:gui` property host fn
+    /// (`controlGet/SetProperty(this, "Text"[, value])`) — the compiler pushes
+    /// the key as an argument. `None` for dedicated per-property host fns
+    /// (`Environment.NewLine` → `node:os.EOL(this)`).
+    Host {
+        module: String,
+        func: String,
+        key: Option<String>,
+    },
 }
 pub struct DotnetSurface {
     default_imports: Vec<String>,
@@ -70,7 +79,7 @@ fn is_real_runtime_interface(interface: &str) -> bool {
 
 /// Normalize a source-language receiver type to its descriptor base name.
 /// Returns `(base, is_array)`:
-/// - `"List<int>"` → `("List", false)` (generic args stripped)
+/// - `"List<int>"` / `"List(Of Integer)"` → `("List", false)` (generic args stripped)
 /// - `"int[]"` / `"Integer()"` → `(original, true)` (array shape)
 /// - `"IEnumerable<T>"` → `("IEnumerable", false)`
 fn normalize_receiver_type_name(name: &str) -> (String, bool) {
@@ -82,8 +91,15 @@ fn normalize_receiver_type_name(name: &str) -> (String, bool) {
     if trimmed.ends_with("()") {
         return (trimmed.to_string(), true);
     }
-    // Strip generic arguments: `List<int>` → `List`.
-    let base = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    // Strip generic arguments: `List<int>` / `List(Of Integer)` → `List`.
+    let base = trimmed
+        .split('<')
+        .next()
+        .unwrap_or(trimmed)
+        .split("(Of")
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
     (base.to_string(), false)
 }
 
@@ -109,6 +125,59 @@ fn is_enumerable_type_name(name: &str) -> bool {
             | "concurrentqueue"
             | "concurrentstack"
             | "concurrentbag"
+    )
+}
+
+fn is_linq_method_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "select"
+            | "selectmany"
+            | "where"
+            | "count"
+            | "sum"
+            | "any"
+            | "all"
+            | "contains"
+            | "reverse"
+            | "skip"
+            | "skipwhile"
+            | "skiplast"
+            | "take"
+            | "takewhile"
+            | "takelast"
+            | "first"
+            | "firstordefault"
+            | "last"
+            | "lastordefault"
+            | "single"
+            | "singleordefault"
+            | "elementat"
+            | "elementatordefault"
+            | "orderby"
+            | "orderbydescending"
+            | "thenby"
+            | "thenbydescending"
+            | "distinct"
+            | "distinctby"
+            | "union"
+            | "intersect"
+            | "except"
+            | "concat"
+            | "zip"
+            | "toarray"
+            | "tolist"
+            | "todictionary"
+            | "tolookup"
+            | "cast"
+            | "oftype"
+            | "asenumerable"
+            | "defaultifempty"
+            | "groupby"
+            | "min"
+            | "max"
+            | "average"
+            | "aggregate"
     )
 }
 
@@ -175,10 +244,13 @@ impl DotnetSurface {
     }
 
     pub fn lookup_constructor(&self, name: &str) -> Option<ConstructorTarget> {
+        let short = name.rsplit('.').next().unwrap_or(name);
         self.component_descriptor
             .classes
             .iter()
-            .find(|class| class.name.eq_ignore_ascii_case(name))
+            .find(|class| {
+                class.name.eq_ignore_ascii_case(name) || class.name.eq_ignore_ascii_case(short)
+            })
             .and_then(|class| class.constructor.as_ref())
             .and_then(|ctor| ctor.backing.clone())
     }
@@ -231,49 +303,70 @@ impl DotnetSurface {
         if is_array || is_enumerable_type_name(base_short) {
             return self.find_instance_method_on("IEnumerable", method_name, arg_count);
         }
+        if is_linq_method_name(method_name) {
+            return self.find_instance_method_on("IEnumerable", method_name, arg_count);
+        }
         None
     }
 
-    /// Find an instance method by name + arity on the named descriptor class.
+    /// True if `class_name` names a class in the .NET component descriptor
+    /// (a framework type like `Button`/`Control`), as opposed to a user class.
+    pub fn is_descriptor_class(&self, class_name: &str) -> bool {
+        let short = class_name.rsplit('.').next().unwrap_or(class_name);
+        self.component_descriptor
+            .classes
+            .iter()
+            .any(|class| {
+                class.name.eq_ignore_ascii_case(class_name)
+                    || class.name.eq_ignore_ascii_case(short)
+            })
+    }
+
+    /// Find an instance method by name + arity on the named descriptor class or
+    /// any of its ancestors (`Button.Show` resolves `Show` on `Control`).
     fn find_instance_method_on(
         &self,
         class_name: &str,
         method_name: &str,
         arg_count: u8,
     ) -> Option<InstanceMethodTarget> {
-        self.component_descriptor
+        let mut current = self
+            .component_descriptor
             .classes
             .iter()
-            .find(|class| class.name.eq_ignore_ascii_case(class_name))
-            .and_then(|class| {
-                class
-                    .methods
+            .find(|class| class.name.eq_ignore_ascii_case(class_name));
+        while let Some(class) = current {
+            // Overload resolution is by exact arity — the adapter class declares
+            // each overload (`Count()` runtime property vs `Count(pred)` LINQ).
+            // A missing arity must NOT fall back to a different overload.
+            if let Some(method) = class.methods.iter().find(|method| {
+                !method.is_static
+                    && method.name.eq_ignore_ascii_case(method_name)
+                    && method.arity == arg_count
+            }) {
+                return match &method.body {
+                    MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
+                        module: target.module.clone(),
+                        func: target.name.clone(),
+                        arity: method.arity,
+                    }),
+                    MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
+                        emit: name.clone(),
+                        arity: method.arity,
+                    }),
+                    // UserChunk paths are compiled by the wrapper builder
+                    // (DotnetClass) — not driven through this lookup.
+                    _ => None,
+                };
+            }
+            current = class.parent.as_deref().and_then(|parent| {
+                self.component_descriptor
+                    .classes
                     .iter()
-                    // Overload resolution is by exact arity — the adapter class
-                    // declares each overload (`Count()` runtime property vs
-                    // `Count(pred)` LINQ). A missing arity must NOT fall back to
-                    // a different overload; it returns `None` so the caller
-                    // routes on (e.g. `Count()` → runtime collection registry).
-                    .find(|method| {
-                        !method.is_static
-                            && method.name.eq_ignore_ascii_case(method_name)
-                            && method.arity == arg_count
-                    })
-                    .and_then(|method| match &method.body {
-                        MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
-                            module: target.module.clone(),
-                            func: target.name.clone(),
-                            arity: method.arity,
-                        }),
-                        MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
-                            emit: name.clone(),
-                            arity: method.arity,
-                        }),
-                        // UserChunk paths are compiled by the wrapper builder
-                        // (DotnetClass) — not driven through this lookup.
-                        _ => None,
-                    })
-            })
+                    .find(|candidate| candidate.name.eq_ignore_ascii_case(parent))
+            });
+        }
+        None
     }
 
     pub fn lookup_instance_method_return_type(
@@ -336,30 +429,62 @@ impl DotnetSurface {
         class_name: &str,
         property_name: &str,
     ) -> Option<InstancePropertyTarget> {
+        self.lookup_instance_accessor(class_name, property_name, false)
+    }
+
+    pub fn lookup_instance_property_setter(
+        &self,
+        class_name: &str,
+        property_name: &str,
+    ) -> Option<InstancePropertyTarget> {
+        self.lookup_instance_accessor(class_name, property_name, true)
+    }
+
+    /// Resolve a property accessor by walking `class_name` and its ancestors —
+    /// `Button.Text` finds `Text` on `Control`. The generic `vybe:gui` property
+    /// host fns take the PascalCase key as an argument, so it rides along in
+    /// `key`; dedicated per-property host fns leave `key` `None`.
+    fn lookup_instance_accessor(
+        &self,
+        class_name: &str,
+        property_name: &str,
+        want_setter: bool,
+    ) -> Option<InstancePropertyTarget> {
         let requested = class_name.trim();
         let requested_short = requested.rsplit('.').next().unwrap_or(requested);
-        self.component_descriptor
-            .classes
-            .iter()
-            .find(|class| {
-                class.name.eq_ignore_ascii_case(requested)
-                    || class.name.eq_ignore_ascii_case(requested_short)
-            })
-            .and_then(|class| {
-                class
-                    .properties
-                    .iter()
-                    .find(|property| property.name.eq_ignore_ascii_case(property_name))
-            })
-            .and_then(|property| {
-                property
-                    .getter
-                    .as_ref()
-                    .map(|target| InstancePropertyTarget::Host {
+        let mut current = self.component_descriptor.classes.iter().find(|class| {
+            class.name.eq_ignore_ascii_case(requested)
+                || class.name.eq_ignore_ascii_case(requested_short)
+        });
+        while let Some(class) = current {
+            if let Some(property) = class
+                .properties
+                .iter()
+                .find(|property| property.name.eq_ignore_ascii_case(property_name))
+            {
+                let target = if want_setter {
+                    property.setter.as_ref()
+                } else {
+                    property.getter.as_ref()
+                };
+                return target.map(|target| {
+                    let keyed = target.name == vybe_emitter::gui::HOST_FN_GET_PROPERTY
+                        || target.name == vybe_emitter::gui::HOST_FN_SET_PROPERTY;
+                    InstancePropertyTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
-                    })
-            })
+                        key: keyed.then(|| property.name.clone()),
+                    }
+                });
+            }
+            current = class.parent.as_deref().and_then(|parent| {
+                self.component_descriptor
+                    .classes
+                    .iter()
+                    .find(|candidate| candidate.name.eq_ignore_ascii_case(parent))
+            });
+        }
+        None
     }
 
     pub fn lookup_static_method(
@@ -471,6 +596,36 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             return Some("string".into());
         }
     }
+    if class.eq_ignore_ascii_case("XElement") {
+        if matches!(method_name.to_ascii_lowercase().as_str(), "element") {
+            return Some("XElement".into());
+        }
+        if matches!(method_name.to_ascii_lowercase().as_str(), "elements") {
+            return Some("IEnumerable".into());
+        }
+        if matches!(method_name.to_ascii_lowercase().as_str(), "name") {
+            return Some("XName".into());
+        }
+        if method_name.eq_ignore_ascii_case("attribute") {
+            return Some("XAttribute".into());
+        }
+        if matches!(method_name.to_ascii_lowercase().as_str(), "value" | "tostring") {
+            return Some("string".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("XDocument") {
+        if matches!(method_name.to_ascii_lowercase().as_str(), "root") {
+            return Some("XElement".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("XName") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "localname" | "namespacename" | "tostring"
+        ) {
+            return Some("string".into());
+        }
+    }
     // LINQ deferred (sequence-returning) operators stay `IEnumerable<T>`, so a
     // chain like `xs.OrderBy(k).Distinct().Where(p)` keeps resolving each step
     // against the shared surface. Terminal operators (`Count`, `Sum`, `First`,
@@ -507,6 +662,8 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
                 | "defaultifempty"
                 | "groupby"
                 | "zip"
+                | "cast"
+                | "oftype"
                 | "asenumerable"
         ) {
             return Some("IEnumerable".into());

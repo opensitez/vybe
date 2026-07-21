@@ -15,7 +15,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_random_unit(chunks: &mut [Chunk], current: usize, line: u32) {
-    let idx = chunks[0].add_import("ecma:math", "random");
+    let idx = chunks[current].add_import("ecma:math", "random");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(0, line);

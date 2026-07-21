@@ -29,6 +29,8 @@ mod component_classes_system_version;
 mod component_classes_text;
 #[path = "component_classes_threading.rs"]
 mod component_classes_threading;
+#[path = "component_classes_xml.rs"]
+mod component_classes_xml;
 
 pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
@@ -40,6 +42,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         let mut enumerable = component_classes_linq::enumerable_export();
         component_classes_span::add_array_extension_methods(&mut enumerable.class);
         exports.push(enumerable);
+        exports.push(component_classes_linq::enumerable_static_export());
         exports.extend(component_classes_span::exports());
         exports.extend(component_classes_system::exports());
         exports.extend(component_classes_system_values::exports());
@@ -50,6 +53,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.extend(component_classes_diagnostics_process::exports());
         exports.extend(component_classes_network::exports());
         exports.extend(component_classes_io::exports());
+        exports.extend(component_classes_xml::exports());
         exports
     });
     EXPORTS.as_slice()

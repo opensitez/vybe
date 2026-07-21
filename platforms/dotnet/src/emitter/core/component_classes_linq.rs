@@ -22,6 +22,23 @@ pub(super) fn enumerable_export() -> DotnetClassExport {
     DotnetClassExport::new("dotnet.System.Collections.Generic", class)
 }
 
+pub(super) fn enumerable_static_export() -> DotnetClassExport {
+    DotnetClassExport::new(
+        "dotnet.System.Linq",
+        ClassType::new("Enumerable")
+            .with_method(MethodDef::static_method(
+                "Sum",
+                1,
+                MethodBody::Common("dotnet.linq_sum".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "Sum",
+                2,
+                MethodBody::Common("dotnet.linq_sum_selector".into()),
+            )),
+    )
+}
+
 fn is_linq_target(interface: &str, class: &ClassType) -> bool {
     (interface == "dotnet.System.Collections.Generic" && class.name == "List")
         || (interface == "dotnet.System.Collections" && class.name == "ArrayList")
@@ -60,6 +77,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_any".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Any",
+        1,
+        MethodBody::Common("dotnet.linq_any_pred".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "Contains",
         1,
         MethodBody::Common("dotnet.linq_contains".into()),
@@ -95,6 +117,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_last".into()),
     ));
     class.methods.push(MethodDef::new(
+        "LastOrDefault",
+        0,
+        MethodBody::Common("dotnet.linq_last_or_default".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "Skip",
         1,
         MethodBody::Common("dotnet.linq_skip".into()),
@@ -118,6 +145,26 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "Distinct",
         0,
         MethodBody::Common("dotnet.linq_distinct".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Distinct",
+        1,
+        MethodBody::Common("dotnet.linq_distinct_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "All",
+        1,
+        MethodBody::Common("dotnet.linq_all".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "LongCount",
+        0,
+        MethodBody::Common("dotnet.linq_count".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "LongCount",
+        1,
+        MethodBody::Common("dotnet.linq_count_pred".into()),
     ));
     class.methods.push(MethodDef::new(
         "Aggregate",
@@ -151,13 +198,58 @@ fn add_linq_instance_methods(class: &mut ClassType) {
     ));
     class.methods.push(MethodDef::new(
         "ToDictionary",
+        1,
+        MethodBody::Common("dotnet.linq_to_dictionary_key".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ToDictionary",
         2,
         MethodBody::Common("dotnet.linq_to_dictionary".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ToLookup",
+        1,
+        MethodBody::Common("dotnet.linq_to_lookup".into()),
     ));
     class.methods.push(MethodDef::new(
         "Zip",
         2,
         MethodBody::Common("dotnet.linq_zip".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Concat",
+        1,
+        MethodBody::Common("dotnet.linq_concat".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Union",
+        1,
+        MethodBody::Common("dotnet.linq_union".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Intersect",
+        1,
+        MethodBody::Common("dotnet.linq_intersect".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Except",
+        1,
+        MethodBody::Common("dotnet.linq_except".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Cast",
+        0,
+        MethodBody::Common("dotnet.linq_identity".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "OfType",
+        0,
+        MethodBody::Common("dotnet.linq_identity".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "OfType",
+        1,
+        MethodBody::Common("dotnet.linq_of_type".into()),
     ));
     class.methods.push(MethodDef::new(
         "ToList",
@@ -234,6 +326,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         0,
         MethodBody::Common("dotnet.linq_default_if_empty".into()),
     ));
+    class.methods.push(MethodDef::new(
+        "DefaultIfEmpty",
+        1,
+        MethodBody::Common("dotnet.linq_default_if_empty_value".into()),
+    ));
     // Aggregation. `Sum` drains any receiver (array, `List<T>`, generator,
     // cross-language iterable) through the shared iterator protocol before
     // summing; `Min`/`Max` operate on the materialized sequence.
@@ -241,6 +338,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "Sum",
         0,
         MethodBody::Common("dotnet.linq_sum".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Sum",
+        1,
+        MethodBody::Common("dotnet.linq_sum_selector".into()),
     ));
     class.methods.push(MethodDef::new(
         "Min",

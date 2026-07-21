@@ -31,7 +31,7 @@ fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, li
 }
 
 fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
-    let parse_int_idx = chunks[0].add_import("ecma:number", "parseInt");
+    let parse_int_idx = chunks[current].add_import("ecma:number", "parseInt");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, parse_int_idx, line);
@@ -212,7 +212,7 @@ pub fn emit_version_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 }
 
 pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
-    let to_str_idx = chunks[0].add_import("ecma:string", "String");
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
     let parts_slot = reserve_slot(chunk);
@@ -261,7 +261,7 @@ pub fn emit_version_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    let to_str_idx = chunks[0].add_import("ecma:string", "String");
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let out_slot = reserve_slot(chunk);

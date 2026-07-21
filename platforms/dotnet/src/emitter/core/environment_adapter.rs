@@ -34,7 +34,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
 
-    let object_new = chunks[0].add_import("ecma:object", "new");
+    let object_new = chunks[current].add_import("ecma:object", "new");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
     chunk.emit(0, line);
@@ -49,7 +49,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
 }
 
 pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32) {
-    let user_info = chunks[0].add_import("node:os", "userInfo");
+    let user_info = chunks[current].add_import("node:os", "userInfo");
     let chunk = &mut chunks[current];
     let username_key = chunk.add_constant(Value::String(Arc::from("username")));
     chunk.emit_op_u16(Op::CALL_IMPORT, user_info, line);
@@ -58,7 +58,7 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
 }
 
 pub fn emit_environment_processor_count(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cpus = chunks[0].add_import("node:os", "cpus");
+    let cpus = chunks[current].add_import("node:os", "cpus");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, cpus, line);
     chunk.emit(0, line);
@@ -66,7 +66,7 @@ pub fn emit_environment_processor_count(chunks: &mut [Chunk], current: usize, li
 }
 
 pub fn emit_environment_tick_count(chunks: &mut [Chunk], current: usize, line: u32) {
-    let uptime = chunks[0].add_import("node:process", "uptime");
+    let uptime = chunks[current].add_import("node:process", "uptime");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, uptime, line);
     chunk.emit(0, line);
@@ -108,7 +108,7 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_br(1, line);
 
-    let get_env = chunks[0].add_import("wasi:cli/environment", "get-environment");
+    let get_env = chunks[current].add_import("wasi:cli/environment", "get-environment");
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(fallback_block);

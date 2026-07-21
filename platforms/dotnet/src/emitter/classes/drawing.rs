@@ -714,6 +714,24 @@ const BRUSH_METHODS: &[DotnetMethod] = &[DotnetMethod {
     target: MethodTarget::body(GRAPHICS_DISPOSE),
 }];
 
+/// Look up a drawing method's `Body` ops by name across the Graphics/Pen/Brush
+/// tables. The `dotnet.drawing.*` call-site dispatch uses this to lower the
+/// method inline (`builder::emit_body_inline`) — the drawing objects resolve
+/// their methods through the component descriptor (`MethodBody::Common`) with
+/// no ctor-bound thunk, the same way controls resolve theirs.
+pub fn drawing_method_body(name: &str) -> Option<&'static [MethodOp]> {
+    for table in [GRAPHICS_METHODS, PEN_METHODS, BRUSH_METHODS] {
+        for m in table {
+            if m.name == name {
+                if let MethodTarget::Body(ops) = m.target {
+                    return Some(ops);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn classes() -> &'static [DotnetClass] {
     &[
         DotnetClass {

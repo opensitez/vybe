@@ -20,7 +20,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32) {
-    let read_idx = chunks[0].add_import("node:fs", "readFileSync");
+    let read_idx = chunks[current].add_import("node:fs", "readFileSync");
     let chunk = &mut chunks[current];
     let path_slot = reserve_slot(chunk);
 
@@ -35,9 +35,9 @@ pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32)
 }
 
 fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_directories: bool) {
-    let list_idx = chunks[0].add_import("wasi:filesystem", "listDir");
-    let is_dir_idx = chunks[0].add_import("wasi:filesystem", "isDir");
-    let resolve_idx = chunks[0].add_import("node:path", "resolve");
+    let list_idx = chunks[current].add_import("wasi:filesystem", "listDir");
+    let is_dir_idx = chunks[current].add_import("wasi:filesystem", "isDir");
+    let resolve_idx = chunks[current].add_import("node:path", "resolve");
 
     let chunk = &mut chunks[current];
     let root_slot = reserve_slot(chunk);

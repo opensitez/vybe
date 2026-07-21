@@ -31,6 +31,7 @@ pub mod thread_adapter;
 pub mod timespan_adapter;
 pub mod types;
 pub mod version_adapter;
+pub mod xml_linq_adapter;
 
 use vybe_bytecode::component_model::ComponentDescriptor;
 

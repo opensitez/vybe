@@ -100,9 +100,9 @@ fn emit_build_guid_from_stack(
     validate: bool,
     line: u32,
 ) {
-    let to_str_idx = chunks[0].add_import("ecma:string", "String");
-    let lower_idx = chunks[0].add_import("ecma:string", "toLowerCase");
-    let test_idx = chunks[0].add_import("ecma:regexp", "test");
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
+    let lower_idx = chunks[current].add_import("ecma:string", "toLowerCase");
+    let test_idx = chunks[current].add_import("ecma:regexp", "test");
 
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
@@ -134,7 +134,7 @@ pub fn emit_guid_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 }
 
 pub fn emit_guid_new_guid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let random_uuid_idx = chunks[0].add_import("web:crypto", "randomUUID");
+    let random_uuid_idx = chunks[current].add_import("web:crypto", "randomUUID");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, random_uuid_idx, line);
     chunk.emit(0, line);
@@ -169,9 +169,9 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 }
 
 pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let to_str_idx = chunks[0].add_import("ecma:string", "String");
-    let lower_idx = chunks[0].add_import("ecma:string", "toLowerCase");
-    let test_idx = chunks[0].add_import("ecma:regexp", "test");
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
+    let lower_idx = chunks[current].add_import("ecma:string", "toLowerCase");
+    let test_idx = chunks[current].add_import("ecma:regexp", "test");
 
     let text_slot;
     {
