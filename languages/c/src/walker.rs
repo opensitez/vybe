@@ -3939,6 +3939,7 @@ impl Walker {
         trimmed.to_string()
     }
 
+    #[allow(dead_code)]
     fn make_c_comparator_adapter(&self, cmp: Expression) -> Expression {
         let left_name = "__c_cmp_left".to_string();
         let right_name = "__c_cmp_right".to_string();
@@ -14970,6 +14971,27 @@ fn rewrite_gotos_in_stmts(
                     cond,
                     update,
                     body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
+                }));
+            }
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                of,
+                else_body,
+                is_async,
+            } => {
+                out.push(stmt(StmtKind::ForIn {
+                    var,
+                    key,
+                    iter,
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
+                    of,
+                    else_body: else_body.map(|b| {
+                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label)
+                    }),
+                    is_async,
                 }));
             }
             StmtKind::While {
