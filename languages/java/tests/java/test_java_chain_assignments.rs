@@ -34,5 +34,5 @@ jt!(post_then_assign, "int a = 0; a += 1; a += a++; System.out.println(a);", "2"
 jt!(assignment_with_brace_scope, "int a = 1; { int b = a; a = b; } a += 4; System.out.println(a);", "5");
 jt!(mixed_primitive_assignments, "int a = 2; a += 3; a -= 1; a *= 2; a /= 2; a %= 3; System.out.println(a);", "3");
 jt!(multiple_composite_updates, "int a = 10; a = (a += 1) + (a += 2); System.out.println(a);", "24");
-jt!(assignment_from_ternary_object, "int a = 2; int b = (a += 1) > 2 ? (a += 2) : (a += 3); System.out.println(a + ";" + b);", "5;5");
+jt!(assignment_from_ternary_object, r#"int a = 2; int b = (a += 1) > 2 ? (a += 2) : (a += 3); System.out.println(a + ";" + b);"#, "5;5");
 jt!(bitwise_assign_after_branch, "int a = 8; boolean ok = true; if (ok) { a &= 6; } else { a |= 6; } System.out.println(a);", "0");

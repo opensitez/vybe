@@ -30,7 +30,7 @@ jt!(label_break_in_while_switch, "int c = 0; int i = 0; outer: while (true) { if
 jt!(label_continue_across_nested, "int c = 0; int i = 0; outer: for (; i < 4; i++) { for (int j = 0; j < 4; j++) { if (j == 2) continue outer; c++; } } System.out.println(c);", "8");
 jt!(label_break_while_nested, "int i = 0; int j = 0; int c = 0; outer: while (i < 3) { i++; while (j < 3) { if (j == 1) break outer; c++; j++; } } System.out.println(c);", "0");
 jt!(label_continue_while_nested, "int i = 0; int c = 0; outer: for (i = 0; i < 3; i++) { int j = 0; while (j < 3) { j++; if (j == 1) continue outer; c++; } } System.out.println(c);", "6");
-jt!(label_break_with_variable, "int a = 0; int b = 0; outer: for (int i = 0; i < 4; i++) { for (int j = 0; j < 4; j++) { b++; if (i == 1 && j == 1) break outer; } a++; } System.out.println(a + "," + b);", "1,2");
+jt!(label_break_with_variable, r#"int a = 0; int b = 0; outer: for (int i = 0; i < 4; i++) { for (int j = 0; j < 4; j++) { b++; if (i == 1 && j == 1) break outer; } a++; } System.out.println(a + "," + b);"#, "1,2");
 jt!(label_continue_after_calc, "int s = 0; outer: for (int i = 0; i < 6; i++) { if (i % 2 == 0) continue outer; s += i; } System.out.println(s);", "9");
 jt!(label_break_if_condition, "int x=0; outer: for(int i = 0; i < 5; i++) { if (i == 3) break outer; x += i; } System.out.println(x);", "3");
 jt!(label_continue_in_block, "int x=0; outer: for(int i = 0; i < 5; i++) { { if (i == 3) continue outer; } x += i; } System.out.println(x);", "7");

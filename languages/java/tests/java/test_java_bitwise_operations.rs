@@ -31,7 +31,7 @@ jt!(sign_bit_check, "int v = Integer.MIN_VALUE; System.out.println((v & Integer.
 jt!(low_bit_check, "System.out.println((3 & 1) != 0);", "true");
 jt!(low_bit_check_false, "System.out.println((2 & 1) != 0);", "false");
 jt!(compose_parity, "int v = 10; System.out.println((v & 1) == 0);", "true");
-jt!(xor_swap_like, "int a = 1; int b = 3; a ^= b; b ^= a; a ^= b; System.out.println(a + "," + b);", "3,1");
+jt!(xor_swap_like, r#"int a = 1; int b = 3; a ^= b; b ^= a; a ^= b; System.out.println(a + "," + b);"#, "3,1");
 jt!(bitwise_or_chain, "System.out.println((1 | 2 | 4 | 8));", "15");
 jt!(bitwise_and_chain, "System.out.println((15 & 14 & 7));", "6");
 jt!(bitwise_xor_chain, "System.out.println((15 ^ 10 ^ 3));", "4");

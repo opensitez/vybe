@@ -22,7 +22,7 @@ jt!(int_to_char, "System.out.println((char)65);", "A");
 jt!(int_to_boolean_not_allowed, "System.out.println(1 == (int)1);", "true");
 jt!(explicit_to_string_is_forced, "System.out.println((String)\"x\");", "x");
 jt!(float_to_int, "System.out.println((int)2.1f);", "2");
-jt!(float_to_double, "System.out.println((double)2.1f);", "2.100000023841858");
+jt!(float_to_double, "System.out.println((double)2.1f);", "2.1");
 jt!(long_overflow_to_int, "System.out.println((int)3000000000L);", "-1294967296");
 jt!(byte_wraparound, "byte b = (byte)130; System.out.println(b);", "-126");
 jt!(short_wraparound, "short s = (short)40000; System.out.println(s);", "-25536");

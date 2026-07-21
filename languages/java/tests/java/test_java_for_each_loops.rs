@@ -32,8 +32,8 @@ jt!(sum_strings, "String[] words = {\"a\", \"b\", \"c\"}; String s = \"\"; for (
 jt!(count_with_continue, "int[] values = {1,2,3,4,5}; int c = 0; for (int v : values) { if (v % 2 == 0) continue; c++; } System.out.println(c);", "3");
 jt!(reduce_like_add, "int[] values = {5,1,1}; int s = 1; for (int v : values) { s *= v; } System.out.println(s);", "5");
 jt!(repeat_three, "int[] values = {1,1,1}; int s = 0; for (int v : values) { s += 3 * v; } System.out.println(s);", "9");
-jt!(array_length_from_loop, "int[] values = {8,9}; int c=0; for (int v : values) c++; System.out.println(c == values.length ? c : 0);", "true");
+jt!(array_length_from_loop, "int[] values = {8,9}; int c=0; for (int v : values) c++; System.out.println(c == values.length ? c : 0);", "2");
 jt!(sum_abs, "int[] values = {-1,2,-3,4}; int s=0; for (int v : values) { s += v < 0 ? -v : v; } System.out.println(s);", "10");
 jt!(join_nontrivial, "String[] words = {\"x\", \"y\", \"z\"}; String s = words[0]; for (String w : words) { if (w != words[0]) s += \"|\" + w; } System.out.println(s);", "x|y|z");
-jt!(sum_until_condition, "int[] values = {1,2,3,4}; int s = 0; for (int v : values) { s += v; if (s > 4) break; } System.out.println(s);", "3");
+jt!(sum_until_condition, "int[] values = {1,2,3,4}; int s = 0; for (int v : values) { s += v; if (s > 4) break; } System.out.println(s);", "6");
 jt!(sum_char_codes, "char[] values = {'A', 'B'}; int s = 0; for (char c : values) { s += c; } System.out.println(s);", "131");

@@ -35,7 +35,7 @@ jm!(cast_to_array, "Object o = new String[]{\"a\"}; String[] a = (String[])o; Sy
 jm!(cast_in_try, "Object x = 1; try { int v = (Integer)x + 1; System.out.println(v); } catch (ClassCastException e) { System.out.println(\"bad\"); }", "", "bad");
 jm!(instanceof_parent, "System.out.println(new Sub(\"x\") instanceof Base);", "static class Base {} static class Sub extends Base { Sub(String s) {} }", "true");
 jm!(cast_mismatch_with_derived, "Object x = new Dog2(); if (x instanceof Animal2) { System.out.println(((Animal2)x).name()); } else { System.out.println(\"no\"); }", "interface Animal2 { String name(); } static class Dog2 implements Animal2 { public String name() { return \"dog\"; } }", "dog");
-jm!(instanceof_multiple, "Object x = new Multi(); System.out.println((x instanceof A2) + "," + (x instanceof B2) + "," + (x instanceof C2));", "interface A2 {} interface B2 {} static class Multi implements A2 {}", "true,false,false");
+jm!(instanceof_multiple, r#"Object x = new Multi(); System.out.println((x instanceof A2) + "," + (x instanceof B2) + "," + (x instanceof C2));"#, "interface A2 {} interface B2 {} static class Multi implements A2 {}", "true,false,false");
 jm!(cast_with_number, "Object x = Integer.valueOf(7); int y = ((Number)x).intValue(); System.out.println(y);", "", "7");
 jm!(instanceof_after_assignment, "Object x = new HolderObj(); HolderObj h = (HolderObj)x; System.out.println(h.value);", "static class HolderObj { int value = 9; }", "9");
 jm!(cast_null, "Object x = null; if (x instanceof String) System.out.println(1); else System.out.println(0);", "", "0");

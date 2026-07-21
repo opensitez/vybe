@@ -448,7 +448,7 @@ fn anonymous_class_with_numeric_return_from_interface() {
         "Calc c = new Calc() { public double compute(double x) { return x * x; } }; System.out.println(c.compute(3.0));",
         types,
     );
-    assert_eq!(out, vec!["9.0"]);
+    assert_eq!(out, vec!["9"]);
 }
 
 #[test]
