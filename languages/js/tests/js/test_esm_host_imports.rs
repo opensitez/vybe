@@ -324,8 +324,7 @@ version();
     )
     .expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
     let result = vybe_compiler::compiler::Compiler::with_profile(profile)
@@ -366,8 +365,7 @@ log("hi");
     )
     .expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
     let result = vybe_compiler::compiler::Compiler::with_profile(profile)
@@ -404,8 +402,7 @@ definitelyNotAThing();
     )
     .expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
     let result = vybe_compiler::compiler::Compiler::with_profile(profile)

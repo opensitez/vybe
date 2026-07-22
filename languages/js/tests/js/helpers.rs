@@ -63,12 +63,14 @@ macro_rules! js_import_cases {
 
 /// Run JS source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_js(src: &str) -> Vec<String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_js::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_js::register);
+    }
     let module = vybe_language_js::parse(src).expect("JS parse failed");
 
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("Failed to parse JS profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
+        .expect("Failed to parse JS profile");
 
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
@@ -79,8 +81,12 @@ pub fn run_js(src: &str) -> Vec<String> {
     vybe_host::register_all(&mut vm);
     register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
-    vybe_compiler::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
-        .expect("JS run failed");
+    vybe_compiler::dynamic::run_with_js_dynamic_runtime(
+        &mut vm,
+        vybe_host::Capabilities::all(),
+        chunks,
+    )
+    .expect("JS run failed");
     let result = output.lock().unwrap().clone();
     result
 }
@@ -96,9 +102,8 @@ pub fn assert_js(src: &str, expected: &[&str]) {
 /// and then read X as a value or use `import * as ns`.
 pub fn run_js_with_imports(src: &str) -> Vec<String> {
     let module = vybe_language_js::parse(src).expect("JS parse failed");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("Failed to parse JS profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
+        .expect("Failed to parse JS profile");
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -135,9 +140,8 @@ pub fn assert_js_with_imports(src: &str, expected: &[&str]) {
 /// Run JS source, return (VM, output) for post-run inspection.
 pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     let module = vybe_language_js::parse(src).expect("JS parse failed");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("Failed to parse JS profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
+        .expect("Failed to parse JS profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("JS compile failed");
@@ -147,7 +151,11 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     vybe_host::register_all(&mut vm);
     register_output_capture(&mut vm, &output);
     vybe_host::setup_namespaces(&mut vm);
-    vybe_compiler::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
-        .expect("JS run failed");
+    vybe_compiler::dynamic::run_with_js_dynamic_runtime(
+        &mut vm,
+        vybe_host::Capabilities::all(),
+        chunks,
+    )
+    .expect("JS run failed");
     (vm, output)
 }

@@ -30,9 +30,7 @@
 //! the legacy `compile_class` orchestration in `crate::compiler::classes`.
 //! Phase 2b flips the switch.
 
-use vybe_ast::{
-    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind,
-};
+use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
 use vybe_plugin::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},

@@ -378,15 +378,18 @@ pub fn register() {
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
     });
-    vybe_plugin::registry::register_hooks("js", vybe_plugin::registry::LanguageHooks {
-        proxy_get: Some(emitter::proxy_adapter::emit_proxy_get_dispatch),
-        proxy_set: Some(emitter::proxy_adapter::emit_proxy_set_dispatch),
-        proxy_set_bool: Some(emitter::proxy_adapter::emit_proxy_set_dispatch_bool),
-        proxy_has: Some(emitter::proxy_adapter::emit_proxy_has_dispatch),
-        proxy_create: Some(emitter::proxy_adapter::emit_proxy_create),
-        parse_eval: Some(parse_source_only),
-        ..Default::default()
-    });
+    vybe_plugin::registry::register_hooks(
+        "js",
+        vybe_plugin::registry::LanguageHooks {
+            proxy_get: Some(emitter::proxy_adapter::emit_proxy_get_dispatch),
+            proxy_set: Some(emitter::proxy_adapter::emit_proxy_set_dispatch),
+            proxy_set_bool: Some(emitter::proxy_adapter::emit_proxy_set_dispatch_bool),
+            proxy_has: Some(emitter::proxy_adapter::emit_proxy_has_dispatch),
+            proxy_create: Some(emitter::proxy_adapter::emit_proxy_create),
+            parse_eval: Some(parse_source_only),
+            ..Default::default()
+        },
+    );
 }
 
 /// This crate as a [`vybe_plugin::Plugin`] — its `init` registers the

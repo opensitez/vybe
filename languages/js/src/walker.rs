@@ -1,8 +1,8 @@
 use super::{JsParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use vybe_ast::*;
 
 // Monotonically increasing counter — unique template object slot per call site.
 static TEMPLATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
