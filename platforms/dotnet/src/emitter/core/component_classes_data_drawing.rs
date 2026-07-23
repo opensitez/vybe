@@ -41,6 +41,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataRow")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.datarow_new"))
                 .with_method(MethodDef::new(
                     "Item",
                     1,
@@ -50,6 +51,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "IsNull",
                     1,
                     MethodBody::Common("dotnet.datarow_is_null".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Data",
+            ClassType::new("DataAdapter")
+                .with_constructor(
+                    ConstructorDef::new(0)
+                        .with_backing(HostTarget::new("wasi:sql/types", "data-adapter.new")),
+                )
+                .with_method(MethodDef::new(
+                    "Fill",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:sql/types", "[method]adapter.fill")),
                 )),
         ),
         constructor_class("dotnet.System.Drawing", "Point", "vybe:gui", "pointNew"),

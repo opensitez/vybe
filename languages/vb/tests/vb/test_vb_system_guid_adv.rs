@@ -24,7 +24,10 @@ Module M
 End Module
 "#,
     );
-    assert_eq!(out, vec!["False", "Parsed", "d87a74a4-5694-4d8b-a3ed-3085794711f1"]);
+    assert_eq!(
+        out,
+        vec!["False", "Parsed", "d87a74a4-5694-4d8b-a3ed-3085794711f1"]
+    );
 }
 
 #[test]

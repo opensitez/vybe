@@ -9,9 +9,9 @@
 //! In other words: VB/C# think they are targeting `.NET`; the generated wasm is
 //! actually targeting JS/WASM-flavoured runtime primitives underneath.
 pub mod class_exports;
-pub mod dispatch;
 pub mod core;
 mod descriptor;
+pub mod dispatch;
 pub mod host_map;
 pub mod imports;
 pub mod namespaces;
@@ -92,14 +92,15 @@ fn normalize_receiver_type_name(name: &str) -> (String, bool) {
         return (trimmed.to_string(), true);
     }
     // Strip generic arguments: `List<int>` / `List(Of Integer)` → `List`.
-    let base = trimmed
-        .split('<')
-        .next()
-        .unwrap_or(trimmed)
-        .split("(Of")
-        .next()
-        .unwrap_or(trimmed)
-        .trim();
+    let angle = trimmed.find('<');
+    let vb = trimmed.to_ascii_lowercase().find("(of");
+    let end = match (angle, vb) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => trimmed.len(),
+    };
+    let base = trimmed[..end].trim();
     (base.to_string(), false)
 }
 
@@ -125,6 +126,9 @@ fn is_enumerable_type_name(name: &str) -> bool {
             | "concurrentqueue"
             | "concurrentstack"
             | "concurrentbag"
+            | "blockingcollection"
+            | "observablecollection"
+            | "readonlyobservablecollection"
     )
 }
 
@@ -244,12 +248,13 @@ impl DotnetSurface {
     }
 
     pub fn lookup_constructor(&self, name: &str) -> Option<ConstructorTarget> {
-        let short = name.rsplit('.').next().unwrap_or(name);
+        let (base, _) = normalize_receiver_type_name(name);
+        let short = base.rsplit('.').next().unwrap_or(&base);
         self.component_descriptor
             .classes
             .iter()
             .find(|class| {
-                class.name.eq_ignore_ascii_case(name) || class.name.eq_ignore_ascii_case(short)
+                class.name.eq_ignore_ascii_case(&base) || class.name.eq_ignore_ascii_case(short)
             })
             .and_then(|class| class.constructor.as_ref())
             .and_then(|ctor| ctor.backing.clone())
@@ -313,13 +318,9 @@ impl DotnetSurface {
     /// (a framework type like `Button`/`Control`), as opposed to a user class.
     pub fn is_descriptor_class(&self, class_name: &str) -> bool {
         let short = class_name.rsplit('.').next().unwrap_or(class_name);
-        self.component_descriptor
-            .classes
-            .iter()
-            .any(|class| {
-                class.name.eq_ignore_ascii_case(class_name)
-                    || class.name.eq_ignore_ascii_case(short)
-            })
+        self.component_descriptor.classes.iter().any(|class| {
+            class.name.eq_ignore_ascii_case(class_name) || class.name.eq_ignore_ascii_case(short)
+        })
     }
 
     /// Find an instance method by name + arity on the named descriptor class or
@@ -609,7 +610,10 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         if method_name.eq_ignore_ascii_case("attribute") {
             return Some("XAttribute".into());
         }
-        if matches!(method_name.to_ascii_lowercase().as_str(), "value" | "tostring") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "value" | "tostring"
+        ) {
             return Some("string".into());
         }
     }
@@ -733,7 +737,13 @@ pub fn capitalize_data_type(name: &str) -> String {
 }
 
 pub fn namespace_constant_mappings() -> &'static [(&'static str, f64)] {
-    winforms::types::namespace_constants()
+    static CONSTANTS: LazyLock<Vec<(&'static str, f64)>> = LazyLock::new(|| {
+        let mut constants = Vec::new();
+        constants.extend_from_slice(core::types::namespace_constants());
+        constants.extend_from_slice(winforms::types::namespace_constants());
+        constants
+    });
+    CONSTANTS.as_slice()
 }
 
 /// Build the typed `.NET` core library descriptor.
@@ -753,6 +763,162 @@ pub fn dotnet_component_descriptor() -> ComponentDescriptor {
 
 pub fn lookup_component_constructor(name: &str) -> Option<ConstructorTarget> {
     surface().lookup_constructor(name)
+}
+
+pub fn is_component_descriptor_class(name: &str) -> bool {
+    surface().is_descriptor_class(name)
+}
+
+pub fn component_descriptor_class_interface(name: &str) -> Option<String> {
+    let short = name.rsplit('.').next().unwrap_or(name);
+    surface()
+        .component_descriptor
+        .exports
+        .iter()
+        .find_map(|export| {
+            let ComponentItemKind::Class(class) = &export.kind else {
+                return None;
+            };
+            if class.name.eq_ignore_ascii_case(name) || class.name.eq_ignore_ascii_case(short) {
+                Some(export.interface.clone())
+            } else {
+                None
+            }
+        })
+}
+
+pub fn is_component_descriptor_class_in_namespace(name: &str, namespace_prefix: &str) -> bool {
+    component_descriptor_class_interface(name)
+        .is_some_and(|interface| interface.starts_with(namespace_prefix))
+}
+
+pub fn component_instance_method_exists(
+    class_name: &str,
+    method_name: &str,
+    arg_count: u8,
+) -> bool {
+    lookup_component_instance_method(class_name, method_name, arg_count).is_some()
+}
+
+pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'static str> {
+    let normalized = prefix.trim();
+    if (normalized.eq_ignore_ascii_case("StringComparer")
+        || normalized.eq_ignore_ascii_case("System.StringComparer"))
+        && member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+    {
+        return Some("__dotnet_stringcomparer_ordinalignorecase");
+    }
+    if (normalized.eq_ignore_ascii_case("StringComparer")
+        || normalized.eq_ignore_ascii_case("System.StringComparer"))
+        && member_name.eq_ignore_ascii_case("Ordinal")
+    {
+        return Some("__dotnet_stringcomparer_ordinal");
+    }
+    if (normalized.eq_ignore_ascii_case("StringComparison")
+        || normalized.eq_ignore_ascii_case("System.StringComparison"))
+        && member_name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+    {
+        return Some("__dotnet_stringcomparison_ordinalignorecase");
+    }
+    if (normalized.eq_ignore_ascii_case("StringComparison")
+        || normalized.eq_ignore_ascii_case("System.StringComparison"))
+        && member_name.eq_ignore_ascii_case("InvariantCultureIgnoreCase")
+    {
+        return Some("__dotnet_stringcomparison_invariantignorecase");
+    }
+    if (normalized.eq_ignore_ascii_case("StringComparison")
+        || normalized.eq_ignore_ascii_case("System.StringComparison"))
+        && (member_name.eq_ignore_ascii_case("Ordinal")
+            || member_name.eq_ignore_ascii_case("InvariantCulture")
+            || member_name.eq_ignore_ascii_case("CurrentCulture"))
+    {
+        return Some("__dotnet_stringcomparison_ordinal");
+    }
+    if normalized.contains("EqualityComparer<") && member_name.eq_ignore_ascii_case("Default") {
+        return Some("__dotnet_equalitycomparer_default");
+    }
+    if normalized.contains("Comparer<")
+        && !normalized.contains("EqualityComparer<")
+        && member_name.eq_ignore_ascii_case("Default")
+    {
+        return Some("__dotnet_comparer_default");
+    }
+    if (normalized.eq_ignore_ascii_case("DateTimeKind")
+        || normalized.eq_ignore_ascii_case("System.DateTimeKind"))
+        && (member_name.eq_ignore_ascii_case("Utc")
+            || member_name.eq_ignore_ascii_case("Local")
+            || member_name.eq_ignore_ascii_case("Unspecified"))
+    {
+        return Some(match member_name.to_ascii_lowercase().as_str() {
+            "utc" => "Utc",
+            "local" => "Local",
+            _ => "Unspecified",
+        });
+    }
+    if (normalized.eq_ignore_ascii_case("NotifyCollectionChangedAction")
+        || normalized
+            .eq_ignore_ascii_case("System.Collections.Specialized.NotifyCollectionChangedAction"))
+        && (member_name.eq_ignore_ascii_case("Add")
+            || member_name.eq_ignore_ascii_case("Remove")
+            || member_name.eq_ignore_ascii_case("Replace")
+            || member_name.eq_ignore_ascii_case("Move")
+            || member_name.eq_ignore_ascii_case("Reset"))
+    {
+        return Some(match member_name.to_ascii_lowercase().as_str() {
+            "add" => "Add",
+            "remove" => "Remove",
+            "replace" => "Replace",
+            "move" => "Move",
+            _ => "Reset",
+        });
+    }
+    None
+}
+
+pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool {
+    let normalized = prefix.trim();
+    ((normalized.eq_ignore_ascii_case("DateTime")
+        || normalized.eq_ignore_ascii_case("System.DateTime"))
+        && (member_name.eq_ignore_ascii_case("Now")
+            || member_name.eq_ignore_ascii_case("UtcNow")
+            || member_name.eq_ignore_ascii_case("Today")))
+        || ((normalized.eq_ignore_ascii_case("TimeSpan")
+            || normalized.eq_ignore_ascii_case("System.TimeSpan"))
+            && member_name.eq_ignore_ascii_case("Zero"))
+}
+
+pub fn canonical_type_name(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('?').trim();
+    let trimmed = trimmed.strip_suffix("()").unwrap_or(trimmed).trim();
+    let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+    match leaf.to_ascii_lowercase().as_str() {
+        "short" | "int16" => "Int16",
+        "integer" | "int" | "int32" => "Int32",
+        "long" | "int64" => "Int64",
+        "byte" => "Byte",
+        "sbyte" => "SByte",
+        "ushort" | "uint16" => "UInt16",
+        "uinteger" | "uint" | "uint32" => "UInt32",
+        "ulong" | "uint64" => "UInt64",
+        "single" | "float" => "Single",
+        "double" => "Double",
+        "decimal" => "Decimal",
+        "boolean" | "bool" => "Boolean",
+        "string" => "String",
+        "char" => "Char",
+        "object" => "Object",
+        "date" | "datetime" => "DateTime",
+        _ => leaf,
+    }
+    .to_string()
+}
+
+pub fn lookup_component_instance_method(
+    class_name: &str,
+    method_name: &str,
+    arg_count: u8,
+) -> Option<InstanceMethodTarget> {
+    surface().lookup_instance_method(class_name, method_name, arg_count)
 }
 
 pub fn lookup_component_static_method(

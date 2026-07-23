@@ -51,5 +51,13 @@ Module M
 End Module
 "#,
     );
-    assert_eq!(out, vec!["Handler Added", "Raising Event", "Action executed", "Handler Removed"]);
+    assert_eq!(
+        out,
+        vec![
+            "Handler Added",
+            "Raising Event",
+            "Action executed",
+            "Handler Removed"
+        ]
+    );
 }

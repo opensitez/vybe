@@ -9,7 +9,16 @@ fn quote(value: Option<i32>) -> String {
 
 #[test]
 fn nullable_int_coalesce_fallback_matrix() {
-    let values: [Option<i32>; 8] = [Some(-3), Some(0), Some(17), Some(42), None, Some(5), None, Some(-1)];
+    let values: [Option<i32>; 8] = [
+        Some(-3),
+        Some(0),
+        Some(17),
+        Some(42),
+        None,
+        Some(5),
+        None,
+        Some(-1),
+    ];
 
     for value in values {
         let src = format!(
@@ -23,13 +32,7 @@ fn nullable_int_coalesce_fallback_matrix() {
 
 #[test]
 fn nullable_string_length_with_null_conditional_chain() {
-    let cases = [
-        "null",
-        "\"\"",
-        "\"a\"",
-        "\"hello\"",
-        "\"  trim  \"",
-    ];
+    let cases = ["null", "\"\"", "\"a\"", "\"hello\"", "\"  trim  \""];
 
     for raw in cases {
         let src = format!(
@@ -61,7 +64,10 @@ Console.WriteLine(value.Value);
                 None => "null".to_string(),
             }
         );
-        assert_eq!(run_csharp(&src), vec![initial.unwrap_or(fallback).to_string()]);
+        assert_eq!(
+            run_csharp(&src),
+            vec![initial.unwrap_or(fallback).to_string()]
+        );
     }
 }
 
@@ -100,11 +106,7 @@ fn nullable_collection_count_and_sum_matrix() {
 
 #[test]
 fn nullable_value_type_member_and_hasvalue_paths() {
-    let pairs = [
-        (Some(1), "has"),
-        (Some(-9), "has"),
-        (None, "missing"),
-    ];
+    let pairs = [(Some(1), "has"), (Some(-9), "has"), (None, "missing")];
 
     for (value, expected) in pairs {
         let src = format!(
@@ -113,10 +115,7 @@ fn nullable_value_type_member_and_hasvalue_paths() {
         );
         assert_eq!(
             run_csharp(&src),
-            vec![
-                expected.to_string(),
-                value.unwrap_or(123).to_string()
-            ]
+            vec![expected.to_string(), value.unwrap_or(123).to_string()]
         );
     }
 }

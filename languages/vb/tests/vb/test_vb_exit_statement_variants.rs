@@ -36,8 +36,5 @@ Module M
 End Module
 "#,
     );
-    assert_eq!(
-        out,
-        vec!["Sub1", "10", "For 1", "For 2", "Do 1"]
-    );
+    assert_eq!(out, vec!["Sub1", "10", "For 1", "For 2", "Do 1"]);
 }

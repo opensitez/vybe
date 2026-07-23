@@ -29,10 +29,10 @@
 //! constants via [`push_string_const`] — NEVER `emit_string_const`,
 //! which secretly adds a `wasm:string-constants` import.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 use super::{DotnetClass, DotnetMethod, MethodOp, MethodTarget};
 use vybe_emitter::functions::create_function_chunk;

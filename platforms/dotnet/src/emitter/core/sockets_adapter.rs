@@ -57,7 +57,8 @@ fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line
 /// `__addresses` field is the already-collected array of IP strings;
 /// we just `STRUCT_GET` it to drain.
 pub fn emit_dns_get_host_addresses(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let resolve_idx = chunks[current].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
+    let resolve_idx =
+        chunks[current].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
     chunks[current].emit(1, line);
     let addrs_key = chunks[current].add_constant(Value::String(Arc::from("__addresses")));
@@ -105,7 +106,8 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
 
     // 1. Create socket
-    let create_idx = chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx =
+        chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
@@ -176,7 +178,8 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx = chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
+    let create_idx =
+        chunks[current].add_import("wasi:sockets/tcp-create-socket", "create-tcp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);
@@ -283,7 +286,8 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, port_slot, line);
 
-    let create_idx = chunks[current].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
+    let create_idx =
+        chunks[current].add_import("wasi:sockets/udp-create-socket", "create-udp-socket");
     push_const(&mut chunks[current], Value::String(Arc::from("ipv4")), line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, create_idx, line);
     chunks[current].emit(1, line);

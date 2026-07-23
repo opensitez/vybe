@@ -189,7 +189,11 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
 
     // TrimStart walks the cursor up, TrimEnd walks it down.
     chunks[current].emit_op_u16(Op::LOCAL_GET, cursor_slot, line);
-    core_wasm::f64_const(&mut chunks[current], line, if from_start { 1.0 } else { -1.0 });
+    core_wasm::f64_const(
+        &mut chunks[current],
+        line,
+        if from_start { 1.0 } else { -1.0 },
+    );
     vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cursor_slot, line);
 

@@ -13,7 +13,14 @@ use vybe_emitter::collections;
 // Thread.Sleep bytecode lives in vybe_emitter::threading::emit_thread_sleep
 // (pure WASI, platform-neutral).
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(argc, line);

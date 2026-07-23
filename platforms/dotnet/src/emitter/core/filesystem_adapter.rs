@@ -1,5 +1,5 @@
-use vybe_emitter::instructions::host;
 use std::sync::Arc;
+use vybe_emitter::instructions::host;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -99,4 +99,16 @@ pub fn emit_directory_get_files(chunks: &mut [Chunk], current: usize, line: u32)
 
 pub fn emit_directory_get_directories(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_directory_entries(chunks, current, line, true);
+}
+
+pub fn emit_directory_delete(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let remove_idx = chunks[current].add_import("wasi:filesystem", "remove");
+    let chunk = &mut chunks[current];
+
+    if argc > 1 {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::CALL_IMPORT, remove_idx, line);
+    chunk.emit(1, line);
 }

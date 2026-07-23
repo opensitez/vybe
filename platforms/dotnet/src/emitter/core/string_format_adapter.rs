@@ -18,10 +18,10 @@
 //! packs `arg0..` into an array local, then walks the format string emitting
 //! literal chars or `String(args[idx])` substitutions.
 
-use vybe_emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::{core_wasm, host};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {

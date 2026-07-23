@@ -13,7 +13,10 @@ fn task_from_result_returns_expected_value_per_type() {
         let src = format!(
             "System.Threading.Tasks.Task<{type_name}> result = System.Threading.Tasks.Task.FromResult({source_value}); Console.WriteLine(result.Result.GetType().FullName); Console.WriteLine(result.Result);"
         );
-        assert_eq!(run_csharp(&src), vec![type_name.to_string(), expected.to_string()]);
+        assert_eq!(
+            run_csharp(&src),
+            vec![type_name.to_string(), expected.to_string()]
+        );
     }
 }
 
@@ -55,12 +58,7 @@ Console.WriteLine(task.GetAwaiter().GetResult());
 
 #[test]
 fn task_when_all_collects_all_results_in_input_order() {
-    let triplets = [
-        (1, 2, 3),
-        (10, -5, 7),
-        (-1, 0, 1),
-        (42, 42, 42),
-    ];
+    let triplets = [(1, 2, 3), (10, -5, 7), (-1, 0, 1), (42, 42, 42)];
 
     for (first, second, third) in triplets {
         let expected_sum = first + second + third;
@@ -86,5 +84,8 @@ var completed = System.Threading.Tasks.Task.CompletedTask;
 Console.WriteLine(completed.IsCompleted);
 Console.WriteLine(completed.IsFaulted);
 "#;
-    assert_eq!(run_csharp(src), vec!["True".to_string(), "False".to_string()]);
+    assert_eq!(
+        run_csharp(src),
+        vec!["True".to_string(), "False".to_string()]
+    );
 }

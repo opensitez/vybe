@@ -1,5 +1,7 @@
-use vybe_emitter::instructions::core_wasm;
+//! Shared Microsoft.VisualBasic runtime helpers for .NET languages.
+
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -18,6 +20,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
+        Value::Bool(b) => chunk.emit_bool_const(*b, line),
         _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
     }
 }

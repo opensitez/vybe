@@ -31,6 +31,16 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                         "vybe:gui",
                         vybe_emitter::gui::HOST_FN_APP_EXIT,
                     )),
+                ))
+                .with_method(MethodDef::static_method(
+                    "EnableVisualStyles",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("vybe:gui", "noop")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetCompatibleTextRenderingDefault",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("vybe:gui", "noop")),
                 )),
         ));
         exports

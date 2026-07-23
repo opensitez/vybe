@@ -35,5 +35,10 @@ pub fn all() -> Vec<FormModuleLanguage> {
 }
 
 pub fn find_by_name(name: &str) -> Option<FormModuleLanguage> {
-    registry().lock().unwrap().iter().find(|m| m.name == name).copied()
+    registry()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|m| m.name == name)
+        .copied()
 }

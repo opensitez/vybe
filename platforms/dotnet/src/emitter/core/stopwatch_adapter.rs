@@ -4,10 +4,10 @@
 //! for all timing.  The Stopwatch object layout:
 //!   `{__type: "Stopwatch", __start_ns: f64, __accumulated_ns: f64, isrunning: bool}`
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {

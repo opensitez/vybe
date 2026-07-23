@@ -1,31 +1,231 @@
 use super::helpers::run_vb;
 
-#[test] fn ns_basic() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn ns_nested() { assert_eq!(run_vb("Namespace N1\nNamespace N2\nPublic Class C\nPublic V As Integer = 10\nEnd Class\nEnd Namespace\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.N2.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
-#[test] fn ns_dotted_declaration() { assert_eq!(run_vb("Namespace N1.N2\nPublic Class C\nPublic V As Integer = 15\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.N2.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["15"]); }
-#[test] fn ns_multiple_blocks_same_name() { assert_eq!(run_vb("Namespace N1\nPublic Class C1\nPublic V1 As Integer = 1\nEnd Class\nEnd Namespace\nNamespace N1\nPublic Class C2\nPublic V2 As Integer = 2\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C1()\nDim c2 As New N1.C2()\nConsole.WriteLine(c1.V1 + c2.V2)\nEnd Sub\nEnd Module"), vec!["3"]); }
-#[test] fn ns_imports_basic() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nImports N1\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test]
+fn ns_basic() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn ns_nested() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nNamespace N2\nPublic Class C\nPublic V As Integer = 10\nEnd Class\nEnd Namespace\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.N2.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["10"]
+    );
+}
+#[test]
+fn ns_dotted_declaration() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1.N2\nPublic Class C\nPublic V As Integer = 15\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.N2.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["15"]
+    );
+}
+#[test]
+fn ns_multiple_blocks_same_name() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C1\nPublic V1 As Integer = 1\nEnd Class\nEnd Namespace\nNamespace N1\nPublic Class C2\nPublic V2 As Integer = 2\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C1()\nDim c2 As New N1.C2()\nConsole.WriteLine(c1.V1 + c2.V2)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+}
+#[test]
+fn ns_imports_basic() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nImports N1\nModule M\nSub Main()\nDim c1 As New C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
 
-#[test] fn ns_imports_alias() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nImports MyAlias = N1.C\nModule M\nSub Main()\nDim c1 As New MyAlias()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn ns_global_keyword() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New Global.N1.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn ns_shadowing_by_local_name() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 1\nEnd Class\nEnd Namespace\nClass N1\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim n As New N1()\nConsole.WriteLine(n.V)\nEnd Sub\nEnd Module"), vec!["2"]); } // Local class N1 shadows namespace N1
-#[test] fn ns_global_bypasses_shadowing() { assert_eq!(run_vb("Namespace N1\nPublic Class C\nPublic V As Integer = 1\nEnd Class\nEnd Namespace\nClass N1\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim c As New Global.N1.C()\nConsole.WriteLine(c.V)\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn ns_access_from_within() { assert_eq!(run_vb("Namespace N1\nPublic Class C1\nPublic V As Integer = 5\nEnd Class\nPublic Class C2\nPublic Function GetV() As Integer\nDim c1 As New C1()\nReturn c1.V\nEnd Function\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c2 As New N1.C2()\nConsole.WriteLine(c2.GetV())\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test]
+fn ns_imports_alias() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nImports MyAlias = N1.C\nModule M\nSub Main()\nDim c1 As New MyAlias()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn ns_global_keyword() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New Global.N1.C()\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn ns_shadowing_by_local_name() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 1\nEnd Class\nEnd Namespace\nClass N1\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim n As New N1()\nConsole.WriteLine(n.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // Local class N1 shadows namespace N1
+#[test]
+fn ns_global_bypasses_shadowing() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C\nPublic V As Integer = 1\nEnd Class\nEnd Namespace\nClass N1\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim c As New Global.N1.C()\nConsole.WriteLine(c.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ns_access_from_within() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C1\nPublic V As Integer = 5\nEnd Class\nPublic Class C2\nPublic Function GetV() As Integer\nDim c1 As New C1()\nReturn c1.V\nEnd Function\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c2 As New N1.C2()\nConsole.WriteLine(c2.GetV())\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
 
-#[test] fn ns_access_from_nested_to_outer() { assert_eq!(run_vb("Namespace N1\nPublic Class C1\nPublic V As Integer = 5\nEnd Class\nNamespace N2\nPublic Class C2\nPublic Function GetV() As Integer\nDim c1 As New C1()\nReturn c1.V\nEnd Function\nEnd Class\nEnd Namespace\nEnd Namespace\nModule M\nSub Main()\nDim c2 As New N1.N2.C2()\nConsole.WriteLine(c2.GetV())\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn ns_access_outer_to_nested_requires_qualification() { assert_eq!(run_vb("Namespace N1\nNamespace N2\nPublic Class C2\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nPublic Class C1\nPublic Function GetV() As Integer\nDim c2 As New N2.C2()\nReturn c2.V\nEnd Function\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C1()\nConsole.WriteLine(c1.GetV())\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn mod_implicit_namespace_import() { assert_eq!(run_vb("Namespace N1\nPublic Module Mod1\nPublic V As Integer = 42\nEnd Module\nEnd Namespace\nImports N1\nModule M\nSub Main()\nConsole.WriteLine(V) ' Mod1 is implicitly imported because N1 is imported\nEnd Sub\nEnd Module"), vec!["42"]); }
-#[test] fn mod_access_without_imports_requires_full_path() { assert_eq!(run_vb("Namespace N1\nPublic Module Mod1\nPublic V As Integer = 42\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(N1.Mod1.V)\nEnd Sub\nEnd Module"), vec!["42"]); }
-#[test] fn ns_cannot_contain_fields() { assert_eq!(run_vb("Namespace N1\n' Public V As Integer ' Namespaces cannot contain fields\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test]
+fn ns_access_from_nested_to_outer() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Class C1\nPublic V As Integer = 5\nEnd Class\nNamespace N2\nPublic Class C2\nPublic Function GetV() As Integer\nDim c1 As New C1()\nReturn c1.V\nEnd Function\nEnd Class\nEnd Namespace\nEnd Namespace\nModule M\nSub Main()\nDim c2 As New N1.N2.C2()\nConsole.WriteLine(c2.GetV())\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn ns_access_outer_to_nested_requires_qualification() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nNamespace N2\nPublic Class C2\nPublic V As Integer = 5\nEnd Class\nEnd Namespace\nPublic Class C1\nPublic Function GetV() As Integer\nDim c2 As New N2.C2()\nReturn c2.V\nEnd Function\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C1()\nConsole.WriteLine(c1.GetV())\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn mod_implicit_namespace_import() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Module Mod1\nPublic V As Integer = 42\nEnd Module\nEnd Namespace\nImports N1\nModule M\nSub Main()\nConsole.WriteLine(V) ' Mod1 is implicitly imported because N1 is imported\nEnd Sub\nEnd Module"
+        ),
+        vec!["42"]
+    );
+}
+#[test]
+fn mod_access_without_imports_requires_full_path() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Module Mod1\nPublic V As Integer = 42\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(N1.Mod1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["42"]
+    );
+}
+#[test]
+fn ns_cannot_contain_fields() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\n' Public V As Integer ' Namespaces cannot contain fields\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
 
-#[test] fn ns_cannot_contain_methods() { assert_eq!(run_vb("Namespace N1\n' Public Sub M() ' Namespaces cannot contain methods directly\n' End Sub\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn ns_contains_delegate() { assert_eq!(run_vb("Namespace N1\nPublic Delegate Sub D()\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn ns_contains_enum() { assert_eq!(run_vb("Namespace N1\nPublic Enum E\nA\nB\nEnd Enum\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(CInt(N1.E.B))\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn ns_contains_structure() { assert_eq!(run_vb("Namespace N1\nPublic Structure S\nPublic V As Integer\nEnd Structure\nEnd Namespace\nModule M\nSub Main()\nDim s1 As N1.S\ns1.V = 5\nConsole.WriteLine(s1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn ns_contains_interface() { assert_eq!(run_vb("Namespace N1\nPublic Interface I\nSub M()\nEnd Interface\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test]
+fn ns_cannot_contain_methods() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\n' Public Sub M() ' Namespaces cannot contain methods directly\n' End Sub\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn ns_contains_delegate() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Delegate Sub D()\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn ns_contains_enum() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Enum E\nA\nB\nEnd Enum\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(CInt(N1.E.B))\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ns_contains_structure() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Structure S\nPublic V As Integer\nEnd Structure\nEnd Namespace\nModule M\nSub Main()\nDim s1 As N1.S\ns1.V = 5\nConsole.WriteLine(s1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn ns_contains_interface() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPublic Interface I\nSub M()\nEnd Interface\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
 
-#[test] fn mod_extension_methods_require_imports() { assert_eq!(run_vb("Imports System.Runtime.CompilerServices\nNamespace N1\nPublic Module Mod1\n<Extension()>\nPublic Function DoubleIt(v As Integer) As Integer\nReturn v * 2\nEnd Function\nEnd Module\nEnd Namespace\nImports N1 ' Required to use extension methods in Mod1\nModule M\nSub Main()\nDim x = 5\nConsole.WriteLine(x.DoubleIt())\nEnd Sub\nEnd Module"), vec!["10"]); }
-#[test] fn mod_extension_methods_fail_without_imports() { assert_eq!(run_vb("Imports System.Runtime.CompilerServices\nNamespace N1\nPublic Module Mod1\n<Extension()>\nPublic Function DoubleIt(v As Integer) As Integer\nReturn v * 2\nEnd Function\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nDim x = 5\n' Console.WriteLine(x.DoubleIt()) ' Extension method not in scope without Imports N1\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn ns_partial_class_across_namespaces_fails() { assert_eq!(run_vb("Namespace N1\nPartial Class C\nPublic V1 As Integer = 1\nEnd Class\nEnd Namespace\nNamespace N2\nPartial Class C ' This is a different class N2.C\nPublic V2 As Integer = 2\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C()\n' Console.WriteLine(c1.V1 + c1.V2) ' Fails, c1 only has V1\nConsole.WriteLine(c1.V1)\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn ns_imports_project_level() { assert_eq!(run_vb("' Project-level imports are usually configured externally, but simulated here via assumption\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn ns_root_namespace() { assert_eq!(run_vb("' Root namespace is usually configured externally (e.g. via compilation args)\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
+#[test]
+fn mod_extension_methods_require_imports() {
+    assert_eq!(
+        run_vb(
+            "Imports System.Runtime.CompilerServices\nNamespace N1\nPublic Module Mod1\n<Extension()>\nPublic Function DoubleIt(v As Integer) As Integer\nReturn v * 2\nEnd Function\nEnd Module\nEnd Namespace\nImports N1 ' Required to use extension methods in Mod1\nModule M\nSub Main()\nDim x = 5\nConsole.WriteLine(x.DoubleIt())\nEnd Sub\nEnd Module"
+        ),
+        vec!["10"]
+    );
+}
+#[test]
+fn mod_extension_methods_fail_without_imports() {
+    assert_eq!(
+        run_vb(
+            "Imports System.Runtime.CompilerServices\nNamespace N1\nPublic Module Mod1\n<Extension()>\nPublic Function DoubleIt(v As Integer) As Integer\nReturn v * 2\nEnd Function\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nDim x = 5\n' Console.WriteLine(x.DoubleIt()) ' Extension method not in scope without Imports N1\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn ns_partial_class_across_namespaces_fails() {
+    assert_eq!(
+        run_vb(
+            "Namespace N1\nPartial Class C\nPublic V1 As Integer = 1\nEnd Class\nEnd Namespace\nNamespace N2\nPartial Class C ' This is a different class N2.C\nPublic V2 As Integer = 2\nEnd Class\nEnd Namespace\nModule M\nSub Main()\nDim c1 As New N1.C()\n' Console.WriteLine(c1.V1 + c1.V2) ' Fails, c1 only has V1\nConsole.WriteLine(c1.V1)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn ns_imports_project_level() {
+    assert_eq!(
+        run_vb(
+            "' Project-level imports are usually configured externally, but simulated here via assumption\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn ns_root_namespace() {
+    assert_eq!(
+        run_vb(
+            "' Root namespace is usually configured externally (e.g. via compilation args)\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}

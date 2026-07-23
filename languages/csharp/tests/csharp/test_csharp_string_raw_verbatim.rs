@@ -15,8 +15,10 @@ Console.WriteLine(path.Contains(@"\test"));"#
 #[test]
 fn verbatim_string_preserves_newlines_in_literal() {
     assert_eq!(
-        run_csharp(r#"string s=@"line1\nline2";
-Console.WriteLine(s.Contains(@"\n"));"#),
+        run_csharp(
+            r#"string s=@"line1\nline2";
+Console.WriteLine(s.Contains(@"\n"));"#
+        ),
         &["True"]
     );
 }

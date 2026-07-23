@@ -13,10 +13,10 @@
 //! seconds }` matching the existing `vybe:types/timeSpan*` host
 //! impls so callers continue to work.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_emitter::math;
 

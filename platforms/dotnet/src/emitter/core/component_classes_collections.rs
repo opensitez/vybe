@@ -21,7 +21,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Remove", 1, "collections.remove"),
                 ("RemoveAt", 1, "collections.remove_at"),
                 ("Contains", 1, "collections.contains"),
-                ("Count", 0, "collections.length"),
+                ("Count", 0, "dotnet.observable_collection_count"),
                 ("Clear", 0, "collections.clear"),
                 ("IndexOf", 1, "collections.index_of"),
                 ("Sort", 0, "dotnet.array_sort"),
@@ -34,7 +34,10 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("RemoveRange", 2, "collections.remove_range"),
                 ("GetRange", 2, "collections.get_range"),
                 ("SetRange", 2, "collections.set_range"),
-                ("BinarySearch", 1, "collections.binary_search"),
+                ("Exists", 1, "dotnet.array_exists"),
+                ("Find", 1, "dotnet.array_find"),
+                ("FindAll", 1, "dotnet.array_find_all"),
+                ("BinarySearch", 1, "dotnet.array_binary_search"),
             ],
         ),
         // .NET `Dictionary<K,V>` is shape-identical to ECMA-262 §24.1
@@ -47,10 +50,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_constructor(
                     ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")),
                 )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.dict_new_ignore_arg"),
+                )
                 .with_method(MethodDef::new(
                     "Add",
                     2,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "set")),
+                ))
+                .with_method(MethodDef::new(
+                    "TryAdd",
+                    2,
+                    MethodBody::Common("dotnet.dict_try_add".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Item",
@@ -70,7 +81,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Remove",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "delete")),
+                    MethodBody::Common("dotnet.dict_remove".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Keys",
@@ -81,6 +92,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Values",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "values")),
+                ))
+                .with_method(MethodDef::new(
+                    "Entries",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("ecma:map", "entries")),
                 ))
                 .with_method(MethodDef::new(
                     "EntriesSorted",
@@ -106,6 +122,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "TryGetValue",
                     2,
                     MethodBody::Common("dotnet.dict_try_get_value".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.dict_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimExcess",
+                    0,
+                    MethodBody::Common("dotnet.dict_trim_excess".into()),
                 )),
         ),
         // .NET `Queue<T>` is a JS Array used FIFO - `Enqueue` appends
@@ -204,7 +230,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")),
                 )
                 .with_constructor(
-                    ConstructorDef::new(1).with_common_backing("dotnet.set_new_ignore_comparer"),
+                    ConstructorDef::new(1).with_common_backing("dotnet.set_new_from_iterable"),
                 )
                 .with_method(MethodDef::new(
                     "Add",
@@ -294,12 +320,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryAdd",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "set")),
+                    MethodBody::Common("dotnet.dict_try_add".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryGetValue",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "get")),
+                    MethodBody::Common("dotnet.dict_try_get_value".into()),
                 ))
                 .with_method(MethodDef::new(
                     "AddOrUpdate",
@@ -319,7 +345,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Remove",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:map", "delete")),
+                    MethodBody::Common("dotnet.dict_remove".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
@@ -330,6 +356,72 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Count",
                     0,
                     MethodBody::HostCall(HostTarget::new("ecma:map", "size")),
+                )),
+        ),
+        collection_class_common(
+            "dotnet.System.Collections.Concurrent",
+            "ConcurrentBag",
+            "collections.new",
+            &[
+                ("Add", 1, "collections.push"),
+                ("TryTake", 1, "dotnet.concurrent_stack_try_pop"),
+                ("TryPeek", 1, "dotnet.concurrent_stack_try_peek"),
+                ("Count", 0, "dotnet.observable_collection_count"),
+            ],
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Concurrent",
+            ClassType::new("BlockingCollection")
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.blocking_collection_new"),
+                )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.blocking_collection_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryAdd",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_try_add".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Take",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_take".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TryTake",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_take".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Count",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_count".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompleteAdding",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_complete_adding".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsAddingCompleted",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_is_completed".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsCompleted",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_is_completed".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetConsumingEnumerable",
+                    0,
+                    MethodBody::Common("dotnet.blocking_collection_items".into()),
                 )),
         ),
         // ConcurrentQueue / ConcurrentStack - same shape as their
@@ -755,10 +847,58 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 )),
         ),
         constructor_class("dotnet.System.Collections", "Hashtable", "ecma:map", "new"),
+        collection_class_common(
+            "dotnet.System.Collections.ObjectModel",
+            "ObservableCollection",
+            "collections.new",
+            &[
+                ("Add", 1, "dotnet.observable_collection_add"),
+                ("Remove", 1, "dotnet.observable_collection_remove"),
+                ("RemoveAt", 1, "dotnet.observable_collection_remove_at"),
+                ("Insert", 2, "dotnet.observable_collection_insert"),
+                ("Move", 2, "dotnet.observable_collection_move"),
+                ("Clear", 0, "dotnet.observable_collection_clear"),
+                ("Count", 0, "collections.length"),
+                ("Item", 1, "collections.get"),
+                ("ToArray", 0, "collections.clone"),
+                ("Items", 0, "dotnet.observable_collection_items"),
+                (
+                    "OnCollectionChanged",
+                    1,
+                    "dotnet.observable_collection_on_changed",
+                ),
+            ],
+        ),
+        collection_class_common(
+            "dotnet.System.Collections.ObjectModel",
+            "ReadOnlyObservableCollection",
+            "dotnet.readonly_observable_collection_new",
+            &[
+                ("Count", 0, "collections.length"),
+                ("Item", 1, "collections.get"),
+                ("ToArray", 0, "collections.clone"),
+            ],
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Specialized",
+            ClassType::new("NotifyCollectionChangedEventArgs").with_constructor(
+                ConstructorDef::new(1)
+                    .with_common_backing("dotnet.notify_collection_changed_event_args_new"),
+            ),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.ComponentModel",
+            ClassType::new("PropertyChangedEventArgs").with_constructor(
+                ConstructorDef::new(1)
+                    .with_common_backing("dotnet.property_changed_event_args_new"),
+            ),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Collections",
             ClassType::new("Collection")
-                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.vb_collection_new"))
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.vb_collection_new"),
+                )
                 .with_method(MethodDef::new(
                     "Add",
                     1,
@@ -801,6 +941,15 @@ fn collection_class_common(
 ) -> DotnetClassExport {
     let mut class = ClassType::new(name)
         .with_constructor(ConstructorDef::new(0).with_common_backing(ctor_common));
+    if matches!(name, "List" | "ObservableCollection") {
+        class = class.with_constructor(
+            ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
+        );
+    } else if name == "ReadOnlyObservableCollection" {
+        class = class.with_constructor(
+            ConstructorDef::new(1).with_common_backing("dotnet.readonly_observable_collection_new"),
+        );
+    }
     for (method, arity, common) in methods {
         class = class.with_method(MethodDef::new(
             *method,

@@ -79,8 +79,6 @@ uses_normalize_class = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"console.writeline"   = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 255 }
-"console.write"       = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 255 }
 "console.error.writeline" = { emit = "host:wasi:cli:error",  min_args = 0, max_args = 255 }
 "console.error"       = { emit = "host:wasi:cli:error",      min_args = 0, max_args = 255 }
 "console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
@@ -91,8 +89,6 @@ uses_normalize_class = true
 "application.exit"    = { emit = "host:vybe:gui:appExit",         min_args = 0, max_args = 0 }
 "application.enablevisualstyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
 "application.setcompatibletextrenderingdefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
-"system.windows.forms.application.enablevisualstyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
-"system.windows.forms.application.setcompatibletextrenderingdefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
 "debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
@@ -150,23 +146,10 @@ vartype    = { emit = "common:dotnet.vartype",         min_args = 1, max_args = 
 # ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
 
 abs           = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
-"math.abs"    = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 fix           = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
 int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
-"math.floor"  = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
-"math.ceiling" = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
-"math.ceil"   = { emit = "opcode:f64_ceil",    min_args = 1, max_args = 1 }
 sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
-"math.sqrt"   = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
-"math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
 round         = { emit = "common:round", min_args = 1, max_args = 2 }
-"math.round"  = { emit = "common:round", min_args = 1, max_args = 2 }
-"math.min"    = { emit = "opcode:f64_min",     min_args = 2, max_args = 2 }
-"math.max"    = { emit = "opcode:f64_max",     min_args = 2, max_args = 2 }
-
-"convert.toint32" = { emit = "opcode:i32_from_f64", min_args = 1, max_args = 1 }
-"convert.toint"   = { emit = "opcode:i32_from_f64", min_args = 1, max_args = 1 }
-"convert.todouble" = { emit = "opcode:f64_from_i32", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
@@ -181,36 +164,19 @@ tan        = { emit = "host:ecma:math:tan",    min_args = 1, max_args = 1 }
 atn        = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
 atan       = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
 pow                 = { emit = "host:ecma:math:pow",    min_args = 2, max_args = 2 }
-"math.pow"          = { emit = "host:ecma:math:pow",    min_args = 2, max_args = 2 }
-"math.log10"        = { emit = "host:ecma:math:log10",  min_args = 1, max_args = 1 }
-"math.log2"         = { emit = "host:ecma:math:log2", min_args = 1, max_args = 1 }
-"math.log"          = { emit = "host:ecma:math:log", min_args = 1, max_args = 2 }
-"math.sin"          = { emit = "host:ecma:math:sin",    min_args = 1, max_args = 1 }
-"math.cos"          = { emit = "host:ecma:math:cos",    min_args = 1, max_args = 1 }
-"math.tan"          = { emit = "host:ecma:math:tan",    min_args = 1, max_args = 1 }
-"math.asin"         = { emit = "host:ecma:math:asin",   min_args = 1, max_args = 1 }
-"math.acos"         = { emit = "host:ecma:math:acos",   min_args = 1, max_args = 1 }
-"math.atan"         = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
-"math.atan2"        = { emit = "host:ecma:math:atan2",  min_args = 2, max_args = 2 }
-"math.exp"          = { emit = "host:ecma:math:exp",    min_args = 1, max_args = 1 }
-"math.sign"         = { emit = "host:ecma:math:sign",          min_args = 1, max_args = 1 }
-"math.sinh"         = { emit = "host:ecma:math:sinh",  min_args = 1, max_args = 1 }
-"math.cosh"         = { emit = "host:ecma:math:cosh",  min_args = 1, max_args = 1 }
-"math.tanh"         = { emit = "host:ecma:math:tanh",  min_args = 1, max_args = 1 }
-"math.clamp"        = { emit = "common:math.clamp",            min_args = 3, max_args = 3 }
 
 # ── Financial functions ─────────────────────────────────────────────────────
 
-pmt   = { emit = "common:vb.pmt",   min_args = 3, max_args = 5 }
-fv    = { emit = "common:vb.fv",    min_args = 3, max_args = 5 }
-pv    = { emit = "common:vb.pv",    min_args = 3, max_args = 5 }
-nper  = { emit = "common:vb.nper",  min_args = 3, max_args = 5 }
-rate  = { emit = "common:vb.rate",  min_args = 3, max_args = 6 }
-ipmt  = { emit = "common:vb.ipmt",  min_args = 4, max_args = 6 }
-ppmt  = { emit = "common:vb.ppmt",  min_args = 4, max_args = 6 }
-sln   = { emit = "common:vb.sln",   min_args = 3, max_args = 3 }
-ddb   = { emit = "common:vb.ddb",   min_args = 4, max_args = 5 }
-syd   = { emit = "common:vb.syd",   min_args = 4, max_args = 4 }
+pmt   = { emit = "common:dotnet.vb_pmt",   min_args = 3, max_args = 5 }
+fv    = { emit = "common:dotnet.vb_fv",    min_args = 3, max_args = 5 }
+pv    = { emit = "common:dotnet.vb_pv",    min_args = 3, max_args = 5 }
+nper  = { emit = "common:dotnet.vb_nper",  min_args = 3, max_args = 5 }
+rate  = { emit = "common:dotnet.vb_rate",  min_args = 3, max_args = 6 }
+ipmt  = { emit = "common:dotnet.vb_ipmt",  min_args = 4, max_args = 6 }
+ppmt  = { emit = "common:dotnet.vb_ppmt",  min_args = 4, max_args = 6 }
+sln   = { emit = "common:dotnet.vb_sln",   min_args = 3, max_args = 3 }
+ddb   = { emit = "common:dotnet.vb_ddb",   min_args = 4, max_args = 5 }
+syd   = { emit = "common:dotnet.vb_syd",   min_args = 4, max_args = 4 }
 
 # ── String functions — WASM string builtins (zero overhead) ──────────────────
 
@@ -256,7 +222,6 @@ format     = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2
 lset       = { emit = "host:ecma:string:padEnd",     min_args = 2, max_args = 2 }
 rset       = { emit = "host:ecma:string:padStart",     min_args = 2, max_args = 2 }
 filter     = { emit = "intrinsic:filter",         min_args = 2, max_args = 4 }
-"string.isnullorempty" = { emit = "intrinsic:string_isnullorempty", min_args = 1, max_args = 1 }
 
 # Format variants
 formatnumber   = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
@@ -281,12 +246,12 @@ today        = { emit = "common:dotnet.datetime_today", min_args = 0, max_args =
 time         = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
 timeofday    = { emit = "common:dotnet.datetime_now",   min_args = 0, max_args = 0 }
 timer        = { emit = "intrinsic:timer",               min_args = 0, max_args = 0 }
-year         = { emit = "common:vb.year",    min_args = 1, max_args = 1 }
-month        = { emit = "common:vb.month",   min_args = 1, max_args = 1 }
-day          = { emit = "common:vb.day",     min_args = 1, max_args = 1 }
-hour         = { emit = "common:vb.hour",    min_args = 1, max_args = 1 }
-minute       = { emit = "common:vb.minute",  min_args = 1, max_args = 1 }
-second       = { emit = "common:vb.second",  min_args = 1, max_args = 1 }
+year         = { emit = "common:dotnet.datetime_year",   min_args = 1, max_args = 1 }
+month        = { emit = "common:dotnet.datetime_month",  min_args = 1, max_args = 1 }
+day          = { emit = "common:dotnet.datetime_day",    min_args = 1, max_args = 1 }
+hour         = { emit = "common:dotnet.datetime_hour",   min_args = 1, max_args = 1 }
+minute       = { emit = "common:dotnet.datetime_minute", min_args = 1, max_args = 1 }
+second       = { emit = "common:dotnet.datetime_second", min_args = 1, max_args = 1 }
 # DateAdd / DateSerial / TimeSerial profile entries retired — they
 # pointed at `vybe:types/dateTime*` host fns that have been retired in
 # favour of compile-time lowering through
@@ -302,46 +267,19 @@ timevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args =
 # comment above).
 cdate        = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
-weekday      = { emit = "common:vb.weekday",                  min_args = 1, max_args = 1 }
+weekday      = { emit = "common:dotnet.datetime_day_of_week",  min_args = 1, max_args = 1 }
 weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
-"datetime.now"    = { emit = "host:ecma:date:now",   min_args = 0, max_args = 0 }
-"datetime.utcnow" = { emit = "host:ecma:date:now", min_args = 0, max_args = 0 }
-"datetime.parse"  = { emit = "host:ecma:date:parse", min_args = 1, max_args = 1 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
-"dir"        = { emit = "common:vb.dir",  min_args = 0, max_args = 1 }
-"dir$"       = { emit = "common:vb.dir",  min_args = 0, max_args = 1 }
+"dir"        = { emit = "common:dotnet.vb_dir",  min_args = 0, max_args = 1 }
+"dir$"       = { emit = "common:dotnet.vb_dir",  min_args = 0, max_args = 1 }
 filecopy     = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
 kill         = { emit = "host:wasi:filesystem:remove",   min_args = 1, max_args = 1 }
 fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
-"file.exists"         = { emit = "host:wasi:filesystem:exists",      min_args = 1, max_args = 1 }
-"file.readalltext"    = { emit = "host:wasi:filesystem:readFile",    min_args = 1, max_args = 1 }
-"file.writealltext"   = { emit = "host:wasi:filesystem:writeFile",   min_args = 2, max_args = 2 }
-"file.appendalltext"  = { emit = "host:wasi:filesystem:appendFile",  min_args = 2, max_args = 2 }
-"file.delete"         = { emit = "host:wasi:filesystem:remove",      min_args = 1, max_args = 1 }
-"file.copy"           = { emit = "host:wasi:filesystem:copy",        min_args = 2, max_args = 2 }
-"file.move"           = { emit = "host:wasi:filesystem:rename",      min_args = 2, max_args = 2 }
-"file.readalllines"   = { emit = "common:dotnet.file_read_all_lines", min_args = 1, max_args = 1 }
-"directory.exists"          = { emit = "host:wasi:filesystem:isDir",         min_args = 1, max_args = 1 }
-"directory.createdirectory" = { emit = "host:wasi:filesystem:mkdir",         min_args = 1, max_args = 1 }
-"directory.delete"          = { emit = "host:wasi:filesystem:remove",        min_args = 1, max_args = 2 }
-"directory.getfiles"        = { emit = "common:dotnet.directory_get_files",       min_args = 1, max_args = 1 }
-"directory.getdirectories"  = { emit = "common:dotnet.directory_get_directories", min_args = 1, max_args = 1 }
-"directory.getcurrentdirectory" = { emit = "host:node:process:cwd",               min_args = 0, max_args = 0 }
-"path.getfilename"              = { emit = "host:wasi:filesystem:pathGetFileName",            min_args = 1, max_args = 1 }
-"path.getfilenamewithoutextension" = { emit = "host:wasi:filesystem:pathGetFileNameWithoutExt", min_args = 1, max_args = 1 }
-"path.getextension"             = { emit = "host:node:path:extname",                         min_args = 1, max_args = 1 }
-"path.getdirectoryname"         = { emit = "host:wasi:filesystem:pathGetDirectory",           min_args = 1, max_args = 1 }
-"path.getfullpath"              = { emit = "host:wasi:filesystem:pathGetFullPath",            min_args = 1, max_args = 1 }
-"path.gettemppath"              = { emit = "host:wasi:filesystem:pathGetTempPath",            min_args = 0, max_args = 0 }
-"path.combine"                  = { emit = "host:wasi:filesystem:pathCombine",                min_args = 2, max_args = 255 }
-"path.changeextension"          = { emit = "host:wasi:filesystem:pathChangeExtension",        min_args = 2, max_args = 2 }
-"path.hasextension"             = { emit = "host:wasi:filesystem:pathHasExtension",           min_args = 1, max_args = 1 }
-"path.ispathrooted"             = { emit = "host:wasi:filesystem:pathIsRooted",               min_args = 1, max_args = 1 }
-filedatetime = { emit = "common:vb.filedatetime",        min_args = 1, max_args = 1 }
+filedatetime = { emit = "common:dotnet.vb_filedatetime", min_args = 1, max_args = 1 }
 filelen      = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
-lof          = { emit = "common:vb.lof",                   min_args = 1, max_args = 1 }
+lof          = { emit = "common:dotnet.vb_lof",            min_args = 1, max_args = 1 }
 "curdir"     = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
 "curdir$"    = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
 chdir        = { emit = "host:node:process:chdir",        min_args = 1, max_args = 1 }
@@ -353,7 +291,7 @@ loc          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 fileattr     = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 getattr      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
-eof          = { emit = "common:vb.eof",                  min_args = 1, max_args = 1 }
+eof          = { emit = "common:dotnet.vb_eof",            min_args = 1, max_args = 1 }
 seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
 get          = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 3 }
 put          = { emit = "host:wasi:filesystem:writeFile", min_args = 1, max_args = 3 }
@@ -367,7 +305,7 @@ performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
 # ── Interaction ──────────────────────────────────────────────────────────────
 
 beep         = { emit = "noop",                            min_args = 0, max_args = 0 }
-shell        = { emit = "common:vb.shell_pid",             min_args = 1, max_args = 2 }
+shell        = { emit = "common:dotnet.vb_shell_pid",      min_args = 1, max_args = 2 }
 environ      = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
 "environ$"   = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
 command      = { emit = "intrinsic:command",               min_args = 0, max_args = 0 }
@@ -377,88 +315,61 @@ appactivate  = { emit = "noop",                            min_args = 1, max_arg
 doevents     = { emit = "noop",                            min_args = 0, max_args = 0 }
 
 # ── Environment ──────────────────────────────────────────────────────────────
-
-"environment.currentdirectory"        = { emit = "host:node:process:cwd",              min_args = 0, max_args = 0 }
-"environment.newline"                 = { emit = "host:node:os:EOL",                    min_args = 0, max_args = 0 }
-"environment.machinename"             = { emit = "host:node:os:hostname",               min_args = 0, max_args = 0 }
-"environment.username"                = { emit = "common:dotnet.environment_username",  min_args = 0, max_args = 0 }
-"environment.osversion"               = { emit = "host:node:os:version",                min_args = 0, max_args = 0 }
-"environment.processorcount"          = { emit = "common:dotnet.environment_processor_count", min_args = 0, max_args = 0 }
-"environment.tickcount"               = { emit = "common:dotnet.environment_tick_count", min_args = 0, max_args = 0 }
-"environment.getenvironmentvariable"  = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
-"environment.setenvironmentvariable"  = { emit = "common:dotnet.environment_set", min_args = 2, max_args = 2 }
-"environment.getfolderpath"           = { emit = "host:wasi:cli:getFolderPath", min_args = 1, max_args = 1 }
+# `System.Environment` lives in the shared dotnet component descriptor.
 "app.path"                            = { emit = "host:node:process:cwd",               min_args = 0, max_args = 0 }
 "app.title"                           = { emit = "host:node:process:argv0",             min_args = 0, max_args = 0 }
-
-# ── Convert (Base64) ─────────────────────────────────────────────────────────
-
-"convert.tobase64string"   = { emit = "host:ecma:string:btoa",  min_args = 1, max_args = 1 }
-"convert.frombase64string" = { emit = "host:ecma:string:atob",  min_args = 1, max_args = 1 }
-"convert.todatetime"       = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 
 # ── JSON / XML / Regex ───────────────────────────────────────────────────────
 
 "json.serialize"   = { emit = "host:ecma:json:stringify", min_args = 1, max_args = 1 }
 "json.deserialize" = { emit = "host:ecma:json:parse",    min_args = 1, max_args = 1 }
-"xml.parse"        = { emit = "host:web:dom-parser:parse",     min_args = 1, max_args = 1 }
-"xdocument.parse"  = { emit = "host:web:dom-parser:parse",     min_args = 1, max_args = 1 }
-"xml.load"         = { emit = "host:web:dom-parser:load",      min_args = 1, max_args = 1 }
-"xdocument.load"   = { emit = "host:web:dom-parser:load",      min_args = 1, max_args = 1 }
-"xml.save"         = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
-"xdocument.save"   = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
-__vb_xml_node_name = { emit = "common:xml.node_name",          min_args = 1, max_args = 1 }
-__vb_xml_name      = { emit = "common:xml.name",               min_args = 3, max_args = 3 }
-__vb_xml_local     = { emit = "common:xml.local",              min_args = 1, max_args = 1 }
-__vb_xml_namespace = { emit = "common:xml.namespace",          min_args = 1, max_args = 1 }
-__vb_xml_qualified = { emit = "common:xml.qualified",          min_args = 1, max_args = 1 }
-__vb_xml_elements  = { emit = "host:web:dom-parser:getElementsByTagName", min_args = 2, max_args = 2 }
-# VB Regex.* — .NET pattern-first convention; same arg shape as PHP/Python.
-# `Regex.IsMatch(pat, str)` and `Regex.Match(pat, str)` route to ECMA-262
-# RegExp directly (test/exec accept string-as-pattern as first arg).
-# Replace/Split go through the pat-first runtime-helper adapter chunks.
-"regex.ismatch"    = { emit = "host:ecma:regexp:test",            min_args = 2, max_args = 2 }
-"regex.match"      = { emit = "host:ecma:regexp:exec",            min_args = 2, max_args = 2 }
-"regex.matches"    = { emit = "common:dotnet.regex_match_all_pat_first", min_args = 2, max_args = 2 }
-"regex.replace"    = { emit = "common:dotnet.regex_replace_pat_first",   min_args = 3, max_args = 3 }
-"regex.split"      = { emit = "common:dotnet.regex_split_pat_first",     min_args = 2, max_args = 2 }
+"xml.parse"        = { emit = "common:xml.parse",     min_args = 1, max_args = 1 }
+"xml.load"         = { emit = "common:xml.load",      min_args = 1, max_args = 1 }
+"xdocument.load"   = { emit = "common:xml.load",      min_args = 1, max_args = 1 }
+"xml.save"         = { emit = "common:xml.save",      min_args = 1, max_args = 1 }
+"xdocument.save"   = { emit = "common:xml.save",      min_args = 1, max_args = 1 }
+"xml.elements"     = { emit = "common:xml.elements",  min_args = 2, max_args = 2 }
+# `Regex.*` static methods live in the shared .NET component surface
+# (`platforms/dotnet/.../component_classes_text.rs`) so VB and C# resolve
+# the same `System.Text.RegularExpressions.Regex` descriptors.
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
-"encoding.ascii.getbytes"      = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.utf8.getbytes"       = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.unicode.getbytes"    = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.default.getbytes"    = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.ascii.getstring"     = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.utf8.getstring"      = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.unicode.getstring"   = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.default.getstring"   = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.getencoding"         = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
-"encoding.convert"             = { emit = "host:ecma:string:String", min_args = 3, max_args = 3 }
+"encoding.ascii.getbytes"      = { emit = "common:dotnet.encoding_ascii_get_bytes", min_args = 1, max_args = 1 }
+"encoding.utf8.getbytes"       = { emit = "common:dotnet.encoding_get_bytes", min_args = 1, max_args = 1 }
+"encoding.unicode.getbytes"    = { emit = "common:dotnet.encoding_unicode_get_bytes", min_args = 1, max_args = 1 }
+"encoding.default.getbytes"    = { emit = "common:dotnet.encoding_get_bytes", min_args = 1, max_args = 1 }
+"encoding.utf32.getbytes"      = { emit = "common:dotnet.encoding_utf32_get_bytes", min_args = 1, max_args = 1 }
+"encoding.latin1.getbytes"     = { emit = "common:dotnet.encoding_latin1_get_bytes", min_args = 1, max_args = 1 }
+"encoding.bigendianunicode.getbytes" = { emit = "common:dotnet.encoding_big_endian_unicode_get_bytes", min_args = 1, max_args = 1 }
+"encoding.ascii.getstring"     = { emit = "common:dotnet.encoding_ascii_get_string", min_args = 1, max_args = 1 }
+"encoding.utf8.getstring"      = { emit = "common:dotnet.encoding_get_string", min_args = 1, max_args = 1 }
+"encoding.unicode.getstring"   = { emit = "common:dotnet.encoding_unicode_get_string", min_args = 1, max_args = 1 }
+"encoding.default.getstring"   = { emit = "common:dotnet.encoding_get_string", min_args = 1, max_args = 1 }
+"encoding.utf32.getstring"     = { emit = "common:dotnet.encoding_utf32_get_string", min_args = 1, max_args = 1 }
+"encoding.latin1.getstring"    = { emit = "common:dotnet.encoding_latin1_get_string", min_args = 1, max_args = 1 }
+"encoding.ascii.getbytecount"  = { emit = "common:dotnet.encoding_ascii_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.utf8.getbytecount"   = { emit = "common:dotnet.encoding_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.unicode.getbytecount" = { emit = "common:dotnet.encoding_unicode_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.default.getbytecount" = { emit = "common:dotnet.encoding_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.utf32.getbytecount"  = { emit = "common:dotnet.encoding_utf32_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.latin1.getbytecount" = { emit = "common:dotnet.encoding_latin1_get_byte_count", min_args = 1, max_args = 1 }
+"encoding.utf8.getpreamble"    = { emit = "common:dotnet.encoding_utf8_get_preamble", min_args = 0, max_args = 0 }
+"encoding.unicode.getpreamble" = { emit = "common:dotnet.encoding_get_preamble", min_args = 0, max_args = 0 }
+"encoding.utf8.getmaxbytecount" = { emit = "common:dotnet.encoding_get_max_byte_count", min_args = 1, max_args = 1 }
+"encoding.unicode.getmaxbytecount" = { emit = "common:dotnet.encoding_unicode_get_max_byte_count", min_args = 1, max_args = 1 }
+"encoding.utf8.getmaxcharcount" = { emit = "common:dotnet.encoding_get_max_char_count", min_args = 1, max_args = 1 }
+"encoding.utf8.getcharcount"  = { emit = "common:dotnet.encoding_get_char_count", min_args = 1, max_args = 3 }
+"encoding.utf8.getchars"      = { emit = "common:dotnet.encoding_get_chars", min_args = 5, max_args = 5 }
+"encoding.getencoding"         = { emit = "common:dotnet.encoding_get_encoding", min_args = 1, max_args = 3 }
+"encoding.convert"             = { emit = "common:dotnet.encoding_convert", min_args = 3, max_args = 3 }
+"__vb_object_equals"           = { emit = "common:dotnet.object_equals", min_args = 2, max_args = 2 }
 
 # ── StringBuilder ────────────────────────────────────────────────────────────
 # Free-function `StringBuilder()` retired — `New StringBuilder()`
 # / `New StringBuilder("init")` lower at compile time through the
 # dotnet wrapper Component Model adapter (`stringbuilder_adapter`).
 switch        = { emit = "intrinsic:switch",                min_args = 2, max_args = 255 }
-
-# ── Array static methods ─────────────────────────────────────────────────────
-# Shared with C# via `common:dotnet.array_*` adapters in
-# `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`. VB lowercases
-# section keys for case-insensitive dispatch.
-
-"array.sort"        = { emit = "common:dotnet.array_sort",          min_args = 1, max_args = 1 }
-"array.reverse"     = { emit = "common:dotnet.array_reverse",       min_args = 1, max_args = 1 }
-"array.indexof"     = { emit = "common:dotnet.array_index_of",      min_args = 2, max_args = 2 }
-"array.copy"        = { emit = "common:dotnet.array_copy",          min_args = 3, max_args = 3 }
-"array.clear"       = { emit = "common:dotnet.array_clear",         min_args = 3, max_args = 3 }
-"array.resize"      = { emit = "common:dotnet.array_resize",        min_args = 2, max_args = 2 }
-"array.exists"      = { emit = "common:dotnet.array_exists",        min_args = 2, max_args = 2 }
-"array.find"        = { emit = "common:dotnet.array_find",          min_args = 2, max_args = 2 }
-"array.findall"     = { emit = "common:dotnet.array_find_all",      min_args = 2, max_args = 2 }
-"array.trueforall"  = { emit = "common:dotnet.array_true_for_all",  min_args = 2, max_args = 2 }
-"array.convertall"  = { emit = "common:dotnet.array_convert_all",   min_args = 2, max_args = 2 }
-"array.foreach"     = { emit = "common:dotnet.array_for_each",      min_args = 2, max_args = 2 }
 
 # ── Legacy VB6 ───────────────────────────────────────────────────────────────
 
@@ -665,6 +576,7 @@ Day    = "Day"
 Hour   = "Hour"
 Minute = "Minute"
 Second = "Second"
+Weekday = "DayOfWeek"
 
 [array_methods]
 findindex     = "__array_findIndex"
@@ -711,20 +623,7 @@ extra_imports = [
 #   process, queue, stack, hashset — all dispatch through dotnet wrapper
 #   Common emit paths (`stringbuilder_adapter`, `stream_io_adapter`,
 #   `threading::emit_*`, `process_adapter`, `collections.new`).
-"stopwatch"      = ["common", "dotnet.stopwatch_new"]
-"random"         = ["wasi:random/insecure", "get-insecure-random-u64"]
-"memorystream"   = ["common", "collections.new"]
-"filestream"     = ["wasi:filesystem", "readFile"]
-"binaryreader"   = ["wasi:filesystem", "readFile"]
-"binarywriter"   = ["wasi:filesystem", "writeFile"]
-"xmldocument"    = ["web:dom-parser", "parse"]
-"xdocument"      = ["web:dom-parser", "parse"]
-"webrequest"     = ["wasi:http", "fetch"]
-"webclient"      = ["wasi:http", "fetch"]
-"httpclient"     = ["wasi:http", "fetch"]
-"datatable"      = ["common", "dotnet.datatable_new"]
-"datarow"        = ["common", "dotnet.datarow_new"]
-"dataadapter"    = ["wasi:sql/types", "data-adapter.new"]
+"string"         = ["common", "dotnet.string_from_chars"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — compile-time float/string values for property accesses
@@ -771,6 +670,78 @@ path = "dotnet.system"
 # qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
 # search under these tree paths in order.
 
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.windows.forms"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.text"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.io"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.diagnostics"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.threading"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.generic"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.concurrent"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.http"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.sockets"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.sqlclient"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.oledb"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.drawing"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml.linq"
+
 
 
 
@@ -783,8 +754,3 @@ path = "dotnet.system"
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
-
-
-
-
-

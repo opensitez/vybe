@@ -7,8 +7,8 @@
 //! The adapters keep Node-shaped JS call signatures while lowering to the
 //! real `wasi:sockets/*` surface. No `dotnet:*` host module is involved.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};

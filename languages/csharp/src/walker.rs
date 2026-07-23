@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{CSharpParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use vybe_ast::*;
+use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
+use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let pairs =
@@ -70,17 +72,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
-    // Synthesize the .NET Exception hierarchy at the top of every C#
-    // program. ECMA-335 / .NET BCL exposes `System.Exception` plus a
-    // family of common subclasses (`InvalidOperationException`,
-    // `ArgumentNullException`, `DivideByZeroException`, etc.) that user
-    // code routinely throws via `throw new <T>("msg")`. We don't model
-    // the BCL's class file system, so the walker injects minimal
-    // declarations: each takes a `string msg` ctor that stamps `Message`
-    // on `this`. `try { ... } catch (T e) { ... e.Message ... }`
-    // resolves T to the synthesized class and reads `e.Message`.
-    let mut synthesized = synthesize_exception_classes();
-    synthesized.extend(synthesize_attribute_classes());
+    // Install the shared .NET Exception hierarchy at the top of every C#
+    // program. The BCL surface and constructor field semantics live in
+    // platforms/dotnet so every .NET-shaped frontend can share them.
+    let mut synthesized = dotnet_exceptions::synthesize_exception_classes();
     synthesized.extend(synthesize_checked_numeric_helpers());
     body.splice(0..0, synthesized);
 
@@ -4569,75 +4564,6 @@ fn expr_dotted_name(expr: &Expression) -> Option<String> {
     }
 }
 
-fn synthesize_exception_classes() -> Vec<Statement> {
-    // The real .NET `System.Exception` hierarchy as `(class, parent)`, parents
-    // before children so class-install order is valid. Empty parent = root.
-    // Modeling the tree (not a flat list) is what makes typed catch match up
-    // the hierarchy (`catch (SystemException)` catches an `ArgumentException`)
-    // via the class-identity path.
-    let hierarchy: &[(&str, &str)] = &[
-        ("Exception", ""),
-        ("SystemException", "Exception"),
-        ("ApplicationException", "Exception"),
-        ("AggregateException", "Exception"),
-        ("ArithmeticException", "SystemException"),
-        ("ArgumentException", "SystemException"),
-        ("InvalidOperationException", "SystemException"),
-        ("FormatException", "SystemException"),
-        ("NotImplementedException", "SystemException"),
-        ("NotSupportedException", "SystemException"),
-        ("NullReferenceException", "SystemException"),
-        ("IndexOutOfRangeException", "SystemException"),
-        ("KeyNotFoundException", "SystemException"),
-        ("TimeoutException", "SystemException"),
-        ("DivideByZeroException", "ArithmeticException"),
-        ("OverflowException", "ArithmeticException"),
-        ("ArgumentNullException", "ArgumentException"),
-        ("ArgumentOutOfRangeException", "ArgumentException"),
-        ("ObjectDisposedException", "InvalidOperationException"),
-    ];
-    hierarchy
-        .iter()
-        .map(|(name, parent)| synthesize_exception_class(name, parent))
-        .collect()
-}
-
-fn synthesize_attribute_classes() -> Vec<Statement> {
-    let names = [
-        "Attribute",
-        "FlagsAttribute",
-        "STAThreadAttribute",
-        "SerializableAttribute",
-        "ObsoleteAttribute",
-    ];
-    names.into_iter().map(synthesize_attribute_class).collect()
-}
-
-fn synthesize_attribute_class(name: &str) -> Statement {
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: name.into(),
-            parents: if name == "Attribute" {
-                Vec::new()
-            } else {
-                vec!["Attribute".into()]
-            },
-            interfaces: Vec::new(),
-            members: vec![ClassMember::Constructor {
-                name: None,
-                params: Vec::new(),
-                body: Vec::new(),
-                base_args: None,
-                initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public,
-            }],
-            modifiers: ClassModifiers::default(),
-            decorators: Vec::new(),
-        },
-        Span::default(),
-    )
-}
-
 fn synthesize_checked_numeric_helpers() -> Vec<Statement> {
     vec![synthesize_checked_byte_cast_helper()]
 }
@@ -4701,182 +4627,6 @@ fn synthesize_checked_byte_cast_helper() -> Statement {
             is_sub: false,
         },
         Span::default(),
-    )
-}
-
-fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
-    let span = Span::default();
-    // Per-type constructor signatures per ECMA-335 / .NET BCL:
-    //   ArgumentNullException(paramName)              → ParamName=paramName
-    //   ArgumentOutOfRangeException(paramName, msg)   → ParamName=paramName, Message=msg
-    //   ArgumentException(msg, paramName)             → Message=msg, ParamName=paramName
-    //   <other>(msg)                                  → Message=msg
-    //
-    // Walker emits the appropriate constructor body so `e.ParamName`
-    // and `e.Message` resolve to the right values on every catch.
-    let needs_param_name = matches!(
-        name,
-        "ArgumentNullException" | "ArgumentOutOfRangeException" | "ArgumentException"
-    );
-
-    let assign = |field: &str, ident: &str| {
-        Statement::with_span(
-            StmtKind::Assign {
-                targets: vec![Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                        field: field.into(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                )],
-                value: Expression::with_span(ExprKind::Ident(ident.into()), span.clone()),
-            },
-            span.clone(),
-        )
-    };
-
-    let canon = vybe_emitter::errors::canonical_exception_name(name).to_string();
-    let assign_extype = Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                    field: "__exception_type".into(),
-                    null_safe: false,
-                },
-                span.clone(),
-            )],
-            value: Expression::with_span(ExprKind::Lit(Literal::Str(canon.clone())), span.clone()),
-        },
-        span.clone(),
-    );
-
-    let mk_param = |pname: &str| Param {
-        name: pname.into(),
-        type_hint: Some("string".into()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    };
-
-    let (params, body) = if needs_param_name {
-        // 2-arg form: (paramName, msg) for ArgumentOutOfRangeException;
-        // (msg, paramName) for ArgumentException; (paramName) for
-        // ArgumentNullException. The walker matches the .NET BCL order.
-        match name {
-            "ArgumentException" => (
-                vec![mk_param("msg"), mk_param("paramName")],
-                vec![
-                    assign("Message", "msg"),
-                    assign("ParamName", "paramName"),
-                    assign_extype.clone(),
-                ],
-            ),
-            "ArgumentNullException" => (
-                vec![mk_param("paramName")],
-                vec![assign("ParamName", "paramName"), assign_extype.clone()],
-            ),
-            "ArgumentOutOfRangeException" => (
-                vec![mk_param("paramName"), mk_param("msg")],
-                vec![
-                    assign("ParamName", "paramName"),
-                    assign("Message", "msg"),
-                    assign_extype.clone(),
-                ],
-            ),
-            _ => unreachable!(),
-        }
-    } else {
-        (
-            vec![mk_param("msg")],
-            vec![assign("Message", "msg"), assign_extype.clone()],
-        )
-    };
-
-    let mk_field = |fname: &str| ClassMember::Field {
-        name: fname.into(),
-        type_hint: None,
-        init: None,
-        modifiers: Modifiers::default(),
-        with_events: false,
-        array_bounds: None,
-    };
-    // `Message` + `InnerException` on every node (harmless if inherited too).
-    let mut members = vec![mk_field("Message"), mk_field("InnerException")];
-    if needs_param_name {
-        members.push(ClassMember::Field {
-            name: "ParamName".into(),
-            type_hint: Some("string".into()),
-            init: None,
-            modifiers: Modifiers::default(),
-            with_events: false,
-            array_bounds: None,
-        });
-    }
-    // Parameterless ctor so the implicit `base()` chain up the hierarchy always
-    // resolves (each parent has a 0-arg ctor). The typed ctors set their own
-    // fields on `this`; `base()` runs the parent's 0-arg ctor.
-    members.push(ClassMember::Constructor {
-        name: None,
-        params: Vec::new(),
-        body: vec![assign_extype.clone()],
-        base_args: None,
-        initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    });
-    members.push(ClassMember::Constructor {
-        name: None,
-        params,
-        body,
-        base_args: None,
-        initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    });
-    if name == "ArgumentException" {
-        members.push(ClassMember::Constructor {
-            name: None,
-            params: vec![mk_param("msg")],
-            body: vec![assign("Message", "msg"), assign_extype.clone()],
-            base_args: None,
-            initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public,
-        });
-    }
-    if !needs_param_name {
-        // `(message, innerException)` — .NET's exception-chaining ctor, so
-        // `throw new Exception("wrap", e)` preserves `e` as `.InnerException`.
-        members.push(ClassMember::Constructor {
-            name: None,
-            params: vec![mk_param("msg"), mk_param("inner")],
-            body: vec![
-                assign("Message", "msg"),
-                assign("InnerException", "inner"),
-                assign_extype.clone(),
-            ],
-            base_args: None,
-            initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public,
-        });
-    }
-
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: name.into(),
-            parents: if parent.is_empty() {
-                Vec::new()
-            } else {
-                vec![parent.into()]
-            },
-            interfaces: Vec::new(),
-            members,
-            modifiers: ClassModifiers::default(),
-            decorators: Vec::new(),
-        },
-        span,
     )
 }
 
@@ -5557,7 +5307,10 @@ fn is_csharp_xml_linq_type(type_name: &str) -> bool {
     )
 }
 
-fn csharp_xml_linq_property_return_type(type_name: &str, property_name: &str) -> Option<&'static str> {
+fn csharp_xml_linq_property_return_type(
+    type_name: &str,
+    property_name: &str,
+) -> Option<&'static str> {
     let normalized = normalize_runtime_type_name(type_name);
     let class_name = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
     match (class_name, property_name) {
@@ -5634,9 +5387,7 @@ fn rewrite_csharp_xml_linq_factories_stmt(stmt: &mut Statement) {
             }
             rewrite_csharp_xml_linq_factories(body);
         }
-        StmtKind::ForIn {
-            iter, body, ..
-        } => {
+        StmtKind::ForIn { iter, body, .. } => {
             rewrite_csharp_xml_linq_factories_expr(iter);
             rewrite_csharp_xml_linq_factories(body);
         }
@@ -13447,10 +13198,7 @@ fn build_switch_pattern_binding(
             // `Wallet { Balance: var b } => b` — a property pattern can bind
             // several names, each rooted at a member, so it goes through the
             // shared collector rather than the fixed `T x` shape below.
-            if let Some(property) = inner
-                .iter()
-                .find(|p| p.as_rule() == Rule::property_pattern)
-            {
+            if let Some(property) = inner.iter().find(|p| p.as_rule() == Rule::property_pattern) {
                 let mut declarations = Vec::new();
                 collect_pattern_var_bindings(&subject, property.clone(), &mut declarations)?;
                 if !declarations.is_empty() {
@@ -13598,10 +13346,7 @@ fn split_list_pattern(
         };
         if inner.as_rule() == Rule::slice_pattern {
             has_slice = true;
-            if let Some(id) = inner
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::ident_name)
-            {
+            if let Some(id) = inner.into_inner().find(|p| p.as_rule() == Rule::ident_name) {
                 slice_var = Some(id.as_str().to_string());
             }
         } else if has_slice {
@@ -13785,7 +13530,11 @@ fn build_general_pattern_cond(
             let min_len = (prefix.len() + suffix.len()) as i64;
             let mut cond = Expression::with_span(
                 ExprKind::Binary {
-                    op: if has_slice { BinOp::GtEq } else { BinOp::StrictEq },
+                    op: if has_slice {
+                        BinOp::GtEq
+                    } else {
+                        BinOp::StrictEq
+                    },
                     left: Box::new(length_expr(&subject)),
                     right: Box::new(Expression::int(min_len)),
                 },
@@ -14951,65 +14700,11 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
 
     if let Some(path) = expr_dotted_name(&object) {
         let normalized = path.trim();
-        if (normalized.eq_ignore_ascii_case("StringComparer")
-            || normalized.eq_ignore_ascii_case("System.StringComparer"))
-            && name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+        if let Some(value) = vybe_platform_dotnet::emitter::static_member_constant(normalized, name)
         {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_stringcomparer_ordinalignorecase".into(),
-            )));
+            return Expression::new(ExprKind::Lit(Literal::Str(value.into())));
         }
-        if (normalized.eq_ignore_ascii_case("StringComparer")
-            || normalized.eq_ignore_ascii_case("System.StringComparer"))
-            && name.eq_ignore_ascii_case("Ordinal")
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_stringcomparer_ordinal".into(),
-            )));
-        }
-        if (normalized.eq_ignore_ascii_case("StringComparison")
-            || normalized.eq_ignore_ascii_case("System.StringComparison"))
-            && name.eq_ignore_ascii_case("OrdinalIgnoreCase")
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_stringcomparison_ordinalignorecase".into(),
-            )));
-        }
-        if (normalized.eq_ignore_ascii_case("StringComparison")
-            || normalized.eq_ignore_ascii_case("System.StringComparison"))
-            && name.eq_ignore_ascii_case("InvariantCultureIgnoreCase")
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_stringcomparison_invariantignorecase".into(),
-            )));
-        }
-        if (normalized.eq_ignore_ascii_case("StringComparison")
-            || normalized.eq_ignore_ascii_case("System.StringComparison"))
-            && (name.eq_ignore_ascii_case("Ordinal")
-                || name.eq_ignore_ascii_case("InvariantCulture")
-                || name.eq_ignore_ascii_case("CurrentCulture"))
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_stringcomparison_ordinal".into(),
-            )));
-        }
-        if normalized.contains("EqualityComparer<") && name.eq_ignore_ascii_case("Default") {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_equalitycomparer_default".into(),
-            )));
-        }
-        if normalized.contains("Comparer<")
-            && !normalized.contains("EqualityComparer<")
-            && name.eq_ignore_ascii_case("Default")
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(
-                "__dotnet_comparer_default".into(),
-            )));
-        }
-        if (normalized.eq_ignore_ascii_case("DateTime")
-            || normalized.eq_ignore_ascii_case("System.DateTime"))
-            && matches!(name, "Now" | "UtcNow" | "Today")
-        {
+        if vybe_platform_dotnet::emitter::static_member_parameterless_call(normalized, name) {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(object),
@@ -15019,26 +14714,6 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 args: vec![],
                 optional: false,
             });
-        }
-        if (normalized.eq_ignore_ascii_case("TimeSpan")
-            || normalized.eq_ignore_ascii_case("System.TimeSpan"))
-            && name.eq_ignore_ascii_case("Zero")
-        {
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(object),
-                    field: name.to_string(),
-                    null_safe: false,
-                })),
-                args: vec![],
-                optional: false,
-            });
-        }
-        if (normalized.eq_ignore_ascii_case("DateTimeKind")
-            || normalized.eq_ignore_ascii_case("System.DateTimeKind"))
-            && matches!(name, "Utc" | "Local" | "Unspecified")
-        {
-            return Expression::new(ExprKind::Lit(Literal::Str(name.to_string())));
         }
     }
 
@@ -15108,7 +14783,7 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                                 optional: false,
                             });
                         }
-                        let short = dotnet_runtime_type_name_expr((**receiver).clone());
+                        let short = dotnet_lowering::runtime_type_name_expr((**receiver).clone());
                         if name == "Name" {
                             return short;
                         }
@@ -15578,69 +15253,6 @@ fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -
 // syntax for what other languages express as `arr.join(sep)`. We rewrite it to
 // the canonical instance-method form so the compiler dispatches it through the
 // shared value-method path with the correct `this` arg ordering.
-/// Out-param desugar for `X.TryParse(s, out r)` (see `canonicalize_method_call`).
-/// The 1-arg core resolves through the common .NET surface; the assignment
-/// expression yields the assigned value, so a null comparison gives the success
-/// bool while writing the out target. Returns `None` for receivers not covered
-/// here (they keep the ordinary call form). Kept a free fn so the shape is
-/// obvious and testable.
-fn build_dotnet_try_parse_desugar(
-    recv: Option<&str>,
-    callee: &Expression,
-    input: &Expression,
-    out_target: &Expression,
-) -> Option<Expression> {
-    let recv = recv?;
-    let core = Expression::new(ExprKind::Call {
-        callee: Box::new(callee.clone()),
-        args: vec![Argument::positional(input.clone())],
-        optional: false,
-    });
-    let assign_core = Expression::new(ExprKind::Assign {
-        target: Box::new(out_target.clone()),
-        value: Box::new(core),
-    });
-    let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
-
-    if recv.eq_ignore_ascii_case("Guid") {
-        // `(r = Guid.TryParse(s)) != null` — Guid's failure out value
-        // (Guid.Empty) is never observed, so a null sentinel suffices.
-        return Some(Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(assign_core),
-            right: Box::new(null_lit()),
-        }));
-    }
-    if recv.eq_ignore_ascii_case("int")
-        || recv.eq_ignore_ascii_case("Int32")
-        || recv.eq_ignore_ascii_case("Integer")
-    {
-        // `((r = int.TryParse(s)) != null) || ((r = 0) == null)` — on success
-        // the first operand is true and `r` holds the parsed int; on failure
-        // `r` is null, then the fallback sets `r = 0` and yields false
-        // (`0 == null` is false), matching .NET's zero-on-failure out value.
-        let success = Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(assign_core),
-            right: Box::new(null_lit()),
-        });
-        let fallback = Expression::new(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(Expression::new(ExprKind::Assign {
-                target: Box::new(out_target.clone()),
-                value: Box::new(Expression::int(0)),
-            })),
-            right: Box::new(null_lit()),
-        });
-        return Some(Expression::new(ExprKind::Binary {
-            op: BinOp::Or,
-            left: Box::new(success),
-            right: Box::new(fallback),
-        }));
-    }
-    None
-}
-
 fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
     // LINQ surface (First / Last / Skip / Take / Average / FirstOrDefault /
     // Distinct / Aggregate / OrderByDescending / Count(pred) / ToList /
@@ -15678,64 +15290,18 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                 _ => None,
             };
             if let Some(rewritten) =
-                build_dotnet_try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
+                dotnet_lowering::try_parse_desugar(recv, &callee, &args[0].value, &args[1].value)
             {
                 return rewritten;
             }
         }
-        // `d.TryGetValue(k, out v)` → `d.ContainsKey(k) ? ((v = d[k]) != null || true)
-        //                                              : ((v = null) != null && false)`.
-        // The out-param convention is C# syntax; normalize it here using the
-        // generic `ContainsKey` + index ops (which already apply the
-        // `#ordinalignorecase` key lowering) instead of a shared-compiler
-        // intercept. `ContainsKey` is evaluated once as the ternary condition;
-        // each branch assigns the out target and yields the presence bool.
         if field.eq_ignore_ascii_case("TryGetValue") && args.len() == 2 && args[1].by_ref {
-            let key = args[0].value.clone();
-            let out_target = args[1].value.clone();
-            let null_lit = || Expression::new(ExprKind::Lit(Literal::Null));
-            let contains = Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: object.clone(),
-                    field: "ContainsKey".into(),
-                    null_safe: false,
-                })),
-                args: vec![Argument::positional(key.clone())],
-                optional: false,
-            });
-            let then_branch = Expression::new(ExprKind::Binary {
-                op: BinOp::Or,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::NotEq,
-                    left: Box::new(Expression::new(ExprKind::Assign {
-                        target: Box::new(out_target.clone()),
-                        value: Box::new(Expression::new(ExprKind::Index {
-                            object: object.clone(),
-                            index: Box::new(key),
-                            null_safe: false,
-                        })),
-                    })),
-                    right: Box::new(null_lit()),
-                })),
-                right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-            });
-            let else_branch = Expression::new(ExprKind::Binary {
-                op: BinOp::And,
-                left: Box::new(Expression::new(ExprKind::Binary {
-                    op: BinOp::NotEq,
-                    left: Box::new(Expression::new(ExprKind::Assign {
-                        target: Box::new(out_target),
-                        value: Box::new(null_lit()),
-                    })),
-                    right: Box::new(null_lit()),
-                })),
-                right: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-            });
-            return Expression::new(ExprKind::Ternary {
-                cond: Box::new(contains),
-                then: Box::new(then_branch),
-                else_: Box::new(else_branch),
-            });
+            return dotnet_lowering::try_get_value_desugar_with_default(
+                object,
+                &args[0].value,
+                &args[1].value,
+                Expression::null(),
+            );
         }
         if let Some(rewritten) =
             rewrite_csharp_string_instance_call((**object).clone(), field, &args)
@@ -16297,26 +15863,7 @@ fn char_static_lower(method: &str, c: Expression) -> Option<Expression> {
 /// Map a C#/.NET type-name token to its System.* short name.
 /// `int` → `Int32`, `string` → `String`, `MyClass` → `MyClass`.
 fn dotnet_type_name(t: &str) -> String {
-    let trimmed = t.trim().trim_end_matches('?');
-    match trimmed {
-        "int" | "Int32" => "Int32",
-        "uint" | "UInt32" => "UInt32",
-        "long" | "Int64" => "Int64",
-        "ulong" | "UInt64" => "UInt64",
-        "short" | "Int16" => "Int16",
-        "ushort" | "UInt16" => "UInt16",
-        "byte" | "Byte" => "Byte",
-        "sbyte" | "SByte" => "SByte",
-        "float" | "Single" => "Single",
-        "double" | "Double" => "Double",
-        "decimal" | "Decimal" => "Decimal",
-        "bool" | "Boolean" => "Boolean",
-        "char" | "Char" => "Char",
-        "string" | "String" => "String",
-        "object" | "Object" => "Object",
-        other => other,
-    }
-    .to_string()
+    vybe_platform_dotnet::emitter::canonical_type_name(t)
 }
 
 fn normalize_runtime_type_name(t: &str) -> String {
@@ -16496,101 +16043,6 @@ fn find_if_is_pattern_binding(
         }
         _ => Ok(None),
     }
-}
-
-/// Build a runtime expression that yields the .NET type name of `expr`.
-///
-/// `Math.floor(e) === e ? "Int32" : "Double"` for numbers, `String` /
-/// `Boolean` for primitives, and `Object` as the fallback. Implemented
-/// as nested ternaries on `typeof e` so the result is plain bytecode
-/// with no host helper required.
-fn dotnet_runtime_type_name_expr(expr: Expression) -> Expression {
-    let typeof_expr = Expression::new(ExprKind::TypeOf(Box::new(expr.clone())));
-
-    let is_string = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "string".into(),
-        )))),
-    });
-    let is_number = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "number".into(),
-        )))),
-    });
-    let is_boolean = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(typeof_expr.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "boolean".into(),
-        )))),
-    });
-
-    // Math.floor(e) === e — true for whole numbers; faithful to .NET
-    // semantics where `42.GetType().Name == "Int32"` and
-    // `3.14.GetType().Name == "Double"`. Vybe stores all numbers as f64
-    // so this is the only post-hoc int/float distinction available.
-    let floor_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident("Math")),
-            field: "floor".into(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(expr.clone())],
-        optional: false,
-    });
-    let is_int = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(floor_call),
-        right: Box::new(expr.clone()),
-    });
-
-    let number_branch = Expression::new(ExprKind::Ternary {
-        cond: Box::new(is_int),
-        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str("Int32".into())))),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "Double".into(),
-        )))),
-    });
-
-    // Non-primitive: a class instance. `GetType().Name` is the runtime class
-    // name, read from the instance's `__type` stamp (`obj.__type ?? "Object"`).
-    let inst_type = Expression::new(ExprKind::Member {
-        object: Box::new(expr.clone()),
-        field: "__type".into(),
-        null_safe: false,
-    });
-    let object_name = Expression::new(ExprKind::Ternary {
-        cond: Box::new(inst_type.clone()),
-        then: Box::new(inst_type),
-        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "Object".into(),
-        )))),
-    });
-    let bool_branch = Expression::new(ExprKind::Ternary {
-        cond: Box::new(is_boolean),
-        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "Boolean".into(),
-        )))),
-        else_: Box::new(object_name),
-    });
-
-    let num_or_bool = Expression::new(ExprKind::Ternary {
-        cond: Box::new(is_number),
-        then: Box::new(number_branch),
-        else_: Box::new(bool_branch),
-    });
-
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(is_string),
-        then: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
-            "String".into(),
-        )))),
-        else_: Box::new(num_or_bool),
-    })
 }
 
 fn char_in_range(c: Expression, lo: &str, hi: &str) -> Expression {

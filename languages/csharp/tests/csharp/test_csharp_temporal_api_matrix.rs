@@ -77,14 +77,7 @@ fn timespan_matrix_total_units() {
 
 #[test]
 fn timespan_matrix_addition_and_compare() {
-    let cases = [
-        (2, 30),
-        (5, 90),
-        (15, 45),
-        (120, 90),
-        (60, 15),
-        (300, 600),
-    ];
+    let cases = [(2, 30), (5, 90), (15, 45), (120, 90), (60, 15), (300, 600)];
 
     for (minutes, add_seconds) in cases {
         let src = format!(
@@ -100,12 +93,7 @@ fn timespan_matrix_addition_and_compare() {
 
 #[test]
 fn timespan_matrix_comparison_matrix() {
-    let cases = [
-        (30, 30),
-        (60, 90),
-        (180, 90),
-        (45, 45),
-    ];
+    let cases = [(30, 30), (60, 90), (180, 90), (45, 45)];
 
     for (left_sec, right_sec) in cases {
         let src = format!(
@@ -118,7 +106,10 @@ fn timespan_matrix_comparison_matrix() {
         };
         assert_eq!(
             run_csharp(&src),
-            vec![expected_cmp.to_string(), bool_text(left_sec == right_sec).to_string()]
+            vec![
+                expected_cmp.to_string(),
+                bool_text(left_sec == right_sec).to_string()
+            ]
         );
     }
 }

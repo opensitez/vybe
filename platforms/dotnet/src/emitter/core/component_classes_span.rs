@@ -85,9 +85,7 @@ fn view_class(name: &'static str) -> ClassType {
     // sub-range. A class carries ONE constructor slot and the emit passes the
     // real argument count, so both arities share a single argc-branching
     // adapter rather than two `ConstructorDef`s.
-    class = class.with_constructor(
-        ConstructorDef::new(1).with_common_backing("dotnet.span_ctor"),
-    );
+    class = class.with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.span_ctor"));
     class
 }
 

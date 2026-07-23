@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn convert_to_boolean_maps_nonzero_integers_to_true() {
     assert_eq!(
-        run_csharp(r#"// convert_uri_path
-Console.WriteLine(System.Convert.ToBoolean(1));"#),
+        run_csharp(
+            r#"// convert_uri_path
+Console.WriteLine(System.Convert.ToBoolean(1));"#
+        ),
         &["True"]
     );
 }
@@ -13,8 +15,10 @@ Console.WriteLine(System.Convert.ToBoolean(1));"#),
 #[test]
 fn convert_to_int32_truncates_double_toward_zero() {
     assert_eq!(
-        run_csharp(r#"// convert_uri_path
-Console.WriteLine(System.Convert.ToInt32(3.9));"#),
+        run_csharp(
+            r#"// convert_uri_path
+Console.WriteLine(System.Convert.ToInt32(3.9));"#
+        ),
         &["3"]
     );
 }
@@ -78,8 +82,10 @@ Console.WriteLine(relative.IsAbsoluteUri);
 #[test]
 fn path_get_extension_returns_suffix_including_dot() {
     assert_eq!(
-        run_csharp(r#"// convert_uri_path
-Console.WriteLine(System.IO.Path.GetExtension("archive.tar.gz"));"#),
+        run_csharp(
+            r#"// convert_uri_path
+Console.WriteLine(System.IO.Path.GetExtension("archive.tar.gz"));"#
+        ),
         &[".gz"]
     );
 }
@@ -87,8 +93,10 @@ Console.WriteLine(System.IO.Path.GetExtension("archive.tar.gz"));"#),
 #[test]
 fn path_change_extension_replaces_trailing_suffix() {
     assert_eq!(
-        run_csharp(r#"// convert_uri_path
-Console.WriteLine(System.IO.Path.ChangeExtension("data.txt", ".json"));"#),
+        run_csharp(
+            r#"// convert_uri_path
+Console.WriteLine(System.IO.Path.ChangeExtension("data.txt", ".json"));"#
+        ),
         &["data.json"]
     );
 }

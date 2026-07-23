@@ -119,7 +119,13 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::strings::emit_concat(chunk, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
 
-    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stdout", "get-stdout", line);
+    emit_stream_write(
+        &mut chunks[current],
+        result_local,
+        "wasi:cli/stdout",
+        "get-stdout",
+        line,
+    );
 }
 
 /// `Console.Write(v)` — stringify and write to stdout with NO newline.
@@ -129,7 +135,13 @@ pub fn emit_console_write(chunks: &mut [Chunk], current: usize, line: u32) {
     let result_local = alloc_local(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v_local, line);
     emit_dotnet_stringify(&mut chunks[current], v_local, result_local, line);
-    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stdout", "get-stdout", line);
+    emit_stream_write(
+        &mut chunks[current],
+        result_local,
+        "wasi:cli/stdout",
+        "get-stdout",
+        line,
+    );
 }
 
 /// `Console.WriteLine()` — bare newline, no argument. Stack: [] → [null].
@@ -137,7 +149,13 @@ pub fn emit_console_writeline_empty(chunks: &mut [Chunk], current: usize, line: 
     let nl_local = alloc_local(&mut chunks[current]);
     chunks[current].emit_string_const("\n", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nl_local, line);
-    emit_stream_write(&mut chunks[current], nl_local, "wasi:cli/stdout", "get-stdout", line);
+    emit_stream_write(
+        &mut chunks[current],
+        nl_local,
+        "wasi:cli/stdout",
+        "get-stdout",
+        line,
+    );
 }
 
 /// `Console.ReadLine()` — wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read.
@@ -160,7 +178,13 @@ pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::strings::emit_concat(chunk, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
 
-    emit_stream_write(&mut chunks[current], result_local, "wasi:cli/stderr", "get-stderr", line);
+    emit_stream_write(
+        &mut chunks[current],
+        result_local,
+        "wasi:cli/stderr",
+        "get-stderr",
+        line,
+    );
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

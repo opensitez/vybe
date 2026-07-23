@@ -1,5 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -100,6 +102,23 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ToString",
                     0,
                     MethodBody::Common("dotnet.xml_attribute_value".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Xml",
+            ClassType::new("XmlDocument")
+                .with_constructor(
+                    ConstructorDef::new(1).with_backing(HostTarget::new("web:dom-parser", "parse")),
+                )
+                .with_method(MethodDef::new(
+                    "Load",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("web:dom-parser", "load")),
+                ))
+                .with_method(MethodDef::new(
+                    "Save",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("web:dom-parser", "toString")),
                 )),
         ),
         DotnetClassExport::new(

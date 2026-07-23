@@ -13,7 +13,7 @@ line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 
 // Program structure
 program = { SOI ~ line* ~ EOI }
-line = _{ xml_namespace_imports_statement | imports_statement | option_directive | attribute_line | statement_line | NEWLINE | COMMENT }
+line = _{ xml_namespace_imports_statement | imports_statement | option_directive | statement_line | NEWLINE | COMMENT }
 option_directive = { ^"Option" ~ (^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off") ~ (NEWLINE | EOI) }
 statement_line = {
     (
@@ -78,6 +78,9 @@ statement = _{
     | resume_statement
     | goto_statement
     | label_statement
+    | addhandler_statement
+    | removehandler_statement
+    | raiseevent_statement
     | line_input_statement
     | open_statement
     | close_statement
@@ -85,9 +88,6 @@ statement = _{
     | write_file_statement
     | input_file_statement
     | call_statement
-    | addhandler_statement
-    | removehandler_statement
-    | raiseevent_statement
     | static_statement
     | synclock_statement
     | expression_statement
@@ -616,8 +616,9 @@ expression_statement = { dot_call_statement | dot_member_access | postfix }
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }
-addhandler_statement = { ^"AddHandler" ~ dotted_identifier ~ "," ~ expression }
-removehandler_statement = { ^"RemoveHandler" ~ dotted_identifier ~ "," ~ expression }
+event_target = { cast_expression ~ ("." ~ member_identifier)+ | dotted_identifier }
+addhandler_statement = { ^"AddHandler" ~ event_target ~ "," ~ expression }
+removehandler_statement = { ^"RemoveHandler" ~ event_target ~ "," ~ expression }
 
 member_access = { identifier ~ ("." ~ member_identifier)+ }
 named_argument = { identifier ~ ":=" ~ expression }
@@ -660,7 +661,7 @@ type_name = {
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
         | dotted_identifier
-    ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ "?"?
+    ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ ("." ~ member_identifier ~ (generic_suffix | array_type_suffix)?)* ~ "?"?
 }
 
 fixed_length_suffix = { "*" ~ numeric_literal }
@@ -676,7 +677,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

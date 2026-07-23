@@ -61,7 +61,10 @@ fn finalize_lines(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 
 /// Run VB source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_vb(src: &str) -> Vec<String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_vb::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_vb::register);
+    }
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
 
     let profile = load_vb_profile();

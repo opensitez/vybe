@@ -1,12 +1,18 @@
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_emitter::collections;
 
 const VB_COLLECTION_ITEMS: &str = "__dotnet_vb_collection_items";
 const VB_COLLECTION_KEYS: &str = "__dotnet_vb_collection_keys";
+const BLOCKING_ITEMS: &str = "__dotnet_blocking_items";
+const BLOCKING_CAPACITY: &str = "__dotnet_blocking_capacity";
+const BLOCKING_COMPLETED: &str = "__dotnet_blocking_completed";
+const BLOCKING_LIFO: &str = "__dotnet_blocking_lifo";
+const OBSERVABLE_ITEMS: &str = "__dotnet_observable_items";
+const OBSERVABLE_NOTIFYING: &str = "__dotnet_observable_notifying";
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -61,9 +67,99 @@ fn emit_set_field(
     chunks[current].emit_op(Op::DROP, line);
 }
 
+fn emit_array_with_slots(chunks: &mut [Chunk], current: usize, slots: &[u16], line: u32) {
+    for slot in slots {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
+    }
+    collections::emit_array_new(chunks, current, slots.len() as u16, line);
+}
+
+fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+}
+
+fn emit_observable_items_slot(chunks: &mut [Chunk], current: usize, recv: u16, line: u32) -> u16 {
+    let items = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+    chunks[current].emit_else(line);
+    emit_get_field(chunks, current, recv, OBSERVABLE_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+    emit_slot_is_nullish(chunks, current, items, line);
+    chunks[current].emit_if(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+    emit_set_field(chunks, current, recv, OBSERVABLE_ITEMS, items, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    items
+}
+
 pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     call_import(chunks, current, "ecma:set", "new", 0, line);
+}
+
+pub fn emit_list_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_spread_iterable(chunks, current, line);
+}
+
+pub fn emit_readonly_observable_collection_new(_chunks: &mut [Chunk], _current: usize, _line: u32) {
+    // ReadOnlyObservableCollection is a view over the source ObservableCollection:
+    // preserve the backing object so Count/Item and CollectionChanged stay in sync.
+}
+
+pub fn emit_property_changed_event_args_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let property_name = stash_args(chunks, current, 1, line);
+    let args = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
+    emit_set_field(chunks, current, args, "PropertyName", property_name, line);
+    emit_set_field(chunks, current, args, "propertyname", property_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, args, line);
+}
+
+pub fn emit_notify_collection_changed_event_args_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let action = stash_args(chunks, current, 1, line);
+    let args = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
+    emit_set_field(chunks, current, args, "Action", action, line);
+    emit_set_field(chunks, current, args, "action", action, line);
+
+    let minus_one = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, minus_one, line);
+    emit_set_field(chunks, current, args, "OldStartingIndex", minus_one, line);
+    emit_set_field(chunks, current, args, "oldstartingindex", minus_one, line);
+    emit_set_field(chunks, current, args, "NewStartingIndex", minus_one, line);
+    emit_set_field(chunks, current, args, "newstartingindex", minus_one, line);
+
+    let null_value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, null_value, line);
+    emit_set_field(chunks, current, args, "OldItems", null_value, line);
+    emit_set_field(chunks, current, args, "olditems", null_value, line);
+    emit_set_field(chunks, current, args, "NewItems", null_value, line);
+    emit_set_field(chunks, current, args, "newitems", null_value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, args, line);
+}
+
+pub fn emit_set_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_spread_iterable(chunks, current, line);
+    call_import(chunks, current, "ecma:set", "new", 1, line);
 }
 
 pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -87,6 +183,783 @@ pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     core_wasm::bool_const(&mut chunks[current], line, true);
     chunks[current].emit_end(line);
+}
+
+pub fn emit_dict_new_ignore_arg(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+}
+
+pub fn emit_dict_try_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let key = base + 1;
+    let value = base + 2;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    chunks[current].emit_if_value(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_dict_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let arg = base + 1;
+    let key = chunks[current].alloc_scratch(4);
+    let value = key + 1;
+    let current_value = key + 2;
+    let len = key + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_dict_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+}
+
+pub fn emit_dict_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+fn emit_blocking_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv_slot: u16,
+    field: &str,
+    line: u32,
+) {
+    emit_get_field(chunks, current, recv_slot, field, line);
+}
+
+pub fn emit_blocking_collection_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let input_slot = chunks[current].alloc_scratch(1);
+    if argc > 0 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, input_slot, line);
+    } else {
+        chunks[current].emit_i32_const(-1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, input_slot, line);
+    }
+
+    let obj_slot = chunks[current].alloc_scratch(4);
+    let items_slot = obj_slot + 1;
+    let capacity_slot = obj_slot + 2;
+    let lifo_slot = obj_slot + 3;
+
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    if argc > 0 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
+        call_import(chunks, current, "wasm:js-number", "test", 1, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_i32_const(0, line);
+        call_import(chunks, current, "ecma:array", "newWithLength", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
+        core_wasm::bool_const(&mut chunks[current], line, false);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, lifo_slot, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+        chunks[current].emit_i32_const(-1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
+        core_wasm::bool_const(&mut chunks[current], line, true);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, lifo_slot, line);
+        chunks[current].emit_end(line);
+    } else {
+        chunks[current].emit_i32_const(0, line);
+        call_import(chunks, current, "ecma:array", "newWithLength", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+        chunks[current].emit_i32_const(-1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
+        core_wasm::bool_const(&mut chunks[current], line, false);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, lifo_slot, line);
+    }
+
+    emit_set_field(chunks, current, obj_slot, BLOCKING_ITEMS, items_slot, line);
+    emit_set_field(
+        chunks,
+        current,
+        obj_slot,
+        BLOCKING_CAPACITY,
+        capacity_slot,
+        line,
+    );
+    let completed_slot = chunks[current].alloc_scratch(1);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, completed_slot, line);
+    emit_set_field(
+        chunks,
+        current,
+        obj_slot,
+        BLOCKING_COMPLETED,
+        completed_slot,
+        line,
+    );
+    emit_set_field(chunks, current, obj_slot, BLOCKING_LIFO, lifo_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_blocking_collection_try_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let value = base + 1;
+    let slots = chunks[current].alloc_scratch(3);
+    let items = slots;
+    let capacity = slots + 1;
+    let len = slots + 2;
+
+    emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_CAPACITY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, capacity, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, capacity, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, capacity, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+    chunks[current].emit_if_value(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_blocking_collection_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_blocking_collection_try_add(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_blocking_collection_take(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let base = stash_args(chunks, current, 1, line);
+    let recv = base;
+    let items = chunks[current].alloc_scratch(2);
+    let lifo = items + 1;
+
+    emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_LIFO, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lifo, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lifo, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_pop(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_shift(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_blocking_collection_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
+    collections::emit_len(chunks, current, line);
+}
+
+pub fn emit_blocking_collection_complete_adding(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    let value = chunks[current].alloc_scratch(1);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_set_field(chunks, current, recv, BLOCKING_COMPLETED, value, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_blocking_collection_is_completed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_COMPLETED, line);
+}
+
+pub fn emit_blocking_collection_items(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
+}
+
+pub fn emit_observable_collection_items(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+}
+
+pub fn emit_observable_collection_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_len(chunks, current, line);
+}
+
+fn emit_observable_event_args(
+    chunks: &mut [Chunk],
+    current: usize,
+    action: &str,
+    old_items: Option<u16>,
+    new_items: Option<u16>,
+    old_index: Option<u16>,
+    new_index: Option<u16>,
+    line: u32,
+) -> u16 {
+    let args = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
+
+    let action_value = chunks[current].alloc_scratch(1);
+    emit_string_const(chunks, current, action, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, action_value, line);
+    emit_set_field(chunks, current, args, "Action", action_value, line);
+    emit_set_field(chunks, current, args, "action", action_value, line);
+
+    let old_index_value = chunks[current].alloc_scratch(1);
+    if let Some(slot) = old_index {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    } else {
+        chunks[current].emit_i32_const(-1, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, old_index_value, line);
+    emit_set_field(
+        chunks,
+        current,
+        args,
+        "OldStartingIndex",
+        old_index_value,
+        line,
+    );
+    emit_set_field(
+        chunks,
+        current,
+        args,
+        "oldstartingindex",
+        old_index_value,
+        line,
+    );
+
+    let new_index_value = chunks[current].alloc_scratch(1);
+    if let Some(slot) = new_index {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    } else {
+        chunks[current].emit_i32_const(-1, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, new_index_value, line);
+    emit_set_field(
+        chunks,
+        current,
+        args,
+        "NewStartingIndex",
+        new_index_value,
+        line,
+    );
+    emit_set_field(
+        chunks,
+        current,
+        args,
+        "newstartingindex",
+        new_index_value,
+        line,
+    );
+
+    let old_items_value = chunks[current].alloc_scratch(1);
+    if let Some(slot) = old_items {
+        emit_array_with_slots(chunks, current, &[slot], line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, old_items_value, line);
+    emit_set_field(chunks, current, args, "OldItems", old_items_value, line);
+    emit_set_field(chunks, current, args, "olditems", old_items_value, line);
+
+    let new_items_value = chunks[current].alloc_scratch(1);
+    if let Some(slot) = new_items {
+        emit_array_with_slots(chunks, current, &[slot], line);
+    } else {
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, new_items_value, line);
+    emit_set_field(chunks, current, args, "NewItems", new_items_value, line);
+    emit_set_field(chunks, current, args, "newitems", new_items_value, line);
+
+    args
+}
+
+fn emit_property_changed_args(
+    chunks: &mut [Chunk],
+    current: usize,
+    property_name: &str,
+    line: u32,
+) -> u16 {
+    let args = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
+
+    let value = chunks[current].alloc_scratch(1);
+    emit_string_const(chunks, current, property_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_set_field(chunks, current, args, "PropertyName", value, line);
+    emit_set_field(chunks, current, args, "propertyname", value, line);
+    args
+}
+
+fn emit_delegate_event(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    event_name: &str,
+    fallback_name: &str,
+    args: u16,
+    line: u32,
+) {
+    let delegate = chunks[current].alloc_scratch(1);
+    emit_get_field(chunks, current, recv, event_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delegate, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    emit_get_field(chunks, current, recv, fallback_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delegate, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, args, line);
+    vybe_emitter::delegates::emit_invoke(chunks, current, 3, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_throw_dotnet_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const(message, line);
+    vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], exception_name, line);
+    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+}
+
+fn emit_check_index_in_range(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    index: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    collections::emit_len(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "ArgumentOutOfRangeException",
+        "Index was out of range. Must be non-negative and less than the size of the collection.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+fn emit_check_not_reentrant(chunks: &mut [Chunk], current: usize, recv: u16, line: u32) {
+    emit_get_field(chunks, current, recv, OBSERVABLE_NOTIFYING, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "InvalidOperationException",
+        "Cannot change ObservableCollection during a CollectionChanged event.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+fn emit_set_observable_notifying(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    notifying: bool,
+    line: u32,
+) {
+    let value = chunks[current].alloc_scratch(1);
+    core_wasm::bool_const(&mut chunks[current], line, notifying);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_set_field(chunks, current, recv, OBSERVABLE_NOTIFYING, value, line);
+}
+
+fn emit_observable_collection_changed(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    args: u16,
+    line: u32,
+) {
+    emit_set_observable_notifying(chunks, current, recv, true, line);
+    emit_delegate_event(
+        chunks,
+        current,
+        recv,
+        "CollectionChanged",
+        "collectionchanged",
+        args,
+        line,
+    );
+    emit_set_observable_notifying(chunks, current, recv, false, line);
+}
+
+fn emit_observable_property_changed(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    property_name: &str,
+    line: u32,
+) {
+    let args = emit_property_changed_args(chunks, current, property_name, line);
+    emit_delegate_event(
+        chunks,
+        current,
+        recv,
+        "PropertyChanged",
+        "propertychanged",
+        args,
+        line,
+    );
+}
+
+fn emit_observable_count_and_indexer_changed(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    line: u32,
+) {
+    emit_observable_property_changed(chunks, current, recv, "Count", line);
+    emit_observable_property_changed(chunks, current, recv, "Item[]", line);
+}
+
+pub fn emit_observable_collection_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let value = base + 1;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let index = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+
+    emit_observable_count_and_indexer_changed(chunks, current, recv, line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Add",
+        None,
+        Some(value),
+        None,
+        Some(index),
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let value = base + 1;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    let index = chunks[current].alloc_scratch(1);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_index_of(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_observable_count_and_indexer_changed(chunks, current, recv, line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Remove",
+        Some(value),
+        None,
+        Some(index),
+        None,
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_observable_collection_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let index = base + 1;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    let value = chunks[current].alloc_scratch(1);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+    emit_check_index_in_range(chunks, current, items, index, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_observable_count_and_indexer_changed(chunks, current, recv, line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Remove",
+        Some(value),
+        None,
+        Some(index),
+        None,
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_insert(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let index = base + 1;
+    let value = base + 2;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_insert(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_observable_count_and_indexer_changed(chunks, current, recv, line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Add",
+        None,
+        Some(value),
+        None,
+        Some(index),
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_set_index(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let index = base + 1;
+    let value = base + 2;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    let old_value = chunks[current].alloc_scratch(1);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+    emit_check_index_in_range(chunks, current, items, index, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, old_value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_observable_property_changed(chunks, current, recv, "Item[]", line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Replace",
+        Some(old_value),
+        Some(value),
+        Some(index),
+        Some(index),
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_move(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 3, line);
+    let recv = base;
+    let old_index = base + 1;
+    let new_index = base + 2;
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    let value = chunks[current].alloc_scratch(1);
+
+    emit_check_not_reentrant(chunks, current, recv, line);
+    emit_check_index_in_range(chunks, current, items, old_index, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old_index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, old_index, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, new_index, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_insert(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_observable_property_changed(chunks, current, recv, "Item[]", line);
+    let args = emit_observable_event_args(
+        chunks,
+        current,
+        "Move",
+        Some(value),
+        Some(value),
+        Some(old_index),
+        Some(new_index),
+        line,
+    );
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = stash_args(chunks, current, 1, line);
+    let items = emit_observable_items_slot(chunks, current, recv, line);
+    emit_check_not_reentrant(chunks, current, recv, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_clear(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_observable_count_and_indexer_changed(chunks, current, recv, line);
+    let args = emit_observable_event_args(chunks, current, "Reset", None, None, None, None, line);
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_observable_collection_on_changed(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 2, line);
+    let recv = base;
+    let args = base + 1;
+    emit_observable_collection_changed(chunks, current, recv, args, line);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 /// Normalize the `IEnumerable<T>` argument in `slot` to an ECMA Set: drain it
@@ -214,64 +1087,7 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
 }
 
 pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = stash_args(chunks, current, 2, line);
-    let recv = base;
-    let src = base + 1;
-    let source_arr_slot = chunks[current].alloc_scratch(4);
-    let recv_arr_slot = source_arr_slot + 1;
-    let idx_slot = source_arr_slot + 2;
-    let value_slot = source_arr_slot + 3;
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
-    collections::emit_iter_values(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, source_arr_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    collections::emit_iter_values(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, recv_arr_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    call_import(chunks, current, "ecma:set", "clear", 1, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    let block = chunks[current].emit_block(line);
-    let (loop_patch, _) = chunks[current].emit_loop_s(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_arr_slot, line);
-    collections::emit_len(chunks, current, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
-    chunks[current].emit_br_if(1, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv_arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, source_arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    collections::emit_contains(chunks, current, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
-
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(loop_patch);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-    chunks[current].emit_op(Op::NULL, line);
+    emit_hashset_mutation(chunks, current, "intersection", line);
 }
 
 pub fn emit_hashset_except_with(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -298,6 +1114,7 @@ fn emit_hashset_predicate(chunks: &mut [Chunk], current: usize, func: &str, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     call_import(chunks, current, "ecma:set", func, 2, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_hashset_is_subset_of(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -348,6 +1165,7 @@ fn emit_hashset_relation(chunks: &mut [Chunk], current: usize, line: u32, rel: &
     chunks[current].emit_else(line);
     core_wasm::bool_const(&mut chunks[current], line, false);
     chunks[current].emit_end(line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_hashset_set_equals(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -255,6 +255,7 @@ vb_full_spec!(
     r#"Module M : Sub Main() : Dim d As New Dictionary(Of String, Integer) : d.Add("a",1) : d.Add("b",2) : Dim total As Integer = 0 : For Each key In d.Keys : total += d.Item(key) : Next : Console.WriteLine(total) : End Sub : End Module"#,
     ["3"]
 );
+
 vb_full_spec!(
     array_spec_queue_and_stack_can_model_fifo_and_lifo,
     r#"Module M : Sub Main() : Dim q As New Queue(Of Integer) : q.Enqueue(1) : q.Enqueue(2) : Dim s As New Stack(Of Integer) : s.Push(1) : s.Push(2) : Console.WriteLine(q.Dequeue()) : Console.WriteLine(s.Pop()) : End Sub : End Module"#,

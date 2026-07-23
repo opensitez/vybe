@@ -11,9 +11,9 @@
 //!
 //! Pure WASM, zero `vybe:types` involvement.
 
-use vybe_emitter::instructions::{core_wasm, host};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::{core_wasm, host};
 
 /// `Array.Clear(arr, idx, count)` — reset `count` elements starting at
 /// `idx` to a .NET-style default. Until the runtime carries per-array
@@ -206,11 +206,12 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     // Use existing find loop pattern: iterate, return first matching elem.
     // We compose: filter then index 0 (matches the LINQ adapter's
     // `Array.Find` walker rewrite).
-    let arr_slot = alloc_locals(&mut chunks[current], 5);
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
     let fn_slot = arr_slot + 1;
     let result_slot = arr_slot + 2;
     let idx_slot = arr_slot + 3;
     let elem_slot = arr_slot + 4;
+    let found_slot = arr_slot + 5;
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
@@ -227,6 +228,22 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     // The result is on the stack as an array — take element 0.
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_emitter::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found_slot, line);
+    let undef_idx = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, undef_idx, line);
+    chunks[current].emit(1, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// `Array.FindAll(arr, pred)` → `arr.filter(pred)`. Stack: `[arr, pred]` → `[array]`.
@@ -375,8 +392,7 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, list_slot, line);
 
     // for elem in other: list.push(elem)
-    let state =
-        vybe_emitter::loops::emit_for_in_start(chunks, current, other_slot, idx_slot, line);
+    let state = vybe_emitter::loops::emit_for_in_start(chunks, current, other_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     let elem_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);

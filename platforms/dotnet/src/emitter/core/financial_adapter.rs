@@ -1,3 +1,5 @@
+//! Shared Microsoft.VisualBasic.Financial helpers for .NET languages.
+
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 

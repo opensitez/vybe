@@ -7,12 +7,7 @@ fn bool_text(v: bool) -> &'static str {
 
 #[test]
 fn list_matrix_sum_count_first_and_contains_even() {
-    let cases: Vec<Vec<i32>> = vec![
-        vec![1, 2, 3, 4],
-        vec![-2, 0, 7],
-        vec![9],
-        vec![],
-    ];
+    let cases: Vec<Vec<i32>> = vec![vec![1, 2, 3, 4], vec![-2, 0, 7], vec![9], vec![]];
 
     for values in cases {
         let add_lines = values
@@ -60,15 +55,14 @@ fn list_matrix_mutate_front_and_report_head() {
 
 #[test]
 fn array_matrix_sorted_min_max() {
-    let cases: Vec<Vec<i32>> = vec![
-        vec![9, 4, 7, 1],
-        vec![12, 3, 3, 8],
-        vec![5],
-        vec![],
-    ];
+    let cases: Vec<Vec<i32>> = vec![vec![9, 4, 7, 1], vec![12, 3, 3, 8], vec![5], vec![]];
 
     for values in cases {
-        let literal = values.iter().map(i32::to_string).collect::<Vec<_>>().join(", ");
+        let literal = values
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         let src = format!(
             "var arr = new int[] {{ {literal} }}; System.Array.Sort(arr); Console.WriteLine(arr.Length); Console.WriteLine(arr.Length == 0 ? 0 : arr[0]); Console.WriteLine(arr.Length == 0 ? 0 : arr[arr.Length - 1]);"
         );
@@ -108,7 +102,10 @@ fn dictionary_matrix_lookup_with_tryget() {
             .find(|(key, _)| *key == query)
             .map(|(_, value)| *value)
             .unwrap_or(-1);
-        assert_eq!(run_csharp(&src), vec![bool_text(found).to_string(), value.to_string()]);
+        assert_eq!(
+            run_csharp(&src),
+            vec![bool_text(found).to_string(), value.to_string()]
+        );
     }
 }
 
@@ -176,7 +173,11 @@ fn stack_matrix_lifo_pop_and_next_top() {
             "using System.Collections.Generic; var stack = new Stack<int>(); {add_lines} int top = stack.Pop(); int next = stack.Count == 0 ? 0 : stack.Peek(); Console.WriteLine(stack.Count + 1); Console.WriteLine(top); Console.WriteLine(next);"
         );
         let expected_top = values[values.len() - 1];
-        let expected_next = if values.len() > 1 { values[values.len() - 2] } else { 0 };
+        let expected_next = if values.len() > 1 {
+            values[values.len() - 2]
+        } else {
+            0
+        };
         assert_eq!(
             run_csharp(&src),
             vec![
@@ -221,12 +222,7 @@ fn hashset_matrix_uniqueness_and_remove() {
 
 #[test]
 fn list_matrix_foreach_projection_counts() {
-    let cases: Vec<Vec<i32>> = vec![
-        vec![1, 2, 3],
-        vec![2, 4, 6, 8],
-        vec![-1, 0, 2],
-        vec![],
-    ];
+    let cases: Vec<Vec<i32>> = vec![vec![1, 2, 3], vec![2, 4, 6, 8], vec![-1, 0, 2], vec![]];
 
     for values in cases {
         let add_lines = values
@@ -245,7 +241,10 @@ fn list_matrix_foreach_projection_counts() {
         );
         assert_eq!(
             run_csharp(&src),
-            vec![expected_odd_count.to_string(), expected_even_half_sum.to_string()]
+            vec![
+                expected_odd_count.to_string(),
+                expected_even_half_sum.to_string()
+            ]
         );
     }
 }

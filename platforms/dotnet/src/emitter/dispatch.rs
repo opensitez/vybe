@@ -1,9 +1,9 @@
 //! Auto-extracted `dotnet.*` dispatch (language-specific routing lives in the
 //! language module; the common dispatcher delegates here).
 
-use vybe_emitter::instructions::core_wasm;
-use vybe_bytecode::{Chunk, Value};
 use std::sync::Arc;
+use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 
@@ -58,8 +58,7 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
-    if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line)
-    {
+    if crate::emitter::core::runtime_adapter::emit_helper(name, chunks, current, argc, line) {
         return true;
     }
     match name {
@@ -87,59 +86,37 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.dns_get_host_entry" => {
-            crate::emitter::core::sockets_adapter::emit_dns_get_host_entry(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_dns_get_host_entry(chunks, current, line)
         }
         "dotnet.dns_get_host_name" => {
-            crate::emitter::core::sockets_adapter::emit_dns_get_host_name(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_dns_get_host_name(chunks, current, line)
         }
         "dotnet.tcp_client_new" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_client_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_client_new(chunks, current, line)
         }
         "dotnet.tcp_client_get_stream" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_client_get_stream(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_client_get_stream(chunks, current, line)
         }
         "dotnet.tcp_client_close" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_client_close(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_client_close(chunks, current, line)
         }
         "dotnet.tcp_listener_new" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_listener_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_listener_new(chunks, current, line)
         }
         "dotnet.tcp_listener_start" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_listener_start(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_listener_start(chunks, current, line)
         }
         "dotnet.tcp_listener_stop" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_listener_stop(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_listener_stop(chunks, current, line)
         }
         "dotnet.tcp_listener_accept" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_listener_accept(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_listener_accept(chunks, current, line)
         }
         "dotnet.tcp_listener_pending" => {
-            crate::emitter::core::sockets_adapter::emit_tcp_listener_pending(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_tcp_listener_pending(chunks, current, line)
         }
         "dotnet.udp_client_new" => {
-            crate::emitter::core::sockets_adapter::emit_udp_client_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::sockets_adapter::emit_udp_client_new(chunks, current, line)
         }
         "dotnet.udp_send" => {
             crate::emitter::core::sockets_adapter::emit_udp_send(chunks, current, line)
@@ -161,9 +138,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.sb_append" => crate::emitter::core::stringbuilder_adapter::emit_sb_append(
-            chunks, current, line,
-        ),
+        "dotnet.sb_append" => {
+            crate::emitter::core::stringbuilder_adapter::emit_sb_append(chunks, current, line)
+        }
         "dotnet.sb_append_line" => {
             crate::emitter::core::stringbuilder_adapter::emit_sb_append_line(
                 chunks, current, argc, line,
@@ -174,50 +151,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.sb_to_string" => {
-            crate::emitter::core::stringbuilder_adapter::emit_sb_to_string(
-                chunks, current, argc, line,
-            )
+        "dotnet.sb_to_string" => crate::emitter::core::stringbuilder_adapter::emit_sb_to_string(
+            chunks, current, argc, line,
+        ),
+        "dotnet.sb_clear" => {
+            crate::emitter::core::stringbuilder_adapter::emit_sb_clear(chunks, current, line)
         }
-        "dotnet.sb_clear" => crate::emitter::core::stringbuilder_adapter::emit_sb_clear(
-            chunks, current, line,
-        ),
-        "dotnet.sb_length" => crate::emitter::core::stringbuilder_adapter::emit_sb_length(
-            chunks, current, line,
-        ),
-        "dotnet.sb_insert" => crate::emitter::core::stringbuilder_adapter::emit_sb_insert(
-            chunks, current, line,
-        ),
-        "dotnet.sb_remove" => crate::emitter::core::stringbuilder_adapter::emit_sb_remove(
-            chunks, current, line,
-        ),
+        "dotnet.sb_length" => {
+            crate::emitter::core::stringbuilder_adapter::emit_sb_length(chunks, current, line)
+        }
+        "dotnet.sb_insert" => {
+            crate::emitter::core::stringbuilder_adapter::emit_sb_insert(chunks, current, line)
+        }
+        "dotnet.sb_remove" => {
+            crate::emitter::core::stringbuilder_adapter::emit_sb_remove(chunks, current, line)
+        }
         "dotnet.sb_replace" => {
-            crate::emitter::core::stringbuilder_adapter::emit_sb_replace(
-                chunks, current, line,
-            )
+            crate::emitter::core::stringbuilder_adapter::emit_sb_replace(chunks, current, line)
         }
         "dotnet.sb_index_get" => {
-            crate::emitter::core::stringbuilder_adapter::emit_sb_index_get(
-                chunks, current, line,
-            )
+            crate::emitter::core::stringbuilder_adapter::emit_sb_index_get(chunks, current, line)
         }
         "dotnet.sb_index_set" => {
-            crate::emitter::core::stringbuilder_adapter::emit_sb_index_set(
-                chunks, current, line,
-            )
+            crate::emitter::core::stringbuilder_adapter::emit_sb_index_set(chunks, current, line)
         }
 
         // ── .NET Random adapter ─────────────────────────────────────
-        "dotnet.random_new" => crate::emitter::core::random_adapter::emit_random_new(
-            chunks, current, argc, line,
-        ),
-        "dotnet.random_next" => crate::emitter::core::random_adapter::emit_random_next(
-            chunks, current, argc, line,
-        ),
+        "dotnet.random_new" => {
+            crate::emitter::core::random_adapter::emit_random_new(chunks, current, argc, line)
+        }
+        "dotnet.random_next" => {
+            crate::emitter::core::random_adapter::emit_random_next(chunks, current, argc, line)
+        }
         "dotnet.random_next_double" => {
-            crate::emitter::core::random_adapter::emit_random_next_double(
-                chunks, current, line,
-            )
+            crate::emitter::core::random_adapter::emit_random_next_double(chunks, current, line)
         }
 
         // ── .NET Regex adapter ──────────────────────────────────────
@@ -226,6 +193,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.regex_is_match" => {
             crate::emitter::core::regex_adapter::emit_regex_is_match(chunks, current, line)
+        }
+        "dotnet.regex_static_is_match" => {
+            crate::emitter::core::regex_adapter::emit_regex_static_is_match(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.regex_static_match" => {
+            crate::emitter::core::regex_adapter::emit_regex_static_match(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.regex_static_matches" => {
+            crate::emitter::core::regex_adapter::emit_regex_static_matches(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.regex_static_replace" => {
+            crate::emitter::core::regex_adapter::emit_regex_static_replace(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.regex_static_split" => {
+            crate::emitter::core::regex_adapter::emit_regex_static_split(
+                chunks, current, argc, line,
+            )
         }
         "dotnet.regex_replace" => {
             crate::emitter::core::regex_adapter::emit_regex_replace(chunks, current, line)
@@ -242,34 +234,22 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── .NET Stopwatch adapter ──────────────────────────────────
         "dotnet.stopwatch_new" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_new(chunks, current, line)
         }
         "dotnet.stopwatch_start" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_start(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_start(chunks, current, line)
         }
         "dotnet.stopwatch_stop" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_stop(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_stop(chunks, current, line)
         }
         "dotnet.stopwatch_reset" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_reset(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_reset(chunks, current, line)
         }
         "dotnet.stopwatch_start_new" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_start_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_start_new(chunks, current, line)
         }
         "dotnet.stopwatch_restart" => {
-            crate::emitter::core::stopwatch_adapter::emit_stopwatch_restart(
-                chunks, current, line,
-            )
+            crate::emitter::core::stopwatch_adapter::emit_stopwatch_restart(chunks, current, line)
         }
         "dotnet.stopwatch_elapsed_ms" => {
             crate::emitter::core::stopwatch_adapter::emit_stopwatch_elapsed_ms(
@@ -291,100 +271,66 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "dotnet.process_new" => crate::emitter::core::process_adapter::emit_process_new(
-            chunks, current, argc, line,
-        ),
+        "dotnet.process_new" => {
+            crate::emitter::core::process_adapter::emit_process_new(chunks, current, argc, line)
+        }
         "dotnet.process_start" => {
             crate::emitter::core::process_adapter::emit_process_start(chunks, current, line)
         }
         "dotnet.process_get_current" => {
-            crate::emitter::core::process_adapter::emit_process_get_current(
-                chunks, current, line,
-            )
+            crate::emitter::core::process_adapter::emit_process_get_current(chunks, current, line)
         }
         "dotnet.process_wait_for_exit" => {
-            crate::emitter::core::process_adapter::emit_process_wait_for_exit(
-                chunks, current, line,
-            )
+            crate::emitter::core::process_adapter::emit_process_wait_for_exit(chunks, current, line)
         }
 
         // ── .NET LINQ-to-XML adapter ────────────────────────────────
         // Tree operations compose `web:dom-parser`; XName operations delegate
         // to `vybe_emitter::xml` inside the adapter.
         "dotnet.xml_xelement_new" => {
-            crate::emitter::core::xml_linq_adapter::emit_xelement_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xelement_new(chunks, current, argc, line)
         }
         "dotnet.xml_xattribute_new" => {
-            crate::emitter::core::xml_linq_adapter::emit_xattribute_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xattribute_new(chunks, current, argc, line)
         }
         "dotnet.xml_xdocument_new" => {
-            crate::emitter::core::xml_linq_adapter::emit_xdocument_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_new(chunks, current, argc, line)
         }
         "dotnet.xml_xdocument_parse" => {
-            crate::emitter::core::xml_linq_adapter::emit_xdocument_parse(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_parse(chunks, current, line)
         }
         "dotnet.xml_xdocument_root" => {
-            crate::emitter::core::xml_linq_adapter::emit_xdocument_root(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xdocument_root(chunks, current, line)
         }
         "dotnet.xml_xelement_name" => {
-            crate::emitter::core::xml_linq_adapter::emit_xelement_name(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xelement_name(chunks, current, line)
         }
         "dotnet.xml_value" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_value(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_value(chunks, current, line)
         }
         "dotnet.xml_to_string" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_to_string(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_to_string(chunks, current, line)
         }
         "dotnet.xml_element" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_element(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_element(chunks, current, line)
         }
         "dotnet.xml_child_elements" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_child_elements(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_child_elements(chunks, current, line)
         }
         "dotnet.xml_elements" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_elements(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_elements(chunks, current, line)
         }
         "dotnet.xml_attribute" => {
-            crate::emitter::core::xml_linq_adapter::emit_xml_attribute(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xml_attribute(chunks, current, line)
         }
         "dotnet.xml_attribute_value" => {
-            crate::emitter::core::xml_linq_adapter::emit_attribute_value(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_attribute_value(chunks, current, line)
         }
         "dotnet.xml_xelement_add" => {
-            crate::emitter::core::xml_linq_adapter::emit_xelement_add(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xelement_add(chunks, current, line)
         }
         "dotnet.xml_xelement_remove" => {
-            crate::emitter::core::xml_linq_adapter::emit_xelement_remove(
-                chunks, current, line,
-            )
+            crate::emitter::core::xml_linq_adapter::emit_xelement_remove(chunks, current, line)
         }
         "dotnet.xml_xelement_replace_nodes" => {
             crate::emitter::core::xml_linq_adapter::emit_xelement_replace_nodes(
@@ -414,12 +360,35 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::array_adapter::emit_array_sort(chunks, current, line)
         }
         "dotnet.hashset_add" => {
-            crate::emitter::core::collections_adapter::emit_hashset_add(
-                chunks, current, line,
-            )
+            crate::emitter::core::collections_adapter::emit_hashset_add(chunks, current, line)
         }
         "dotnet.set_new_ignore_comparer" => {
             crate::emitter::core::collections_adapter::emit_set_new_ignore_comparer(
+                chunks, current, line,
+            )
+        }
+        "dotnet.list_new_from_iterable" => {
+            crate::emitter::core::collections_adapter::emit_list_new_from_iterable(
+                chunks, current, line,
+            )
+        }
+        "dotnet.readonly_observable_collection_new" => {
+            crate::emitter::core::collections_adapter::emit_readonly_observable_collection_new(
+                chunks, current, line,
+            )
+        }
+        "dotnet.property_changed_event_args_new" => {
+            crate::emitter::core::collections_adapter::emit_property_changed_event_args_new(
+                chunks, current, line,
+            )
+        }
+        "dotnet.notify_collection_changed_event_args_new" => {
+            crate::emitter::core::collections_adapter::emit_notify_collection_changed_event_args_new(
+                chunks, current, line,
+            )
+        }
+        "dotnet.set_new_from_iterable" => {
+            crate::emitter::core::collections_adapter::emit_set_new_from_iterable(
                 chunks, current, line,
             )
         }
@@ -497,19 +466,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.linked_list_find" => {
-            crate::emitter::core::collections_adapter::emit_linked_list_find(
-                chunks, current, line,
-            )
+            crate::emitter::core::collections_adapter::emit_linked_list_find(chunks, current, line)
         }
         "dotnet.linked_list_first" => {
-            crate::emitter::core::collections_adapter::emit_linked_list_first(
-                chunks, current, line,
-            )
+            crate::emitter::core::collections_adapter::emit_linked_list_first(chunks, current, line)
         }
         "dotnet.vb_collection_new" => {
-            crate::emitter::core::collections_adapter::emit_vb_collection_new(
-                chunks, current, line,
-            )
+            crate::emitter::core::collections_adapter::emit_vb_collection_new(chunks, current, line)
         }
         "dotnet.vb_collection_add" => {
             crate::emitter::core::collections_adapter::emit_vb_collection_add(
@@ -533,6 +496,115 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.vb_collection_remove" => {
             crate::emitter::core::collections_adapter::emit_vb_collection_remove(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dict_new_ignore_arg" => {
+            crate::emitter::core::collections_adapter::emit_dict_new_ignore_arg(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dict_try_add" => {
+            crate::emitter::core::collections_adapter::emit_dict_try_add(chunks, current, line)
+        }
+        "dotnet.dict_remove" => {
+            crate::emitter::core::collections_adapter::emit_dict_remove(chunks, current, line)
+        }
+        "dotnet.dict_ensure_capacity" => {
+            crate::emitter::core::collections_adapter::emit_dict_ensure_capacity(
+                chunks, current, line,
+            )
+        }
+        "dotnet.dict_trim_excess" => {
+            crate::emitter::core::collections_adapter::emit_dict_trim_excess(chunks, current, line)
+        }
+        "dotnet.blocking_collection_new" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_new(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.blocking_collection_add" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_add(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_try_add" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_try_add(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_take" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_take(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.blocking_collection_count" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_count(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_complete_adding" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_complete_adding(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_is_completed" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_is_completed(
+                chunks, current, line,
+            )
+        }
+        "dotnet.blocking_collection_items" => {
+            crate::emitter::core::collections_adapter::emit_blocking_collection_items(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_items" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_items(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_count" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_count(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_add" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_add(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_remove" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_remove(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_remove_at" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_remove_at(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_insert" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_insert(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_set_index" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_set_index(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_move" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_move(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_clear" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_clear(
+                chunks, current, line,
+            )
+        }
+        "dotnet.observable_collection_on_changed" => {
+            crate::emitter::core::collections_adapter::emit_observable_collection_on_changed(
                 chunks, current, line,
             )
         }
@@ -580,14 +652,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // multiplying `n` with the unit-to-ms factor. Pure inline
         // bytecode; no host fns.
         "dotnet.timespan_from_days" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_from_days(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_from_days(chunks, current, line)
         }
         "dotnet.timespan_from_hours" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_from_hours(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_from_hours(chunks, current, line)
         }
         "dotnet.timespan_from_minutes" => {
             crate::emitter::core::timespan_adapter::emit_timespan_from_minutes(
@@ -605,27 +673,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.timespan_zero" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_zero(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_zero(chunks, current, line)
         }
-        "dotnet.timespan_new" => crate::emitter::core::timespan_adapter::emit_timespan_new(
-            chunks, current, argc, line,
-        ),
+        "dotnet.timespan_new" => {
+            crate::emitter::core::timespan_adapter::emit_timespan_new(chunks, current, argc, line)
+        }
         "dotnet.timespan_compare" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_compare(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_compare(chunks, current, line)
         }
         "dotnet.timespan_negate" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_negate(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_negate(chunks, current, line)
         }
         "dotnet.timespan_duration" => {
-            crate::emitter::core::timespan_adapter::emit_timespan_duration(
-                chunks, current, line,
-            )
+            crate::emitter::core::timespan_adapter::emit_timespan_duration(chunks, current, line)
         }
         "dotnet.timespan_add" => {
             crate::emitter::core::timespan_adapter::emit_timespan_add(chunks, current, line)
@@ -652,30 +712,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.guid_to_string" => {
             crate::emitter::core::guid_adapter::emit_guid_to_string(chunks, current, line)
         }
-        "dotnet.guid_try_parse" => crate::emitter::core::guid_adapter::emit_guid_try_parse(
-            chunks, current, argc, line,
-        ),
+        "dotnet.guid_try_parse" => {
+            crate::emitter::core::guid_adapter::emit_guid_try_parse(chunks, current, argc, line)
+        }
 
-        "dotnet.version_new" => crate::emitter::core::version_adapter::emit_version_new(
-            chunks, current, argc, line,
-        ),
+        "dotnet.version_new" => {
+            crate::emitter::core::version_adapter::emit_version_new(chunks, current, argc, line)
+        }
         "dotnet.version_parse" => {
             crate::emitter::core::version_adapter::emit_version_parse(chunks, current, line)
         }
         "dotnet.version_to_string" => {
-            crate::emitter::core::version_adapter::emit_version_to_string(
-                chunks, current, line,
-            )
+            crate::emitter::core::version_adapter::emit_version_to_string(chunks, current, line)
         }
         "dotnet.version_compare" => {
-            crate::emitter::core::version_adapter::emit_version_compare(
-                chunks, current, line,
-            )
+            crate::emitter::core::version_adapter::emit_version_compare(chunks, current, line)
         }
         "dotnet.version_equals" => {
-            crate::emitter::core::version_adapter::emit_version_equals(
-                chunks, current, line,
-            )
+            crate::emitter::core::version_adapter::emit_version_equals(chunks, current, line)
         }
         "dotnet.version_lt" => {
             crate::emitter::core::version_adapter::emit_version_lt(chunks, current, line)
@@ -700,32 +754,43 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::datetime_adapter::emit_datetime_now(chunks, current, line)
         }
         "dotnet.datetime_parse" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_parse(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_parse(chunks, current, line)
         }
         "dotnet.datetime_today" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_today(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_today(chunks, current, line)
         }
-        "dotnet.datetime_new" => crate::emitter::core::datetime_adapter::emit_datetime_new(
-            chunks, current, argc, line,
-        ),
+        "dotnet.datetime_new" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_new(chunks, current, argc, line)
+        }
+        "dotnet.datetime_year" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_year(chunks, current, line)
+        }
+        "dotnet.datetime_month" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_month(chunks, current, line)
+        }
+        "dotnet.datetime_day" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_day(chunks, current, line)
+        }
+        "dotnet.datetime_hour" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_hour(chunks, current, line)
+        }
+        "dotnet.datetime_minute" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_minute(chunks, current, line)
+        }
+        "dotnet.datetime_second" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_second(chunks, current, line)
+        }
+        "dotnet.datetime_day_of_week" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_day_of_week(chunks, current, line)
+        }
         "dotnet.datetime_add_days" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_add_days(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_add_days(chunks, current, line)
         }
         "dotnet.datetime_add_hours" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_add_hours(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_add_hours(chunks, current, line)
         }
         "dotnet.datetime_add_months" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_add_months(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_add_months(chunks, current, line)
         }
         "dotnet.datetime_days_in_month" => {
             crate::emitter::core::datetime_adapter::emit_datetime_days_in_month(
@@ -738,9 +803,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.datetime_compare" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_compare(
-                chunks, current, line,
-            )
+            crate::emitter::core::datetime_adapter::emit_datetime_compare(chunks, current, line)
         }
         "dotnet.datetime_to_short_date_string" => {
             crate::emitter::core::datetime_adapter::emit_datetime_to_short_date_string(
@@ -761,10 +824,62 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──
         // Bytecode-only — composes existing `ecma:date.*` host fns into
         // the PHP-shaped surface. See `emitter/php/datetime_adapter.rs`.
-        "dotnet.string_format" => {
-            crate::emitter::core::string_format_adapter::emit_string_format(
+        "dotnet.string_format" => crate::emitter::core::string_format_adapter::emit_string_format(
+            chunks, current, argc, line,
+        ),
+        "dotnet.string_from_chars" => crate::emitter::core::string_adapter::emit_string_from_chars(
+            chunks, current, argc, line,
+        ),
+
+        // ── Microsoft.VisualBasic runtime helpers shared by .NET languages ──
+        "dotnet.vb_dir" => {
+            crate::emitter::core::visualbasic_adapter::emit_vb_dir(chunks, current, argc, line)
+        }
+        "dotnet.vb_filedatetime" => {
+            crate::emitter::core::visualbasic_adapter::emit_vb_filedatetime(
                 chunks, current, argc, line,
             )
+        }
+        "dotnet.vb_lof" => {
+            crate::emitter::core::visualbasic_adapter::emit_vb_lof(chunks, current, argc, line)
+        }
+        "dotnet.vb_eof" => {
+            crate::emitter::core::visualbasic_adapter::emit_vb_eof(chunks, current, argc, line)
+        }
+        "dotnet.vb_shell_pid" => crate::emitter::core::visualbasic_adapter::emit_vb_shell_pid(
+            chunks, current, argc, line,
+        ),
+
+        // ── Microsoft.VisualBasic.Financial shared by .NET languages ────────
+        "dotnet.vb_pmt" => {
+            crate::emitter::core::financial_adapter::emit_vb_pmt(chunks, current, argc, line)
+        }
+        "dotnet.vb_fv" => {
+            crate::emitter::core::financial_adapter::emit_vb_fv(chunks, current, argc, line)
+        }
+        "dotnet.vb_pv" => {
+            crate::emitter::core::financial_adapter::emit_vb_pv(chunks, current, argc, line)
+        }
+        "dotnet.vb_nper" => {
+            crate::emitter::core::financial_adapter::emit_vb_nper(chunks, current, argc, line)
+        }
+        "dotnet.vb_rate" => {
+            crate::emitter::core::financial_adapter::emit_vb_rate(chunks, current, argc, line)
+        }
+        "dotnet.vb_ipmt" => {
+            crate::emitter::core::financial_adapter::emit_vb_ipmt(chunks, current, argc, line)
+        }
+        "dotnet.vb_ppmt" => {
+            crate::emitter::core::financial_adapter::emit_vb_ppmt(chunks, current, argc, line)
+        }
+        "dotnet.vb_sln" => {
+            crate::emitter::core::financial_adapter::emit_vb_sln(chunks, current, argc, line)
+        }
+        "dotnet.vb_ddb" => {
+            crate::emitter::core::financial_adapter::emit_vb_ddb(chunks, current, argc, line)
+        }
+        "dotnet.vb_syd" => {
+            crate::emitter::core::financial_adapter::emit_vb_syd(chunks, current, argc, line)
         }
 
         // ── VB / VBA `Format(value, picture)` — picture-string render ──
@@ -800,9 +915,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.stream_reader_close" => {
-            crate::emitter::core::stream_io_adapter::emit_stream_reader_close(
-                chunks, current, line,
-            )
+            crate::emitter::core::stream_io_adapter::emit_stream_reader_close(chunks, current, line)
         }
         "dotnet.stream_writer_new" => {
             crate::emitter::core::stream_io_adapter::emit_stream_writer_new(
@@ -810,9 +923,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.stream_writer_write" => {
-            crate::emitter::core::stream_io_adapter::emit_stream_writer_write(
-                chunks, current, line,
-            )
+            crate::emitter::core::stream_io_adapter::emit_stream_writer_write(chunks, current, line)
         }
         "dotnet.stream_writer_write_line" => {
             crate::emitter::core::stream_io_adapter::emit_stream_writer_write_line(
@@ -820,14 +931,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.stream_writer_flush" => {
-            crate::emitter::core::stream_io_adapter::emit_stream_writer_flush(
-                chunks, current, line,
-            )
+            crate::emitter::core::stream_io_adapter::emit_stream_writer_flush(chunks, current, line)
         }
         "dotnet.stream_close" => {
-            crate::emitter::core::stream_io_adapter::emit_stream_close(
-                chunks, current, line,
-            )
+            crate::emitter::core::stream_io_adapter::emit_stream_close(chunks, current, line)
         }
         "dotnet.file_read_all_lines" => {
             crate::emitter::core::filesystem_adapter::emit_file_read_all_lines(
@@ -844,6 +951,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.directory_delete" => {
+            crate::emitter::core::filesystem_adapter::emit_directory_delete(
+                chunks, current, argc, line,
+            )
+        }
         "dotnet.console_writeline" => {
             // `WriteLine()` with no argument is a bare newline; `WriteLine(v)`
             // stringifies then appends one. The call site passes the real argc.
@@ -852,24 +964,188 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                     chunks, current, line,
                 )
             } else {
-                crate::emitter::core::console_adapter::emit_console_writeline(
-                    chunks, current, line,
-                )
+                crate::emitter::core::console_adapter::emit_console_writeline(chunks, current, line)
             }
         }
         "dotnet.console_write" => {
             crate::emitter::core::console_adapter::emit_console_write(chunks, current, line)
         }
         "dotnet.console_readline" => {
-            crate::emitter::core::console_adapter::emit_console_readline(
-                chunks, current, line,
-            )
+            crate::emitter::core::console_adapter::emit_console_readline(chunks, current, line)
         }
         "dotnet.console_error" => {
             crate::emitter::core::console_adapter::emit_console_error(chunks, current, line)
         }
+        "dotnet.encoding_utf8" => crate::emitter::core::encoding_adapter::emit_encoding_value(
+            chunks, current, "utf-8", line,
+        ),
+        "dotnet.encoding_ascii" => crate::emitter::core::encoding_adapter::emit_encoding_value(
+            chunks, current, "ascii", line,
+        ),
+        "dotnet.encoding_unicode" => crate::emitter::core::encoding_adapter::emit_encoding_value(
+            chunks, current, "utf16le", line,
+        ),
+        "dotnet.encoding_utf32" => crate::emitter::core::encoding_adapter::emit_encoding_value(
+            chunks, current, "utf32", line,
+        ),
+        "dotnet.encoding_big_endian_unicode" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_value(
+                chunks, current, "utf16be", line,
+            )
+        }
+        "dotnet.encoding_latin1" => crate::emitter::core::encoding_adapter::emit_encoding_value(
+            chunks, current, "latin1", line,
+        ),
+        "dotnet.utf8encoding_new" => {
+            for _ in 0..argc {
+                chunks[current].emit_op(vybe_bytecode::opcode::Op::DROP, line);
+            }
+            crate::emitter::core::encoding_adapter::emit_encoding_value(
+                chunks, current, "utf-8", line,
+            )
+        }
+        "dotnet.encoding_get_encoding" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_encoding(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_convert" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_convert(chunks, current, line)
+        }
+        "dotnet.encoding_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_bytes(
+                chunks, current, argc, "utf8", line,
+            )
+        }
+        "dotnet.encoding_ascii_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_bytes(
+                chunks, current, argc, "ascii", line,
+            )
+        }
+        "dotnet.encoding_unicode_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_bytes(
+                chunks, current, argc, "utf16le", line,
+            )
+        }
+        "dotnet.encoding_utf32_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_utf32_get_bytes(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_big_endian_unicode_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_big_endian_unicode_get_bytes(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_latin1_get_bytes" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_bytes(
+                chunks, current, argc, "latin1", line,
+            )
+        }
+        "dotnet.encoding_get_string" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_string(
+                chunks, current, argc, "utf8", line,
+            )
+        }
+        "dotnet.encoding_ascii_get_string" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_string(
+                chunks, current, argc, "ascii", line,
+            )
+        }
+        "dotnet.encoding_unicode_get_string" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_unicode_get_string(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_utf32_get_string" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_utf32_get_string(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_latin1_get_string" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_string(
+                chunks, current, argc, "latin1", line,
+            )
+        }
+        "dotnet.encoding_get_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_byte_count(
+                chunks, current, argc, "utf8", line,
+            )
+        }
+        "dotnet.encoding_ascii_get_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_byte_count(
+                chunks, current, argc, "ascii", line,
+            )
+        }
+        "dotnet.encoding_unicode_get_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_byte_count(
+                chunks, current, argc, "utf16le", line,
+            )
+        }
+        "dotnet.encoding_utf32_get_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_utf32_get_byte_count(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_latin1_get_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_byte_count(
+                chunks, current, argc, "latin1", line,
+            )
+        }
+        "dotnet.encoding_get_preamble" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_preamble(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_utf8_get_preamble" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_utf8_get_preamble(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_get_max_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_max_byte_count(
+                chunks, current, argc, 4, line,
+            )
+        }
+        "dotnet.encoding_unicode_get_max_byte_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_max_byte_count(
+                chunks, current, argc, 2, line,
+            )
+        }
+        "dotnet.encoding_get_max_char_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_max_char_count(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_get_char_count" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_char_count(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_get_chars" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_get_chars(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.encoding_equals" => {
+            crate::emitter::core::encoding_adapter::emit_encoding_equals(chunks, current, line)
+        }
+        "dotnet.object_equals" => {
+            crate::emitter::core::encoding_adapter::emit_object_equals(chunks, current, line)
+        }
+        "dotnet.identity" => {}
         "dotnet.environment_username" => {
             crate::emitter::core::environment_adapter::emit_environment_username(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_version" => {
+            crate::emitter::core::environment_adapter::emit_environment_version(
+                chunks, current, line,
+            )
+        }
+        "dotnet.environment_system_directory" => {
+            crate::emitter::core::environment_adapter::emit_environment_system_directory(
                 chunks, current, line,
             )
         }
@@ -884,13 +1160,45 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.environment_get" => {
-            crate::emitter::core::environment_adapter::emit_environment_get(
+            crate::emitter::core::environment_adapter::emit_environment_get(chunks, current, line)
+        }
+        "dotnet.environment_set" => {
+            crate::emitter::core::environment_adapter::emit_environment_set(chunks, current, line)
+        }
+        "dotnet.environment_get_folder_path" => {
+            crate::emitter::core::environment_adapter::emit_environment_get_folder_path(
                 chunks, current, line,
             )
         }
-        "dotnet.environment_set" => {
-            crate::emitter::core::environment_adapter::emit_environment_set(
+        "dotnet.environment_get_command_line_args" => {
+            crate::emitter::core::environment_adapter::emit_environment_get_command_line_args(
                 chunks, current, line,
+            )
+        }
+        "dotnet.environment_special_folder_personal" => {
+            crate::emitter::core::environment_adapter::emit_environment_special_folder(
+                "Personal", chunks, current, line,
+            )
+        }
+        "dotnet.environment_special_folder_application_data" => {
+            crate::emitter::core::environment_adapter::emit_environment_special_folder(
+                "ApplicationData",
+                chunks,
+                current,
+                line,
+            )
+        }
+        "dotnet.environment_special_folder_local_application_data" => {
+            crate::emitter::core::environment_adapter::emit_environment_special_folder(
+                "LocalApplicationData",
+                chunks,
+                current,
+                line,
+            )
+        }
+        "dotnet.environment_special_folder_desktop" => {
+            crate::emitter::core::environment_adapter::emit_environment_special_folder(
+                "Desktop", chunks, current, line,
             )
         }
 
@@ -901,9 +1209,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.oledb_command_new" => {
-            crate::emitter::core::oledb_adapter::emit_oledb_command_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::oledb_adapter::emit_oledb_command_new(chunks, current, argc, line)
         }
 
         // ── ADODB adapter — ADODB.Connection / Command / Recordset ──────────────
@@ -933,9 +1239,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.adodb_command_new" => {
-            crate::emitter::core::adodb_adapter::emit_adodb_command_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::adodb_adapter::emit_adodb_command_new(chunks, current, argc, line)
         }
         "dotnet.adodb_command_execute" => {
             crate::emitter::core::adodb_adapter::emit_adodb_command_execute(
@@ -968,14 +1272,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.adodb_recordset_fields" => {
-            crate::emitter::core::adodb_adapter::emit_adodb_recordset_fields(
-                chunks, current, line,
-            )
+            crate::emitter::core::adodb_adapter::emit_adodb_recordset_fields(chunks, current, line)
         }
         "dotnet.adodb_recordset_close" => {
-            crate::emitter::core::adodb_adapter::emit_adodb_recordset_close(
-                chunks, current, line,
-            )
+            crate::emitter::core::adodb_adapter::emit_adodb_recordset_close(chunks, current, line)
         }
 
         // ── LINQ surface — composed bytecode shared by every .NET-shape language ──
@@ -1001,9 +1301,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_average(chunks, current, line)
         }
         "dotnet.linq_first_or_default" => {
-            crate::emitter::core::linq_adapter::emit_linq_first_or_default(
-                chunks, current, line,
-            )
+            crate::emitter::core::linq_adapter::emit_linq_first_or_default(chunks, current, line)
         }
         "dotnet.linq_distinct" => {
             crate::emitter::core::linq_adapter::emit_linq_distinct(chunks, current, line)
@@ -1018,9 +1316,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_order_by(chunks, current, line)
         }
         "dotnet.linq_sequence_equal" => {
-            crate::emitter::core::linq_adapter::emit_linq_sequence_equal(
-                chunks, current, line,
-            )
+            crate::emitter::core::linq_adapter::emit_linq_sequence_equal(chunks, current, line)
         }
         "dotnet.linq_all" => {
             crate::emitter::core::linq_adapter::emit_linq_all(chunks, current, line)
@@ -1032,9 +1328,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_aggregate(chunks, current, line)
         }
         "dotnet.linq_order_by_descending" => {
-            crate::emitter::core::linq_adapter::emit_linq_order_by_descending(
-                chunks, current, line,
-            )
+            crate::emitter::core::linq_adapter::emit_linq_order_by_descending(chunks, current, line)
         }
         "dotnet.linq_select" => {
             crate::emitter::core::linq_adapter::emit_linq_select(chunks, current, line)
@@ -1046,14 +1340,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::linq_adapter::emit_linq_group_by(chunks, current, line)
         }
         "dotnet.linq_to_dictionary" => {
-            crate::emitter::core::linq_adapter::emit_linq_to_dictionary(
-                chunks, current, line,
-            )
+            crate::emitter::core::linq_adapter::emit_linq_to_dictionary(chunks, current, line)
         }
         "dotnet.linq_to_dictionary_key" => {
-            crate::emitter::core::linq_adapter::emit_linq_to_dictionary_key(
-                chunks, current, line,
-            )
+            crate::emitter::core::linq_adapter::emit_linq_to_dictionary_key(chunks, current, line)
         }
         "dotnet.linq_to_lookup" => {
             crate::emitter::core::linq_adapter::emit_linq_to_lookup(chunks, current, line)
@@ -1164,9 +1454,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::array_adapter::emit_array_exists(chunks, current, line)
         }
         "dotnet.array_true_for_all" => {
-            crate::emitter::core::array_adapter::emit_array_true_for_all(
-                chunks, current, line,
-            )
+            crate::emitter::core::array_adapter::emit_array_true_for_all(chunks, current, line)
         }
         "dotnet.array_find" => {
             crate::emitter::core::array_adapter::emit_array_find(chunks, current, line)
@@ -1178,9 +1466,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::array_adapter::emit_array_binary_search(chunks, current, line)
         }
         "dotnet.array_convert_all" => {
-            crate::emitter::core::array_adapter::emit_array_convert_all(
-                chunks, current, line,
-            )
+            crate::emitter::core::array_adapter::emit_array_convert_all(chunks, current, line)
         }
         "dotnet.array_for_each" => {
             crate::emitter::core::array_adapter::emit_array_for_each(chunks, current, line)
@@ -1250,46 +1536,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── .NET System.Data adapter ────────────────────────────────
         "dotnet.datatable_new" => {
-            crate::emitter::core::datatable_adapter::emit_datatable_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datatable_new(chunks, current, argc, line)
         }
-        "dotnet.dataset_new" => crate::emitter::core::datatable_adapter::emit_dataset_new(
-            chunks, current, argc, line,
-        ),
-        "dotnet.datarow_new" => crate::emitter::core::datatable_adapter::emit_datarow_new(
-            &mut chunks[current],
-            line,
-        ),
+        "dotnet.dataset_new" => {
+            crate::emitter::core::datatable_adapter::emit_dataset_new(chunks, current, argc, line)
+        }
+        "dotnet.datarow_new" => {
+            crate::emitter::core::datatable_adapter::emit_datarow_new(&mut chunks[current], line)
+        }
         "dotnet.datatable_new_row" => {
-            crate::emitter::core::datatable_adapter::emit_datatable_new_row(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datatable_new_row(chunks, current, line)
         }
         "dotnet.datatable_add_row" => {
-            crate::emitter::core::datatable_adapter::emit_datatable_add_row(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datatable_add_row(chunks, current, line)
         }
         "dotnet.datatable_select" => {
-            crate::emitter::core::datatable_adapter::emit_datatable_select(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datatable_select(chunks, current, line)
         }
         "dotnet.dataset_tables" => {
-            crate::emitter::core::datatable_adapter::emit_dataset_tables(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_dataset_tables(chunks, current, line)
         }
         "dotnet.datarow_item" => {
-            crate::emitter::core::datatable_adapter::emit_datarow_item(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datarow_item(chunks, current, line)
         }
         "dotnet.datarow_is_null" => {
-            crate::emitter::core::datatable_adapter::emit_datarow_is_null(
-                chunks, current, line,
-            )
+            crate::emitter::core::datatable_adapter::emit_datarow_is_null(chunks, current, line)
         }
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
@@ -1312,11 +1583,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_call(get, 2, line);
             chunk.emit_else(line);
             chunk.emit_string_const("The given key was not present in the dictionary.", line);
-            vybe_emitter::errors::emit_exception_new_finalize(
-                chunk,
-                "KeyNotFoundException",
-                line,
-            );
+            vybe_emitter::errors::emit_exception_new_finalize(chunk, "KeyNotFoundException", line);
             vybe_emitter::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
         }
@@ -1393,9 +1660,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op(Op::DROP, line);
             vybe_emitter::collections::emit_pop(chunks, current, line);
         }
-        "dotnet.concurrent_queue_try_peek" | "dotnet.concurrent_stack_try_peek" => {
+        "dotnet.concurrent_queue_try_peek" => {
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_i32_const(0, line);
+            vybe_emitter::collections::emit_get(chunks, current, line);
+        }
+        "dotnet.concurrent_stack_try_peek" => {
+            chunks[current].emit_op(Op::DROP, line);
+            let recv = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+            vybe_emitter::collections::emit_len(chunks, current, line);
+            chunks[current].emit_i32_const(1, line);
+            chunks[current].emit_op(Op::I32_SUB, line);
             vybe_emitter::collections::emit_get(chunks, current, line);
         }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),

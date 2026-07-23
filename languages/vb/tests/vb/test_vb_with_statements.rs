@@ -1,31 +1,231 @@
 use super::helpers::run_vb;
 
-#[test] fn with_basic_property_assignment() { assert_eq!(run_vb("Class C\nPublic Property V1 As Integer\nPublic Property V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.V1 = 1\n.V2 = 2\nEnd With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"), vec!["3"]); }
-#[test] fn with_basic_method_call() { assert_eq!(run_vb("Class C\nPublic Sub Print()\nConsole.WriteLine(\"C\")\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.Print()\nEnd With\nEnd Sub\nEnd Module"), vec!["C"]); }
-#[test] fn with_nested_with_blocks() { assert_eq!(run_vb("Class Inner\nPublic V As Integer = 5\nEnd Class\nClass Outer\nPublic Prop As New Inner()\nEnd Class\nModule M\nSub Main()\nDim o As New Outer()\nWith o\nWith .Prop\nConsole.WriteLine(.V)\nEnd With\nEnd With\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn with_shadowing_outer_with() { assert_eq!(run_vb("Class C1\nPublic V As Integer = 1\nEnd Class\nClass C2\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim c1 As New C1(), c2 As New C2()\nWith c1\nWith c2\nConsole.WriteLine(.V)\nEnd With\nEnd With\nEnd Sub\nEnd Module"), vec!["2"]); } // .V binds to inner With (c2)
-#[test] fn with_expression_evaluation_once() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nDim calls = 0\nFunction GetC() As C\ncalls += 1\nReturn New C()\nEnd Function\nSub Main()\nWith GetC()\n.V = 1\n.V = 2\nEnd With\nConsole.WriteLine(calls)\nEnd Sub\nEnd Module"), vec!["1"]); } // Evaluated exactly once
+#[test]
+fn with_basic_property_assignment() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic Property V1 As Integer\nPublic Property V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.V1 = 1\n.V2 = 2\nEnd With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+}
+#[test]
+fn with_basic_method_call() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic Sub Print()\nConsole.WriteLine(\"C\")\nEnd Sub\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.Print()\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["C"]
+    );
+}
+#[test]
+fn with_nested_with_blocks() {
+    assert_eq!(
+        run_vb(
+            "Class Inner\nPublic V As Integer = 5\nEnd Class\nClass Outer\nPublic Prop As New Inner()\nEnd Class\nModule M\nSub Main()\nDim o As New Outer()\nWith o\nWith .Prop\nConsole.WriteLine(.V)\nEnd With\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn with_shadowing_outer_with() {
+    assert_eq!(
+        run_vb(
+            "Class C1\nPublic V As Integer = 1\nEnd Class\nClass C2\nPublic V As Integer = 2\nEnd Class\nModule M\nSub Main()\nDim c1 As New C1(), c2 As New C2()\nWith c1\nWith c2\nConsole.WriteLine(.V)\nEnd With\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // .V binds to inner With (c2)
+#[test]
+fn with_expression_evaluation_once() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nDim calls = 0\nFunction GetC() As C\ncalls += 1\nReturn New C()\nEnd Function\nSub Main()\nWith GetC()\n.V = 1\n.V = 2\nEnd With\nConsole.WriteLine(calls)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+} // Evaluated exactly once
 
-#[test] fn with_field_assignment() { assert_eq!(run_vb("Class C\nPublic V1 As Integer\nPublic V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.V1 = 1\n.V2 = 2\nEnd With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"), vec!["3"]); }
-#[test] fn with_value_type_mutation_fails() { assert_eq!(run_vb("Structure S\nPublic V As Integer\nEnd Structure\nModule M\nFunction GetS() As S\nReturn New S()\nEnd Function\nSub Main()\n' With GetS() ' Fails to mutate if returned by value (often a compiler error or just mutates temp copy)\n' .V = 1\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn with_value_type_variable_mutation() { assert_eq!(run_vb("Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Main()\nDim s1 As S\nWith s1\n.V = 10\nEnd With\nConsole.WriteLine(s1.V)\nEnd Sub\nEnd Module"), vec!["10"]); } // Mutates the actual variable
-#[test] fn with_new_instantiation() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nWith New C()\n.V = 5\nConsole.WriteLine(.V)\nEnd With\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn with_object_initializer_equiv() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C() With {.V = 5}\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["5"]); }
+#[test]
+fn with_field_assignment() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V1 As Integer\nPublic V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\n.V1 = 1\n.V2 = 2\nEnd With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+}
+#[test]
+fn with_value_type_mutation_fails() {
+    assert_eq!(
+        run_vb(
+            "Structure S\nPublic V As Integer\nEnd Structure\nModule M\nFunction GetS() As S\nReturn New S()\nEnd Function\nSub Main()\n' With GetS() ' Fails to mutate if returned by value (often a compiler error or just mutates temp copy)\n' .V = 1\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn with_value_type_variable_mutation() {
+    assert_eq!(
+        run_vb(
+            "Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Main()\nDim s1 As S\nWith s1\n.V = 10\nEnd With\nConsole.WriteLine(s1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["10"]
+    );
+} // Mutates the actual variable
+#[test]
+fn with_new_instantiation() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nWith New C()\n.V = 5\nConsole.WriteLine(.V)\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn with_object_initializer_equiv() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C() With {.V = 5}\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
 
-#[test] fn with_late_bound() { assert_eq!(run_vb("Option Strict Off\nClass C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim obj As Object = New C()\nWith obj\n.V = 42\nConsole.WriteLine(.V)\nEnd With\nEnd Sub\nEnd Module"), vec!["42"]); }
-#[test] fn with_array_element() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim arr() As C = {New C()}\nWith arr(0)\n.V = 7\nEnd With\nConsole.WriteLine(arr(0).V)\nEnd Sub\nEnd Module"), vec!["7"]); }
-#[test] fn with_exit_with_fails() { assert_eq!(run_vb("Class C\nEnd Class\nModule M\nSub Main()\nWith New C()\n' Exit With ' Exit With does not exist in VB.NET\nEnd With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn with_null_reference_throws() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As C = Nothing\nTry\nWith c1\n.V = 1\nEnd With\nCatch\nConsole.WriteLine(\"Caught\")\nEnd Try\nEnd Sub\nEnd Module"), vec!["Caught"]); }
-#[test] fn with_mixed_access() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nDim x = 1\nWith c1\n.V = x + 1\nEnd With\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["2"]); }
+#[test]
+fn with_late_bound() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nClass C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim obj As Object = New C()\nWith obj\n.V = 42\nConsole.WriteLine(.V)\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["42"]
+    );
+}
+#[test]
+fn with_array_element() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim arr() As C = {New C()}\nWith arr(0)\n.V = 7\nEnd With\nConsole.WriteLine(arr(0).V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["7"]
+    );
+}
+#[test]
+fn with_exit_with_fails() {
+    assert_eq!(
+        run_vb(
+            "Class C\nEnd Class\nModule M\nSub Main()\nWith New C()\n' Exit With ' Exit With does not exist in VB.NET\nEnd With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn with_null_reference_throws() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As C = Nothing\nTry\nWith c1\n.V = 1\nEnd With\nCatch\nConsole.WriteLine(\"Caught\")\nEnd Try\nEnd Sub\nEnd Module"
+        ),
+        vec!["Caught"]
+    );
+}
+#[test]
+fn with_mixed_access() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nDim x = 1\nWith c1\n.V = x + 1\nEnd With\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
 
-#[test] fn with_function_call_in_with() { assert_eq!(run_vb("Class C\nPublic Function GetV() As Integer\nReturn 10\nEnd Function\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nConsole.WriteLine(.GetV())\nEnd With\nEnd Sub\nEnd Module"), vec!["10"]); }
-#[test] fn with_byref_parameter() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Mutate(ByRef c1 As C)\nWith c1\n.V = 10\nEnd With\nEnd Sub\nSub Main()\nDim c1 As New C()\nMutate(c1)\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["10"]); }
-#[test] fn with_collection_initializer() { assert_eq!(run_vb("Module M\nSub Main()\nDim lst As New System.Collections.Generic.List(Of Integer) From {1, 2, 3}\nConsole.WriteLine(lst.Count)\nEnd Sub\nEnd Module"), vec!["3"]); } // Related feature to object initializers
-#[test] fn with_anonymous_type() { assert_eq!(run_vb("Module M\nSub Main()\nDim obj = New With { .A = 1, .B = 2 }\nConsole.WriteLine(obj.A + obj.B)\nEnd Sub\nEnd Module"), vec!["3"]); } // Related feature
-#[test] fn with_anonymous_type_key() { assert_eq!(run_vb("Module M\nSub Main()\nDim obj = New With { Key .A = 1, .B = 2 }\nConsole.WriteLine(obj.A)\nEnd Sub\nEnd Module"), vec!["1"]); }
+#[test]
+fn with_function_call_in_with() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic Function GetV() As Integer\nReturn 10\nEnd Function\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nConsole.WriteLine(.GetV())\nEnd With\nEnd Sub\nEnd Module"
+        ),
+        vec!["10"]
+    );
+}
+#[test]
+fn with_byref_parameter() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Mutate(ByRef c1 As C)\nWith c1\n.V = 10\nEnd With\nEnd Sub\nSub Main()\nDim c1 As New C()\nMutate(c1)\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["10"]
+    );
+}
+#[test]
+fn with_collection_initializer() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Main()\nDim lst As New System.Collections.Generic.List(Of Integer) From {1, 2, 3}\nConsole.WriteLine(lst.Count)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+} // Related feature to object initializers
+#[test]
+fn with_anonymous_type() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Main()\nDim obj = New With { .A = 1, .B = 2 }\nConsole.WriteLine(obj.A + obj.B)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+} // Related feature
+#[test]
+fn with_anonymous_type_key() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Main()\nDim obj = New With { Key .A = 1, .B = 2 }\nConsole.WriteLine(obj.A)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
 
-#[test] fn with_multiple_statements_same_line() { assert_eq!(run_vb("Class C\nPublic V1 As Integer\nPublic V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1: .V1 = 1: .V2 = 2: End With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"), vec!["3"]); }
-#[test] fn with_reference_preservation() { assert_eq!(run_vb("Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nc1 = New C() ' Reassigning original var doesn't affect With reference\n.V = 5\nEnd With\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"), vec!["0"]); } // c1 points to new object, but With block uses old reference
-#[test] fn with_type_inference_fails() { assert_eq!(run_vb("Option Infer On\nModule M\nSub Main()\n' With obj = New Object() ' With cannot declare variables\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn with_property_getter_returns_value_type() { assert_eq!(run_vb("Structure S\nPublic V As Integer\nEnd Structure\nClass C\nPublic Property Prop As New S()\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\n' With c1.Prop ' Fails to mutate original if struct returned by value property\n' .V = 10\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn with_empty_block() { assert_eq!(run_vb("Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nEnd With\nConsole.WriteLine(\"OK\")\nEnd Sub\nEnd Module"), vec!["OK"]); }
+#[test]
+fn with_multiple_statements_same_line() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V1 As Integer\nPublic V2 As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1: .V1 = 1: .V2 = 2: End With\nConsole.WriteLine(c1.V1 + c1.V2)\nEnd Sub\nEnd Module"
+        ),
+        vec!["3"]
+    );
+}
+#[test]
+fn with_reference_preservation() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nc1 = New C() ' Reassigning original var doesn't affect With reference\n.V = 5\nEnd With\nConsole.WriteLine(c1.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["0"]
+    );
+} // c1 points to new object, but With block uses old reference
+#[test]
+fn with_type_inference_fails() {
+    assert_eq!(
+        run_vb(
+            "Option Infer On\nModule M\nSub Main()\n' With obj = New Object() ' With cannot declare variables\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn with_property_getter_returns_value_type() {
+    assert_eq!(
+        run_vb(
+            "Structure S\nPublic V As Integer\nEnd Structure\nClass C\nPublic Property Prop As New S()\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\n' With c1.Prop ' Fails to mutate original if struct returned by value property\n' .V = 10\n' End With\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn with_empty_block() {
+    assert_eq!(
+        run_vb(
+            "Class C\nEnd Class\nModule M\nSub Main()\nDim c1 As New C()\nWith c1\nEnd With\nConsole.WriteLine(\"OK\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["OK"]
+    );
+}

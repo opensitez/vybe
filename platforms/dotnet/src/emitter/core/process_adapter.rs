@@ -7,12 +7,12 @@
 //! No `vybe:types` involvement — pure compile-time adapter, runtime
 //! work happens in `node:child_process.spawnSync` etc.
 
-use vybe_emitter::classes::emit_bind_method;
-use vybe_emitter::functions::create_function_chunk;
-use vybe_emitter::instructions::{core_wasm, host};
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::classes::emit_bind_method;
+use vybe_emitter::functions::create_function_chunk;
+use vybe_emitter::instructions::{core_wasm, host};
 
 const FILENAME_KEY: &str = "filename";
 const ARGUMENTS_KEY: &str = "arguments";

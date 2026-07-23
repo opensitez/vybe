@@ -54,72 +54,16 @@ tuple_literals_tagged = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"Console.WriteLine"       = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 1 }
-"Console.Write"           = { emit = "common:dotnet.console_write",      min_args = 1, max_args = 1 }
-"Console.ReadLine"        = { emit = "host:wasi:cli:readLine",    min_args = 0, max_args = 0 }
 "Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
 "__csharp_object_get"     = { emit = "host:ecma:object:get",      min_args = 2, max_args = 2 }
 
-# ── Math — shorthand (C# `using System;` makes Math available) ──────────────
-"Math.Abs"          = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
-"Math.Floor"        = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
-"Math.Ceiling"      = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
-"Math.Ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
-"Math.Sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
-"Math.Truncate"     = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
-"Math.Trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
-"Math.Round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
-"Math.Min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
-"Math.Max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
-"Math.Pow"          = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
-"Math.Sin"          = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
-"Math.Cos"          = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
-"Math.Tan"          = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
-"Math.Asin"         = { emit = "host:ecma:math:asin",     min_args = 1, max_args = 1 }
-"Math.Acos"         = { emit = "host:ecma:math:acos",     min_args = 1, max_args = 1 }
-"Math.Atan"         = { emit = "host:ecma:math:atan",     min_args = 1, max_args = 1 }
-"Math.Atan2"        = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
-"Math.Log"          = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
-"Math.Log10"        = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
-"Math.Log2"         = { emit = "host:ecma:math:log2",     min_args = 1, max_args = 1 }
-"Math.Exp"          = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
-"Math.Sinh"         = { emit = "host:ecma:math:sinh",     min_args = 1, max_args = 1 }
-"Math.Cosh"         = { emit = "host:ecma:math:cosh",     min_args = 1, max_args = 1 }
-"Math.Tanh"         = { emit = "host:ecma:math:tanh",     min_args = 1, max_args = 1 }
-"Math.Sign"         = { emit = "host:ecma:math:sign",     min_args = 1, max_args = 1 }
-"Math.Clamp"        = { emit = "common:math.clamp",       min_args = 3, max_args = 3 }
+# ── Math — shorthand resolves through the shared `System.Math` Dotnet tree ──
 
 # ── Type conversion ──────────────────────────────────────────────────────────
-
-"Convert.ToInt32"    = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-"Convert.ToDouble"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-"Convert.ToString"   = { emit = "common:dotnet.tostring",        min_args = 1, max_args = 1 }
-"Convert.ToBoolean"  = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
-"Convert.ToChar"     = { emit = "common:dotnet.cchar",            min_args = 1, max_args = 1 }
-"Convert.ToByte"     = { emit = "intrinsic:cbyte",                min_args = 1, max_args = 1 }
-"Convert.ToInt64"    = { emit = "intrinsic:clng",         min_args = 1, max_args = 1 }
-"Convert.ToSingle"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-"Convert.ToDecimal"  = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-# `<T>.Parse(s)` — throw FormatException on invalid input per
-# ECMA-335. Adapters live in `emitter/dotnet/core/parse_adapter.rs`
-# so VB picks them up by listing the same `common:dotnet.parse_*`
-# emit targets (lower-cased keys for case-insensitive dispatch).
-"int.Parse"          = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
-"byte.Parse"         = { emit = "common:dotnet.parse_byte",     min_args = 1, max_args = 1 }
-"long.Parse"         = { emit = "common:dotnet.parse_long",     min_args = 1, max_args = 1 }
-"float.Parse"        = { emit = "common:dotnet.parse_float",    min_args = 1, max_args = 1 }
-"decimal.Parse"      = { emit = "common:dotnet.parse_decimal",  min_args = 1, max_args = 1 }
-"char.Parse"         = { emit = "common:dotnet.parse_char",     min_args = 1, max_args = 1 }
-"double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
-"bool.Parse"         = { emit = "common:dotnet.parse_bool",     min_args = 1, max_args = 1 }
-"Byte.Parse"         = { emit = "common:dotnet.parse_byte",     min_args = 1, max_args = 1 }
-"Int64.Parse"        = { emit = "common:dotnet.parse_long",     min_args = 1, max_args = 1 }
-"Single.Parse"       = { emit = "common:dotnet.parse_float",    min_args = 1, max_args = 1 }
-"Decimal.Parse"      = { emit = "common:dotnet.parse_decimal",  min_args = 1, max_args = 1 }
-"Char.Parse"         = { emit = "common:dotnet.parse_char",     min_args = 1, max_args = 1 }
-"Int32.Parse"        = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
-"Double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
+#
+# `Convert.*`, primitive `<T>.Parse`, and `Int32.TryParse` resolve through the
+# shared .NET namespace tree registered by `platforms/dotnet`.
 "decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
 "Decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
 "decimal.Truncate"   = { emit = "common:dotnet.system.math.truncate", min_args = 1, max_args = 1 }
@@ -127,23 +71,10 @@ tuple_literals_tagged = true
 "decimal.Floor"      = { emit = "common:dotnet.system.math.floor", min_args = 1, max_args = 1 }
 "decimal.Ceiling"    = { emit = "common:dotnet.system.math.ceiling", min_args = 1, max_args = 1 }
 "decimal.Abs"        = { emit = "common:dotnet.system.math.abs", min_args = 1, max_args = 1 }
-# TryParse: `int.TryParse(s, out r)` is normalized in the walker to the
-# out-param desugar `((r = int.TryParse(s)) != null) || ((r = 0) == null)`,
-# so the compiler only ever sees the 1-arg core, which parses to int-or-null.
-"Int32.TryParse"     = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
-"int.TryParse"       = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
-"String.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
-"String.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
-"String.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
-"String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
-"String.Concat"       = { emit = "common:str_concat",             min_args = 2, max_args = 255 }
 "str_repeat"          = { emit = "common:str_repeat",             min_args = 2, max_args = 2 }
-"string.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
-"string.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
-"string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
 
 # C# walker-private string lowering helpers. These avoid generic member-call
 # fallback for C# string methods that overlap with .NET collection methods.
@@ -170,19 +101,6 @@ tuple_literals_tagged = true
 # All shared with VB via `common:dotnet.array_*` adapters in
 # `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`.
 
-"Array.Sort"          = { emit = "common:dotnet.array_sort",          min_args = 1, max_args = 1 }
-"Array.Reverse"       = { emit = "common:dotnet.array_reverse",       min_args = 1, max_args = 1 }
-"Array.IndexOf"       = { emit = "common:dotnet.array_index_of",      min_args = 2, max_args = 2 }
-"Array.Copy"          = { emit = "common:dotnet.array_copy",          min_args = 3, max_args = 3 }
-"Array.Clear"         = { emit = "common:dotnet.array_clear",         min_args = 3, max_args = 3 }
-"Array.Resize"        = { emit = "common:dotnet.array_resize",        min_args = 2, max_args = 2 }
-"Array.Exists"        = { emit = "common:dotnet.array_exists",        min_args = 2, max_args = 2 }
-"Array.Find"          = { emit = "common:dotnet.array_find",          min_args = 2, max_args = 2 }
-"Array.FindAll"       = { emit = "common:dotnet.array_find_all",      min_args = 2, max_args = 2 }
-"Array.TrueForAll"    = { emit = "common:dotnet.array_true_for_all",  min_args = 2, max_args = 2 }
-"Array.ConvertAll"    = { emit = "common:dotnet.array_convert_all",   min_args = 2, max_args = 2 }
-"Array.ForEach"       = { emit = "common:dotnet.array_for_each",      min_args = 2, max_args = 2 }
-
 # ── Object static methods ───────────────────────────────────────────────────
 
 "Object.assign"      = { emit = "host:ecma:object:assign",       min_args = 2, max_args = 255 }
@@ -196,9 +114,6 @@ tuple_literals_tagged = true
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
-"Environment.NewLine"          = { emit = "common:dotnet.newline",      min_args = 0, max_args = 0 }
-"Environment.GetEnvironmentVariable" = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
-
 # ── Threading ────────────────────────────────────────────────────────────────
 # Routes through compiler_common::threading which uses real WASM threading
 # opcodes (thread_spawn, thread_join, atomic_*) — NOT Vybe-specific host calls.
@@ -211,8 +126,6 @@ tuple_literals_tagged = true
 "Application.Exit"             = { emit = "host:vybe:gui:appExit",          min_args = 0, max_args = 0 }
 "Application.EnableVisualStyles" = { emit = "host:vybe:gui:noop",          min_args = 0, max_args = 0 }
 "Application.SetCompatibleTextRenderingDefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
-"System.Windows.Forms.Application.EnableVisualStyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
-"System.Windows.Forms.Application.SetCompatibleTextRenderingDefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
 "MessageBox.Show"              = { emit = "host:vybe:gui:msgBox",           min_args = 1, max_args = 3 }
 
 # ── Layout no-ops ────────────────────────────────────────────────────────────
@@ -306,36 +219,11 @@ kind = "tree-mount"
 prefix = "System"
 path = "dotnet.system"
 
-[[esm_default]]
-kind = "namespace"
-alias = "Console"
-module = "wasi:cli"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Math"
-module = "ecma:math"
-
 # `Convert` namespace alias retired — `Convert.To*` methods lower at
 # compile time through the dotnet wrapper Component Model dispatch.
 # The namespace object itself is still registered in
 # `vybe_host::namespaces::convert` (binding `ToInt32` → `ecma:number.parseInt`
 # etc.) for any dynamic identifier-resolution path.
-
-[[esm_default]]
-kind = "namespace"
-alias = "Environment"
-module = "wasi:cli"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Array"
-module = "ecma:array"
-
-[[esm_default]]
-kind = "namespace"
-alias = "String"
-module = "ecma:string"
 
 [[esm_default]]
 kind = "namespace"
@@ -357,21 +245,6 @@ kind = "namespace"
 alias = "MessageBox"
 module = "vybe:gui"
 
-[[esm_default]]
-kind = "namespace"
-alias = "File"
-module = "wasi:filesystem"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Directory"
-module = "wasi:filesystem"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Path"
-module = "wasi:filesystem"
-
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor mappings for new TypeName()
 # ────────────────────────────────────────────────────────────────────────────
@@ -384,9 +257,6 @@ module = "wasi:filesystem"
 # Retired entries:
 #   Exception family, StringBuilder, Timer — all routed through dotnet
 #   wrapper Common emit (no `vybe:types/{exception,sb,timer}New` host fns).
-"Regex"           = ["ecma:regexp", "new"]
-"Random"          = ["wasi:random/insecure", "get-insecure-random-u64"]
-"Stopwatch"       = ["common", "dotnet.stopwatch_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — property access, NOT function call
@@ -410,26 +280,8 @@ TrueForAll = "__array_every"
 ConvertAll = "__array_map"
 
 [namespace_constants]
-"Math.PI"               = 3.141592653589793
-"Math.E"                = 2.718281828459045
-"Math.Tau"              = 6.283185307179586
-"int.MaxValue"          = 2147483647
-"int.MinValue"          = -2147483648
-"double.MaxValue"       = 1.7976931348623157e308
-"double.MinValue"       = -1.7976931348623157e308
-"double.NaN"            = "NaN"
-"double.PositiveInfinity" = "Infinity"
-"double.NegativeInfinity" = "-Infinity"
-"float.MaxValue"        = 3.4028235e38
-"float.MinValue"        = -3.4028235e38
-"char.MaxValue"         = 65535
-"char.MinValue"         = 0
 "bool.TrueString"       = "True"
 "bool.FalseString"      = "False"
-"CommandType.Text"      = 1.0
-"CommandType.StoredProcedure" = 4.0
-"ConnectionState.Closed" = 0.0
-"ConnectionState.Open"   = 1.0
 
 [namespaces]
 # Use the .NET BCL namespace resolution from the shared dotnet module.
@@ -449,6 +301,78 @@ use_dotnet_resolver = true
 # qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
 # search under these tree paths in order.
 
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.windows.forms"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.text"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.io"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.diagnostics"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.threading"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.generic"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.concurrent"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.http"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.sockets"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.sqlclient"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.oledb"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.drawing"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml.linq"
+
 
 
 
@@ -461,12 +385,3 @@ use_dotnet_resolver = true
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
-
-
-
-
-
-
-
-
-

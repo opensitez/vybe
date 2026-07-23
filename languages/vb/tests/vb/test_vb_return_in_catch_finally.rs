@@ -42,11 +42,6 @@ End Module
     );
     assert_eq!(
         out,
-        vec![
-            "Finally executed",
-            "1",
-            "Finally executed 2",
-            "2"
-        ]
+        vec!["Finally executed", "1", "Finally executed 2", "2"]
     );
 }

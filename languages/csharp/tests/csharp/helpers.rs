@@ -15,12 +15,14 @@ macro_rules! csharp_cases {
 
 /// Run C# source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_csharp(src: &str) -> Vec<String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_csharp::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_csharp::register);
+    }
     let module = vybe_language_csharp::parse(src).expect("C# parse failed");
 
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
-            .expect("Failed to parse C# profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
+        .expect("Failed to parse C# profile");
 
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
@@ -107,9 +109,8 @@ pub fn assert_csharp(src: &str, expected: &[&str]) {
 
 pub fn compile_csharp_to_wasm(src: &str) -> Vec<u8> {
     let module = vybe_language_csharp::parse(src).expect("C# parse failed");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
-            .expect("Failed to parse C# profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
+        .expect("Failed to parse C# profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");

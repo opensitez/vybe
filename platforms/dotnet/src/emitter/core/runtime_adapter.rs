@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use vybe_emitter::collections;
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Op;
 use vybe_bytecode::Value;
+use vybe_emitter::collections;
+use vybe_emitter::instructions::host;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {

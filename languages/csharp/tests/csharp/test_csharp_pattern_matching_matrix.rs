@@ -92,7 +92,11 @@ fn property_like_deconstruction_pattern_matrix() {
     ];
 
     for (left, right, _expected) in cases {
-        let expected_bool = if (left % 2) == (right % 2) { "same-parity" } else { "mixed-parity" };
+        let expected_bool = if (left % 2) == (right % 2) {
+            "same-parity"
+        } else {
+            "mixed-parity"
+        };
         let src = format!(
             r#"
 (int Left, int Right) pair = ({left}, {right});

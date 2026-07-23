@@ -32,7 +32,7 @@ Module M
 End Module
 "#,
     );
-    // Note: The order of attributes returned by GetCustomAttributes is not guaranteed, 
+    // Note: The order of attributes returned by GetCustomAttributes is not guaranteed,
     // so we can't assert the exact order, but we can verify the count.
     assert_eq!(out.len(), 3);
     assert_eq!(out[0], "2");

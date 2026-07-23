@@ -1,5 +1,5 @@
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 use vybe_emitter::{collections, loops};
 
 const ATTR_KIND: &str = "XAttribute";
@@ -20,7 +20,14 @@ fn call_import(
     chunks[current].emit(argc, line);
 }
 
-fn set_field(chunks: &mut [Chunk], current: usize, obj_slot: u16, key: &str, value_slot: u16, line: u32) {
+fn set_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    key: &str,
+    value_slot: u16,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_string_const(key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -275,7 +282,14 @@ pub fn emit_xml_child_elements(chunks: &mut [Chunk], current: usize, line: u32) 
 }
 
 pub fn emit_xml_elements(chunks: &mut [Chunk], current: usize, line: u32) {
-    call_import(chunks, current, "web:dom-parser", "getElementsByTagName", 2, line);
+    call_import(
+        chunks,
+        current,
+        "web:dom-parser",
+        "getElementsByTagName",
+        2,
+        line,
+    );
 }
 
 pub fn emit_xml_attribute(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -12,91 +12,6 @@ fn control_field_name(control: &Control) -> String {
     }
 }
 
-/// Maps a ControlType to its fully-qualified VB.NET class name.
-pub fn control_type_to_vbnet(ct: &ControlType) -> &str {
-    match ct {
-        ControlType::Button => "System.Windows.Forms.Button",
-        ControlType::Label => "System.Windows.Forms.Label",
-        ControlType::TextBox => "System.Windows.Forms.TextBox",
-        ControlType::CheckBox => "System.Windows.Forms.CheckBox",
-        ControlType::RadioButton => "System.Windows.Forms.RadioButton",
-        ControlType::ComboBox => "System.Windows.Forms.ComboBox",
-        ControlType::ListBox => "System.Windows.Forms.ListBox",
-        ControlType::Frame => "System.Windows.Forms.GroupBox",
-        ControlType::PictureBox => "System.Windows.Forms.PictureBox",
-        ControlType::RichTextBox => "System.Windows.Forms.RichTextBox",
-        ControlType::WebBrowser => "System.Windows.Forms.WebBrowser",
-        ControlType::TreeView => "System.Windows.Forms.TreeView",
-        ControlType::DataGridView => "System.Windows.Forms.DataGridView",
-        ControlType::Panel => "System.Windows.Forms.Panel",
-        ControlType::ListView => "System.Windows.Forms.ListView",
-        ControlType::BindingNavigator => "System.Windows.Forms.BindingNavigator",
-        ControlType::TabControl => "System.Windows.Forms.TabControl",
-        ControlType::TabPage => "System.Windows.Forms.TabPage",
-        ControlType::ProgressBar => "System.Windows.Forms.ProgressBar",
-        ControlType::NumericUpDown => "System.Windows.Forms.NumericUpDown",
-        ControlType::MenuStrip => "System.Windows.Forms.MenuStrip",
-        ControlType::ToolStripMenuItem => "System.Windows.Forms.ToolStripMenuItem",
-        ControlType::ContextMenuStrip => "System.Windows.Forms.ContextMenuStrip",
-        ControlType::StatusStrip => "System.Windows.Forms.StatusStrip",
-        ControlType::ToolStripStatusLabel => "System.Windows.Forms.ToolStripStatusLabel",
-        ControlType::DateTimePicker => "System.Windows.Forms.DateTimePicker",
-        ControlType::LinkLabel => "System.Windows.Forms.LinkLabel",
-        ControlType::ToolStrip => "System.Windows.Forms.ToolStrip",
-        ControlType::TrackBar => "System.Windows.Forms.TrackBar",
-        ControlType::MaskedTextBox => "System.Windows.Forms.MaskedTextBox",
-        ControlType::SplitContainer => "System.Windows.Forms.SplitContainer",
-        ControlType::FlowLayoutPanel => "System.Windows.Forms.FlowLayoutPanel",
-        ControlType::TableLayoutPanel => "System.Windows.Forms.TableLayoutPanel",
-        ControlType::MonthCalendar => "System.Windows.Forms.MonthCalendar",
-        ControlType::HScrollBar => "System.Windows.Forms.HScrollBar",
-        ControlType::VScrollBar => "System.Windows.Forms.VScrollBar",
-        ControlType::ToolTip => "System.Windows.Forms.ToolTip",
-        ControlType::BindingSourceComponent => "System.Windows.Forms.BindingSource",
-        ControlType::DataSetComponent => "System.Data.DataSet",
-        ControlType::DataTableComponent => "System.Data.DataTable",
-        ControlType::DataAdapterComponent => "System.Data.SqlClient.SqlDataAdapter",
-        ControlType::Timer => "System.Windows.Forms.Timer",
-        ControlType::ImageList => "System.Windows.Forms.ImageList",
-        ControlType::ErrorProvider => "System.Windows.Forms.ErrorProvider",
-        ControlType::OpenFileDialog => "System.Windows.Forms.OpenFileDialog",
-        ControlType::SaveFileDialog => "System.Windows.Forms.SaveFileDialog",
-        ControlType::FolderBrowserDialog => "System.Windows.Forms.FolderBrowserDialog",
-        ControlType::FontDialog => "System.Windows.Forms.FontDialog",
-        ControlType::ColorDialog => "System.Windows.Forms.ColorDialog",
-        ControlType::PrintDialog => "System.Windows.Forms.PrintDialog",
-        ControlType::PrintDocument => "System.Drawing.Printing.PrintDocument",
-        ControlType::NotifyIcon => "System.Windows.Forms.NotifyIcon",
-        // Additional visual controls
-        ControlType::CheckedListBox => "System.Windows.Forms.CheckedListBox",
-        ControlType::DomainUpDown => "System.Windows.Forms.DomainUpDown",
-        ControlType::PropertyGrid => "System.Windows.Forms.PropertyGrid",
-        ControlType::Splitter => "System.Windows.Forms.Splitter",
-        ControlType::DataGrid => "System.Windows.Forms.DataGrid",
-        ControlType::UserControl => "System.Windows.Forms.UserControl",
-        // ToolStrip sub-components
-        ControlType::ToolStripSeparator => "System.Windows.Forms.ToolStripSeparator",
-        ControlType::ToolStripButton => "System.Windows.Forms.ToolStripButton",
-        ControlType::ToolStripLabel => "System.Windows.Forms.ToolStripLabel",
-        ControlType::ToolStripComboBox => "System.Windows.Forms.ToolStripComboBox",
-        ControlType::ToolStripDropDownButton => "System.Windows.Forms.ToolStripDropDownButton",
-        ControlType::ToolStripSplitButton => "System.Windows.Forms.ToolStripSplitButton",
-        ControlType::ToolStripTextBox => "System.Windows.Forms.ToolStripTextBox",
-        ControlType::ToolStripProgressBar => "System.Windows.Forms.ToolStripProgressBar",
-        // Additional dialogs
-        ControlType::PrintPreviewDialog => "System.Windows.Forms.PrintPreviewDialog",
-        ControlType::PageSetupDialog => "System.Windows.Forms.PageSetupDialog",
-        ControlType::PrintPreviewControl => "System.Windows.Forms.PrintPreviewControl",
-        // Non-visual infrastructure
-        ControlType::HelpProvider => "System.Windows.Forms.HelpProvider",
-        ControlType::BackgroundWorker => "System.ComponentModel.BackgroundWorker",
-        ControlType::SqlConnection => "System.Data.SqlClient.SqlConnection",
-        ControlType::OleDbConnection => "System.Data.OleDb.OleDbConnection",
-        ControlType::DataView => "System.Data.DataView",
-        ControlType::Custom(s) => s.as_str(),
-    }
-}
-
 /// Format a PropertyValue as a VB.NET assignment RHS.
 /// Strings are quoted with `""` escaping; booleans use True/False;
 /// Expressions are emitted verbatim (raw VB.NET code).
@@ -149,7 +64,7 @@ pub fn generate_designer_code(form: &Form) -> String {
 
     // Field declarations with Friend WithEvents (standard VB.NET pattern)
     for control in &form.controls {
-        let vb_type = control_type_to_vbnet(&control.control_type);
+        let vb_type = control.control_type.dotnet_class_name();
         let field_name = control_field_name(control);
         code.push_str(&format!(
             "    Friend WithEvents {} As {}\n",
@@ -162,7 +77,7 @@ pub fn generate_designer_code(form: &Form) -> String {
 
     // ── 1. Instantiation ───────────────────────────────────────────────────
     for control in &form.controls {
-        let vb_type = control_type_to_vbnet(&control.control_type);
+        let vb_type = control.control_type.dotnet_class_name();
         let field_name = control_field_name(control);
         code.push_str(&format!("        Me.{} = New {}()\n", field_name, vb_type));
     }

@@ -1,32 +1,232 @@
 use super::helpers::run_vb;
 
-#[test] fn arg_byval_basic() { assert_eq!(run_vb("Module M\nSub Mutate(ByVal v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn arg_byval_implicit_default() { assert_eq!(run_vb("Module M\nSub Mutate(v As Integer) ' ByVal is default in VB.NET\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn arg_byval_object_reference() { assert_eq!(run_vb("Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByVal obj As C)\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"), vec!["2"]); } // Reference type contents are mutable
-#[test] fn arg_byval_object_reassignment() { assert_eq!(run_vb("Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByVal obj As C)\nobj = New C()\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"), vec!["1"]); } // Pointer to object not mutated
+#[test]
+fn arg_byval_basic() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByVal v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn arg_byval_implicit_default() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(v As Integer) ' ByVal is default in VB.NET\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn arg_byval_object_reference() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByVal obj As C)\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // Reference type contents are mutable
+#[test]
+fn arg_byval_object_reassignment() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByVal obj As C)\nobj = New C()\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+} // Pointer to object not mutated
 
-#[test] fn arg_byref_basic() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["2"]); }
-#[test] fn arg_byref_object_reassignment() { assert_eq!(run_vb("Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByRef obj As C)\nobj = New C()\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"), vec!["2"]); }
-#[test] fn arg_byref_property_copy_back() { assert_eq!(run_vb("Class C\nPublic Property V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o.V)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"), vec!["2"]); } // Property passed ByRef gets copied back after method ends
-#[test] fn arg_byref_array_element() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim arr() As Integer = {1}\nMutate(arr(0))\nConsole.WriteLine(arr(0))\nEnd Sub\nEnd Module"), vec!["2"]); }
+#[test]
+fn arg_byref_basic() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
+#[test]
+fn arg_byref_object_reassignment() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByRef obj As C)\nobj = New C()\nobj.V = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
+#[test]
+fn arg_byref_property_copy_back() {
+    assert_eq!(
+        run_vb(
+            "Class C\nPublic Property V As Integer = 1\nEnd Class\nModule M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim o As New C()\nMutate(o.V)\nConsole.WriteLine(o.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // Property passed ByRef gets copied back after method ends
+#[test]
+fn arg_byref_array_element() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim arr() As Integer = {1}\nMutate(arr(0))\nConsole.WriteLine(arr(0))\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
 
-#[test] fn arg_byref_type_coercion_copy_back() { assert_eq!(run_vb("Option Strict Off\nModule M\nSub Mutate(ByRef v As Double)\nv = 2.5\nEnd Sub\nSub Main()\nDim x As Integer = 1\nMutate(x) ' Passed as Double, copied back to Integer with conversion\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["2"]); } // Bankers rounding or implicit CInt back to 2
-#[test] fn arg_byref_literal_fails_to_mutate() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nMutate(1)\nConsole.WriteLine(\"OK\")\nEnd Sub\nEnd Module"), vec!["OK"]); } // Passing literal to ByRef creates temp var
-#[test] fn arg_byref_expression_fails_to_mutate() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x + 0)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["1"]); } // Temp var evaluated
-#[test] fn arg_byref_late_bound_mutation() { assert_eq!(run_vb("Option Strict Off\nModule M\nSub Mutate(ByRef v As Object)\nv = 2\nEnd Sub\nSub Main()\nDim x As Object = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["2"]); }
+#[test]
+fn arg_byref_type_coercion_copy_back() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nModule M\nSub Mutate(ByRef v As Double)\nv = 2.5\nEnd Sub\nSub Main()\nDim x As Integer = 1\nMutate(x) ' Passed as Double, copied back to Integer with conversion\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // Bankers rounding or implicit CInt back to 2
+#[test]
+fn arg_byref_literal_fails_to_mutate() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nMutate(1)\nConsole.WriteLine(\"OK\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["OK"]
+    );
+} // Passing literal to ByRef creates temp var
+#[test]
+fn arg_byref_expression_fails_to_mutate() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef v As Integer)\nv = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(x + 0)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+} // Temp var evaluated
+#[test]
+fn arg_byref_late_bound_mutation() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nModule M\nSub Mutate(ByRef v As Object)\nv = 2\nEnd Sub\nSub Main()\nDim x As Object = 1\nMutate(x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
 
-#[test] fn arg_byval_array() { assert_eq!(run_vb("Module M\nSub Mutate(ByVal arr() As Integer)\narr(0) = 2\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"), vec!["2"]); } // Array is reference type
-#[test] fn arg_byval_array_reassignment() { assert_eq!(run_vb("Module M\nSub Mutate(ByVal arr() As Integer)\narr = New Integer() {2}\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"), vec!["1"]); }
-#[test] fn arg_byref_array_reassignment() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef arr() As Integer)\narr = New Integer() {2}\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"), vec!["2"]); }
-#[test] fn arg_type_character() { assert_eq!(run_vb("Module M\nSub Print(v$)\nConsole.WriteLine(v)\nEnd Sub\nSub Main()\nPrint(\"A\")\nEnd Sub\nEnd Module"), vec!["A"]); }
+#[test]
+fn arg_byval_array() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByVal arr() As Integer)\narr(0) = 2\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+} // Array is reference type
+#[test]
+fn arg_byval_array_reassignment() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByVal arr() As Integer)\narr = New Integer() {2}\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+}
+#[test]
+fn arg_byref_array_reassignment() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef arr() As Integer)\narr = New Integer() {2}\nEnd Sub\nSub Main()\nDim a() As Integer = {1}\nMutate(a)\nConsole.WriteLine(a(0))\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
+#[test]
+fn arg_type_character() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Print(v$)\nConsole.WriteLine(v)\nEnd Sub\nSub Main()\nPrint(\"A\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["A"]
+    );
+}
 
-#[test] fn arg_byval_structure() { assert_eq!(run_vb("Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Mutate(ByVal s1 As S)\ns1.V = 2\nEnd Sub\nSub Main()\nDim x As New S()\nx.V = 1\nMutate(x)\nConsole.WriteLine(x.V)\nEnd Sub\nEnd Module"), vec!["1"]); } // Structure is value type
-#[test] fn arg_byref_structure() { assert_eq!(run_vb("Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Mutate(ByRef s1 As S)\ns1.V = 2\nEnd Sub\nSub Main()\nDim x As New S()\nx.V = 1\nMutate(x)\nConsole.WriteLine(x.V)\nEnd Sub\nEnd Module"), vec!["2"]); }
-#[test] fn arg_named_arguments() { assert_eq!(run_vb("Module M\nSub Print(a As Integer, b As Integer)\nConsole.WriteLine(a - b)\nEnd Sub\nSub Main()\nPrint(b:=5, a:=10)\nEnd Sub\nEnd Module"), vec!["5"]); }
-#[test] fn arg_named_arguments_byref() { assert_eq!(run_vb("Module M\nSub Mutate(ByRef a As Integer)\na = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(a:=x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"), vec!["2"]); }
+#[test]
+fn arg_byval_structure() {
+    assert_eq!(
+        run_vb(
+            "Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Mutate(ByVal s1 As S)\ns1.V = 2\nEnd Sub\nSub Main()\nDim x As New S()\nx.V = 1\nMutate(x)\nConsole.WriteLine(x.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["1"]
+    );
+} // Structure is value type
+#[test]
+fn arg_byref_structure() {
+    assert_eq!(
+        run_vb(
+            "Structure S\nPublic V As Integer\nEnd Structure\nModule M\nSub Mutate(ByRef s1 As S)\ns1.V = 2\nEnd Sub\nSub Main()\nDim x As New S()\nx.V = 1\nMutate(x)\nConsole.WriteLine(x.V)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
+#[test]
+fn arg_named_arguments() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Print(a As Integer, b As Integer)\nConsole.WriteLine(a - b)\nEnd Sub\nSub Main()\nPrint(b:=5, a:=10)\nEnd Sub\nEnd Module"
+        ),
+        vec!["5"]
+    );
+}
+#[test]
+fn arg_named_arguments_byref() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(ByRef a As Integer)\na = 2\nEnd Sub\nSub Main()\nDim x = 1\nMutate(a:=x)\nConsole.WriteLine(x)\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
 
-#[test] fn arg_array_dimensions_enforced() { assert_eq!(run_vb("Module M\nSub Mutate(arr(,) As Integer)\narr(0, 0) = 2\nEnd Sub\nSub Main()\nDim a(1, 1) As Integer\na(0, 0) = 1\nMutate(a)\nConsole.WriteLine(a(0, 0))\nEnd Sub\nEnd Module"), vec!["2"]); }
-#[test] fn arg_array_dimensions_mismatch_throws() { assert_eq!(run_vb("Option Strict Off\nModule M\nSub Mutate(arr(,) As Integer)\nEnd Sub\nSub Main()\nDim a(1) As Integer\n' Mutate(a) ' Compiler error or late bound throw\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn arg_byref_type_mismatch_option_strict_on() { assert_eq!(run_vb("Option Strict On\nModule M\nSub Mutate(ByRef v As Double)\nEnd Sub\nSub Main()\nDim x As Integer = 1\n' Mutate(x) ' Cannot pass Integer to ByRef Double in Strict On\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn arg_named_argument_unknown() { assert_eq!(run_vb("Module M\nSub Print(a As Integer)\nEnd Sub\nSub Main()\n' Print(b:=1) ' Unknown argument\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"), vec!["Parsed"]); }
-#[test] fn arg_evaluation_order() { assert_eq!(run_vb("Module M\nDim v = 1\nFunction F() As Integer\nv += 1\nReturn v\nEnd Function\nSub Print(a As Integer, b As Integer)\nConsole.WriteLine(a & b)\nEnd Sub\nSub Main()\nPrint(F(), F())\nEnd Sub\nEnd Module"), vec!["23"]); } // Left to right evaluation
+#[test]
+fn arg_array_dimensions_enforced() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Mutate(arr(,) As Integer)\narr(0, 0) = 2\nEnd Sub\nSub Main()\nDim a(1, 1) As Integer\na(0, 0) = 1\nMutate(a)\nConsole.WriteLine(a(0, 0))\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}
+#[test]
+fn arg_array_dimensions_mismatch_throws() {
+    assert_eq!(
+        run_vb(
+            "Option Strict Off\nModule M\nSub Mutate(arr(,) As Integer)\nEnd Sub\nSub Main()\nDim a(1) As Integer\n' Mutate(a) ' Compiler error or late bound throw\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn arg_byref_type_mismatch_option_strict_on() {
+    assert_eq!(
+        run_vb(
+            "Option Strict On\nModule M\nSub Mutate(ByRef v As Double)\nEnd Sub\nSub Main()\nDim x As Integer = 1\n' Mutate(x) ' Cannot pass Integer to ByRef Double in Strict On\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn arg_named_argument_unknown() {
+    assert_eq!(
+        run_vb(
+            "Module M\nSub Print(a As Integer)\nEnd Sub\nSub Main()\n' Print(b:=1) ' Unknown argument\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+        ),
+        vec!["Parsed"]
+    );
+}
+#[test]
+fn arg_evaluation_order() {
+    assert_eq!(
+        run_vb(
+            "Module M\nDim v = 1\nFunction F() As Integer\nv += 1\nReturn v\nEnd Function\nSub Print(a As Integer, b As Integer)\nConsole.WriteLine(a & b)\nEnd Sub\nSub Main()\nPrint(F(), F())\nEnd Sub\nEnd Module"
+        ),
+        vec!["23"]
+    );
+} // Left to right evaluation

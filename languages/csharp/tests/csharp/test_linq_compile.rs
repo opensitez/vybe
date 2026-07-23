@@ -2,9 +2,8 @@
 
 fn compile_ok(src: &str) {
     let module = vybe_language_csharp::parse(src).expect("C# parse failed");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
-            .expect("Failed to parse C# profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
+        .expect("Failed to parse C# profile");
     let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");

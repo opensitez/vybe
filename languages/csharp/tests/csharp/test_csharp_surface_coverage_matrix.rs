@@ -233,9 +233,7 @@ matrix_case!(matrix_compare_ge_identity, |left, right| {
 });
 
 matrix_case!(matrix_bool_tautology_true, |left, right| {
-    format!(
-        "long left = {left}; long right = {right}; Console.WriteLine(left > 0 || left <= 0);"
-    )
+    format!("long left = {left}; long right = {right}; Console.WriteLine(left > 0 || left <= 0);")
 });
 
 matrix_case!(matrix_bool_tautology_false, |left, right| {
@@ -269,9 +267,7 @@ matrix_case!(matrix_bool_xor_false, |left, right| {
 });
 
 matrix_case!(matrix_bool_conditional_pos, |left, right| {
-    format!(
-        "long left = {left}; long right = {right}; Console.WriteLine(left > 0 ? true : false);"
-    )
+    format!("long left = {left}; long right = {right}; Console.WriteLine(left > 0 ? true : false);")
 });
 
 matrix_case!(matrix_bool_conditional_nested, |left, right| {

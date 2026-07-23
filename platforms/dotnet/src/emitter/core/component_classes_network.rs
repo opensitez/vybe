@@ -1,8 +1,56 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
+        DotnetClassExport::new(
+            "dotnet.System.Net",
+            ClassType::new("WebRequest")
+                .with_constructor(
+                    ConstructorDef::new(1).with_backing(HostTarget::new("wasi:http", "fetch")),
+                )
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetResponse",
+                    0,
+                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Net",
+            ClassType::new("WebClient")
+                .with_constructor(
+                    ConstructorDef::new(0).with_backing(HostTarget::new("wasi:http", "fetch")),
+                )
+                .with_method(MethodDef::new(
+                    "DownloadString",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Net.Http",
+            ClassType::new("HttpClient")
+                .with_constructor(
+                    ConstructorDef::new(0).with_backing(HostTarget::new("wasi:http", "fetch")),
+                )
+                .with_method(MethodDef::new(
+                    "GetStringAsync",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                ))
+                .with_method(MethodDef::new(
+                    "GetAsync",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Net.Sockets",
             ClassType::new("TcpClient")

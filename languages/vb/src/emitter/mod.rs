@@ -1,10 +1,6 @@
-//! VB-specific `common:vb.*` emitter adapters.
+//! VB-specific emitter dispatch.
 //!
-//! These helpers keep VB builtins in the frontend/compiler layer and lower
-//! directly to portable bytecode plus standard `ecma:*` imports where WASM
-//! lacks the required math primitives.
+//! Dotnet/BCL surface is resolved through `platforms/dotnet`; this module
+//! remains as the language hook for any truly VB-local lowering.
 
-pub mod datetime_adapter;
 pub mod dispatch;
-pub mod financial_adapter;
-pub mod misc_adapter;

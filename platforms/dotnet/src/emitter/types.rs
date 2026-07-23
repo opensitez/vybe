@@ -111,4 +111,39 @@ mod tests {
                 .any(|mapping| mapping.name == "form")
         );
     }
+
+    #[test]
+    fn core_bcl_constructors_resolve_from_shared_table() {
+        for name in [
+            "stopwatch",
+            "random",
+            "xdocument",
+            "datatable",
+            "datarow",
+            "dictionary",
+            "queue",
+            "stack",
+            "hashset",
+            "thread",
+            "tcpclient",
+            "tcplistener",
+            "udpclient",
+            "webrequest",
+            "webclient",
+            "httpclient",
+            "memorystream",
+            "filestream",
+            "binaryreader",
+            "binarywriter",
+            "streamreader",
+            "streamwriter",
+            "xmldocument",
+            "dataadapter",
+        ] {
+            assert!(
+                lookup_known_type(name).is_some(),
+                "expected shared dotnet constructor mapping for {name}"
+            );
+        }
+    }
 }

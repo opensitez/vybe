@@ -1,5 +1,5 @@
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
+use vybe_emitter::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -55,6 +55,46 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::CALL_IMPORT, user_info, line);
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::STRUCT_GET, username_key, line);
+}
+
+pub fn emit_environment_version(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    for value in [8.0, 0.0, 0.0, 0.0] {
+        push_const(chunk, Value::F64(value), line);
+    }
+    crate::emitter::core::version_adapter::emit_version_new(chunks, current, 4, line);
+}
+
+pub fn emit_environment_system_directory(chunks: &mut [Chunk], current: usize, line: u32) {
+    let cwd = chunks[current].add_import("node:process", "cwd");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, cwd, line);
+    chunk.emit(0, line);
+}
+
+pub fn emit_environment_get_command_line_args(chunks: &mut [Chunk], current: usize, line: u32) {
+    let get_args = chunks[current].add_import("wasi:cli/environment", "get-arguments");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, get_args, line);
+    chunk.emit(0, line);
+}
+
+pub fn emit_environment_get_folder_path(chunks: &mut [Chunk], current: usize, line: u32) {
+    let cwd = chunks[current].add_import("node:process", "cwd");
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, cwd, line);
+    chunk.emit(0, line);
+}
+
+pub fn emit_environment_special_folder(
+    name: &str,
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::String(Arc::from(name)), line);
 }
 
 pub fn emit_environment_processor_count(chunks: &mut [Chunk], current: usize, line: u32) {

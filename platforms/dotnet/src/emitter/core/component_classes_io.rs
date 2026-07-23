@@ -7,6 +7,80 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
         DotnetClassExport::new(
             "dotnet.System.IO",
+            ClassType::new("MemoryStream")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("collections.clone".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Write",
+                    1,
+                    MethodBody::Common("collections.push".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Read",
+                    0,
+                    MethodBody::Common("collections.shift".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
+            ClassType::new("FileStream")
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_backing(HostTarget::new("wasi:filesystem", "readFile")),
+                )
+                .with_method(MethodDef::new(
+                    "Read",
+                    0,
+                    MethodBody::Common("dotnet.stream_reader_read_to_end".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Write",
+                    1,
+                    MethodBody::Common("dotnet.stream_writer_write".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::Common("dotnet.stream_writer_flush".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
+            ClassType::new("BinaryReader")
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_backing(HostTarget::new("wasi:filesystem", "readFile")),
+                )
+                .with_method(MethodDef::new(
+                    "Read",
+                    0,
+                    MethodBody::Common("dotnet.stream_reader_read_to_end".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
+            ClassType::new("BinaryWriter")
+                .with_constructor(
+                    ConstructorDef::new(1)
+                        .with_backing(HostTarget::new("wasi:filesystem", "writeFile")),
+                )
+                .with_method(MethodDef::new(
+                    "Write",
+                    1,
+                    MethodBody::Common("dotnet.stream_writer_write".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Close",
+                    0,
+                    MethodBody::Common("dotnet.stream_writer_flush".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
             ClassType::new("StreamReader")
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.stream_reader_new"),
@@ -95,7 +169,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Delete",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "remove")),
+                    MethodBody::Common("dotnet.directory_delete".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Delete",
+                    2,
+                    MethodBody::Common("dotnet.directory_delete".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Copy",
@@ -192,6 +271,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "GetTempPath",
                     0,
                     MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetTempPath")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "HasExtension",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathHasExtension")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsPathRooted",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathIsRooted")),
                 )),
         ),
     ]

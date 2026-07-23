@@ -13,10 +13,10 @@
 //! the .NET surface looks .NET-shaped while the bytecode is
 //! standardized.
 
-use vybe_emitter::instructions::core_wasm;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 use super::timespan_adapter;
 
@@ -48,6 +48,11 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+}
+
+fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
 }
 
 fn call_import(
@@ -362,6 +367,34 @@ pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         }
         _ => emit_datetime_now(chunks, current, line),
     }
+}
+
+pub fn emit_datetime_year(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Year", line);
+}
+
+pub fn emit_datetime_month(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Month", line);
+}
+
+pub fn emit_datetime_day(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Day", line);
+}
+
+pub fn emit_datetime_hour(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Hour", line);
+}
+
+pub fn emit_datetime_minute(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Minute", line);
+}
+
+pub fn emit_datetime_second(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "Second", line);
+}
+
+pub fn emit_datetime_day_of_week(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get_named_field(&mut chunks[current], "DayOfWeek", line);
 }
 
 pub fn emit_datetime_add_days(chunks: &mut [Chunk], current: usize, line: u32) {

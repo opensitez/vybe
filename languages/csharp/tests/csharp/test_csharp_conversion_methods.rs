@@ -4,8 +4,10 @@ use super::helpers::run_csharp;
 #[test]
 fn convert_to_int32_from_string() {
     assert_eq!(
-        run_csharp(r#"// conversion_methods
-Console.WriteLine(System.Convert.ToInt32("99"));"#),
+        run_csharp(
+            r#"// conversion_methods
+Console.WriteLine(System.Convert.ToInt32("99"));"#
+        ),
         &["99"]
     );
 }
@@ -24,8 +26,10 @@ Console.WriteLine(d);"#
 #[test]
 fn convert_to_string_from_bool() {
     assert_eq!(
-        run_csharp(r#"// conversion_methods
-Console.WriteLine(System.Convert.ToString(true));"#),
+        run_csharp(
+            r#"// conversion_methods
+Console.WriteLine(System.Convert.ToString(true));"#
+        ),
         &["True"]
     );
 }
@@ -33,8 +37,10 @@ Console.WriteLine(System.Convert.ToString(true));"#),
 #[test]
 fn convert_to_boolean_from_int_one_is_true() {
     assert_eq!(
-        run_csharp(r#"// conversion_methods
-Console.WriteLine(System.Convert.ToBoolean(1));"#),
+        run_csharp(
+            r#"// conversion_methods
+Console.WriteLine(System.Convert.ToBoolean(1));"#
+        ),
         &["True"]
     );
 }
@@ -42,8 +48,10 @@ Console.WriteLine(System.Convert.ToBoolean(1));"#),
 #[test]
 fn convert_to_boolean_from_zero_is_false() {
     assert_eq!(
-        run_csharp(r#"// conversion_methods
-Console.WriteLine(System.Convert.ToBoolean(0));"#),
+        run_csharp(
+            r#"// conversion_methods
+Console.WriteLine(System.Convert.ToBoolean(0));"#
+        ),
         &["False"]
     );
 }
@@ -51,8 +59,10 @@ Console.WriteLine(System.Convert.ToBoolean(0));"#),
 #[test]
 fn convert_to_char_from_int_gives_unicode_char() {
     assert_eq!(
-        run_csharp(r#"// conversion_methods
-Console.WriteLine(System.Convert.ToChar(65));"#),
+        run_csharp(
+            r#"// conversion_methods
+Console.WriteLine(System.Convert.ToChar(65));"#
+        ),
         &["A"]
     );
 }

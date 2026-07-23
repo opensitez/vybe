@@ -54,7 +54,9 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // ECMA-262 Array surface by default; .NET-only methods need
         // explicit adapter entries.
         "system.array" => Some("ecma:array"),
-        "system.environment" => Some("wasi:cli/environment"),
+        // System.Environment has explicit component metadata and common
+        // adapters; do not synthesize `wasi:cli/environment.*` fallbacks.
+        "system.environment" => None,
         // StreamReader / StreamWriter — retired from `dotnet:io` host
         // namespace; lower at compile time through
         // `emitter::dotnet::core::stream_io_adapter` (composes

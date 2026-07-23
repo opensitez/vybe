@@ -1,7 +1,8 @@
-use vybe_ast::*;
-use vybe_platform_dotnet::winforms::form::Form;
 use std::sync::Arc;
+use vybe_ast::*;
 use vybe_host::GuiState;
+use vybe_platform_dotnet::winforms::control::ControlType;
+use vybe_platform_dotnet::winforms::form::Form;
 
 struct ControlInfo {
     name: String,
@@ -205,16 +206,14 @@ pub fn generate_designer_code(form: &Form) -> String {
     ));
 
     for control in &form.controls {
-        let ty =
-            vybe_language_vb::designer_codegen::control_type_to_vbnet(&control.control_type);
+        let ty = control.control_type.dotnet_class_name();
         out.push_str(&format!("    private {} {};\n", ty, control.name));
     }
 
     out.push_str("\n    private void InitializeComponent()\n    {\n");
     out.push_str("        this.SuspendLayout();\n");
     for control in &form.controls {
-        let ty =
-            vybe_language_vb::designer_codegen::control_type_to_vbnet(&control.control_type);
+        let ty = control.control_type.dotnet_class_name();
         out.push_str(&format!(
             "        this.{0} = new {1}();\n",
             control.name, ty
@@ -444,41 +443,7 @@ fn expr_to_value_string(expr: &Expression) -> String {
 }
 
 fn widget_to_csharp_type(widget: &dyn vybe_widgets::PanelWidget) -> &'static str {
-    let name = std::any::type_name_of_val(widget);
-    let short = name.rsplit("::").next().unwrap_or(name);
-    match short.to_lowercase().as_str() {
-        "button" => "System.Windows.Forms.Button",
-        "label" => "System.Windows.Forms.Label",
-        "textinput" => "System.Windows.Forms.TextBox",
-        "checkbox" => "System.Windows.Forms.CheckBox",
-        "radio" => "System.Windows.Forms.RadioButton",
-        "select" => "System.Windows.Forms.ComboBox",
-        "listbox" => "System.Windows.Forms.ListBox",
-        "panel" => "System.Windows.Forms.Panel",
-        "groupbox" => "System.Windows.Forms.GroupBox",
-        "picturebox" => "System.Windows.Forms.PictureBox",
-        "progressbar" => "System.Windows.Forms.ProgressBar",
-        "slider" => "System.Windows.Forms.TrackBar",
-        "numericupdown" => "System.Windows.Forms.NumericUpDown",
-        "datetimepicker" => "System.Windows.Forms.DateTimePicker",
-        "treeview" => "System.Windows.Forms.TreeView",
-        "datagrid" => "System.Windows.Forms.DataGridView",
-        "listview" => "System.Windows.Forms.ListView",
-        "tabs" => "System.Windows.Forms.TabControl",
-        "monthcalendar" => "System.Windows.Forms.MonthCalendar",
-        "scrollbar" => "System.Windows.Forms.ScrollBar",
-        "menustrip" => "System.Windows.Forms.MenuStrip",
-        "toolstrip" => "System.Windows.Forms.ToolStrip",
-        "statusstrip" => "System.Windows.Forms.StatusStrip",
-        "contextmenu" => "System.Windows.Forms.ContextMenuStrip",
-        "splitcontainer" => "System.Windows.Forms.SplitContainer",
-        "flowlayoutpanel" => "System.Windows.Forms.FlowLayoutPanel",
-        "tablelayoutpanel" => "System.Windows.Forms.TableLayoutPanel",
-        "maskedtextbox" => "System.Windows.Forms.MaskedTextBox",
-        "bindingnavigator" => "System.Windows.Forms.BindingNavigator",
-        "canvas" => "System.Windows.Forms.PictureBox",
-        _ => "System.Windows.Forms.Control",
-    }
+    ControlType::dotnet_class_name_for_widget_type_name(std::any::type_name_of_val(widget))
 }
 
 fn is_control_type(name: &str) -> bool {

@@ -1,11 +1,12 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::super::super::classes::DotnetClass;
+use super::super::exceptions::EXCEPTION_HIERARCHY;
 use vybe_bytecode::component_model::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
-    vec![
+    let mut exports = vec![
         DotnetClassExport::with_wrapper(
             "dotnet.System",
             ClassType::new("ValueType").with_parent("Object"),
@@ -31,6 +32,57 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 widget_host_fn: None,
                 widget_host_module: "vybe:gui",
             },
+        ),
+    ];
+    exports.extend(EXCEPTION_HIERARCHY.iter().map(|(name, parent)| {
+        let class = if parent.is_empty() {
+            ClassType::new(*name)
+        } else {
+            ClassType::new(*name).with_parent(*parent)
+        };
+        DotnetClassExport::new("dotnet.System", class)
+    }));
+    exports.extend(vec![
+        DotnetClassExport::new(
+            "dotnet.System.Text.RegularExpressions",
+            ClassType::new("RegexMatchTimeoutException").with_parent("TimeoutException"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text",
+            ClassType::new("EncoderFallbackException").with_parent("ArgumentException"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text",
+            ClassType::new("DecoderFallbackException").with_parent("ArgumentException"),
+        ),
+        DotnetClassExport::new("dotnet.System", ClassType::new("Attribute")),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("AttributeUsageAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("FlagsAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("STAThreadAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("SerializableAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("ObsoleteAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Reflection",
+            ClassType::new("AssemblyTitleAttribute").with_parent("Attribute"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.ComponentModel",
+            ClassType::new("DescriptionAttribute").with_parent("Attribute"),
         ),
         DotnetClassExport::new(
             "dotnet.System",
@@ -193,12 +245,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Reverse",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "reverse")),
+                    MethodBody::Common("dotnet.array_reverse".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "IndexOf",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "indexOf")),
+                    MethodBody::Common("dotnet.array_index_of".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "LastIndexOf",
@@ -222,7 +274,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ConvertAll",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "map")),
+                    MethodBody::Common("dotnet.array_convert_all".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "CreateInstance",
@@ -237,7 +289,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Find",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "find")),
+                    MethodBody::Common("dotnet.array_find".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "FindAll",
@@ -257,7 +309,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ForEach",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "forEach")),
+                    MethodBody::Common("dotnet.array_for_each".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "TrueForAll",
@@ -285,12 +337,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.system.math.ceiling".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "Ceil",
+                    1,
+                    MethodBody::Common("dotnet.system.math.ceiling".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "Sqrt",
                     1,
                     MethodBody::Common("dotnet.system.math.sqrt".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Truncate",
+                    1,
+                    MethodBody::Common("dotnet.system.math.truncate".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Trunc",
                     1,
                     MethodBody::Common("dotnet.system.math.truncate".into()),
                 ))
@@ -352,6 +414,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Log",
                     1,
+                    MethodBody::Common("dotnet.system.math.log".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Log",
+                    2,
                     MethodBody::Common("dotnet.system.math.log".into()),
                 ))
                 .with_method(MethodDef::static_method(
@@ -472,24 +539,64 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
                 ))
                 .with_method(MethodDef::static_method(
+                    "ToInt",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
+                ))
+                .with_method(MethodDef::static_method(
                     "ToDouble",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:number", "Number")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToSingle",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:number", "Number")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToDecimal",
                     1,
                     MethodBody::HostCall(HostTarget::new("ecma:number", "Number")),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToString",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:string", "String")),
+                    MethodBody::Common("dotnet.tostring".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToBoolean",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:boolean", "Boolean")),
+                    MethodBody::Common("dyn_to_bool".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToChar",
+                    1,
+                    MethodBody::Common("dotnet.cchar".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToByte",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToInt64",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt")),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToDateTime",
                     1,
                     MethodBody::Common("dotnet.datetime_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToBase64String",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "btoa")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromBase64String",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "atob")),
                 )),
         ),
         DotnetClassExport::new(
@@ -499,6 +606,31 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Format",
                     2,
                     MethodBody::Common("dotnet.string_format".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Join",
+                    2,
+                    MethodBody::Common("collections.join_sep_first".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Concat",
+                    2,
+                    MethodBody::Common("str_concat".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsNullOrWhiteSpace",
+                    1,
+                    MethodBody::Common("dotnet.string_is_null_or_whitespace".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsNullOrEmpty",
+                    1,
+                    MethodBody::Common("dotnet.string_is_null_or_empty".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Contains",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "includes")),
                 ))
                 // `MemoryExtensions.AsSpan` over a string. A `ReadOnlySpan<char>`
                 // is the substring itself here — indexing it yields the same
@@ -545,6 +677,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.environment_username".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "Version",
+                    0,
+                    MethodBody::Common("dotnet.environment_version".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SystemDirectory",
+                    0,
+                    MethodBody::Common("dotnet.environment_system_directory".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "ProcessorCount",
                     0,
                     MethodBody::Common("dotnet.environment_processor_count".into()),
@@ -563,7 +705,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "SetEnvironmentVariable",
                     2,
                     MethodBody::Common("dotnet.environment_set".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetFolderPath",
+                    1,
+                    MethodBody::Common("dotnet.environment_get_folder_path".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetCommandLineArgs",
+                    0,
+                    MethodBody::Common("dotnet.environment_get_command_line_args".into()),
                 )),
         ),
-    ]
+        DotnetClassExport::new(
+            "dotnet.System.Environment",
+            ClassType::new("SpecialFolder")
+                .with_method(MethodDef::static_method(
+                    "Personal",
+                    0,
+                    MethodBody::Common("dotnet.environment_special_folder_personal".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ApplicationData",
+                    0,
+                    MethodBody::Common("dotnet.environment_special_folder_application_data".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "LocalApplicationData",
+                    0,
+                    MethodBody::Common(
+                        "dotnet.environment_special_folder_local_application_data".into(),
+                    ),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Desktop",
+                    0,
+                    MethodBody::Common("dotnet.environment_special_folder_desktop".into()),
+                )),
+        ),
+    ]);
+    exports
 }

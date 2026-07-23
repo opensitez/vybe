@@ -85,7 +85,7 @@ notifier.Raised -= sub;
 notifier.Raise(2);
 Console.WriteLine(total);
 "#;
-assert_eq!(run_csharp(src), vec!["7".to_string()]);
+    assert_eq!(run_csharp(src), vec!["7".to_string()]);
 }
 
 #[test]

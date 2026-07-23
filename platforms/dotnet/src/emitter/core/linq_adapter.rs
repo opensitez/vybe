@@ -16,8 +16,8 @@
 //! emitters wherever possible so semantics stay aligned with the
 //! rest of the standard library.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 use vybe_emitter::instructions::core_wasm;
 
 use vybe_emitter::collections;
@@ -98,7 +98,12 @@ fn emit_linq_structural_key(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:json", "stringify", 1, line);
 }
 
-fn emit_invalid_operation_exception(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
+fn emit_invalid_operation_exception(
+    chunks: &mut [Chunk],
+    current: usize,
+    message: &str,
+    line: u32,
+) {
     chunks[current].emit_string_const(message, line);
     vybe_emitter::errors::emit_exception_new_finalize(
         &mut chunks[current],
@@ -1546,7 +1551,13 @@ pub fn emit_linq_except(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_linq_set_filter(chunks, current, line, false);
 }
 
-fn emit_type_name_is_any(chunks: &mut [Chunk], current: usize, type_slot: u16, names: &[&str], line: u32) {
+fn emit_type_name_is_any(
+    chunks: &mut [Chunk],
+    current: usize,
+    type_slot: u16,
+    names: &[&str],
+    line: u32,
+) {
     let out_slot = alloc_locals(&mut chunks[current], 1);
     core_wasm::bool_const(&mut chunks[current], line, false);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
@@ -1563,7 +1574,13 @@ fn emit_type_name_is_any(chunks: &mut [Chunk], current: usize, type_slot: u16, n
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
-fn emit_linq_of_type_match(chunks: &mut [Chunk], current: usize, type_slot: u16, elem_slot: u16, line: u32) {
+fn emit_linq_of_type_match(
+    chunks: &mut [Chunk],
+    current: usize,
+    type_slot: u16,
+    elem_slot: u16,
+    line: u32,
+) {
     let result_slot = alloc_locals(&mut chunks[current], 1);
     core_wasm::bool_const(&mut chunks[current], line, false);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -1571,9 +1588,9 @@ fn emit_linq_of_type_match(chunks: &mut [Chunk], current: usize, type_slot: u16,
     for (aliases, ecma_type) in [
         (
             &[
-                "Integer", "Int32", "Long", "Int64", "Short", "Int16", "Byte", "Double",
-                "Single", "Decimal", "int", "long", "short", "byte", "uint", "ulong",
-                "ushort", "sbyte", "double", "float", "decimal",
+                "Integer", "Int32", "Long", "Int64", "Short", "Int16", "Byte", "Double", "Single",
+                "Decimal", "int", "long", "short", "byte", "uint", "ulong", "ushort", "sbyte",
+                "double", "float", "decimal",
             ][..],
             "number",
         ),
@@ -1650,7 +1667,10 @@ pub fn emit_linq_element_at(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_index_in_range(chunks, current, arr_slot, idx_slot, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_string_const("Index was out of range. Must be non-negative and less than the size of the collection.", line);
+    chunks[current].emit_string_const(
+        "Index was out of range. Must be non-negative and less than the size of the collection.",
+        line,
+    );
     vybe_emitter::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "ArgumentOutOfRangeException",
@@ -1913,7 +1933,13 @@ pub fn emit_linq_prepend(chunks: &mut [Chunk], current: usize, line: u32) {
 // ── SkipLast / TakeLast / DefaultIfEmpty ─────────────────────────────────
 
 /// Leaves an f64 on the stack: `max(0, arr.length - n)`.
-fn emit_len_minus_n_clamped(chunks: &mut [Chunk], current: usize, arr_slot: u16, n_slot: u16, line: u32) {
+fn emit_len_minus_n_clamped(
+    chunks: &mut [Chunk],
+    current: usize,
+    arr_slot: u16,
+    n_slot: u16,
+    line: u32,
+) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op(Op::F64_FROM_I32, line);

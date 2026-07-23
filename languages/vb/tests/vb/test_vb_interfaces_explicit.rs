@@ -36,7 +36,10 @@ Module M
 End Module
 "#,
     );
-    assert_eq!(out, vec!["This is class Draw, not interface Draw", "Drawing Circle"]);
+    assert_eq!(
+        out,
+        vec!["This is class Draw, not interface Draw", "Drawing Circle"]
+    );
 }
 
 #[test]

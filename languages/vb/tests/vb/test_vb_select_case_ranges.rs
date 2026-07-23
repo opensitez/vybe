@@ -34,6 +34,12 @@ End Module
     );
     assert_eq!(
         out,
-        vec!["Small", "Medium or Teen", "Medium or Teen", "Large", "Other"]
+        vec![
+            "Small",
+            "Medium or Teen",
+            "Medium or Teen",
+            "Large",
+            "Other"
+        ]
     );
 }

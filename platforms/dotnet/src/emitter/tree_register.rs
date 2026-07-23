@@ -74,7 +74,7 @@ pub fn register_namespace_tree() {
 
 #[cfg(test)]
 mod resolve_gap_tests {
-    use vybe_emitter::namespaces::{resolve_path, ResolutionTarget};
+    use vybe_emitter::namespaces::{ResolutionTarget, resolve_path};
 
     #[test]
     fn delegate_combine_resolves_via_tree() {
@@ -93,6 +93,225 @@ mod resolve_gap_tests {
         match r {
             Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.guid_parse"),
             other => panic!("expected CommonEmit(dotnet.guid_parse), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn environment_set_resolves_via_tree() {
+        super::register_namespace_tree();
+        let r = resolve_path(&["dotnet", "system", "environment", "setenvironmentvariable"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.environment_set"),
+            other => panic!("expected CommonEmit(dotnet.environment_set), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_and_parse_resolve_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "convert", "tostring"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.tostring"),
+            other => panic!("expected CommonEmit(dotnet.tostring), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "int32", "parse"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.parse_int"),
+            other => panic!("expected CommonEmit(dotnet.parse_int), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "int", "tryparse"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.try_parse_int"),
+            other => panic!("expected CommonEmit(dotnet.try_parse_int), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn math_methods_resolve_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "math", "sin"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.system.math.sin"),
+            other => panic!("expected CommonEmit(dotnet.system.math.sin), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "math", "ceil"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.system.math.ceiling")
+            }
+            other => panic!("expected CommonEmit(dotnet.system.math.ceiling), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn console_and_datetime_resolve_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "console", "writeline"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.console_writeline")
+            }
+            other => panic!("expected CommonEmit(dotnet.console_writeline), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "datetime", "now"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.datetime_now"),
+            other => panic!("expected CommonEmit(dotnet.datetime_now), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "datetime", "parse"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.datetime_parse"),
+            other => panic!("expected CommonEmit(dotnet.datetime_parse), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_statics_resolve_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "string", "format"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.string_format"),
+            other => panic!("expected CommonEmit(dotnet.string_format), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "string", "join"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "collections.join_sep_first")
+            }
+            other => panic!("expected CommonEmit(collections.join_sep_first), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "string", "concat"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "str_concat"),
+            other => panic!("expected CommonEmit(str_concat), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "string", "isnullorempty"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.string_is_null_or_empty")
+            }
+            other => panic!("expected CommonEmit(dotnet.string_is_null_or_empty), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn system_text_encoding_resolves_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "text", "encoding", "utf8"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "dotnet.encoding_utf8"),
+            other => panic!("expected CommonEmit(dotnet.encoding_utf8), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "text", "encoding", "getencoding"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.encoding_get_encoding")
+            }
+            other => panic!("expected CommonEmit(dotnet.encoding_get_encoding), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn io_threading_network_and_collections_resolve_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&["dotnet", "system", "io", "file", "readalltext"]);
+        match r {
+            Some(ResolutionTarget::HostCall { module, func, .. }) => {
+                assert_eq!(module, "wasi:filesystem");
+                assert_eq!(func, "readFile");
+            }
+            other => panic!("expected HostCall(wasi:filesystem::readFile), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "io", "directory", "getfiles"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.directory_get_files")
+            }
+            other => panic!("expected CommonEmit(dotnet.directory_get_files), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "io", "path", "combine"]);
+        match r {
+            Some(ResolutionTarget::HostCall { module, func, .. }) => {
+                assert_eq!(module, "wasi:filesystem");
+                assert_eq!(func, "pathCombine");
+            }
+            other => panic!("expected HostCall(wasi:filesystem::pathCombine), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "diagnostics", "stopwatch", "startnew"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.stopwatch_start_new")
+            }
+            other => panic!("expected CommonEmit(dotnet.stopwatch_start_new), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "threading", "thread", "sleep"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "threading.sleep"),
+            other => panic!("expected CommonEmit(threading.sleep), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "net", "dns", "gethostname"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.dns_get_host_name")
+            }
+            other => panic!("expected CommonEmit(dotnet.dns_get_host_name), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn winforms_application_resolves_via_tree() {
+        super::register_namespace_tree();
+
+        let r = resolve_path(&[
+            "dotnet",
+            "system",
+            "windows",
+            "forms",
+            "application",
+            "enablevisualstyles",
+        ]);
+        match r {
+            Some(ResolutionTarget::HostCall { module, func, .. }) => {
+                assert_eq!(module, "vybe:gui");
+                assert_eq!(func, "noop");
+            }
+            other => panic!("expected HostCall(vybe:gui/noop), got {other:?}"),
+        }
+
+        let r = resolve_path(&[
+            "dotnet",
+            "system",
+            "windows",
+            "forms",
+            "application",
+            "setcompatibletextrenderingdefault",
+        ]);
+        match r {
+            Some(ResolutionTarget::HostCall { module, func, .. }) => {
+                assert_eq!(module, "vybe:gui");
+                assert_eq!(func, "noop");
+            }
+            other => panic!("expected HostCall(vybe:gui/noop), got {other:?}"),
         }
     }
 }
