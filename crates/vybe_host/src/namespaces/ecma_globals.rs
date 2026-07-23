@@ -14,6 +14,25 @@
 
 use super::*;
 
+/// Install a built-in constructor's `prototype` data property with the
+/// ECMA-262 attributes { [[Writable]]: false, [[Enumerable]]: false,
+/// [[Configurable]]: false } (§20.1.2 and the per-constructor definitions).
+///
+/// The `[[Configurable]]: false` part is load-bearing for process safety, not
+/// just spec fidelity: the canonical constructor pinned on a shared prototype
+/// singleton (`set_constructor_once`) is reachable as `__ctor_<Name>` from
+/// every VM, so a program doing `delete Object.prototype` would otherwise strip
+/// `prototype` off the shared object and corrupt every subsequent VM. Marking
+/// it non-configurable makes `ecma:object.delete` (which honors `__nonconfig`)
+/// a no-op, matching the spec and containing the mutation.
+fn set_ctor_prototype(ctor: &Value, proto: Value) {
+    set_prop(ctor, "prototype", proto);
+    if let Value::Object(obj) = ctor {
+        crate::ecma::object::track_nonconfig(obj, "prototype");
+        crate::ecma::object::track_nonenum(obj, "prototype");
+    }
+}
+
 pub fn register(vm: &mut VM) {
     // ── Object / boxed primitive constructors ─────────────────────
     let object = host_fn_ref(vm, "ecma:object", "Object");
@@ -56,7 +75,7 @@ pub fn register(vm: &mut VM) {
             }
         }
     }
-    set_prop(&object, "prototype", object_proto.clone());
+    set_ctor_prototype(&object, object_proto.clone());
     for name in &[
         "keys",
         "values",
@@ -110,7 +129,7 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:number", name, idx),
         );
     }
-    set_prop(&number, "prototype", number_proto);
+    set_ctor_prototype(&number, number_proto);
     for name in &[
         "parseInt",
         "parseFloat",
@@ -179,7 +198,7 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:string", name, idx),
         );
     }
-    set_prop(&string, "prototype", string_proto);
+    set_ctor_prototype(&string, string_proto);
     for name in &["fromCharCode", "fromCodePoint", "raw"] {
         set_prop(&string, name, host_fn_ref(vm, "ecma:string", name));
     }
@@ -209,7 +228,7 @@ pub fn register(vm: &mut VM) {
         "valueOf",
         receiver_host_fn_ref("ecma:boolean", "valueOf", boolean_value_of),
     );
-    set_prop(&boolean, "prototype", boolean_proto);
+    set_ctor_prototype(&boolean, boolean_proto);
     vm.globals.insert("Boolean".to_string(), boolean.clone());
     vm.globals.insert("boolean".to_string(), boolean.clone());
 
@@ -229,7 +248,7 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:function", name, idx),
         );
     }
-    set_prop(&function, "prototype", function_proto.clone());
+    set_ctor_prototype(&function, function_proto.clone());
     set_prop(&function, "__proto__", function_proto);
     vm.globals.insert("Function".to_string(), function.clone());
     vm.globals.insert("function".to_string(), function.clone());
@@ -317,7 +336,7 @@ pub fn register(vm: &mut VM) {
             crate::ecma::object::track_nonenum(proto, "iterator");
         }
     }
-    set_prop(&array, "prototype", array_proto);
+    set_ctor_prototype(&array, array_proto);
     for name in &["from", "fromAsync", "isArray", "of"] {
         set_prop(&array, name, host_fn_ref(vm, "ecma:array", name));
     }
@@ -391,7 +410,7 @@ pub fn register(vm: &mut VM) {
                     }
                 }
             }
-            set_prop(&ctor, "prototype", proto);
+            set_ctor_prototype(&ctor, proto);
             vm.globals.insert(global_name.to_string(), ctor.clone());
             vm.globals
                 .insert(global_name.to_ascii_lowercase().to_string(), ctor);
@@ -464,7 +483,7 @@ pub fn register(vm: &mut VM) {
                 );
             }
         }
-        set_prop(&date, "prototype", date_proto);
+        set_ctor_prototype(&date, date_proto);
         for name in &["now", "parse", "UTC"] {
             set_prop(&date, name, host_fn_ref(vm, "ecma:date", name));
         }
@@ -689,7 +708,7 @@ pub fn register(vm: &mut VM) {
             if let Value::Object(p) = &proto {
                 crate::ecma::object::track_nonenum(p, "constructor");
             }
-            set_prop(&ctor, "prototype", proto);
+            set_ctor_prototype(&ctor, proto);
             vm.globals.insert(global_name.to_string(), ctor.clone());
             vm.globals
                 .insert(global_name.to_ascii_lowercase().to_string(), ctor);
@@ -723,7 +742,7 @@ pub fn register(vm: &mut VM) {
             if let Value::Object(p) = &proto {
                 crate::ecma::object::track_nonenum(p, "constructor");
             }
-            set_prop(&ctor, "prototype", proto);
+            set_ctor_prototype(&ctor, proto);
             vm.globals.insert(global_name.to_string(), ctor);
         }
     }
@@ -760,7 +779,7 @@ pub fn register(vm: &mut VM) {
                 crate::ecma::object::track_nonenum(p, name);
             }
         }
-        set_prop(&regexp, "prototype", regexp_proto);
+        set_ctor_prototype(&regexp, regexp_proto);
         vm.globals.insert("RegExp".to_string(), regexp.clone());
         vm.globals.insert("regexp".to_string(), regexp);
     }

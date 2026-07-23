@@ -406,6 +406,23 @@ impl Compiler {
             }
         }
         common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, first, line);
+        if self.profile.name == "lua" {
+            let row_slot = self.define_local("__lua_mv_pack_row");
+            self.emit_u16(Op::LOCAL_SET, row_slot);
+            self.stamp_lua_multi_row_slot(row_slot);
+            self.emit_u16(Op::LOCAL_GET, row_slot);
+        }
+    }
+
+    pub(super) fn stamp_lua_multi_row_slot(&mut self, row_slot: u16) {
+        if self.profile.name != "lua" {
+            return;
+        }
+        self.emit_u16(Op::LOCAL_GET, row_slot);
+        self.emit_const(Value::Bool(true));
+        let marker_key = self.str_const("__lua_multi_row");
+        self.emit_u16(Op::STRUCT_SET, marker_key);
+        self.emit(Op::DROP);
     }
 
     /// Return `Some((N, [ident...]))` when `targets`/`value` match the

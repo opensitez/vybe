@@ -1807,6 +1807,16 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet {
                     let parts = self.flatten_member_chain(expr);
                     if !parts.is_empty() {
+                        let const_key = parts.join(".");
+                        if let Some(cv) = self.profile.lookup_constant(&const_key).cloned() {
+                            match cv {
+                                ConstantValue::Float(f) => self.emit_const(Value::F64(f)),
+                                ConstantValue::Str(s) => {
+                                    self.emit_const(Value::String(Arc::from(s.as_str())))
+                                }
+                            }
+                            return Ok(());
+                        }
                         // namespaceplan.md: platform surfaces are data in the
                         // shared tree; the common resolver handles the mounted chain.
                         match self.resolve_profile_namespace_chain(&parts) {

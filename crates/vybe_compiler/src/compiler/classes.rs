@@ -1063,6 +1063,10 @@ impl Compiler {
                 }
                 self.chunks[self.current].emit_end(branch_line);
             }
+            if p.is_rest && self.profile.name == "lua" {
+                let slot = self.scope().resolve(&p.name).unwrap();
+                self.stamp_lua_multi_row_slot(slot);
+            }
             self.maybe_initialize_fortran_out_param(p);
         }
 

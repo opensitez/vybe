@@ -1224,6 +1224,7 @@ impl Compiler {
             common::collections::emit_push(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
         }
+        self.stamp_lua_multi_row_slot(rest_slot);
         self.emit_u16(Op::LOCAL_GET, rest_slot);
         self.emit_u8(Op::CALL_REF, argc as u8);
         self.restore_js_this_after_call(saved_js_this, "__js_rest_arg_call_result");
@@ -9228,7 +9229,12 @@ impl Compiler {
                 }
 
                 let _ = signature;
-                self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+                let rest_receiver = if self.profile.name == "lua" {
+                    None
+                } else {
+                    Some(receiver_slot)
+                };
+                self.emit_call_ref_with_arg_slots(callee_slot, rest_receiver, &arg_slots);
                 return Ok(());
             }
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
