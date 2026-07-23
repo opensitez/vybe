@@ -70,7 +70,11 @@ fn expr_stmt(value: Expression) -> Statement {
     s(StmtKind::Expr(value))
 }
 
-fn if_stmt(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+fn if_stmt(
+    cond: Expression,
+    then_body: Vec<Statement>,
+    else_body: Option<Vec<Statement>>,
+) -> Statement {
     s(StmtKind::If {
         cond,
         then_body,
@@ -124,13 +128,16 @@ pub fn domain_error_helpers() -> Vec<Statement> {
         vec![
             s(StmtKind::If {
                 cond: bin(BinOp::Lt, ident("x"), lit_int(0)),
-                then_body: vec![s(StmtKind::Expr(e(ExprKind::Assign {
-                    target: Box::new(ident("errno")),
-                    value: Box::new(lit_int(33)),
-                }))), s(StmtKind::Expr(e(ExprKind::Assign {
-                    target: Box::new(ident("__c_fenv_excepts")),
-                    value: Box::new(bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(1))),
-                })))],
+                then_body: vec![
+                    s(StmtKind::Expr(e(ExprKind::Assign {
+                        target: Box::new(ident("errno")),
+                        value: Box::new(lit_int(33)),
+                    }))),
+                    s(StmtKind::Expr(e(ExprKind::Assign {
+                        target: Box::new(ident("__c_fenv_excepts")),
+                        value: Box::new(bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(1))),
+                    }))),
+                ],
                 elifs: Vec::new(),
                 else_body: None,
             }),
@@ -228,7 +235,10 @@ pub fn fenv_binary(op: BinOp, left: Expression, right: Expression) -> Expression
         BinOp::Mul => 2,
         _ => 0,
     };
-    call(ident("__c_fenv_binary"), vec![lit_int(op_code), left, right])
+    call(
+        ident("__c_fenv_binary"),
+        vec![lit_int(op_code), left, right],
+    )
 }
 
 /// C `round(x)` uses half-away-from-zero, not banker's rounding.

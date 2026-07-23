@@ -21,7 +21,10 @@ pub fn register_namespace_tree() {
             ("gamma", "libc.math.tgamma"),
             ("lgamma", "libc.math.lgamma"),
         ] {
-            math.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+            math.insert(
+                name.to_string(),
+                NamespaceNode::CommonEmit(emit.to_string()),
+            );
         }
 
         let mut root = Subtree::new();

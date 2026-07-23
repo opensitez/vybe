@@ -969,7 +969,11 @@ fn build_prelude() -> Vec<Statement> {
                     then: Box::new(expr(ExprKind::Ternary {
                         cond: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Eq,
-                            left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
+                            left: Box::new(call_member(
+                                ident("mode"),
+                                "indexOf",
+                                vec![str_lit("a")],
+                            )),
                             right: Box::new(int_lit(-1)),
                         })),
                         then: Box::new(int_lit(1)),
@@ -1692,7 +1696,10 @@ fn build_prelude() -> Vec<Statement> {
         "__c_fclose_h",
         vec!["handle"],
         vec![
-            stmt(StmtKind::Expr(call_expr(ident("__c_fsync_h"), vec![ident("handle")]))),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_fsync_h"),
+                vec![ident("handle")],
+            ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_closed"), ident("handle")),
                 int_lit(1),
@@ -1781,12 +1788,18 @@ fn build_prelude() -> Vec<Statement> {
                 index_expr(ident("__c_file_append"), ident("handle")),
                 vec![stmt(StmtKind::Expr(assign_expr(
                     index_expr(ident("__c_file_pos"), ident("handle")),
-                    member(index_expr(ident("__c_file_content"), ident("handle")), "length"),
+                    member(
+                        index_expr(ident("__c_file_content"), ident("handle")),
+                        "length",
+                    ),
                 )))],
                 None,
             ),
             var_decl_stmt("pos", index_expr(ident("__c_file_pos"), ident("handle"))),
-            var_decl_stmt("content", index_expr(ident("__c_file_content"), ident("handle"))),
+            var_decl_stmt(
+                "content",
+                index_expr(ident("__c_file_content"), ident("handle")),
+            ),
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::Gt,
@@ -2170,8 +2183,14 @@ fn build_prelude() -> Vec<Statement> {
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
-            stmt(StmtKind::Expr(assign_expr(index_expr(ident("__c_file_pos"), ident("handle")), ident("pos")))),
-            stmt(StmtKind::Expr(assign_expr(index_expr(ident("__c_file_eof"), ident("handle")), int_lit(0)))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_pos"), ident("handle")),
+                ident("pos"),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_file_eof"), ident("handle")),
+                int_lit(0),
+            ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_ungot"), ident("handle")),
                 expr(ExprKind::Array(vec![])),

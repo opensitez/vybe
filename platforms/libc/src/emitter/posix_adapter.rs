@@ -27,7 +27,10 @@ fn exec_helper() -> Statement {
         "__c_exec_h",
         vec!["path", "argv", "env", "action"],
         vec![
-            var_decl_stmt("p", call_expr(ident("__libc_char_to_str"), vec![ident("path")])),
+            var_decl_stmt(
+                "p",
+                call_expr(ident("__libc_char_to_str"), vec![ident("path")]),
+            ),
             if_stmt(
                 or(
                     bin(
@@ -114,11 +117,15 @@ fn exec_helper() -> Statement {
                 ternary(
                     bin(BinOp::Gt, member(ident("args"), "length"), int_lit(0)),
                     index_expr(ident("args"), int_lit(0)),
-                    call_member(ident("p"), "substring", vec![bin(
-                        BinOp::Add,
-                        call_member(ident("p"), "lastIndexOf", vec![str_lit("/")]),
-                        int_lit(1),
-                    )]),
+                    call_member(
+                        ident("p"),
+                        "substring",
+                        vec![bin(
+                            BinOp::Add,
+                            call_member(ident("p"), "lastIndexOf", vec![str_lit("/")]),
+                            int_lit(1),
+                        )],
+                    ),
                 ),
             ),
             if_stmt(
@@ -231,7 +238,10 @@ fn exec_helper() -> Statement {
                             member(ident("action"), "openPath"),
                         ),
                         vec![stmt(StmtKind::Expr(assign_expr(
-                            index_expr(ident("__c_file_store"), member(ident("action"), "openPath")),
+                            index_expr(
+                                ident("__c_file_store"),
+                                member(ident("action"), "openPath"),
+                            ),
                             ident("text"),
                         )))],
                         Some(vec![stmt(StmtKind::Expr(call_expr(
@@ -270,13 +280,20 @@ fn exec_helper() -> Statement {
                 None,
             ),
             if_stmt(
-                bin(BinOp::GtEq, call_member(ident("p"), "indexOf", vec![str_lit(".sh")]), int_lit(0)),
+                bin(
+                    BinOp::GtEq,
+                    call_member(ident("p"), "indexOf", vec![str_lit(".sh")]),
+                    int_lit(0),
+                ),
                 vec![
                     if_stmt(
                         bin(
                             BinOp::GtEq,
                             call_member(
-                                nullish(index_expr(ident("__c_file_store"), ident("p")), str_lit("")),
+                                nullish(
+                                    index_expr(ident("__c_file_store"), ident("p")),
+                                    str_lit(""),
+                                ),
                                 "indexOf",
                                 vec![str_lit("echo script")],
                             ),
@@ -1158,7 +1175,13 @@ pub fn posix_spawn_file_actions_destroy(_actions: Expression) -> Expression {
     int_lit(0)
 }
 
-pub fn posix_spawn(pid: Expression, path: Expression, actions: Expression, argv: Expression, env: Expression) -> Expression {
+pub fn posix_spawn(
+    pid: Expression,
+    path: Expression,
+    actions: Expression,
+    argv: Expression,
+    env: Expression,
+) -> Expression {
     expr(ExprKind::Sequence(vec![
         assign_expr(arg_target(pid), int_lit(1001)),
         call_expr(
@@ -1910,14 +1933,21 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
         bin(BinOp::BitAnd, flags.clone(), int_lit(128)),
         int_lit(0),
     );
-    let invalid = bin(BinOp::Gt, member(ident("__c_mq_path"), "length"), int_lit(240));
-    let missing = and(expr(ExprKind::Unary {
-        op: UnaryOp::Not,
-        expr: Box::new(create),
-    }), expr(ExprKind::Unary {
-        op: UnaryOp::Not,
-        expr: Box::new(exists.clone()),
-    }));
+    let invalid = bin(
+        BinOp::Gt,
+        member(ident("__c_mq_path"), "length"),
+        int_lit(240),
+    );
+    let missing = and(
+        expr(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(create),
+        }),
+        expr(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(exists.clone()),
+        }),
+    );
     let exclusive = and(excl, exists.clone());
     expr(ExprKind::Sequence(vec![
         assign_expr(
@@ -1926,13 +1956,19 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
         ),
         assign_expr(
             exists.clone(),
-            nullish(index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")), int_lit(0)),
+            nullish(
+                index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")),
+                int_lit(0),
+            ),
         ),
         ternary(
             or(invalid, or(missing, exclusive)),
             int_lit(-1),
             expr(ExprKind::Sequence(vec![
-                assign_expr(q.clone(), ternary(is_new.clone(), ident("__c_mq_next"), exists)),
+                assign_expr(
+                    q.clone(),
+                    ternary(is_new.clone(), ident("__c_mq_next"), exists),
+                ),
                 assign_expr(
                     ident("__c_mq_next"),
                     ternary(
@@ -1941,7 +1977,10 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
                         ident("__c_mq_next"),
                     ),
                 ),
-                assign_expr(index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")), q.clone()),
+                assign_expr(
+                    index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")),
+                    q.clone(),
+                ),
                 assign_expr(index_expr(ident("__c_mq_flags"), q.clone()), flags),
                 ternary(
                     is_new.clone(),
@@ -1970,9 +2009,15 @@ pub fn mq_unlink(path: Expression) -> Expression {
             call_expr(ident("__libc_char_to_str"), vec![path]),
         ),
         ternary(
-            nullish(index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")), int_lit(0)),
+            nullish(
+                index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")),
+                int_lit(0),
+            ),
             expr(ExprKind::Sequence(vec![
-                assign_expr(index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")), int_lit(0)),
+                assign_expr(
+                    index_expr(ident("__c_mq_by_name"), ident("__c_mq_path")),
+                    int_lit(0),
+                ),
                 int_lit(0),
             ])),
             int_lit(-1),
@@ -1994,7 +2039,12 @@ pub fn mq_send(q: Expression, msg: Expression, len: Expression, prio: Expression
     ]))
 }
 
-pub fn mq_receive(q: Expression, buf: Expression, buflen: Expression, prio: Expression) -> Expression {
+pub fn mq_receive(
+    q: Expression,
+    buf: Expression,
+    buflen: Expression,
+    prio: Expression,
+) -> Expression {
     let buf = arg_target(buf);
     let prio_arg = prio;
     let prio = arg_target(prio_arg.clone());
@@ -2002,7 +2052,10 @@ pub fn mq_receive(q: Expression, buf: Expression, buflen: Expression, prio: Expr
     let prio_value = nullish(index_expr(ident("__c_mq_prio"), q.clone()), int_lit(0));
     let write_buf = ternary(
         pointers::is_carray_ptr_kind(buf.clone()),
-        call_expr(ident("__c_write_carray_string"), vec![buf.clone(), msg.clone()]),
+        call_expr(
+            ident("__c_write_carray_string"),
+            vec![buf.clone(), msg.clone()],
+        ),
         assign_expr(buf, msg.clone()),
     );
     let write_prio = ternary(
@@ -2014,12 +2067,18 @@ pub fn mq_receive(q: Expression, buf: Expression, buflen: Expression, prio: Expr
         or(
             expr(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(nullish(index_expr(ident("__c_mq_has_msg"), q.clone()), int_lit(0))),
+                expr: Box::new(nullish(
+                    index_expr(ident("__c_mq_has_msg"), q.clone()),
+                    int_lit(0),
+                )),
             }),
             bin(
                 BinOp::Lt,
                 buflen,
-                nullish(index_expr(ident("__c_mq_msgsize"), q.clone()), int_lit(8192)),
+                nullish(
+                    index_expr(ident("__c_mq_msgsize"), q.clone()),
+                    int_lit(8192),
+                ),
             ),
         ),
         int_lit(-1),
@@ -2035,10 +2094,22 @@ pub fn mq_receive(q: Expression, buf: Expression, buflen: Expression, prio: Expr
 pub fn mq_getattr(q: Expression, attr: Expression) -> Expression {
     let target = arg_target(attr);
     expr(ExprKind::Sequence(vec![
-        assign_expr(member(target.clone(), "mq_flags"), nullish(index_expr(ident("__c_mq_flags"), q.clone()), int_lit(0))),
+        assign_expr(
+            member(target.clone(), "mq_flags"),
+            nullish(index_expr(ident("__c_mq_flags"), q.clone()), int_lit(0)),
+        ),
         assign_expr(member(target.clone(), "mq_maxmsg"), int_lit(10)),
-        assign_expr(member(target.clone(), "mq_msgsize"), nullish(index_expr(ident("__c_mq_msgsize"), q.clone()), int_lit(8192))),
-        assign_expr(member(target, "mq_curmsgs"), nullish(index_expr(ident("__c_mq_has_msg"), q), int_lit(0))),
+        assign_expr(
+            member(target.clone(), "mq_msgsize"),
+            nullish(
+                index_expr(ident("__c_mq_msgsize"), q.clone()),
+                int_lit(8192),
+            ),
+        ),
+        assign_expr(
+            member(target, "mq_curmsgs"),
+            nullish(index_expr(ident("__c_mq_has_msg"), q), int_lit(0)),
+        ),
         int_lit(0),
     ]))
 }
@@ -2050,8 +2121,14 @@ pub fn mq_setattr(q: Expression, new_attr: Expression, old_attr: Option<Expressi
         .unwrap_or_else(|| int_lit(0));
     expr(ExprKind::Sequence(vec![
         save_old,
-        assign_expr(member(new_attr.clone(), "mq_flags"), nullish(member(new_attr.clone(), "mq_flags"), int_lit(0))),
-        assign_expr(index_expr(ident("__c_mq_flags"), q), member(new_attr, "mq_flags")),
+        assign_expr(
+            member(new_attr.clone(), "mq_flags"),
+            nullish(member(new_attr.clone(), "mq_flags"), int_lit(0)),
+        ),
+        assign_expr(
+            index_expr(ident("__c_mq_flags"), q),
+            member(new_attr, "mq_flags"),
+        ),
         int_lit(0),
     ]))
 }
