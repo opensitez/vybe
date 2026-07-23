@@ -22,7 +22,10 @@ fn function_call_survives_same_named_variable_runtime() {
 
 #[test]
 fn case_insensitive_in_array_keeps_php_argument_order() {
-    assert_outputs("<?php echo in_Array('en', ['en']) ? 'yes' : 'no';", &["yes"]);
+    assert_outputs(
+        "<?php echo in_Array('en', ['en']) ? 'yes' : 'no';",
+        &["yes"],
+    );
 }
 
 // ── String builtins ─────────────────────────────────────────
