@@ -16,7 +16,7 @@ void main() {
 "#
         ),
         vec!["SIGINT"] // ProcessSignal properties don't have standard 'name' directly in older Darts, but toString might.
-        // Actually, toString() returns "SIGINT". We'll just do toString.
+                       // Actually, toString() returns "SIGINT". We'll just do toString.
     );
 }
 

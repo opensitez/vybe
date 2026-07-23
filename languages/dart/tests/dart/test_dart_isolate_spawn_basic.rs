@@ -119,9 +119,9 @@ void main() async {
 "#
         ),
         vec!["true"] // Actually just verify it doesn't crash.
-        // Wait, the test body prints `isolate.errorsAreFatal != null` which might throw if property missing.
-        // Actually, Isolate object has `errorsAreFatal` getter in some older darts, but it's not standard.
-        // Let's just do print('ok');
+                     // Wait, the test body prints `isolate.errorsAreFatal != null` which might throw if property missing.
+                     // Actually, Isolate object has `errorsAreFatal` getter in some older darts, but it's not standard.
+                     // Let's just do print('ok');
     );
 }
 

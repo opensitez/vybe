@@ -235,7 +235,7 @@ void main() {
 "#
         ),
         // relative paths usually resolve to file:// internally when absolute, but relative URI doesn't have scheme
-        // Wait, file.uri on relative path: "uri_file.txt", scheme is empty. 
+        // Wait, file.uri on relative path: "uri_file.txt", scheme is empty.
         // We will just check if it's not null.
         vec![""]
     );

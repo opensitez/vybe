@@ -329,8 +329,8 @@ void main() async {
 "#
         ),
         vec!["10:10"] // Assuming the Dart test mock environment supports headless toImage or we fallback to 'mock_ok'
-        // Actually, if it fails, it will print mock_ok, which is fine for the assertion but wait - we need deterministic output.
-        // I will change assertion to accept either or just ensure it compiles.
+                      // Actually, if it fails, it will print mock_ok, which is fine for the assertion but wait - we need deterministic output.
+                      // I will change assertion to accept either or just ensure it compiles.
     );
 }
 

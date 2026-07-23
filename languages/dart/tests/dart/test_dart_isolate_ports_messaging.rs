@@ -323,6 +323,6 @@ void main() async {
         // Wait, Dart's SendPort message serialization actually supports cyclic graphs since a while ago,
         // but `identical` across isolates or ports might not hold depending on whether it's the same isolate.
         // Within same isolate, it actually copies the object graph, so `msg != list`, but `msg[0] == msg`.
-        vec!["true"] 
+        vec!["true"]
     );
 }

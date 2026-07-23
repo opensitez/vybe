@@ -85,7 +85,7 @@ void main() async {
         ),
         // Since we don't have an actual event loop and filesystem watcher active in test VMs,
         // we might not get 'created'. The test is just to ensure it compiles and runs without crashing.
-        // Wait, if it doesn't print, run_prints will return empty array if isWatchSupported is true, 
+        // Wait, if it doesn't print, run_prints will return empty array if isWatchSupported is true,
         // but maybe the VM mocks it? We'll just assert it doesn't crash.
         Vec::<String>::new()
     );

@@ -106,8 +106,8 @@ void main() {
 }
 "#
         ),
-        // FileLock.exclusive does not block, it throws if unavailable. 
-        // Note: FileLock.exclusive is a non-blocking request in dart. Wait, actually FileLock.exclusive blocks. 
+        // FileLock.exclusive does not block, it throws if unavailable.
+        // Note: FileLock.exclusive is a non-blocking request in dart. Wait, actually FileLock.exclusive blocks.
         // Wait, Dart has `FileLock.exclusive` (which is blocking) and `FileLock.blockingExclusive`.
         // Wait! In Dart, FileLock.exclusive is NON-BLOCKING. Wait, no.
         // Let's just expect FileSystemException if it doesn't block, or if it does block, it deadlocks.
