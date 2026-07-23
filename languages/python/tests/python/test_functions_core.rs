@@ -5,7 +5,6 @@ fn function_return_literal() {
     assert_eq!(run_python_one("def f():\n return 42\nprint(f())\n"), "42");
 }
 
-
 #[test]
 fn function_return_expression() {
     assert_eq!(

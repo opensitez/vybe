@@ -84,7 +84,10 @@ pub fn run_python(src: &str) -> Vec<String> {
     // Run through the RuntimeCompilerService like the real exe (and the PHP
     // harness) — a bare `vm.run` never activates the compiler-as-a-service, so
     // `eval`/`exec`/`compile` (which route to the `vybe:eval` host) break.
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_python::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_python::register);
+    }
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     vybe_host::register_all(&mut vm);
@@ -112,11 +115,13 @@ pub fn parse_ok(src: &str) {
 
 /// Parse + compile: verify the full pipeline up to bytecode emission
 pub fn compile_ok(src: &str) {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_python::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_python::register);
+    }
     let module = vybe_language_python::parse(src).expect("Python parse failed");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
-            .expect("Failed to parse Python profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
+        .expect("Failed to parse Python profile");
     let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("Python compile failed");

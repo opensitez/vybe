@@ -253,6 +253,3 @@ fn list_slice_len_after_slice() {
         "3"
     );
 }
-
-
-

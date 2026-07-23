@@ -35,8 +35,6 @@ fn fstring_format_spec_binary() {
     assert_eq!(run_python_one("print(f'{5:b}')\n"), "101");
 }
 
-
-
 #[test]
 fn fstring_format_spec_percent_style() {
     assert_eq!(run_python_one("print(f'{0.5:.0%}')\n"), "50%");

@@ -291,5 +291,3 @@ fn is_subclass_not_is_instance() {
         "False True"
     );
 }
-
-
