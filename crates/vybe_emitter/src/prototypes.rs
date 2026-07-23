@@ -13,8 +13,8 @@
 //! helpers rather than inlining raw opcodes.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// The intrinsic constructor global whose `.prototype` becomes a function
 /// object's [[Prototype]], selected by function kind.

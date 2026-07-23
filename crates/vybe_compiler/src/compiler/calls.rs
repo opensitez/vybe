@@ -46,6 +46,18 @@ pub(super) fn extract_generic_type_name(name: &str) -> Option<String> {
     Some(inner.rsplit('.').next().unwrap_or(inner).trim().to_string())
 }
 
+fn array_element_type_hint(type_hint: &str) -> Option<String> {
+    let trimmed = type_hint.trim();
+    if let Some(element) = trimmed.strip_suffix("()") {
+        return Some(element.trim().to_string());
+    }
+    if trimmed.ends_with(']') {
+        let bracket = trimmed.rfind('[')?;
+        return Some(trimmed[..bracket].trim().to_string());
+    }
+    None
+}
+
 fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
@@ -358,7 +370,20 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         ExprKind::New { class, .. } => {
             terminal_type_name(class).map(|name| compiler.resolve_source_type_alias(&name))
         }
+        ExprKind::Index { object, .. } if compiler.profile.namespaces.use_dotnet => {
+            resolve_receiver_type_hint(compiler, object)
+                .as_deref()
+                .and_then(array_element_type_hint)
+                .map(|name| compiler.resolve_source_type_alias(&name))
+        }
         ExprKind::Call { callee, args, .. } => {
+            if compiler.profile.parens_for_index && args.len() == 1 {
+                if let Some(type_hint) = resolve_receiver_type_hint(compiler, callee) {
+                    if let Some(element_type) = array_element_type_hint(&type_hint) {
+                        return Some(compiler.resolve_source_type_alias(&element_type));
+                    }
+                }
+            }
             let arg_exprs: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if let Some(return_type) = compiler
@@ -850,7 +875,11 @@ impl Compiler {
             }
             let pending = self.pending_classes.get(&current)?;
             let key = self.js_member_storage_name_for_class(&current, method_name);
-            if pending.instance_member_names.iter().any(|name| name == &key) {
+            if pending
+                .instance_member_names
+                .iter()
+                .any(|name| name == &key)
+            {
                 return None;
             }
             current = pending.parent.clone()?;
@@ -989,7 +1018,11 @@ impl Compiler {
                     arg_slots.push(arg_slot);
                 }
 
-                self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                if self.class_prototype_dispatch() {
+                    self.emit_call_ref_with_bound_js_this_arg_slots(fn_tmp, obj_tmp, &arg_slots);
+                } else {
+                    self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                }
 
                 let pack_slot = self.define_local("__direct_instance_method_ref_call_pack");
                 self.emit_u16(Op::LOCAL_SET, pack_slot);
@@ -1018,7 +1051,11 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, arg_slot);
             arg_slots.push(arg_slot);
         }
-        self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+        if self.class_prototype_dispatch() {
+            self.emit_call_ref_with_bound_js_this_arg_slots(fn_tmp, obj_tmp, &arg_slots);
+        } else {
+            self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+        }
         Ok(())
     }
 
@@ -1428,6 +1465,49 @@ impl Compiler {
         receiver_slot: Option<u16>,
         arg_slots: &[u16],
     ) {
+        if let Some(receiver_slot) = receiver_slot {
+            if self.class_prototype_dispatch() {
+                let result_slot = self.define_local("__call_runtime_result");
+                let has_own_marker_slot =
+                    self.emit_js_has_own_receiver_marker(callee_slot, "__js_receiver_call_marker");
+                let receiver_key = self.str_const("__vybe_method_receiver");
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                self.emit_u16(Op::STRUCT_GET, receiver_key);
+                let marker_slot = self.define_local("__js_receiver_call_marker_value");
+                self.emit_u16(Op::LOCAL_SET, marker_slot);
+
+                self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
+                self.emit(Op::I32_EQZ);
+                let line = self.line;
+                self.chunk().emit_if(line);
+                self.emit_dispatch_and_store_from_arg_slots(
+                    callee_slot,
+                    None,
+                    Some(receiver_slot),
+                    arg_slots,
+                    result_slot,
+                );
+                self.chunk().emit_else(line);
+                self.emit_u16(Op::LOCAL_GET, marker_slot);
+                fn_call!(self, "wasm:js-undefined", "test", 1);
+                let line = self.line;
+                self.chunk().emit_if(line);
+                self.emit_dispatch_and_store_from_arg_slots(
+                    callee_slot,
+                    None,
+                    Some(receiver_slot),
+                    arg_slots,
+                    result_slot,
+                );
+                self.chunk().emit_else(line);
+                self.emit_js_apply_from_arg_slots(callee_slot, receiver_slot, arg_slots);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+                self.chunk().emit_end(line);
+                self.chunk().emit_end(line);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                return;
+            }
+        }
         let result_slot = self.define_local("__call_runtime_result");
         if let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
@@ -1473,6 +1553,70 @@ impl Compiler {
             );
         }
         self.emit_u16(Op::LOCAL_GET, result_slot);
+    }
+
+    fn emit_js_receiver_host_or_bound_this_call(
+        &mut self,
+        callee_slot: u16,
+        receiver_slot: u16,
+        arg_slots: &[u16],
+    ) {
+        let has_own_marker_slot =
+            self.emit_js_has_own_receiver_marker(callee_slot, "__js_receiver_host_marker");
+        let receiver_key = self.str_const("__vybe_method_receiver");
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_u16(Op::STRUCT_GET, receiver_key);
+        let marker_slot = self.define_local("__js_receiver_host_marker_value");
+        self.emit_u16(Op::LOCAL_SET, marker_slot);
+
+        self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
+        self.emit(Op::I32_EQZ);
+        let line = self.line;
+        self.chunk().emit_if(line);
+        self.emit_call_ref_with_bound_js_this_arg_slots(callee_slot, receiver_slot, arg_slots);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, marker_slot);
+        fn_call!(self, "wasm:js-undefined", "test", 1);
+        let line = self.line;
+        self.chunk().emit_if(line);
+        self.emit_call_ref_with_bound_js_this_arg_slots(callee_slot, receiver_slot, arg_slots);
+        self.chunk().emit_else(line);
+        self.emit_js_apply_from_arg_slots(callee_slot, receiver_slot, arg_slots);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+    }
+
+    fn emit_js_has_own_receiver_marker(&mut self, callee_slot: u16, local_name: &str) -> u16 {
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_const(Value::String(Arc::from("__vybe_method_receiver")));
+        let has_own_idx = self.import("ecma:object", "hasOwn");
+        self.emit_host_call(has_own_idx, 2);
+        let line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        let slot = self.define_local(local_name);
+        self.emit_u16(Op::LOCAL_SET, slot);
+        slot
+    }
+
+    fn emit_js_apply_from_arg_slots(
+        &mut self,
+        callee_slot: u16,
+        receiver_slot: u16,
+        arg_slots: &[u16],
+    ) {
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        let args_slot = self.define_local("__js_apply_args");
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, self.line);
+        self.emit_u16(Op::LOCAL_SET, args_slot);
+        for slot in arg_slots {
+            self.emit_u16(Op::LOCAL_GET, args_slot);
+            self.emit_u16(Op::LOCAL_GET, *slot);
+            common::collections::emit_push(&mut self.chunks, self.current, self.line);
+            self.emit(Op::DROP);
+        }
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        fn_call!(self, "ecma:function", "apply", 3);
     }
 
     fn finish_member_index_call_path(
@@ -1884,6 +2028,7 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
+        self.chunks[func_idx].local_names = self.scope().defined_names.clone();
         self.scopes.pop();
         self.current = saved_current;
         self.function_label_base = saved_label_base;
@@ -2041,6 +2186,7 @@ impl Compiler {
             "TypeError" => &["TypeError", "Error"],
             "URIError" => &["URIError", "Error"],
             "AggregateError" => &["AggregateError", "Error"],
+            "SuppressedError" => &["SuppressedError", "Error"],
             _ => &[],
         }
     }
@@ -2223,6 +2369,16 @@ impl Compiler {
             return Ok(());
         }
 
+        if type_name.trim() == "SuppressedError" {
+            let idx = self.import("ecma:error", "SuppressedError");
+            self.emit_u16(Op::STRUCT_NEW, 0);
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+            self.emit_host_call(idx, (args.len() + 1) as u8);
+            return Ok(());
+        }
+
         if let Some(msg_arg) = args.first() {
             self.compile_expr(msg_arg)?;
         } else {
@@ -2359,7 +2515,11 @@ impl Compiler {
                 if !valid {
                     continue;
                 }
-                if fixed_slots.iter().take(signature.min_arity).any(Option::is_none) {
+                if fixed_slots
+                    .iter()
+                    .take(signature.min_arity)
+                    .any(Option::is_none)
+                {
                     continue;
                 }
 
@@ -3201,6 +3361,13 @@ impl Compiler {
             if matches!(&object.kind, ExprKind::Super) {
                 let canon_field = self.canon(field);
                 let class_name = self.current_class.clone();
+                if class_name.is_none() {
+                    self.emit_const(Value::String(Arc::from("'super' keyword unexpected here")));
+                    let line = self.line;
+                    self.emit_js_exception_ctor_from_message_value("ReferenceError")?;
+                    common::errors::emit_throw(self.chunk(), line);
+                    return Ok(());
+                }
                 let parent_name = class_name
                     .as_ref()
                     .and_then(|cn| self.pending_classes.get(cn.as_str()))
@@ -3211,7 +3378,7 @@ impl Compiler {
                     .resolve(&self_kw)
                     .or_else(|| self.scope().resolve_ci(&self_kw));
 
-                if let Some(parent) = parent_name {
+                if let Some(_parent) = parent_name {
                     if self.profile.class_multiple_inheritance {
                         // Cooperative super (multiple inheritance): resolve the NEXT
                         // method by walking the instance's runtime C3 MRO from the
@@ -3233,31 +3400,34 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(canon_field.as_str())));
                         self.emit_u8(Op::CALL_REF, 3);
                     } else {
-                        // Look up parent class via emit_var_get so closure-
-                        // captured parents (mixin pattern: `(Base) => class
-                        // extends Base`) resolve through the upvalue scope.
-                        self.emit_var_get(&parent);
+                        // ECMA `super` resolves from the method's
+                        // [[HomeObject]].[[Prototype]] at call time. For
+                        // instance methods that is `C.prototype.__proto__`,
+                        // so prototype rebinding remains observable.
+                        self.emit_js_super_home_base();
                         let method_idx = self.str_const(&canon_field);
                         self.emit_u16(Op::STRUCT_GET, method_idx);
                     }
 
                     if self.profile.ambient_this_binding {
-                        let saved_js_this = self.save_js_this("__js_prev_this_super_method");
-                        if let Some(slot) = self_slot {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            let js_this = self.str_const("__js_this");
-                            self.emit_u16(Op::GLOBAL_GET, js_this);
-                        }
-                        self.set_js_this_from_stack();
-                        for a in &arg_exprs {
+                        let method_slot = self.define_local("__js_super_method_fn");
+                        self.emit_u16(Op::LOCAL_SET, method_slot);
+                        self.emit_js_current_this_value();
+                        let receiver_slot = self.define_local("__js_super_method_receiver");
+                        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, a) in arg_exprs.iter().enumerate() {
                             self.compile_expr(a)?;
+                            let arg_slot =
+                                self.define_local(&format!("__js_super_method_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            arg_slots.push(arg_slot);
                         }
-                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
-                        let result_slot = self.define_local("__js_super_method_result");
-                        self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.restore_js_this(saved_js_this);
-                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        self.emit_js_receiver_host_or_bound_this_call(
+                            method_slot,
+                            receiver_slot,
+                            &arg_slots,
+                        );
                     } else {
                         // Typed-language method ABI passes receiver as arg0.
                         if let Some(slot) = self_slot {
@@ -3327,11 +3497,48 @@ impl Compiler {
         // ungated, this hijacked typed receivers in other languages
         // (the "dotnet adapter leaked into compiler core" disease).
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if self.profile.namespaces.use_dotnet
+                && field.eq_ignore_ascii_case("Add")
+                && arg_exprs.len() == 1
+                && matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Items"))
+                && self
+                    .current_class
+                    .as_deref()
+                    .and_then(|class_name| {
+                        self.dotnet_framework_instance_method_owner(class_name, "Items", 0)
+                    })
+                    .is_some_and(|owner| {
+                        owner.to_ascii_lowercase().contains("observablecollection")
+                    })
+            {
+                if self.emit_self_ref() {
+                    self.emit_common("dotnet.observable_collection_items", 1, self.line);
+                    self.compile_expr(&arg_exprs[0])?;
+                    common::collections::emit_push(&mut self.chunks, self.current, self.line);
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
+                    return Ok(());
+                }
+            }
+
             let class_name = if self.profile.namespaces.use_dotnet {
                 resolve_receiver_type_hint(self, object)
             } else {
                 None
             };
+            if self.profile.namespaces.use_dotnet
+                && field.eq_ignore_ascii_case("Reverse")
+                && arg_exprs.len() == 2
+                && !self.direct_receiver_has_own_pending_method(object, field)
+            {
+                self.compile_expr(object)?;
+                for a in &arg_exprs {
+                    self.compile_expr(a)?;
+                }
+                let line = self.line;
+                self.emit_common("collections.reverse_range", 3, line);
+                return Ok(());
+            }
             if let Some(class_name) = class_name {
                 if self
                     .resolve_pending_class_name_for_type_hint(&class_name)
@@ -3345,6 +3552,68 @@ impl Compiler {
                     if let Some(target) =
                         surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8)
                     {
+                        if self.profile.namespaces.use_dotnet && field.eq_ignore_ascii_case("Add") {
+                            if let ExprKind::Index {
+                                object: indexed_owner,
+                                index,
+                                ..
+                            } = &object.kind
+                            {
+                                let owner_slot = self.define_local("__dotnet_index_owner");
+                                let key_slot = self.define_local("__dotnet_index_key");
+                                let value_slot = self.define_local("__dotnet_index_value");
+
+                                self.compile_expr(indexed_owner)?;
+                                self.emit_u16(Op::LOCAL_SET, owner_slot);
+                                self.compile_collection_key(indexed_owner, index)?;
+                                self.emit_u16(Op::LOCAL_SET, key_slot);
+
+                                self.emit_u16(Op::LOCAL_GET, owner_slot);
+                                self.emit_u16(Op::LOCAL_GET, key_slot);
+                                common::collections::emit_get(
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
+                                );
+                                self.emit_u16(Op::LOCAL_SET, value_slot);
+
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                for a in &arg_exprs {
+                                    self.compile_expr(a)?;
+                                }
+                                let total_argc = (arg_exprs.len() + 1) as u8;
+                                match &target {
+                                    common::dotnet::InstanceMethodTarget::Host {
+                                        module,
+                                        func,
+                                        ..
+                                    } => {
+                                        let idx = self.import(module, func);
+                                        self.emit_host_call(idx, total_argc);
+                                    }
+                                    common::dotnet::InstanceMethodTarget::Common {
+                                        emit, ..
+                                    } => {
+                                        let line = self.line;
+                                        self.emit_common(emit, total_argc, line);
+                                    }
+                                }
+                                self.emit(Op::DROP);
+
+                                self.emit_u16(Op::LOCAL_GET, owner_slot);
+                                self.emit_u16(Op::LOCAL_GET, key_slot);
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                common::collections::emit_set(
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
+                                );
+                                self.emit(Op::DROP);
+                                self.emit(Op::NULL);
+                                return Ok(());
+                            }
+                        }
+
                         if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
@@ -3439,6 +3708,50 @@ impl Compiler {
                             }
                         }
                         return Ok(());
+                    }
+                }
+            }
+        }
+        if let ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } = &callee.kind
+        {
+            if self.profile.ecma_promise_methods && !*null_safe {
+                if let ExprKind::Ident(class_name) = &object.kind {
+                    let class_canon = self.canon(class_name);
+                    if (self.defined_classes.contains(&class_canon)
+                        || self.pending_classes.contains_key(class_canon.as_str()))
+                        && self.class_extends_builtin(&class_canon, "Promise")
+                    {
+                        let host_name = match field.as_str() {
+                            "resolve" | "reject" | "all" | "race" | "allSettled" | "any"
+                            | "try" => Some(field.as_str()),
+                            _ => None,
+                        };
+                        if let Some(host_name) = host_name {
+                            if let Some(arg) = arg_exprs.first() {
+                                self.compile_expr(arg)?;
+                            } else {
+                                self.emit_const(Value::Undefined);
+                            }
+                            let idx = self.import("ecma:promise", host_name);
+                            self.emit_host_call(idx, 1);
+                            let promise_slot = self.define_local("__promise_subclass_result");
+                            self.emit_u16(Op::LOCAL_SET, promise_slot);
+
+                            self.emit_u16(Op::LOCAL_GET, promise_slot);
+                            self.emit_var_get(&class_canon);
+                            let proto_key = self.str_const("prototype");
+                            self.emit_u16(Op::STRUCT_GET, proto_key);
+                            let proto_link_key = self.str_const("__proto__");
+                            self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, promise_slot);
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -3602,6 +3915,24 @@ impl Compiler {
                 // `try_compile_builtin` below routes to the host fn.
 
                 let compound = format!("{}.{}", obj_name, field);
+                if self.profile.has_ecma_globals && obj_name == "Object" && field == "fromEntries" {
+                    if let Some(first) = arg_exprs.first() {
+                        self.compile_expr(first)?;
+                        if self.profile.has_generators {
+                            common::collections::emit_spread_iterable(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
+                        }
+                    } else {
+                        let line = self.line;
+                        common::expressions::emit_undefined(self.chunk(), line);
+                    }
+                    let idx = self.import("ecma:object", "fromEntries");
+                    self.emit_host_call(idx, 1);
+                    return Ok(());
+                }
                 if self.try_compile_spread_host_builtin(callee, &compound, args)? {
                     return Ok(());
                 }
@@ -3847,6 +4178,27 @@ impl Compiler {
                     }
                 }
 
+                if early_static_class_canon.is_some() && self.profile.namespaces.use_dotnet_resolver
+                {
+                    let tree_backed = matches!(
+                        self.resolve_profile_namespace_chain(&parts),
+                        Some(super::resolver::Resolution::HostImport { .. })
+                            | Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(_)
+                            ))
+                            | Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::HostCall { .. }
+                            ))
+                            | Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::Const(_)
+                            ))
+                            | Some(super::resolver::Resolution::ResolvedPrefix { .. })
+                    );
+                    if tree_backed {
+                        early_static_class_canon = None;
+                    }
+                }
+
                 if let Some(class_canon) = early_static_class_canon {
                     let cls_idx = self.str_const(&class_canon);
                     self.emit_u16(Op::GLOBAL_GET, cls_idx);
@@ -3963,11 +4315,19 @@ impl Compiler {
                             self.emit_u16(Op::GLOBAL_GET, cls_idx);
                             let receiver_slot = self.define_local("__early_static_receiver");
                             self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                            self.emit_call_ref_with_arg_slots(
-                                fn_tmp,
-                                Some(receiver_slot),
-                                &arg_slots,
-                            );
+                            if self.class_prototype_dispatch() {
+                                self.emit_js_receiver_host_or_bound_this_call(
+                                    fn_tmp,
+                                    receiver_slot,
+                                    &arg_slots,
+                                );
+                            } else {
+                                self.emit_call_ref_with_arg_slots(
+                                    fn_tmp,
+                                    Some(receiver_slot),
+                                    &arg_slots,
+                                );
+                            }
                         } else {
                             self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
                         }
@@ -4017,10 +4377,9 @@ impl Compiler {
                         // normal instance pipeline; the dotted resolver is for namespace/
                         // static chains and can otherwise short-circuit LINQ-style calls.
                     } else {
-                        // namespaceplan.md: the legacy platform cascade is deleted —
-                        // the COMMON resolver implements the .NET chain ordering over
-                        // platform data + the namespace tree + real compiler scope.
-                        let resolution = self.resolve_dotnet_chain(&parts);
+                        // namespaceplan.md: platform surfaces are data in the
+                        // shared tree; the common resolver handles the mounted chain.
+                        let resolution = self.resolve_profile_namespace_chain(&parts);
 
                         match resolution {
                             Some(super::resolver::Resolution::GlobalAccess { name }) => {
@@ -4309,9 +4668,9 @@ impl Compiler {
                 // Reads from `host_namespace_aliases` (populated by the
                 // Linker) instead of `profile.lookup_module_alias` — one
                 // source of truth for Member-chain resolution.
-                let dotnet_root = self.profile.namespaces.use_dotnet_resolver
-                    && common::dotnet::is_namespace_root(&lower_parts[0]);
-                if !dotnet_root {
+                let mounted_tree_chain = self.profile.namespaces.use_dotnet_resolver
+                    && self.resolve_profile_namespace_chain(&parts).is_some();
+                if !mounted_tree_chain {
                     let alias_key = self.canon(&lower_parts[0]);
                     // namespaceplan.md: migrated profiles resolve the chain
                     // head through the common resolver (locals shadow);
@@ -4918,6 +5277,19 @@ impl Compiler {
         // fallback for dynamically-typed receivers.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let class_name = resolve_receiver_type_hint(self, object);
+            if self.profile.namespaces.use_dotnet
+                && field.eq_ignore_ascii_case("Reverse")
+                && arg_exprs.len() == 2
+                && !self.direct_receiver_has_own_pending_method(object, field)
+            {
+                self.compile_expr(object)?;
+                for a in &arg_exprs {
+                    self.compile_expr(a)?;
+                }
+                let line = self.line;
+                self.emit_common("collections.reverse_range", 3, line);
+                return Ok(());
+            }
             // Resolve the type to look up on the shared .NET surface. A typed
             // receiver uses its own type (unless it names a user class, which
             // wins over shared names like `Stack`/`Dictionary`). An *untyped*
@@ -4937,11 +5309,7 @@ impl Compiler {
                 .as_deref()
                 .filter(|_| self.profile.namespaces.use_dotnet)
                 .and_then(|cn| {
-                    self.dotnet_framework_instance_method_owner(
-                        cn,
-                        field,
-                        arg_exprs.len() as u8,
-                    )
+                    self.dotnet_framework_instance_method_owner(cn, field, arg_exprs.len() as u8)
                 });
             let surface_type: Option<String> = match &class_name {
                 _ if framework_method_owner.is_some() => framework_method_owner,
@@ -6224,16 +6592,22 @@ impl Compiler {
                     }
                 };
 
+                let private_storage_name;
                 if let Some(class_name) = static_class_canon {
                     if let Some(overload) =
                         self.resolve_static_method_overload_for_type(&class_name, field, &arg_exprs)
                     {
+                        private_storage_name =
+                            self.js_member_storage_name_for_class(&class_name, field);
+                        self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
                         let line = self.line;
                         self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
                         self.chunk().emit(0, line);
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                     } else {
                         let field_name = self.js_member_storage_name_for_class(&class_name, field);
+                        private_storage_name = field_name.clone();
+                        self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
                         let prop = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::STRUCT_GET, prop);
@@ -6241,6 +6615,8 @@ impl Compiler {
                     }
                 } else {
                     let field_name = self.js_member_storage_name_for_receiver(object, field);
+                    private_storage_name = field_name.clone();
+                    self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
                     let prop = self.str_const(&field_name);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::STRUCT_GET, prop);
@@ -6743,7 +7119,7 @@ impl Compiler {
                         // argument 0 and shift every real argument
                         // (`c.f(7)` → f receives the object, not 7).
                         if self.class_prototype_dispatch() {
-                            self.emit_call_ref_with_bound_js_this_arg_slots(
+                            self.emit_js_receiver_host_or_bound_this_call(
                                 class_fn_slot,
                                 obj_tmp,
                                 &arg_slots,
@@ -7071,7 +7447,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
                         arg_slots.push(arg_slot);
                     }
-                    self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                     self.finish_buffered_generator_method_dispatch(result_slot);
                     return Ok(());
                 }
@@ -7335,7 +7711,7 @@ impl Compiler {
                         }
                         self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
                     } else {
-                        self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                        self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                     }
                 } else {
                     if let Some(param_modes) =
@@ -7442,7 +7818,19 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
+                        if self.class_prototype_dispatch() {
+                            self.emit_js_receiver_host_or_bound_this_call(
+                                fn_tmp,
+                                receiver_slot,
+                                &arg_slots,
+                            );
+                        } else {
+                            self.emit_call_ref_with_arg_slots(
+                                fn_tmp,
+                                Some(receiver_slot),
+                                &arg_slots,
+                            );
+                        }
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
@@ -7873,7 +8261,7 @@ impl Compiler {
                             self.chunk().emit_if(line);
                             self.emit_js_lookup_or_invoke_method_call(obj_tmp, field, &arg_slots)?;
                             self.chunk().emit_else(line);
-                            self.emit_call_ref_with_bound_js_this_arg_slots(
+                            self.emit_js_receiver_host_or_bound_this_call(
                                 fn_tmp, obj_tmp, &arg_slots,
                             );
                             self.chunk().emit_end(line);
@@ -8449,6 +8837,47 @@ impl Compiler {
                 // already escape via `current_member_is_static`.
                 let is_known_class = self.defined_classes.contains(&self.canon(name));
                 if !is_local && !is_known_func && !is_known_class {
+                    if self.profile.namespaces.use_dotnet {
+                        if let Some(current_class) = self.current_class.clone() {
+                            if let Some(owner) = self.dotnet_framework_instance_method_owner(
+                                &current_class,
+                                name,
+                                arg_exprs.len() as u8,
+                            ) {
+                                let target = common::dotnet::surface().lookup_instance_method(
+                                    &owner,
+                                    name,
+                                    arg_exprs.len() as u8,
+                                );
+                                if let Some(target) = target {
+                                    if self.emit_self_ref() {
+                                        for arg in &arg_exprs {
+                                            self.compile_expr(arg)?;
+                                        }
+                                        let total_argc = (arg_exprs.len() + 1) as u8;
+                                        match target {
+                                            common::dotnet::InstanceMethodTarget::Host {
+                                                module,
+                                                func,
+                                                ..
+                                            } => {
+                                                let idx = self.import(&module, &func);
+                                                self.emit_host_call(idx, total_argc);
+                                            }
+                                            common::dotnet::InstanceMethodTarget::Common {
+                                                emit,
+                                                ..
+                                            } => {
+                                                let line = self.line;
+                                                self.emit_common(&emit, total_argc, line);
+                                            }
+                                        }
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if self.emit_self_ref() {
                         // Me.name(args) → load Me, dup, struct_get(name).
                         // Real methods receive `this`/Self as arg0, but callable

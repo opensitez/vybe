@@ -55,8 +55,8 @@
 //! function (no outgoing `CALL*` instructions) is marked eligible. See
 //! `is_leaf_function`.
 
-use crate::writer::code;
 use crate::encoding::*;
+use crate::writer::code;
 use vybe_bytecode::{Chunk, Op};
 
 /// The canonical section names — exported so the writer can use them.

@@ -7,8 +7,8 @@
 use crate::collections;
 use crate::instructions::core_wasm;
 use crate::ops;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 fn emit_sort_in_place(chunk: &mut Chunk, h: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, h, line);

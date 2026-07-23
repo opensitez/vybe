@@ -149,7 +149,8 @@ fn make_type_error(ctx: &HostContext, message: &str) -> Value {
 }
 
 fn throw_revoked(ctx: &mut HostContext) -> Value {
-    ctx.throw_value(make_type_error(ctx, 
+    ctx.throw_value(make_type_error(
+        ctx,
         "Cannot perform operation on a revoked proxy",
     ));
     Value::Undefined
@@ -290,7 +291,8 @@ fn construct_dispatch_inner(
                 if matches!(result, Value::Object(_)) {
                     return result;
                 }
-                ctx.throw_value(make_type_error(ctx, 
+                ctx.throw_value(make_type_error(
+                    ctx,
                     "Proxy construct trap must return an object",
                 ));
                 return Value::Undefined;
@@ -360,10 +362,10 @@ fn construct_dispatch_inner(
             )
         };
         if non_ctor {
-            ctx.throw_value(make_type_error(ctx, &format!(
-                "{} is not a constructor",
-                fn_name
-            )));
+            ctx.throw_value(make_type_error(
+                ctx,
+                &format!("{} is not a constructor", fn_name),
+            ));
             return Value::Undefined;
         }
     }

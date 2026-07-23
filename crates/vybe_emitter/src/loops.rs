@@ -12,8 +12,8 @@
 //! 3. The helpers only emit the loop body — not the argument evaluation
 
 use crate::instructions::core_wasm;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 // ── Basic loop primitives ──────────────────────────────────────────────
 //

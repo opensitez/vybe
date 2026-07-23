@@ -1,4 +1,6 @@
-use vybe_bytecode::{VM, Value};
+use std::sync::Arc;
+
+use vybe_bytecode::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     // Core math — callable ops stay as host functions, while spec
@@ -26,7 +28,18 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:math",
         "trunc",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).trunc())),
+        Box::new(|ctx, a| {
+            let n = match number_arg(ctx, a, 0) {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            let truncated = n.trunc();
+            if truncated == 0.0 && truncated.is_sign_negative() {
+                Value::String(Arc::from("-0"))
+            } else {
+                Value::F64(truncated)
+            }
+        }),
     );
     // ECMA-262 §21.3.2.28: Math.round ties toward +Infinity (not symmetric).
     // Rust's f64::round() uses round-half-away-from-zero, which breaks for
@@ -261,12 +274,29 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:math",
         "clz32",
-        Box::new(|_ctx, a| Value::F64((f(a, 0) as u32).leading_zeros() as f64)),
+        Box::new(|ctx, a| {
+            let n = match number_arg(ctx, a, 0) {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            Value::F64(to_uint32(n).leading_zeros() as f64)
+        }),
     );
     vm.register_host_fn(
         "ecma:math",
         "fround",
-        Box::new(|_ctx, a| Value::F64((f(a, 0) as f32) as f64)),
+        Box::new(|ctx, a| {
+            let n = match number_arg(ctx, a, 0) {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            let rounded = (n as f32) as f64;
+            if rounded == 0.0 && rounded.is_sign_negative() {
+                Value::String(Arc::from("-0"))
+            } else {
+                Value::F64(rounded)
+            }
+        }),
     );
     // Math.f16round — ES2025: round to nearest IEEE 754 float16 value.
     vm.register_host_fn(
@@ -288,9 +318,15 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:math",
         "imul",
-        Box::new(|_ctx, a| {
-            let x = f(a, 0) as i64 as i32;
-            let y = f(a, 1) as i64 as i32;
+        Box::new(|ctx, a| {
+            let x = match number_arg(ctx, a, 0) {
+                Ok(n) => to_uint32(n) as i32,
+                Err(e) => return e,
+            };
+            let y = match number_arg(ctx, a, 1) {
+                Ok(n) => to_uint32(n) as i32,
+                Err(e) => return e,
+            };
             Value::F64(x.wrapping_mul(y) as f64)
         }),
     );
@@ -383,4 +419,48 @@ fn collect_nums(args: &[Value]) -> Vec<f64> {
 
 fn f(args: &[Value], idx: usize) -> f64 {
     args.get(idx).map(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+fn number_arg(ctx: &mut HostContext, args: &[Value], idx: usize) -> Result<f64, Value> {
+    let value = args.get(idx).unwrap_or(&Value::Undefined);
+    let primitive = crate::ecma::value::to_primitive(ctx, value, "number");
+    match primitive {
+        Value::Symbol(_) => {
+            ctx.throw_value(crate::ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "Cannot convert a Symbol value to a number",
+            ));
+            Err(Value::Undefined)
+        }
+        Value::String(s) => Ok(string_to_number(&s)),
+        other => Ok(other.as_f64()),
+    }
+}
+
+fn string_to_number(s: &str) -> f64 {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    let (sign, body) = if let Some(rest) = trimmed.strip_prefix('+') {
+        (1.0, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('-') {
+        (-1.0, rest)
+    } else {
+        (1.0, trimmed)
+    };
+    if let Some(rest) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        return i64::from_str_radix(rest, 16)
+            .map(|n| sign * n as f64)
+            .unwrap_or(f64::NAN);
+    }
+    trimmed.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+fn to_uint32(n: f64) -> u32 {
+    if n.is_nan() || n.is_infinite() || n == 0.0 {
+        return 0;
+    }
+    n.trunc().rem_euclid(4_294_967_296.0) as u64 as u32
 }

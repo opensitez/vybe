@@ -19,7 +19,7 @@ use chrono::{
 };
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_bytecode::{HostContext, Value, VM};
 
 const MODULE: &str = "ecma:date";
 
@@ -421,7 +421,14 @@ fn parse_natural(s: &str) -> f64 {
             return ms_of(Utc.from_utc_datetime(&ndt));
         }
     }
-    for pat in &["%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d-%m-%Y"] {
+    for pat in &[
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m/%d/%Y",
+        "%d-%m-%Y",
+        "%b %e, %Y",
+        "%B %e, %Y",
+    ] {
         if let Ok(nd) = NaiveDate::parse_from_str(s, pat) {
             let ndt = nd.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             return ms_of(Utc.from_utc_datetime(&ndt));

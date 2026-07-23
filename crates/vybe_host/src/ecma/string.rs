@@ -59,10 +59,24 @@ pub(crate) fn boxed_string(text: Arc<str>) -> Value {
         "__nonenum".into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
             Value::String(Arc::from("length")),
+            Value::String(Arc::from("toString")),
+            Value::String(Arc::from("valueOf")),
         ])))),
     );
 
-    Value::Object(Arc::new(Mutex::new(obj)))
+    let arc = Arc::new(Mutex::new(obj));
+    if let Value::Object(proto) = shared_string_prototype() {
+        let proto = proto.lock().unwrap();
+        for name in ["toString", "valueOf"] {
+            if let Some(method) = proto.properties.get(name) {
+                arc.lock()
+                    .unwrap()
+                    .properties
+                    .insert(name.to_string(), method.clone());
+            }
+        }
+    }
+    Value::Object(arc)
 }
 
 fn to_string_primitive(ctx: &mut vybe_bytecode::HostContext, value: Value) -> Arc<str> {
@@ -661,7 +675,8 @@ fn register_search_ops(vm: &mut VM) {
         "includes",
         Box::new(|ctx, args| {
             if is_regexp_value(args.get(1)) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "TypeError",
                     "First argument to String.prototype.includes must not be a RegExp",
                 ));
@@ -789,7 +804,8 @@ fn register_modify_ops(vm: &mut VM) {
             // RangeError (NaN → 0 via ToIntegerOrInfinity).
             let n = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
             if n < 0.0 || (n.is_infinite() && n > 0.0) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "Invalid count value",
                 ));
@@ -947,7 +963,8 @@ fn register_normalize(vm: &mut VM) {
                 None | Some(Value::Undefined) => "NFC",
                 Some(Value::String(form)) => form.as_ref(),
                 Some(other) => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -963,7 +980,8 @@ fn register_normalize(vm: &mut VM) {
                 "NFKC" => input.nfkc().collect::<String>(),
                 "NFKD" => input.nfkd().collect::<String>(),
                 _ => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",

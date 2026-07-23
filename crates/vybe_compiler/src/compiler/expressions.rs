@@ -601,6 +601,25 @@ impl Compiler {
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
                     || self.has_static_local_binding(name);
 
+                if !is_local
+                    && self.profile.namespaces.use_dotnet
+                    && name.eq_ignore_ascii_case("Items")
+                    && self
+                        .current_class
+                        .as_deref()
+                        .and_then(|class_name| {
+                            self.dotnet_framework_instance_method_owner(class_name, "Items", 0)
+                        })
+                        .is_some_and(|owner| {
+                            owner.to_ascii_lowercase().contains("observablecollection")
+                        })
+                {
+                    if self.emit_self_ref() {
+                        self.emit_common("dotnet.observable_collection_items", 1, self.line);
+                        return Ok(());
+                    }
+                }
+
                 // Implicit self field access (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
                     if self.emit_self_ref() {
@@ -900,6 +919,7 @@ impl Compiler {
                                         | "TypeError"
                                         | "URIError"
                                         | "AggregateError"
+                                        | "SuppressedError"
                                         | "RegExp"
                                         | "Map"
                                         | "Set"
@@ -1518,6 +1538,45 @@ impl Compiler {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
+                if self.profile.namespaces.use_dotnet {
+                    let parts = self.flatten_member_chain(expr);
+                    if let Some(super::resolver::Resolution::ResolvedPrefix { target, suffix }) =
+                        self.resolve_profile_namespace_chain(&parts)
+                    {
+                        match target {
+                            crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit) => {
+                                self.emit_common(&emit, 0, self.line);
+                            }
+                            crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                module,
+                                func,
+                                ..
+                            } => {
+                                let idx = self.import(&module, &func);
+                                self.emit_host_call(idx, 0);
+                            }
+                            crate::emitter::namespaces::ResolutionTarget::Const(value) => {
+                                self.emit_const(value);
+                            }
+                            _ => {}
+                        }
+                        for part in suffix {
+                            if part.eq_ignore_ascii_case("Length")
+                                || part.eq_ignore_ascii_case("Count")
+                            {
+                                common::collections::emit_len(
+                                    &mut self.chunks,
+                                    self.current,
+                                    self.line,
+                                );
+                            } else {
+                                let idx = self.str_const(&part);
+                                self.emit_u16(Op::STRUCT_GET, idx);
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
                 // First-class function reference (WASM `ref.func $f`): with
                 // `function_references`, a static method named as a VALUE (not
                 // called) tears off into a `REF_FUNC` funcref rather than being
@@ -1585,6 +1644,15 @@ impl Compiler {
                         (ReflectionBinding::Type(type_name), "IsValueType") => {
                             let v = self.reflection_is_value_type(&type_name);
                             inst!(self, core_wasm::bool_const, v);
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "IsSerializable") => {
+                            let attrs = self.reflection_attributes_for_type(
+                                &type_name,
+                                Some("System.SerializableAttribute"),
+                                true,
+                            );
+                            inst!(self, core_wasm::bool_const, !attrs.is_empty());
                             return Ok(());
                         }
                         (ReflectionBinding::Type(type_name), "BaseType") => {
@@ -1739,77 +1807,111 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet {
                     let parts = self.flatten_member_chain(expr);
                     if !parts.is_empty() {
-                        let lower_parts: Vec<String> =
-                            parts.iter().map(|part| self.canon(part)).collect();
-                        if common::dotnet::is_namespace_root(&lower_parts[0]) {
-                            // namespaceplan.md: the legacy platform cascade is
-                            // deleted — the COMMON resolver's .NET chain handles
-                            // it (tree + platform data + real compiler scope).
-                            match self.resolve_dotnet_chain(&parts) {
-                                Some(super::resolver::Resolution::GlobalAccess { name }) => {
-                                    let idx = self.str_const(&name);
-                                    self.emit_u16(Op::GLOBAL_GET, idx);
-                                    return Ok(());
+                        // namespaceplan.md: platform surfaces are data in the
+                        // shared tree; the common resolver handles the mounted chain.
+                        match self.resolve_profile_namespace_chain(&parts) {
+                            Some(super::resolver::Resolution::GlobalAccess { name }) => {
+                                let idx = self.str_const(&name);
+                                self.emit_u16(Op::GLOBAL_GET, idx);
+                                return Ok(());
+                            }
+                            Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                            )) => {
+                                self.emit_common(&emit, 0, self.line);
+                                return Ok(());
+                            }
+                            Some(
+                                super::resolver::Resolution::HostImport { module, func }
+                                | super::resolver::Resolution::Tree(
+                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                        module,
+                                        func,
+                                        ..
+                                    },
+                                ),
+                            ) => {
+                                let idx = self.import(&module, &func);
+                                self.emit_host_call(idx, 0);
+                                return Ok(());
+                            }
+                            Some(super::resolver::Resolution::Tree(
+                                crate::emitter::namespaces::ResolutionTarget::Const(value),
+                            )) => {
+                                self.emit_const(value);
+                                return Ok(());
+                            }
+                            Some(super::resolver::Resolution::ResolvedPrefix {
+                                target,
+                                suffix,
+                            }) => {
+                                match target {
+                                    crate::emitter::namespaces::ResolutionTarget::CommonEmit(
+                                        emit,
+                                    ) => {
+                                        self.emit_common(&emit, 0, self.line);
+                                    }
+                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                        module,
+                                        func,
+                                        ..
+                                    } => {
+                                        let idx = self.import(&module, &func);
+                                        self.emit_host_call(idx, 0);
+                                    }
+                                    crate::emitter::namespaces::ResolutionTarget::Const(value) => {
+                                        self.emit_const(value);
+                                    }
+                                    _ => {}
                                 }
-                                Some(super::resolver::Resolution::Tree(
-                                    crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
-                                )) => {
-                                    self.emit_common(&emit, 0, self.line);
-                                    return Ok(());
+                                for part in suffix {
+                                    if matches!(part.as_str(), "length" | "count") {
+                                        common::collections::emit_len(
+                                            &mut self.chunks,
+                                            self.current,
+                                            self.line,
+                                        );
+                                        continue;
+                                    }
+                                    let idx = self.str_const(&part);
+                                    self.emit_u16(Op::STRUCT_GET, idx);
                                 }
-                                Some(
-                                    super::resolver::Resolution::HostImport { module, func }
-                                    | super::resolver::Resolution::Tree(
-                                        crate::emitter::namespaces::ResolutionTarget::HostCall {
-                                            module,
-                                            func,
-                                            ..
-                                        },
-                                    ),
-                                ) => {
-                                    let idx = self.import(&module, &func);
-                                    self.emit_host_call(idx, 0);
-                                    return Ok(());
-                                }
-                                Some(super::resolver::Resolution::NamespaceChain {
-                                    parts: ns_parts,
-                                }) => {
-                                    if ns_parts.len() >= 2 {
-                                        let mut found_window: Option<(usize, usize)> = None;
-                                        'outer: for start in 0..ns_parts.len().saturating_sub(1) {
-                                            for end in ((start + 2)..=ns_parts.len()).rev() {
-                                                let key = ns_parts[start..end].join(".");
-                                                if self.profile.lookup_constant(&key).is_some() {
-                                                    found_window = Some((start, end));
-                                                    break 'outer;
-                                                }
+                                return Ok(());
+                            }
+                            Some(super::resolver::Resolution::NamespaceChain {
+                                parts: ns_parts,
+                            }) => {
+                                if ns_parts.len() >= 2 {
+                                    let mut found_window: Option<(usize, usize)> = None;
+                                    'outer: for start in 0..ns_parts.len().saturating_sub(1) {
+                                        for end in ((start + 2)..=ns_parts.len()).rev() {
+                                            let key = ns_parts[start..end].join(".");
+                                            if self.profile.lookup_constant(&key).is_some() {
+                                                found_window = Some((start, end));
+                                                break 'outer;
                                             }
-                                        }
-                                        if let Some((_const_start, const_end)) = found_window {
-                                            let key = ns_parts[_const_start..const_end].join(".");
-                                            let cv = self
-                                                .profile
-                                                .lookup_constant(&key)
-                                                .cloned()
-                                                .unwrap();
-                                            match cv {
-                                                ConstantValue::Float(f) => {
-                                                    self.emit_const(Value::F64(f))
-                                                }
-                                                ConstantValue::Str(s) => self.emit_const(
-                                                    Value::String(Arc::from(s.as_str())),
-                                                ),
-                                            }
-                                            for part in &ns_parts[const_end..] {
-                                                let idx = self.str_const(part);
-                                                self.emit_u16(Op::STRUCT_GET, idx);
-                                            }
-                                            return Ok(());
                                         }
                                     }
+                                    if let Some((_const_start, const_end)) = found_window {
+                                        let key = ns_parts[_const_start..const_end].join(".");
+                                        let cv =
+                                            self.profile.lookup_constant(&key).cloned().unwrap();
+                                        match cv {
+                                            ConstantValue::Float(f) => {
+                                                self.emit_const(Value::F64(f))
+                                            }
+                                            ConstantValue::Str(s) => self
+                                                .emit_const(Value::String(Arc::from(s.as_str()))),
+                                        }
+                                        for part in &ns_parts[const_end..] {
+                                            let idx = self.str_const(part);
+                                            self.emit_u16(Op::STRUCT_GET, idx);
+                                        }
+                                        return Ok(());
+                                    }
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
                     }
                 }
@@ -1818,29 +1920,14 @@ impl Compiler {
                     && matches!(&object.kind, ExprKind::Super)
                     && !*null_safe
                 {
-                    if let Some(parent) = self
-                        .current_class
-                        .as_ref()
-                        .and_then(|cn| self.pending_classes.get(cn.as_str()))
-                        .and_then(|pc| pc.parent.clone())
-                    {
+                    if self.current_class.is_some() {
                         let result_slot = self.define_local("__js_super_prop_result");
                         let saved_this = self.save_js_this("__js_prev_this_super_prop");
-                        let self_kw = self.profile.self_keyword.clone();
-                        if let Some(slot) = self
-                            .scope()
-                            .resolve(&self_kw)
-                            .or_else(|| self.scope().resolve_ci(&self_kw))
-                        {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            let js_this = self.str_const("__js_this");
-                            self.emit_u16(Op::GLOBAL_GET, js_this);
-                        }
+                        self.emit_js_current_this_value();
                         self.set_js_this_from_stack();
 
                         let getter_key = self.str_const(&format!("__get_{}", field));
-                        self.emit_var_get(&parent);
+                        self.emit_js_super_home_base();
                         self.emit_u16(Op::STRUCT_GET, getter_key);
                         let getter_slot = self.define_local("__js_super_prop_getter");
                         self.emit_u16(Op::LOCAL_SET, getter_slot);
@@ -1848,19 +1935,12 @@ impl Compiler {
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
                         self.chunk().emit_if_value(line);
-                        common::expressions::emit_undefined(self.chunk(), line);
+                        self.emit_js_super_home_base();
+                        let field_key = self.str_const(field);
+                        self.emit_u16(Op::STRUCT_GET, field_key);
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, getter_slot);
-                        if let Some(slot) = self
-                            .scope()
-                            .resolve(&self_kw)
-                            .or_else(|| self.scope().resolve_ci(&self_kw))
-                        {
-                            self.emit_u16(Op::LOCAL_GET, slot);
-                        } else {
-                            let js_this = self.str_const("__js_this");
-                            self.emit_u16(Op::GLOBAL_GET, js_this);
-                        }
+                        self.emit_js_current_this_value();
                         self.emit_u8(Op::CALL_REF, 1);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -1882,6 +1962,58 @@ impl Compiler {
                     vybe_plugin::registry::hooks(&self.profile.name)
                         .proxy_get
                         .unwrap()(&mut self.chunks, self.current, line);
+                    return Ok(());
+                }
+
+                if self.profile.supports_private_fields && field.starts_with('#') && !*null_safe {
+                    self.compile_expr(object)?;
+                    let obj_slot = self.define_local("__js_private_member_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    self.emit_const(Value::String(Arc::from(
+                        "Cannot read private member from null or undefined",
+                    )));
+                    self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                    common::errors::emit_throw(self.chunk(), line);
+                    self.chunk().emit_end(line);
+
+                    let field_name = self.js_member_storage_name_for_receiver(object, field);
+                    let getter_name = format!("__get_{}", field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_const(Value::String(Arc::from(getter_name.as_str())));
+                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    self.emit_host_call(has_own_idx, 2);
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if_value(line);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let getter_key = self.str_const(&getter_name);
+                    self.emit_u16(Op::STRUCT_GET, getter_key);
+                    let getter_slot = self.define_local("__js_private_getter");
+                    self.emit_u16(Op::LOCAL_SET, getter_slot);
+                    let saved_this = self.save_js_this("__js_prev_this_private_get");
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, getter_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    let result_slot = self.define_local("__js_private_member_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.restore_js_this(saved_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+
+                    self.chunk().emit_else(line);
+
+                    self.emit_js_private_brand_check(obj_slot, &field_name)?;
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let prop = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+
+                    self.chunk().emit_end(line);
                     return Ok(());
                 }
 
@@ -2038,11 +2170,17 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let receiver_type_hint = match &object.kind {
-                    ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
-                    _ => self.infer_expr_type_hint(object),
+                let receiver_type_hint = if self.profile.namespaces.use_dotnet {
+                    crate::compiler::calls::resolve_receiver_type_hint(self, object)
+                        .or_else(|| self.infer_expr_type_hint(object))
+                } else {
+                    match &object.kind {
+                        ExprKind::Ident(name) => {
+                            self.lookup_var_type_hint(name).map(str::to_string)
+                        }
+                        _ => self.infer_expr_type_hint(object),
+                    }
                 };
-
                 if self.profile.name == "pascal" && !*null_safe {
                     if let Some(class_name) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         self.resolve_pending_class_name_for_type_hint(type_hint)
@@ -2128,16 +2266,18 @@ impl Compiler {
                 }
 
                 let receiver_is_collection_like = if self.profile.namespaces.use_dotnet
-                    && matches!(field.as_str(), "Length" | "Count")
+                    && (field.eq_ignore_ascii_case("Length") || field.eq_ignore_ascii_case("Count"))
                 {
-                    let unknown_receiver_default = field == "Length";
+                    let unknown_receiver_default = field.eq_ignore_ascii_case("Length");
                     let is_collection_like_type = |type_hint: &str| {
                         let normalized = Self::normalize_type_hint(type_hint);
-                        let bare = normalized
-                            .split('<')
-                            .next()
-                            .unwrap_or(normalized.as_str())
-                            .trim_end_matches('?');
+                        let generic_start = normalized
+                            .find('<')
+                            .into_iter()
+                            .chain(normalized.find("(of"))
+                            .min()
+                            .unwrap_or(normalized.len());
+                        let bare = normalized[..generic_start].trim_end_matches('?').trim();
                         let terminal = bare.rsplit('.').next().unwrap_or(bare);
                         Self::is_string_type_hint(type_hint)
                             || matches!(
@@ -2152,6 +2292,8 @@ impl Compiler {
                                     | "sortedset"
                                     | "set"
                                     | "collection"
+                                    | "observablecollection"
+                                    | "readonlyobservablecollection"
                                     | "icollection"
                                     | "readonlycollection"
                                     | "enumerable"
@@ -2164,12 +2306,13 @@ impl Compiler {
                     };
 
                     match &object.kind {
-                        ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => {
-                            receiver_type_hint
-                                .as_deref()
-                                .map(is_collection_like_type)
-                                .unwrap_or(unknown_receiver_default)
-                        }
+                        ExprKind::Ident(_)
+                        | ExprKind::New { .. }
+                        | ExprKind::Call { .. }
+                        | ExprKind::Index { .. } => receiver_type_hint
+                            .as_deref()
+                            .map(is_collection_like_type)
+                            .unwrap_or(unknown_receiver_default),
                         ExprKind::Lit(Literal::Str(_))
                         | ExprKind::Interpolation(_)
                         | ExprKind::Array(_) => true,
@@ -2209,7 +2352,8 @@ impl Compiler {
                 }
 
                 let is_csharp_len_accessor = self.profile.namespaces.use_dotnet
-                    && matches!(field.as_str(), "Length" | "Count")
+                    && (field.eq_ignore_ascii_case("Length")
+                        || field.eq_ignore_ascii_case("Count"))
                     && receiver_is_collection_like
                     && !matches!(
                         &object.kind,
@@ -2258,17 +2402,58 @@ impl Compiler {
                     }
                 }
 
-                if *null_safe && is_csharp_len_accessor {
+                let is_dotnet_observable_count = self.profile.namespaces.use_dotnet
+                    && field == "Count"
+                    && receiver_type_hint
+                        .as_deref()
+                        .map(|type_hint| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            normalized.contains("observablecollection")
+                                || self
+                                    .dotnet_framework_instance_method_owner(type_hint, "Count", 0)
+                                    .is_some_and(|owner| {
+                                        owner.to_ascii_lowercase().contains("observablecollection")
+                                    })
+                        })
+                        .unwrap_or(false);
+
+                if is_csharp_len_accessor {
                     self.compile_expr(object)?;
-                    inst!(self, core_wasm::dup);
-                    self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if_value(line);
-                    self.emit(Op::DROP);
-                    self.emit(Op::NULL);
-                    self.chunk().emit_else(line);
-                    common::collections::emit_len(&mut self.chunks, self.current, self.line);
-                    self.chunk().emit_end(line);
+                    if *null_safe {
+                        inst!(self, core_wasm::dup);
+                        self.emit(Op::REF_IS_NULL);
+                        let line = self.line;
+                        self.chunk().emit_if_value(line);
+                        self.emit(Op::DROP);
+                        self.emit(Op::NULL);
+                        self.chunk().emit_else(line);
+                        common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                        self.chunk().emit_end(line);
+                    } else {
+                        common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                    }
+                    return Ok(());
+                } else if is_dotnet_observable_count {
+                    self.compile_expr(object)?;
+                    self.emit_common("dotnet.observable_collection_count", 1, self.line);
+                    return Ok(());
+                } else if self.profile.namespaces.use_dotnet
+                    && field == "Items"
+                    && receiver_type_hint
+                        .as_deref()
+                        .map(|type_hint| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            normalized.contains("observablecollection")
+                                || self
+                                    .dotnet_framework_instance_method_owner(type_hint, "Items", 0)
+                                    .is_some_and(|owner| {
+                                        owner.to_ascii_lowercase().contains("observablecollection")
+                                    })
+                        })
+                        .unwrap_or(false)
+                {
+                    self.compile_expr(object)?;
+                    self.emit_common("dotnet.observable_collection_items", 1, self.line);
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
@@ -3332,6 +3517,13 @@ impl Compiler {
                             return Ok(());
                         }
 
+                        if name == "Promise" && args.len() == 1 {
+                            self.compile_expr(&args[0].value)?;
+                            let idx = self.import("ecma:promise", "new");
+                            self.emit_host_call(idx, 1);
+                            return Ok(());
+                        }
+
                         if name == "Proxy" && args.len() == 2 {
                             self.uses_proxy = true;
                             self.compile_expr(&args[0].value)?;
@@ -3949,7 +4141,7 @@ impl Compiler {
                     .any(|e| e.key.is_some() && !is_array_elision(e));
                 let has_elisions = allows_array_elisions && elements.iter().any(is_array_elision);
 
-                if self.profile.name == "c"
+                if matches!(self.profile.name.as_str(), "c" | "vb")
                     && !has_keys
                     && !has_elisions
                     && elements.iter().all(|elem| !elem.spread)
@@ -4307,7 +4499,7 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                                     // Track dynamic key in __keys (stringified)
+                                // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4487,9 +4679,9 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                                                 // Track key — host fn checks if it's a
-                                                 // Symbol and routes to `__sym_keys` so
-                                                 // Object.keys excludes it (ECMA-262 §7.3.22).
+                            // Track key — host fn checks if it's a
+                            // Symbol and routes to `__sym_keys` so
+                            // Object.keys excludes it (ECMA-262 §7.3.22).
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                             let track_idx = self.import("ecma:object", "trackKey");
@@ -5575,8 +5767,7 @@ impl Compiler {
                             // path the auto-base construction uses. Control
                             // leaves no longer have a ctor global to CALL_REF.
                             if self.is_framework_control_parent(&parent_name) {
-                                let canonical =
-                                    common::gui::canonical_control_name(&parent_name);
+                                let canonical = common::gui::canonical_control_name(&parent_name);
                                 let host_name = common::gui::host_fn_new_control(&canonical);
                                 let new_idx = self.import(common::gui::GUI_MODULE, &host_name);
                                 for a in args {
@@ -5876,6 +6067,25 @@ impl Compiler {
                 // delete obj.prop → ecma:object.delete(obj, key), returns true.
                 // Proxy modules route through ecma:proxy.deleteProperty so the
                 // deleteProperty trap fires (non-proxy targets fall through).
+                if matches!(
+                    inner.as_ref(),
+                    Expression {
+                        kind: ExprKind::Member { object, .. },
+                        ..
+                    } if matches!(object.kind, ExprKind::Super)
+                ) || matches!(
+                    inner.as_ref(),
+                    Expression {
+                        kind: ExprKind::Index { object, .. },
+                        ..
+                    } if matches!(object.kind, ExprKind::Super)
+                ) {
+                    self.emit_const(Value::String(Arc::from("Cannot delete super property")));
+                    let line = self.line;
+                    self.emit_js_exception_ctor_from_message_value("ReferenceError")?;
+                    common::errors::emit_throw(self.chunk(), line);
+                    return Ok(());
+                }
                 let delete_import: (&str, &str) = if self.uses_proxy {
                     ("ecma:proxy", "deleteProperty")
                 } else {
@@ -5886,11 +6096,43 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let idx = self.import(delete_import.0, delete_import.1);
                     self.emit_host_call(idx, 2);
+                    if self.in_strict {
+                        let result_slot = self.define_local("__strict_delete_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.emit(Op::I32_EQZ);
+                        self.chunk().emit_if(line);
+                        self.emit_const(Value::String(Arc::from(
+                            "Cannot delete non-configurable property",
+                        )));
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.chunk().emit_end(line);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    }
                 } else if let ExprKind::Index { object, index, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let idx = self.import(delete_import.0, delete_import.1);
                     self.emit_host_call(idx, 2);
+                    if self.in_strict {
+                        let result_slot = self.define_local("__strict_delete_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        let line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.emit(Op::I32_EQZ);
+                        self.chunk().emit_if(line);
+                        self.emit_const(Value::String(Arc::from(
+                            "Cannot delete non-configurable property",
+                        )));
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.chunk().emit_end(line);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    }
                 } else {
                     self.compile_expr(inner)?;
                     self.emit(Op::DROP);
@@ -5944,6 +6186,11 @@ impl Compiler {
                 // constructs null. Class names are language-agnostic here.
                 self.defined_classes.insert(class_name.clone());
                 let parents: Vec<String> = parent_name.into_iter().collect();
+                let saved_expr_js_this = if self.profile.ambient_this_binding {
+                    Some(self.save_js_this(&format!("__js_prev_this_class_expr_{}", class_name)))
+                } else {
+                    None
+                };
                 crate::compiler::class_normalize::emit::emit_class_from_ast(
                     self,
                     expr.span.clone(),
@@ -5954,7 +6201,11 @@ impl Compiler {
                     &crate::ast::ClassModifiers::default(),
                     false,
                 )?;
-                self.emit_var_get(&class_name);
+                if let Some(saved) = saved_expr_js_this {
+                    self.restore_js_this(saved);
+                }
+                let class_idx = self.str_const(&class_name);
+                self.emit_u16(Op::GLOBAL_GET, class_idx);
             }
 
             // ── FunctionExpr (JS) ───────────────────────────────────────
@@ -6045,14 +6296,41 @@ impl Compiler {
                 // class::member → look up class, then get static member
                 self.compile_expr(class)?;
                 if let ExprKind::Ident(name) = &member.kind {
+                    let class_slot = self.define_local("__static_access_read_class");
+                    self.emit_u16(Op::LOCAL_SET, class_slot);
                     let field_name = match &class.kind {
                         ExprKind::Ident(class_name) => {
                             self.js_member_storage_name_for_class(class_name, name)
                         }
                         _ => self.canon(name),
                     };
-                    let idx = self.str_const(&field_name);
-                    self.emit_u16(Op::STRUCT_GET, idx);
+                    if self.profile.supports_private_fields && name.starts_with('#') {
+                        let getter_name = format!("__get_{}", field_name);
+                        self.emit_u16(Op::LOCAL_GET, class_slot);
+                        self.emit_const(Value::String(Arc::from(getter_name.as_str())));
+                        let has_own_idx = self.import("ecma:object", "hasOwn");
+                        let line = self.line;
+                        self.emit_host_call(has_own_idx, 2);
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if_value(line);
+
+                        self.emit_u16(Op::LOCAL_GET, class_slot);
+                        let getter_key = self.str_const(&getter_name);
+                        self.emit_u16(Op::STRUCT_GET, getter_key);
+                        self.emit_u16(Op::LOCAL_GET, class_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
+
+                        self.chunk().emit_else(line);
+                        self.emit_js_private_brand_check(class_slot, &field_name)?;
+                        self.emit_u16(Op::LOCAL_GET, class_slot);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                        self.chunk().emit_end(line);
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, class_slot);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                    }
                 } else {
                     self.compile_expr(member)?;
                     {

@@ -31,7 +31,6 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
-
 // §28.1 step 1 of most Reflect ops: "If target is not an Object, throw a
 // TypeError". Thrown as a real error object so `e instanceof TypeError`
 // holds in the catcher.
@@ -42,6 +41,14 @@ fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
 
 fn numeric_index(key: &str) -> Option<usize> {
     key.parse::<usize>().ok()
+}
+
+fn property_key(value: &Value) -> String {
+    match value {
+        Value::Symbol(sym) => crate::ecma::symbol::canonical_property_key(sym),
+        Value::String(text) => text.to_string(),
+        _ => format!("{}", value),
+    }
 }
 
 /// §28.1.5 Reflect.get — proxy trap, typed-array elements, and a
@@ -56,11 +63,7 @@ fn reflect_get(ctx: &mut HostContext, target: &Value, key: &str, receiver: Value
                 ctx,
                 &trap,
                 handler,
-                &[
-                    proxy_target,
-                    Value::String(Arc::from(key)),
-                    receiver,
-                ],
+                &[proxy_target, Value::String(Arc::from(key)), receiver],
             );
         }
         return reflect_get(ctx, &proxy_target, key, receiver);
@@ -134,12 +137,7 @@ fn reflect_set(
                 ctx,
                 &trap,
                 handler,
-                &[
-                    proxy_target,
-                    Value::String(Arc::from(key)),
-                    val,
-                    receiver,
-                ],
+                &[proxy_target, Value::String(Arc::from(key)), val, receiver],
             );
             return Value::Bool(result.as_bool());
         }
@@ -191,12 +189,7 @@ fn reflect_set(
                 // ambient `this`; arity-2 setters take (receiver, value).
                 let st = Value::Object(s_obj);
                 if arity >= 2 {
-                    invoke_with_explicit_this(
-                        ctx,
-                        &st,
-                        receiver.clone(),
-                        &[receiver, val],
-                    );
+                    invoke_with_explicit_this(ctx, &st, receiver.clone(), &[receiver, val]);
                 } else {
                     invoke_with_explicit_this(ctx, &st, receiver, &[val]);
                 }
@@ -359,10 +352,7 @@ pub fn register(vm: &mut VM) {
             });
             let new_target = args.get(2).cloned();
             crate::ecma::proxy::construct_dispatch_with_new_target(
-                ctx,
-                &target,
-                &args_list,
-                new_target,
+                ctx, &target, &args_list, new_target,
             )
         }),
     );
@@ -373,7 +363,7 @@ pub fn register(vm: &mut VM) {
         "get",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
-            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let key = args.get(1).map(property_key).unwrap_or_default();
             let receiver = args.get(2).cloned().unwrap_or_else(|| target.clone());
             reflect_get(ctx, &target, &key, receiver)
         }),
@@ -385,7 +375,7 @@ pub fn register(vm: &mut VM) {
         "set",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
-            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let key = args.get(1).map(property_key).unwrap_or_default();
             let val = args.get(2).cloned().unwrap_or(Value::Undefined);
             let receiver = args.get(3).cloned().unwrap_or_else(|| target.clone());
             reflect_set(ctx, &target, &key, val, receiver)
@@ -442,10 +432,10 @@ pub fn register(vm: &mut VM) {
                     if let Some(i) = key.parse::<usize>().ok() {
                         match &o.kind {
                             ObjectKind::Array(elems) if i < elems.len() => {
-                                return Value::Bool(true)
+                                return Value::Bool(true);
                             }
                             ObjectKind::TypedArray(ta) if i < ta.length => {
-                                return Value::Bool(true)
+                                return Value::Bool(true);
                             }
                             _ => {}
                         }

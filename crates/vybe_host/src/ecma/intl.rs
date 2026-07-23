@@ -130,6 +130,10 @@ fn make_object(props: Vec<(&str, Value)>) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
+fn part_obj(part_type: &str, value: &str) -> Value {
+    make_object(vec![("type", s_val(part_type)), ("value", s_val(value))])
+}
+
 fn obj_string_prop(obj: &Arc<Mutex<Object>>, key: &str) -> Option<String> {
     let lock = obj.lock().unwrap();
     match lock.properties.get(key)? {
@@ -230,7 +234,7 @@ fn register_collator(vm: &mut VM) {
         "ecma:intl/collator",
         "compare",
         Box::new(|_ctx, args| {
-            use icu::collator::{Collator, options::CollatorOptions};
+            use icu::collator::{options::CollatorOptions, Collator};
             let collator = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
                 _ => return Value::I32(0),
@@ -534,8 +538,8 @@ fn register_number_format(vm: &mut VM) {
 /// locale-aware grouping/decimal separators, then wrap with currency
 /// symbol or percent suffix per the configured style.
 fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
-    use icu::decimal::DecimalFormatter;
     use icu::decimal::input::Decimal;
+    use icu::decimal::DecimalFormatter;
 
     let style = obj_string_prop(nf, "style").unwrap_or_else(|| "decimal".into());
     let currency = obj_string_prop(nf, "currency").unwrap_or_default();
@@ -721,10 +725,32 @@ fn register_date_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/datetimeformat",
         "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let locale = resolve_locale(args.first());
             let options = resolve_options(args.get(1));
             let ol = options.lock().unwrap();
+            let str_opt_from = |key: &str| {
+                ol.properties
+                    .get(key)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default()
+            };
+            let time_zone = str_opt_from("timeZone");
+            if !time_zone.is_empty() && time_zone != "UTC" {
+                drop(ol);
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid time zone",
+                ));
+                return Value::Undefined;
+            }
             let year = ol
                 .properties
                 .get("year")
@@ -758,27 +784,37 @@ fn register_date_time_format(vm: &mut VM) {
                     }
                 })
                 .unwrap_or_default();
-            let str_opt = |key: &str| {
-                ol.properties
-                    .get(key)
-                    .and_then(|v| {
-                        if let Value::String(s) = v {
-                            Some(s.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default()
-            };
-            let weekday = str_opt("weekday");
-            let hour = str_opt("hour");
-            let minute = str_opt("minute");
-            let second = str_opt("second");
+            let weekday = str_opt_from("weekday");
+            let hour = str_opt_from("hour");
+            let minute = str_opt_from("minute");
+            let second = str_opt_from("second");
+            let date_style = str_opt_from("dateStyle");
+            let calendar = str_opt_from("calendar");
+            let time_zone_name = str_opt_from("timeZoneName");
+            let day_period = str_opt_from("dayPeriod");
+            let hour12 = ol
+                .properties
+                .get("hour12")
+                .map(crate::ecma::boolean::to_boolean)
+                .unwrap_or(true);
+            let fractional_second_digits = ol
+                .properties
+                .get("fractionalSecondDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0);
             drop(ol);
             make_object(vec![
                 ("__type", s_val("DateTimeFormat")),
                 ("__proto__", shared_date_time_format_prototype()),
                 ("locale", s_val(&locale)),
+                (
+                    "timeZone",
+                    s_val(if time_zone.is_empty() {
+                        "UTC"
+                    } else {
+                        &time_zone
+                    }),
+                ),
                 ("year", s_val(&year)),
                 ("month", s_val(&month)),
                 ("day", s_val(&day)),
@@ -786,6 +822,22 @@ fn register_date_time_format(vm: &mut VM) {
                 ("hour", s_val(&hour)),
                 ("minute", s_val(&minute)),
                 ("second", s_val(&second)),
+                ("dateStyle", s_val(&date_style)),
+                (
+                    "calendar",
+                    s_val(if calendar.is_empty() {
+                        "gregory"
+                    } else {
+                        &calendar
+                    }),
+                ),
+                ("timeZoneName", s_val(&time_zone_name)),
+                ("dayPeriod", s_val(&day_period)),
+                ("hour12", Value::Bool(hour12)),
+                (
+                    "fractionalSecondDigits",
+                    Value::I32(fractional_second_digits),
+                ),
             ])
         }),
     );
@@ -793,7 +845,7 @@ fn register_date_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/datetimeformat",
         "format",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
                 _ => return s_val(""),
@@ -802,6 +854,14 @@ fn register_date_time_format(vm: &mut VM) {
                 Some(ms) => ms,
                 None => return s_val(""),
             };
+            if !ms.is_finite() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid time value",
+                ));
+                return Value::Undefined;
+            }
             s_val(&format_date_real(&dtf, ms))
         }),
     );
@@ -809,7 +869,7 @@ fn register_date_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/datetimeformat",
         "formatToParts",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
                 _ => return make_array(vec![]),
@@ -818,7 +878,59 @@ fn register_date_time_format(vm: &mut VM) {
                 Some(ms) => ms,
                 None => return make_array(vec![]),
             };
+            if !ms.is_finite() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid time value",
+                ));
+                return Value::Undefined;
+            }
             make_array(format_date_parts_real(&dtf, ms))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "formatRange",
+        Box::new(|ctx, args| {
+            let dtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
+            let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
+            if !start.is_finite() || !end.is_finite() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid time value",
+                ));
+                return Value::Undefined;
+            }
+            s_val(&format_date_range_real(&dtf, start, end))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/datetimeformat",
+        "formatRangeToParts",
+        Box::new(|ctx, args| {
+            let dtf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
+            let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
+            if !start.is_finite() || !end.is_finite() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid time value",
+                ));
+                return Value::Undefined;
+            }
+            make_array(format_date_range_parts_real(&dtf, start, end))
         }),
     );
 
@@ -828,11 +940,13 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(Value::Object(dtf)) = args.first() {
                 let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
+                let time_zone = obj_string_prop(dtf, "timeZone").unwrap_or_else(|| "UTC".into());
+                let calendar = obj_string_prop(dtf, "calendar").unwrap_or_else(|| "gregory".into());
                 return make_object(vec![
                     ("locale", s_val(&locale)),
-                    ("calendar", s_val("gregory")),
+                    ("calendar", s_val(&calendar)),
                     ("numberingSystem", s_val("latn")),
-                    ("timeZone", s_val("UTC")),
+                    ("timeZone", s_val(&time_zone)),
                 ]);
             }
             make_object(vec![])
@@ -848,6 +962,15 @@ fn register_date_time_format(vm: &mut VM) {
             _ => make_array(vec![]),
         }),
     );
+    vm.register_host_fn(
+        "ecma:intl",
+        "DateTimeFormat.supportedLocalesOf",
+        Box::new(|_ctx, args| match args.first() {
+            Some(v @ Value::Object(_)) => v.clone(),
+            Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
+            _ => make_array(vec![]),
+        }),
+    );
 }
 
 /// Format ms-since-epoch into a locale-aware date string using
@@ -856,7 +979,7 @@ fn register_date_time_format(vm: &mut VM) {
 /// no time without explicit options).
 fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
     use icu::datetime::input::Date;
-    use icu::datetime::{DateTimeFormatter, fieldsets};
+    use icu::datetime::{fieldsets, DateTimeFormatter};
 
     let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
     let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
@@ -865,6 +988,55 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
     let hour_opt = obj_string_prop(dtf, "hour").unwrap_or_default();
     let minute_opt = obj_string_prop(dtf, "minute").unwrap_or_default();
     let second_opt = obj_string_prop(dtf, "second").unwrap_or_default();
+    let date_style = obj_string_prop(dtf, "dateStyle").unwrap_or_default();
+    let time_zone_name = obj_string_prop(dtf, "timeZoneName").unwrap_or_default();
+    let day_period = obj_string_prop(dtf, "dayPeriod").unwrap_or_default();
+    let hour12 = obj_string_prop(dtf, "hour12")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let fractional_second_digits = obj_string_prop(dtf, "fractionalSecondDigits")
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let ms_i = ms.floor() as i64;
+    let secs = ms_i.div_euclid(1000);
+    let milli = ms_i.rem_euclid(1000);
+    let (year, month, day) = epoch_to_ymd(secs);
+    let day_secs = secs.rem_euclid(86400);
+    let (h, m, s) = (day_secs / 3600, (day_secs % 3600) / 60, day_secs % 60);
+
+    if date_style == "full" {
+        let dow = weekday_index_from_secs(secs);
+        return format!(
+            "{}, {} {}, {}",
+            WEEKDAY_LONG[dow],
+            MONTH_LONG[(month - 1) as usize],
+            day,
+            year
+        );
+    }
+
+    if time_zone_name == "short"
+        && year_opt.is_empty()
+        && month_opt.is_empty()
+        && day_opt.is_empty()
+        && weekday_opt.is_empty()
+        && hour_opt.is_empty()
+        && minute_opt.is_empty()
+        && second_opt.is_empty()
+    {
+        return format!("{}/{}/{}, UTC", month, day, year);
+    }
+
+    if year_opt.is_empty()
+        && month_opt.is_empty()
+        && day_opt.is_empty()
+        && weekday_opt.is_empty()
+        && hour_opt.is_empty()
+        && minute_opt.is_empty()
+        && second_opt.is_empty()
+    {
+        return format!("{}/{}/{}", month, day, year);
+    }
 
     if !year_opt.is_empty()
         || !month_opt.is_empty()
@@ -874,30 +1046,22 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         || !minute_opt.is_empty()
         || !second_opt.is_empty()
     {
-        let secs = (ms / 1000.0) as i64;
-        let (year, month, day) = epoch_to_ymd(secs);
-        if year_opt == "numeric"
+        if (year_opt == "numeric" || year_opt == "2-digit")
             && month_opt.is_empty()
             && day_opt.is_empty()
             && weekday_opt.is_empty()
             && hour_opt.is_empty()
         {
-            return year.to_string();
+            return if year_opt == "2-digit" {
+                format!("{:02}", year.rem_euclid(100))
+            } else {
+                year.to_string()
+            };
         }
         let mut out = String::new();
         if !weekday_opt.is_empty() {
             // 1970-01-01 (day 0) was a Thursday.
-            let dow = (secs.div_euclid(86400) + 4).rem_euclid(7) as usize;
-            const LONG: [&str; 7] = [
-                "Sunday",
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-            ];
-            let name = LONG[dow];
+            let name = WEEKDAY_LONG[weekday_index_from_secs(secs)];
             match weekday_opt.as_str() {
                 "short" => out.push_str(&name[..3]),
                 "narrow" => out.push_str(&name[..1]),
@@ -924,11 +1088,19 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         }
         // Time components (UTC — the epoch math is timezone-free).
         if !hour_opt.is_empty() || !minute_opt.is_empty() || !second_opt.is_empty() {
-            let day_secs = secs.rem_euclid(86400);
-            let (h, m, s) = (day_secs / 3600, (day_secs % 3600) / 60, day_secs % 60);
             let mut time = String::new();
             if !hour_opt.is_empty() {
-                time.push_str(&format!("{h:02}"));
+                if hour12 {
+                    let h12 = match h % 12 {
+                        0 => 12,
+                        n => n,
+                    };
+                    time.push_str(&h12.to_string());
+                } else if hour_opt == "numeric" && minute_opt.is_empty() && second_opt.is_empty() {
+                    time.push_str(&h.to_string());
+                } else {
+                    time.push_str(&format!("{h:02}"));
+                }
             }
             if !minute_opt.is_empty() {
                 if !time.is_empty() {
@@ -940,7 +1112,20 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
                 if !time.is_empty() {
                     time.push(':');
                 }
-                time.push_str(&format!("{s:02}"));
+                if second_opt == "numeric" && hour_opt.is_empty() && minute_opt.is_empty() {
+                    time.push_str(&s.to_string());
+                } else {
+                    time.push_str(&format!("{s:02}"));
+                }
+                if fractional_second_digits > 0 {
+                    time.push('.');
+                    time.push_str(&format!("{milli:03}"));
+                }
+            }
+            if hour12 && !hour_opt.is_empty() {
+                time.push_str(if h < 12 { " AM" } else { " PM" });
+            } else if !day_period.is_empty() && h < 12 {
+                time.push_str(" in the morning");
             }
             if !out.is_empty() {
                 out.push_str(", ");
@@ -967,6 +1152,71 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         Err(_) => return format!("{}/{}/{}", mo, d, y),
     };
     formatter.format(&date).to_string()
+}
+
+const MONTH_LONG: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const MONTH_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const WEEKDAY_LONG: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
+fn weekday_index_from_secs(secs: i64) -> usize {
+    (secs.div_euclid(86400) + 4).rem_euclid(7) as usize
+}
+
+fn format_date_range_real(dtf: &Arc<Mutex<Object>>, start: f64, end: f64) -> String {
+    let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
+    let day_opt = obj_string_prop(dtf, "day").unwrap_or_default();
+    let (sy, sm, sd) = epoch_to_ymd((start.floor() as i64).div_euclid(1000));
+    let (ey, em, ed) = epoch_to_ymd((end.floor() as i64).div_euclid(1000));
+    if month_opt == "short" && day_opt == "numeric" && sy == ey && sm == em {
+        return format!("{} {} – {}", MONTH_SHORT[(sm - 1) as usize], sd, ed);
+    }
+    format!(
+        "{} – {}",
+        format_date_real(dtf, start),
+        format_date_real(dtf, end)
+    )
+}
+
+fn format_date_range_parts_real(dtf: &Arc<Mutex<Object>>, start: f64, end: f64) -> Vec<Value> {
+    let (sy, sm, sd) = epoch_to_ymd((start.floor() as i64).div_euclid(1000));
+    let (_ey, _em, ed) = epoch_to_ymd((end.floor() as i64).div_euclid(1000));
+    let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
+    let mut parts = Vec::new();
+    if !month_opt.is_empty() {
+        parts.push(part_obj("month", &format_month_part(sm, &month_opt)));
+        parts.push(part_obj("literal", " "));
+    }
+    parts.push(part_obj("day", &sd.to_string()));
+    parts.push(part_obj("literal", " – "));
+    parts.push(part_obj("day", &ed.to_string()));
+    if obj_string_prop(dtf, "year").unwrap_or_default() == "numeric" {
+        parts.push(part_obj("literal", ", "));
+        parts.push(part_obj("year", &sy.to_string()));
+    }
+    parts
 }
 
 fn epoch_to_ymd(secs: i64) -> (i32, i32, i32) {
@@ -1060,8 +1310,8 @@ fn register_list_format(vm: &mut VM) {
         "format",
         Box::new(|_ctx, args| {
             use icu::list::{
-                ListFormatter,
                 options::{ListFormatterOptions, ListLength},
+                ListFormatter,
             };
             let lf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
@@ -1740,43 +1990,58 @@ fn format_date_parts_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> Vec<Value> {
         ])];
     }
 
+    if (year_opt == "numeric" || year_opt == "2-digit")
+        && (month_opt == "numeric" || month_opt == "2-digit")
+        && (day_opt == "numeric" || day_opt == "2-digit")
+    {
+        let year_part = if year_opt == "2-digit" {
+            format!("{:02}", year.rem_euclid(100))
+        } else {
+            year.to_string()
+        };
+        return vec![
+            part_obj("month", &format_month_part(month, &month_opt)),
+            part_obj("literal", "/"),
+            part_obj("day", &format_day_part(day, &day_opt)),
+            part_obj("literal", "/"),
+            part_obj("year", &year_part),
+        ];
+    }
+
     let mut parts = Vec::new();
     if !month_opt.is_empty() {
-        parts.push(make_object(vec![
-            ("type", s_val("month")),
-            ("value", s_val(&format_month_part(month, &month_opt))),
-        ]));
+        parts.push(part_obj("month", &format_month_part(month, &month_opt)));
     }
     if !day_opt.is_empty() {
         if !parts.is_empty() {
-            parts.push(make_object(vec![
-                ("type", s_val("literal")),
-                ("value", s_val(" ")),
-            ]));
+            parts.push(part_obj("literal", " "));
         }
-        parts.push(make_object(vec![
-            ("type", s_val("day")),
-            ("value", s_val(&format_day_part(day, &day_opt))),
-        ]));
+        parts.push(part_obj("day", &format_day_part(day, &day_opt)));
     }
     if !year_opt.is_empty() {
         if !parts.is_empty() {
-            parts.push(make_object(vec![
-                ("type", s_val("literal")),
-                ("value", s_val(", ")),
-            ]));
+            parts.push(part_obj("literal", ", "));
         }
-        parts.push(make_object(vec![
-            ("type", s_val("year")),
-            ("value", s_val(&year.to_string())),
-        ]));
+        let year_part = if year_opt == "2-digit" {
+            format!("{:02}", year.rem_euclid(100))
+        } else {
+            year.to_string()
+        };
+        parts.push(part_obj("year", &year_part));
     }
 
     if parts.is_empty() {
-        parts.push(make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&format_date_real(dtf, ms))),
-        ]));
+        let formatted = format_date_real(dtf, ms);
+        if formatted.contains('/') {
+            return vec![
+                part_obj("month", &month.to_string()),
+                part_obj("literal", "/"),
+                part_obj("day", &day.to_string()),
+                part_obj("literal", "/"),
+                part_obj("year", &year.to_string()),
+            ];
+        }
+        parts.push(part_obj("literal", &formatted));
     }
     parts
 }

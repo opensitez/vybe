@@ -13,7 +13,7 @@ pub fn disassemble(chunk: &Chunk) -> String {
     out
 }
 
-fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
+pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
     if offset + 3 >= chunk.code.len() {
         return ("TRUNCATED".into(), chunk.code.len());
     }
@@ -149,7 +149,8 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             // ref_func: u16 func_index, u8 upvalue_count, then
             // (u8 is_local + u16 index) descriptors
             let func_idx = chunk.read_u16(operand_start);
-            let uv_count = (chunk.code.get(operand_start + 2).copied().unwrap_or(0) & 0x7f) as usize;
+            let uv_count =
+                (chunk.code.get(operand_start + 2).copied().unwrap_or(0) & 0x7f) as usize;
             let total = 3 + uv_count * 3;
             (
                 format!("Closure func={} upvalues={}", func_idx, uv_count),

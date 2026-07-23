@@ -23,10 +23,10 @@
 //! )
 //! ```
 
+use std::fmt::Write;
 use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
 use vybe_bytecode::value::Value;
-use std::fmt::Write;
 
 /// Render a collection of chunks as a single WAT module. The output
 /// is human-readable; indentation reflects nesting depth of WASM

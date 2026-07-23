@@ -226,6 +226,249 @@ pub fn language_for_path(path: &Path) -> Option<Language> {
     languages::find_by_extension(ext)
 }
 
+/// Debugger expression evaluator — LANGUAGE-AGNOSTIC (common AST + common
+/// compiler). Given the live paused VM, an expression written in the program's
+/// language, and the paused frame's locals, evaluate it in an ISOLATED mini-VM
+/// (the live VM's stack/frames are never touched) and return the value.
+///
+/// How it stays general across every language (JS, Python, PHP, …):
+///   1. Parse the expression with the language's own `parse` — which, like every
+///      Vybe frontend, targets the SAME common AST (`vybe_ast::Module`).
+///   2. Rewrite the trailing expression statement into a `Return` at the AST
+///      level, so the program's result IS the expression's value. No per-language
+///      source template — the value capture is a common-AST transform.
+///   3. Compile with the language's profile via the COMMON compiler.
+///   4. Run; a top-level `return` yields the value from `run()`.
+/// Locals + copyable globals are injected as the mini-VM's globals so names
+/// resolve exactly as the program's language would.
+pub fn debug_eval_expression(
+    live: &VM,
+    expr: &str,
+    locals: &[(String, Value)],
+    language: Language,
+    _caps: Capabilities,
+) -> Result<Value, String> {
+    let expr = expr.trim().trim_end_matches(';');
+    if expr.is_empty() {
+        return Err("empty expression".into());
+    }
+
+    // 1. Parse the expression in the program's language → common AST, then hold
+    //    onto both the prelude-carrying module and the extracted `Expression`.
+    //    Dynamic languages parse a bare expression directly; statically-structured
+    //    languages (Go/Java/C#/C/VB) need minimal scaffolding to parse a fragment,
+    //    from which we lift the same common-AST expression node.
+    let (bundle, mut module, extracted) = obtain_eval_expression(language, expr)?;
+
+    // 2. Common-AST value capture: replace the trailing expression statement with
+    //    a function that takes the paused frame's locals as PARAMETERS and
+    //    `return`s the expression. Passing locals as parameters (not injected
+    //    globals) is what makes this work for EVERY language: a parameter is in
+    //    scope inside the function body regardless of the language's global-scope
+    //    rules (JS/Python fall back to globals for free vars, PHP does not — but
+    //    all languages see their parameters). The node is a common `FunctionDecl`,
+    //    built once for all languages; the values are passed at invoke time.
+    const EVAL_FN: &str = "__vybe_dbg_eval__";
+    // One parameter per copyable local (its compiler-scope name, e.g. `$x` in
+    // PHP, `x` in JS/Python), invoked with the local's live value.
+    let frame_args: Vec<(String, Value)> = locals
+        .iter()
+        .filter(|(_, v)| eval_value_is_copyable(v))
+        .cloned()
+        .collect();
+    let params: Vec<crate::ast::Param> = frame_args
+        .iter()
+        .map(|(name, _)| crate::ast::Param {
+            name: name.clone(),
+            type_hint: None,
+            default: None,
+            pass_by: crate::ast::PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        })
+        .collect();
+    module.body.push(crate::ast::Statement::new(
+        crate::ast::StmtKind::FunctionDecl {
+            name: EVAL_FN.to_string(),
+            params,
+            return_type: None,
+            body: vec![crate::ast::Statement::new(crate::ast::StmtKind::Return(
+                Some(extracted),
+            ))],
+            modifiers: crate::ast::Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+    ));
+
+    // 3. Set up the isolated mini-VM (runtime registration + host functions).
+    let mut eval_vm = VM::new();
+    vybe_host::register_all(&mut eval_vm);
+    vybe_host::setup_namespaces(&mut eval_vm);
+    ensure_php_runtime_registered(&mut eval_vm);
+    ensure_js_runtime_registered(&mut eval_vm);
+    // Copy live globals (scalars + shared objects; NOT function values — their
+    // chunk_index refs belong to the live VM's chunk table). Objects are shared
+    // by Arc, so reads see live object state. Locals come in as params (below).
+    for (k, v) in &live.globals {
+        if eval_value_is_copyable(v) {
+            eval_vm.globals.insert(k.clone(), v.clone());
+        }
+    }
+
+    // 4. Compile the transformed module with the bundle's FULL pipeline, run it
+    //    (defines the eval function as a global), then invoke it with the frame's
+    //    local values — the value it returns is the expression's value.
+    let compiled = bundle
+        .compile_prepared_module(&module, &eval_vm.modules)
+        .map_err(|e| format!("eval compile error: {e}"))?;
+    let dynamic = into_dynamic_compilation(compiled);
+    {
+        let mut service = RuntimeCompilerService::with_capabilities(&mut eval_vm, _caps);
+        service
+            .run_compiled(dynamic)
+            .map_err(|e| format!("eval error: {e}"))?;
+    }
+    let fn_val = eval_vm
+        .globals
+        .remove(EVAL_FN)
+        .or_else(|| eval_vm.globals.remove(&EVAL_FN.to_lowercase()))
+        .ok_or("eval function did not compile")?;
+    let arg_values: Vec<Value> = frame_args.into_iter().map(|(_, v)| v).collect();
+    let result = eval_vm.invoke_callback(&fn_val, &arg_values);
+    if let Some(exc) = eval_vm.last_exception.take() {
+        return Err(format!("eval threw: {exc}"));
+    }
+    Ok(result)
+}
+
+/// Parse `expr` in `language` → `(bundle, prelude-carrying module, expression)`.
+/// Dynamic / expression-oriented languages parse a bare expression directly (its
+/// trailing statement is an `Expr` we lift out). Statically-structured languages
+/// (Go/Java/C#/C/VB) get minimal scaffolding so the fragment parses at all, and
+/// we lift the same common-AST expression from the wrapper's `return` — the
+/// scaffold only makes it *parseable*; its operator semantics still come from the
+/// common compiler.
+fn obtain_eval_expression(
+    language: Language,
+    expr: &str,
+) -> Result<(Bundle, crate::ast::Module, crate::ast::Expression), String> {
+    use crate::ast::StmtKind;
+    // Path A — bare expression (dynamic / expression-oriented languages).
+    let bundle = bundle_from_source(expr, language, PathBuf::from("<dbg-eval>"));
+    if let Ok(mut module) = bundle.prepared_module() {
+        if let Some(idx) = module
+            .body
+            .iter()
+            .rposition(|s| matches!(s.kind, StmtKind::Expr(_)))
+        {
+            if let StmtKind::Expr(e) =
+                std::mem::replace(&mut module.body[idx].kind, StmtKind::Empty)
+            {
+                return Ok((bundle, module, e));
+            }
+        }
+    }
+    // Path B — scaffold a fragment for statically-structured languages, then lift
+    // the expression from the wrapper function's `return` (the uncalled wrapper
+    // is harmless — only our params-function is invoked).
+    if let Some(scaffolded) = eval_scaffold(language.name, expr) {
+        let bundle = bundle_from_source(scaffolded, language, PathBuf::from("<dbg-eval>"));
+        let module = bundle
+            .prepared_module()
+            .map_err(|e| format!("parse error: {e}"))?;
+        if let Some(e) = frag_return_expression(&module) {
+            return Ok((bundle, module, e));
+        }
+    }
+    Err(format!(
+        "expression eval isn't available for '{}' yet — use `p <name>` for a read",
+        language.name
+    ))
+}
+
+/// Minimal per-language source that makes an expression parse as a program,
+/// exposing it as `__vybe_frag`'s return. Lives in the eval-service layer (not
+/// the emit compiler), the same layer that already frames per-language source
+/// (e.g. PHP `<?php`). `None` for languages that already parse bare expressions
+/// or aren't expression-evaluable here.
+fn eval_scaffold(language_name: &str, expr: &str) -> Option<String> {
+    let src = match language_name {
+        "go" => format!(
+            "package main\nfunc main() {{}}\nfunc __vybe_frag() interface{{}} {{\n\treturn ({expr})\n}}\n"
+        ),
+        "java" => {
+            format!("class __VybeFrag {{ static Object __vybe_frag() {{ return ({expr}); }} }}\n")
+        }
+        "csharp" | "cs" => {
+            format!("class __VybeFrag {{ static object __vybe_frag() {{ return ({expr}); }} }}\n")
+        }
+        "c" => format!("long __vybe_frag() {{ return ({expr}); }}\n"),
+        "vb" => format!(
+            "Module __VbFrag\n  Function __vybe_frag() As Object\n    Return ({expr})\n  End Function\nEnd Module\n"
+        ),
+        _ => return None,
+    };
+    Some(src)
+}
+
+/// Lift the expression from `__vybe_frag`'s `return`, whether it's a top-level
+/// function (Go/C) or a method inside a class/module (Java/C#/VB).
+fn frag_return_expression(module: &crate::ast::Module) -> Option<crate::ast::Expression> {
+    use crate::ast::{ClassMember, StmtKind};
+    fn return_of(name: &str, body: &[crate::ast::Statement]) -> Option<crate::ast::Expression> {
+        if name != "__vybe_frag" {
+            return None;
+        }
+        body.iter().find_map(|bs| match &bs.kind {
+            StmtKind::Return(Some(e)) => Some(e.clone()),
+            _ => None,
+        })
+    }
+    for s in &module.body {
+        match &s.kind {
+            StmtKind::FunctionDecl { name, body, .. } => {
+                if let Some(e) = return_of(name, body) {
+                    return Some(e);
+                }
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                for m in members {
+                    if let ClassMember::Method(stmt) = m {
+                        if let StmtKind::FunctionDecl { name, body, .. } = &stmt.kind {
+                            if let Some(e) = return_of(name, body) {
+                                return Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A value that can be lifted into the eval mini-VM. Function/host-function
+/// values can't cross VMs (their chunk_index refs are VM-local), so they are
+/// excluded.
+fn eval_value_is_copyable(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => {
+            let obj = o.lock().unwrap();
+            !matches!(
+                obj.kind,
+                ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+            )
+        }
+        _ => true,
+    }
+}
+
 pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {
     use std::sync::{Arc, Mutex};
 

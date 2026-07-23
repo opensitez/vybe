@@ -160,13 +160,6 @@ impl Compiler {
     ) -> Result<bool, String> {
         let line = self.line;
 
-        if self.profile.has_ecma_globals && name == "Object.groupBy" && args.len() == 2 {
-            self.compile_expr(args[0])?; // arr → bottom
-            self.compile_expr(args[1])?; // fn  → top
-            self.emit_object_group_by(line)?;
-            return Ok(true);
-        }
-
         if self.is_python_profile() && name == "globals" && args.is_empty() {
             common::dict::emit_new(&mut self.chunks, self.current, line);
 
@@ -994,14 +987,95 @@ impl Compiler {
                     // drain — a host fn can't drive coroutine resume,
                     // so we drain via the `__stdlib_drain_generator`
                     // bytecode helper before the host call.
+                    let drains_sync_iterable = (module == "ecma:array" && func == "from")
+                        || (module == "ecma:iterator" && func == "from")
+                        || (module == "ecma:object" && func == "fromEntries")
+                        || (module == "ecma:object" && func == "groupBy")
+                        || (module == "ecma:map" && func == "groupBy")
+                        || (matches!(
+                            module.as_str(),
+                            "ecma:int8array"
+                                | "ecma:uint8array"
+                                | "ecma:uint8clamped"
+                                | "ecma:int16array"
+                                | "ecma:uint16array"
+                                | "ecma:int32array"
+                                | "ecma:uint32array"
+                                | "ecma:float32array"
+                                | "ecma:float64array"
+                                | "ecma:bigint64array"
+                                | "ecma:biguint64array"
+                        ) && func == "from")
+                        || (module == "ecma:promise"
+                            && matches!(func.as_str(), "all" | "allSettled" | "race" | "any"));
+                    let drains_async_iterable = (module == "ecma:array" && func == "fromAsync")
+                        || (module == "ecma:iterator" && func == "asyncFrom");
                     let drain_first_arg = self.profile.has_generators
-                        && ((module == "ecma:array" && (func == "from" || func == "fromAsync"))
-                            || (module == "ecma:iterator"
-                                && (func == "from" || func == "asyncFrom")));
-                    let async_drain = self.profile.has_generators
-                        && ((module == "ecma:array" && func == "fromAsync")
-                            || (module == "ecma:iterator" && func == "asyncFrom"));
+                        && (drains_sync_iterable || drains_async_iterable);
+                    let async_drain = self.profile.has_generators && drains_async_iterable;
                     if drain_first_arg && !args.is_empty() {
+                        let rejects_primitive_iterable_arg = (module == "ecma:promise"
+                            && matches!(func.as_str(), "all" | "allSettled" | "race" | "any"))
+                            || ((module == "ecma:object" || module == "ecma:map")
+                                && func == "groupBy");
+                        let rejects_nullish_source = matches!(
+                            module.as_str(),
+                            "ecma:int8array"
+                                | "ecma:uint8array"
+                                | "ecma:uint8clamped"
+                                | "ecma:int16array"
+                                | "ecma:uint16array"
+                                | "ecma:int32array"
+                                | "ecma:uint32array"
+                                | "ecma:float32array"
+                                | "ecma:float64array"
+                                | "ecma:bigint64array"
+                                | "ecma:biguint64array"
+                        ) && func == "from";
+                        if rejects_primitive_iterable_arg
+                            && matches!(
+                                args[0].kind,
+                                ExprKind::Lit(
+                                    Literal::Int(_)
+                                        | Literal::Float(_)
+                                        | Literal::BigInt(_)
+                                        | Literal::Bool(_)
+                                        | Literal::Char(_)
+                                        | Literal::Null
+                                        | Literal::Undefined
+                                        | Literal::Ellipsis
+                                )
+                            )
+                        {
+                            let label = if module == "ecma:promise" {
+                                format!("Promise.{func}")
+                            } else if module == "ecma:object" {
+                                "Object.groupBy".to_string()
+                            } else {
+                                "Map.groupBy".to_string()
+                            };
+                            self.emit_const(Value::String(Arc::from(format!(
+                                "{label} argument is not iterable"
+                            ))));
+                            self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                            let line = self.line;
+                            common::errors::emit_throw(self.chunk(), line);
+                            return Ok(true);
+                        }
+                        if rejects_nullish_source
+                            && matches!(
+                                args[0].kind,
+                                ExprKind::Lit(Literal::Null | Literal::Undefined)
+                            )
+                        {
+                            self.emit_const(Value::String(Arc::from(
+                                "TypedArray.from source is not iterable",
+                            )));
+                            self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                            let line = self.line;
+                            common::errors::emit_throw(self.chunk(), line);
+                            return Ok(true);
+                        }
                         self.compile_expr(args[0])?;
                         if async_drain {
                             common::generators::emit_drain_async_iterable(
@@ -1134,9 +1208,7 @@ impl Compiler {
                     let elem = expr_str_lit(args.get(1).copied());
                     if !name.is_empty() {
                         let key = format!("__wast_array::{name}");
-                        if let Some(idx) =
-                            self.chunks[0].types.iter().position(|t| t.name == key)
-                        {
+                        if let Some(idx) = self.chunks[0].types.iter().position(|t| t.name == key) {
                             if self.chunks[0].types[idx].fields.is_empty() && !elem.is_empty() {
                                 self.chunks[0].types[idx].fields = vec![elem];
                             }
@@ -1155,8 +1227,8 @@ impl Compiler {
                     let mut chunk_indices = Vec::new();
                     for a in &args[1..] {
                         let name = expr_str_lit(Some(a));
-                        if let Some(idx) =
-                            self.resolve_unique_static_method_chunk_for_class("__wasm_module", &name)
+                        if let Some(idx) = self
+                            .resolve_unique_static_method_chunk_for_class("__wasm_module", &name)
                         {
                             chunk_indices.push(idx);
                         }
@@ -1197,9 +1269,11 @@ impl Compiler {
                     }
                     let type_name = expr_str_lit(args.get(1).copied());
                     let l = self.line;
-                    let g = self.chunk().add_constant(Value::String(std::sync::Arc::from(
-                        format!("__tid_{type_name}").as_str(),
-                    )));
+                    let g = self
+                        .chunk()
+                        .add_constant(Value::String(std::sync::Arc::from(
+                            format!("__tid_{type_name}").as_str(),
+                        )));
                     self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
                     self.chunk().emit_op(Op::SET_TYPE_ID, l);
                     return Ok(true);
@@ -1216,9 +1290,11 @@ impl Compiler {
                     // `__tid___wast_array::<ref>` global carries the registry id.
                     let _ = self.resolve_gc_array_type_id(&type_ref);
                     let l = self.line;
-                    let g = self.chunk().add_constant(Value::String(std::sync::Arc::from(
-                        format!("__tid___wast_array::{type_ref}").as_str(),
-                    )));
+                    let g = self
+                        .chunk()
+                        .add_constant(Value::String(std::sync::Arc::from(
+                            format!("__tid___wast_array::{type_ref}").as_str(),
+                        )));
                     self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
                     self.chunk().emit_op(Op::SET_TYPE_ID, l);
                     return Ok(true);

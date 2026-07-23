@@ -785,10 +785,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             .cloned()
             .unwrap_or(Value::Undefined);
         let proto_link = o.properties.get("__proto__").cloned();
-        let non_ctor = matches!(
-            o.properties.get("__vybe_non_ctor"),
-            Some(Value::Bool(true))
-        );
+        let non_ctor = matches!(o.properties.get("__vybe_non_ctor"), Some(Value::Bool(true)));
         (
             o.kind.clone(),
             prev_bound,
@@ -909,10 +906,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             .cloned()
             .unwrap_or(Value::Undefined);
         let proto_link = o.properties.get("__proto__").cloned();
-        let non_ctor = matches!(
-            o.properties.get("__vybe_non_ctor"),
-            Some(Value::Bool(true))
-        );
+        let non_ctor = matches!(o.properties.get("__vybe_non_ctor"), Some(Value::Bool(true)));
         (
             o.kind.clone(),
             prev_bound,

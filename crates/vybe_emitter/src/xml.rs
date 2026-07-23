@@ -9,9 +9,10 @@
 //! each frontend inventing its own "almost a QName" object.
 
 use crate::collections;
+use crate::namespaces::{self, NamespaceNode, Subtree};
 use crate::ops;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 pub const XML_NAME_TYPE: &str = "XmlName";
 pub const FIELD_TYPE: &str = "__type";
@@ -19,6 +20,33 @@ pub const FIELD_LOCAL: &str = "localName";
 pub const FIELD_NAMESPACE: &str = "namespaceURI";
 pub const FIELD_PREFIX: &str = "prefix";
 pub const FIELD_NODE_NAME: &str = "nodeName";
+
+/// Register the portable XML helper namespace (`xml.name`, `xml.local`, ...).
+///
+/// Language frontends should target these canonical leaves directly. Source
+/// syntax like Go `xml.Name`, .NET `XName`, Java `QName`, and VB XML literals
+/// can still normalize however they need, but the runtime name object shape is
+/// shared here.
+pub fn register_namespace_tree() {
+    let mut tree = Subtree::new();
+    for (name, emit) in [
+        ("name", "xml.name"),
+        ("local", "xml.local"),
+        ("namespace", "xml.namespace"),
+        ("prefix", "xml.prefix"),
+        ("qualified", "xml.qualified"),
+        ("equal", "xml.equal"),
+        ("from_dom_node", "xml.from_dom_node"),
+        ("node_name", "xml.node_name"),
+        ("parse", "xml.parse"),
+        ("load", "xml.load"),
+        ("save", "xml.save"),
+        ("elements", "xml.elements"),
+    ] {
+        tree.insert(name.into(), NamespaceNode::CommonEmit(emit.into()));
+    }
+    namespaces::register_namespace_tree("xml", NamespaceNode::Namespace(tree));
+}
 
 fn emit_object_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("ecma:object", "new");
@@ -267,4 +295,53 @@ pub fn emit_qualified(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+}
+
+/// Stack: `[xml_text] -> [document/node]`.
+pub fn emit_parse(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom-parser", "parse");
+    chunks[current].emit_call(idx, 1, line);
+}
+
+/// Stack: `[path_or_text] -> [document/node]`.
+pub fn emit_load(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom-parser", "load");
+    chunks[current].emit_call(idx, 1, line);
+}
+
+/// Stack: `[document/node] -> [xml_text]`.
+pub fn emit_save(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom-parser", "toString");
+    chunks[current].emit_call(idx, 1, line);
+}
+
+/// Stack: `[document/node, tag_name] -> [element_sequence]`.
+pub fn emit_elements(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:dom-parser", "getElementsByTagName");
+    chunks[current].emit_call(idx, 2, line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::namespaces::{ResolutionTarget, clear_registry_for_tests, resolve_path};
+
+    #[test]
+    fn xml_helpers_register_common_namespace_tree() {
+        clear_registry_for_tests();
+        register_namespace_tree();
+
+        match resolve_path(&["xml", "name"]) {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "xml.name"),
+            other => panic!("expected CommonEmit(xml.name), got {other:?}"),
+        }
+        match resolve_path(&["xml", "node_name"]) {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "xml.node_name"),
+            other => panic!("expected CommonEmit(xml.node_name), got {other:?}"),
+        }
+        match resolve_path(&["xml", "elements"]) {
+            Some(ResolutionTarget::CommonEmit(name)) => assert_eq!(name, "xml.elements"),
+            other => panic!("expected CommonEmit(xml.elements), got {other:?}"),
+        }
+    }
 }

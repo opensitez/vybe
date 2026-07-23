@@ -23,8 +23,8 @@
 use crate::collections;
 use crate::instructions::{core_wasm, host};
 use crate::ops;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// Property key holding the (optional) comparator function on a sorted set/map.
 pub const COMPARATOR_KEY: &str = "__java_comparator";

@@ -18,7 +18,10 @@ use std::sync::{Arc, Mutex};
 pub(crate) fn continuation_entry_is_async(chunks: &[crate::chunk::Chunk], entry: &Value) -> bool {
     if let Value::Object(obj) = entry {
         if let ObjectKind::Function(f) = &obj.lock().unwrap().kind {
-            return chunks.get(f.chunk_index).map(|c| c.is_async).unwrap_or(false);
+            return chunks
+                .get(f.chunk_index)
+                .map(|c| c.is_async)
+                .unwrap_or(false);
         }
     }
     false
@@ -33,9 +36,7 @@ pub(crate) fn attach_continuation_protocols(
     // IteratorResult — wire the async driver when the entry chunk is
     // async (falls back to the sync driver if the async stdlib chunk
     // wasn't bundled).
-    let next_key = if is_async
-        && globals.contains_key("__vybe_async_generator_next")
-    {
+    let next_key = if is_async && globals.contains_key("__vybe_async_generator_next") {
         // Stamp the object so the compiler's inline `.next()` fast path
         // can defer to this promise-returning driver instead.
         properties.insert("__vybe_async_gen".into(), Value::Bool(true));

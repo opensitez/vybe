@@ -1008,10 +1008,10 @@ mod tests {
     use vybe_bytecode::value::ObjectKind;
     use vybe_bytecode::{HostContext, VM, Value};
     use vybe_compiler::compiler::Compiler;
-    use vybe_language_vb as vb;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
     use vybe_host::gui_state::GuiState;
+    use vybe_language_vb as vb;
     use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
 
     fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>) {

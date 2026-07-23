@@ -33,7 +33,7 @@ use crate::ecma::typedarray::{
 use crate::ecma::weakmap::{
     WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
@@ -72,7 +72,8 @@ pub fn register(vm: &mut VM) {
                 if matches!(pa, Value::String(_) | Value::Symbol(_))
                     || matches!(pb, Value::String(_) | Value::Symbol(_))
                 {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "TypeError",
                         "Cannot convert a Symbol value to a string",
                     ));
@@ -334,14 +335,20 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 4 => dispatch_typed_array(ctx, obj.clone(), method, args),
                 5 => dispatch_weakmap(ctx, obj.clone(), method, args),
                 6 => dispatch_weakset(ctx, obj.clone(), method, args),
-                7 => {
-                    crate::ecma::arraybuffer::dispatch_arraybuffer_method(obj.clone(), method, args)
-                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args))
-                }
-                8 => {
-                    crate::ecma::arraybuffer::dispatch_dataview_method(ctx, obj.clone(), method, args)
-                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args))
-                }
+                7 => crate::ecma::arraybuffer::dispatch_arraybuffer_method(
+                    ctx,
+                    obj.clone(),
+                    method,
+                    args,
+                )
+                .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
+                8 => crate::ecma::arraybuffer::dispatch_dataview_method(
+                    ctx,
+                    obj.clone(),
+                    method,
+                    args,
+                )
+                .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
                 _ => dispatch_plain_object(ctx, obj.clone(), method, args),
             }
         }
@@ -535,7 +542,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
             // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
             if !(2..=36).contains(&radix) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toString() radix must be between 2 and 36",
                 ));
@@ -568,7 +576,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
             let digits_i = args.first().map(|v| v.as_i32()).unwrap_or(0);
             if !(0..=100).contains(&digits_i) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toFixed() digits argument must be between 0 and 100",
                 ));
@@ -582,7 +591,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if let Some(d) = args.first() {
                 let di = d.as_i32();
                 if !(0..=100).contains(&di) {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         "toExponential() argument must be between 0 and 100",
                     ));
@@ -612,7 +622,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 None => return Value::String(Arc::from(format!("{}", n).as_str())),
             };
             if !(1..=100).contains(&prec_i) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toPrecision() argument must be between 1 and 100",
                 ));
@@ -710,7 +721,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "includes" => {
             if regex_pattern(args.first()).is_some() {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "TypeError",
                     "First argument to String.prototype.includes must not be a RegExp",
                 ));
@@ -831,7 +843,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 None | Some(Value::Undefined) => "NFC",
                 Some(Value::String(form)) => form.as_ref(),
                 Some(other) => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -847,7 +860,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 "NFKC" => s.nfkc().collect::<String>(),
                 "NFKD" => s.nfkd().collect::<String>(),
                 _ => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         &format!(
                             "The normalization form should be one of NFC, NFD, NFKC, NFKD: {}",
@@ -883,7 +897,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // (NaN → 0 via ToIntegerOrInfinity).
             let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
             if n < 0.0 || (n.is_infinite() && n > 0.0) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "Invalid count value",
                 ));
@@ -1219,6 +1234,15 @@ fn dispatch_array(
         }
         "push" => {
             let mut o = obj.lock().unwrap();
+            if o.properties.get("__array_length_readonly").is_some() {
+                drop(o);
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot assign to read only property 'length'",
+                ));
+                return Value::Undefined;
+            }
             let old_len = match &o.kind {
                 ObjectKind::Array(v) => v.len(),
                 _ => 0,
@@ -1299,7 +1323,16 @@ fn dispatch_array(
                     .min(len) as usize;
                 let e = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
                 let out: Vec<Value> = if s < e { v[s..e].to_vec() } else { Vec::new() };
-                return make_array(out);
+                let sliced = make_array(out);
+                if let Value::Object(out_obj) = &sliced {
+                    let holes: BTreeSet<usize> = (s..e)
+                        .filter(|index| crate::ecma::array::is_array_hole(&o, *index))
+                        .map(|index| index - s)
+                        .collect();
+                    let mut out_lock = out_obj.lock().unwrap();
+                    crate::ecma::array::store_hole_indices(&mut out_lock, &holes);
+                }
+                return sliced;
             }
             make_array(Vec::new())
         }
@@ -1502,8 +1535,17 @@ fn dispatch_array(
             let del = args.get(1).map(|a| a.as_i32().max(0) as usize).unwrap_or(0);
             let items: Vec<Value> = args.iter().skip(2).cloned().collect();
             let mut deleted = Vec::new();
+            let mut deleted_holes = BTreeSet::new();
             let mut o = obj.lock().unwrap();
-            if let ObjectKind::Array(ref mut v) = o.kind {
+            if o.properties.get("__vybe_frozen").is_some() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot modify frozen array",
+                ));
+                return Value::Undefined;
+            }
+            if let ObjectKind::Array(ref v) = o.kind {
                 let len = v.len();
                 let idx = if start < 0 {
                     ((len as i32) + start).max(0) as usize
@@ -1511,15 +1553,46 @@ fn dispatch_array(
                     (start as usize).min(len)
                 };
                 let end = (idx + del).min(len);
-                for _ in idx..end {
-                    deleted.push(v.remove(idx));
+                let delete_count = end.saturating_sub(idx);
+                let insert_count = items.len();
+                let old_holes: BTreeSet<usize> = (0..len)
+                    .filter(|index| crate::ecma::array::is_array_hole(&o, *index))
+                    .collect();
+                for offset in 0..delete_count {
+                    if old_holes.contains(&(idx + offset)) {
+                        deleted_holes.insert(offset);
+                    }
                 }
-                for (i, it) in items.into_iter().enumerate() {
-                    v.insert(idx + i, it);
+                if let ObjectKind::Array(ref mut v) = o.kind {
+                    for _ in idx..end {
+                        deleted.push(v.remove(idx));
+                    }
+                    for (i, it) in items.into_iter().enumerate() {
+                        v.insert(idx + i, it);
+                    }
                 }
+                let shift = insert_count as isize - delete_count as isize;
+                let remapped: BTreeSet<usize> = old_holes
+                    .into_iter()
+                    .filter_map(|hole| {
+                        if hole < idx {
+                            Some(hole)
+                        } else if hole < end {
+                            None
+                        } else {
+                            Some((hole as isize + shift) as usize)
+                        }
+                    })
+                    .collect();
+                crate::ecma::array::store_hole_indices(&mut o, &remapped);
                 sync_length(&mut o);
             }
-            make_array(deleted)
+            let removed = make_array(deleted);
+            if let Value::Object(out_obj) = &removed {
+                let mut out_lock = out_obj.lock().unwrap();
+                crate::ecma::array::store_hole_indices(&mut out_lock, &deleted_holes);
+            }
+            removed
         }
         "keys" => {
             let o = obj.lock().unwrap();
@@ -2239,7 +2312,7 @@ fn dispatch_typed_array(
             }
             Value::Bool(false)
         }
-        "join" => {
+        "join" | "toLocaleString" => {
             let sep = args
                 .first()
                 .map(|v| format!("{v}"))
@@ -2248,7 +2321,7 @@ fn dispatch_typed_array(
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
                 let parts: Vec<String> = (0..live)
-                    .map(|i| format!("{}", read_element(ta, i)))
+                    .map(|i| typed_array_element_to_string(read_element(ta, i)))
                     .collect();
                 return Value::String(Arc::from(parts.join(&sep).as_str()));
             }
@@ -2320,9 +2393,15 @@ fn dispatch_typed_array(
                 let live = ta_live_length(ta) as i32;
                 let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(1).map(|v| v.as_i32()).unwrap_or(live);
-                let s = start.max(0).min(live) as usize;
-                let e = end.max(0).min(live) as usize;
-                let values: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
+                let s = (if start < 0 { live + start } else { start })
+                    .max(0)
+                    .min(live) as usize;
+                let e = (if end < 0 { live + end } else { end }).max(0).min(live) as usize;
+                let values: Vec<Value> = if s < e {
+                    (s..e).map(|i| read_element(ta, i)).collect()
+                } else {
+                    Vec::new()
+                };
                 let elem = ta.elem;
                 drop(o);
                 let out = new_typed_array(elem, values.len());
@@ -2334,6 +2413,7 @@ fn dispatch_typed_array(
                         }
                     }
                 }
+                crate::ecma::typedarray::apply_receiver_species(&out, &obj);
                 return out;
             }
             Value::Undefined
@@ -2359,13 +2439,16 @@ fn dispatch_typed_array(
         }
         "map" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let snapshot: Vec<Value> = {
+            let (elem, snapshot): (Option<vybe_bytecode::value::TypedElemKind>, Vec<Value>) = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
                     let live = ta_live_length(ta);
-                    (0..live).map(|i| read_element(ta, i)).collect()
+                    (
+                        Some(ta.elem),
+                        (0..live).map(|i| read_element(ta, i)).collect(),
+                    )
                 } else {
-                    Vec::new()
+                    (None, Vec::new())
                 }
             };
             let out: Vec<Value> = snapshot
@@ -2378,7 +2461,20 @@ fn dispatch_typed_array(
                     )
                 })
                 .collect();
-            make_array(out)
+            if let Some(elem) = elem {
+                let typed = new_typed_array(elem, out.len());
+                if let Value::Object(ref typed_obj) = typed {
+                    let typed_lock = typed_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = typed_lock.kind {
+                        for (i, value) in out.iter().enumerate() {
+                            write_element(ta, i, value);
+                        }
+                    }
+                }
+                typed
+            } else {
+                make_array(out)
+            }
         }
         "filter" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
@@ -2511,7 +2607,13 @@ fn dispatch_typed_array(
         }
         "set" => {
             // ta.set(source, offset?) — copy elements from source array/TypedArray
-            let offset = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let raw_offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            if raw_offset < 0 {
+                let err = crate::ecma::error::new_error(ctx, "RangeError", "TypedArray set offset");
+                ctx.throw_value(err);
+                return Value::Undefined;
+            }
+            let offset = raw_offset as usize;
             let source_values: Vec<Value> = match args.first() {
                 Some(Value::Object(src)) => {
                     let s = src.lock().unwrap();
@@ -2528,11 +2630,15 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
+                if offset.saturating_add(source_values.len()) > live {
+                    drop(o);
+                    let err =
+                        crate::ecma::error::new_error(ctx, "RangeError", "TypedArray set offset");
+                    ctx.throw_value(err);
+                    return Value::Undefined;
+                }
                 for (i, v) in source_values.iter().enumerate() {
                     let idx = offset + i;
-                    if idx >= live {
-                        break;
-                    }
                     write_element(ta, idx, v);
                 }
             }
@@ -2614,6 +2720,13 @@ fn dispatch_typed_array(
             crate::ecma::array::make_array_iterator(Vec::new())
         }
         _ => Value::Undefined,
+    }
+}
+
+fn typed_array_element_to_string(value: Value) -> String {
+    match value {
+        Value::BigInt(n) => format!("{}", n),
+        other => format!("{}", other),
     }
 }
 
@@ -2823,7 +2936,9 @@ fn dispatch_tagged_object(
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
-            if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(ctx, method, &call_args) {
+            if let Some(result) =
+                crate::ecma::regexp::dispatch_regexp_method(ctx, method, &call_args)
+            {
                 return Some(result);
             }
         } else if tag == "Promise" {
@@ -3312,7 +3427,8 @@ fn dispatch_weakmap(
             let key = args.first().cloned().unwrap_or(Value::Undefined);
             let val = args.get(1).cloned().unwrap_or(Value::Undefined);
             if !matches!(key, Value::Object(_)) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "TypeError",
                     "Invalid value used as weak map key",
                 ));
@@ -3411,7 +3527,8 @@ fn dispatch_weakset(
         "add" => {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
             if !matches!(v, Value::Object(_)) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "TypeError",
                     "Invalid value used in weak set",
                 ));

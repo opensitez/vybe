@@ -5,10 +5,10 @@
 //! `metadata.code.inlining` custom sections. These are trailing custom
 //! sections (no ordering constraint relative to the code section).
 
+use vybe_bytecode::{Chunk, Op};
 use vybe_platform_wasm::writer::proposals::compilation_hints::{
     COMPILATION_ORDER_SECTION_NAME, INLINING_SECTION_NAME,
 };
-use vybe_bytecode::{Chunk, Op};
 
 // ── helpers ───────────────────────────────────────────────────────────────
 

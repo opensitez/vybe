@@ -36,14 +36,13 @@ mod arrays;
 mod bindings;
 mod builtins;
 mod calls;
+mod case_insensitive_collections;
 mod class_context;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
 mod classes;
 mod control_flow;
-mod case_insensitive_collections;
 mod emit_helpers;
 mod enums;
-mod reflection;
 mod events;
 mod expressions;
 mod lambdas;
@@ -52,6 +51,7 @@ mod metadata;
 mod operators;
 mod overloads;
 mod php_lang;
+mod reflection;
 mod resolver;
 mod scope;
 mod statements;
@@ -1199,7 +1199,7 @@ fn stmt_contains_this(stmt: &Statement) -> bool {
 
 pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::This => true,
+        ExprKind::This | ExprKind::Super => true,
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Block(stmts) => body_contains_this(stmts),
             LambdaBody::Expr(e) => expr_contains_this(e),
@@ -2516,6 +2516,7 @@ impl Compiler {
         // need the VM to reserve slots at call-frame entry.
         let ns = self.scope().next_slot;
         self.chunks[0].finalize_local_count(ns);
+        self.chunks[0].local_names = self.scope().defined_names.clone();
         // Skip helper linking when compiling runtime helper source.
         // Re-running finalization here would call back into helper
         // compilation and recurse through `Compiler::compile`.

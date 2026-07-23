@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use vybe_bytecode::chunk::StackSwitchHandler;
 use vybe_bytecode::value::Object;
+use vybe_bytecode::{Chunk, Op, VM, Value};
 use vybe_platform_wasm as wasm;
 use vybe_platform_wasm::write_wasm;
-use vybe_bytecode::{Chunk, Op, VM, Value};
 
 /// Spec-`resume` generator iterator-advance, mirroring the compiler's
 /// `emitter::generators::emit_next`. Stack: `[cont]` -> `[value, has_more_i32]`.

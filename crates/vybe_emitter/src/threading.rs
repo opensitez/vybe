@@ -14,8 +14,8 @@
 
 use crate::functions::create_function_chunk;
 use crate::instructions::core_wasm;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
 
@@ -218,7 +218,8 @@ pub fn emit_thread_sleep(chunk: &mut Chunk, sub_dur_idx: u16, block_idx: u16, li
 /// Stack before: [ms]  Stack after: [task_object]
 pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // WASI pollable sleep imports — all imports flow through chunks[0].
-    let sub_dur_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
+    let sub_dur_idx =
+        chunks[current].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
     let block_idx = chunks[current].add_import("wasi:io/poll", "[method]pollable.block");
 
     // Worker chunk: arity=1 (start_arg = ms), body sleeps via WASI pollable,

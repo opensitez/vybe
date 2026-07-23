@@ -439,8 +439,13 @@ impl Compiler {
             self.emit(Op::RETURN);
             self.current_result_slot = saved_rs;
         } else if matches!(body, LambdaBody::Block(_)) {
-            let line = self.line;
-            common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+            if self.profile.has_undefined_value {
+                inst!(self, core_wasm::undefined);
+                self.emit(Op::RETURN);
+            } else {
+                let line = self.line;
+                common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+            }
         }
         if let Some(saved_rs) = saved_result_slot {
             self.current_result_slot = saved_rs;
@@ -451,6 +456,7 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[ci].finalize_local_count(ns);
+        self.chunks[ci].local_names = self.scope().defined_names.clone();
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         // Resolve upvalue names BEFORE popping the inner scope
         let inner_scope_idx = self.scopes.len() - 1;
@@ -689,9 +695,9 @@ impl Compiler {
         parts: &[String],
         args: &[&Expression],
     ) -> Result<bool, String> {
-        // namespaceplan.md: the legacy platform cascade is deleted — the
-        // COMMON resolver's .NET chain handles it (tree + platform data).
-        match self.resolve_dotnet_chain(parts) {
+        // namespaceplan.md: platform surfaces are data in the shared tree;
+        // the common resolver handles the mounted chain.
+        match self.resolve_profile_namespace_chain(parts) {
             Some(super::resolver::Resolution::Tree(
                 crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
             )) => {

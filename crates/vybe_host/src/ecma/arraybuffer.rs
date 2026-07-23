@@ -53,6 +53,9 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
         .insert("byteLength".into(), Value::I32(n as i32));
     obj.properties
         .insert("maxByteLength".into(), Value::I32(max as i32));
+    obj.properties
+        .insert("resizable".into(), Value::Bool(resizable));
+    obj.properties.insert("detached".into(), Value::Bool(false));
     let type_name = if shared {
         "SharedArrayBuffer"
     } else {
@@ -72,6 +75,47 @@ fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
         }
     }
     None
+}
+
+fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Object>>) {
+    let Some(ctor) = crate::ecma::object::proto_walk_get(receiver, "constructor") else {
+        return;
+    };
+    let (name, prototype) = match ctor {
+        Value::Object(ctor_obj) => {
+            let ctor_lock = ctor_obj.lock().unwrap();
+            let name = match ctor_lock.properties.get("name") {
+                Some(Value::String(name)) if !name.is_empty() => Some(name.to_string()),
+                _ => None,
+            };
+            let prototype = match ctor_lock.properties.get("prototype") {
+                Some(Value::Object(proto)) => Some(proto.clone()),
+                _ => None,
+            };
+            (name, prototype)
+        }
+        _ => (None, None),
+    };
+    let Value::Object(result_obj) = result else {
+        return;
+    };
+    let mut result_lock = result_obj.lock().unwrap();
+    if !matches!(result_lock.kind, ObjectKind::ArrayBuffer(_)) {
+        return;
+    }
+    if let Some(proto) = prototype {
+        result_lock
+            .properties
+            .insert("__proto__".into(), Value::Object(proto));
+    }
+    if let Some(name) = name {
+        let types = Arc::new(Mutex::new(Object::new_array(vec![Value::String(
+            Arc::from(name.as_str()),
+        )])));
+        result_lock
+            .properties
+            .insert("__types".into(), Value::Object(types));
+    }
 }
 
 /// Read-only snapshot of the buffer's current byte length. Call with
@@ -96,17 +140,54 @@ fn register_arraybuffer(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:arraybuffer",
         "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            new_arraybuffer(n, n, false, false)
+            if n < 0 {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid ArrayBuffer length",
+                ));
+                return Value::Undefined;
+            }
+            let max = args
+                .get(1)
+                .and_then(|options| {
+                    let Value::Object(obj) = options else {
+                        return None;
+                    };
+                    obj.lock()
+                        .unwrap()
+                        .properties
+                        .get("maxByteLength")
+                        .map(|value| value.as_i32())
+                })
+                .unwrap_or(n);
+            if max < n {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "ArrayBuffer maxByteLength is smaller than byteLength",
+                ));
+                return Value::Undefined;
+            }
+            new_arraybuffer(n, max, max != n, false)
         }),
     );
 
     vm.register_host_fn(
         "ecma:arraybuffer",
         "newWithLength",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if n < 0 {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid ArrayBuffer length",
+                ));
+                return Value::Undefined;
+            }
             new_arraybuffer(n, n, false, false)
         }),
     );
@@ -177,12 +258,21 @@ fn register_arraybuffer(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:arraybuffer",
         "slice",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    if state.detached {
+                        drop(o);
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
+                            "TypeError",
+                            "ArrayBuffer is detached",
+                        ));
+                        return Value::Undefined;
+                    }
                     let src = state.bytes.lock().unwrap();
                     let len = src.len() as i32;
                     let s = if start < 0 {
@@ -219,7 +309,9 @@ fn register_arraybuffer(vm: &mut VM) {
                     new_obj
                         .properties
                         .insert("maxByteLength".into(), Value::I32(slice_len as i32));
-                    return Value::Object(Arc::new(Mutex::new(new_obj)));
+                    let out = Value::Object(Arc::new(Mutex::new(new_obj)));
+                    apply_arraybuffer_receiver_species(&out, &ab);
+                    return out;
                 }
             }
             Value::Null
@@ -229,17 +321,39 @@ fn register_arraybuffer(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:arraybuffer",
         "resize",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
                 let mut o = ab.lock().unwrap();
                 let ObjectKind::ArrayBuffer(ref mut state) = o.kind else {
                     return Value::Null;
                 };
-                // Per ECMA-262 §25.1.5.3: RangeError when non-resizable
-                // or exceeds maxByteLength. MVP: silent no-op.
-                if !state.resizable || new_len > state.max_byte_length {
-                    return Value::Null;
+                if state.detached {
+                    drop(o);
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "ArrayBuffer is detached",
+                    ));
+                    return Value::Undefined;
+                }
+                if !state.resizable {
+                    drop(o);
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "ArrayBuffer is not resizable",
+                    ));
+                    return Value::Undefined;
+                }
+                if new_len > state.max_byte_length {
+                    drop(o);
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "RangeError",
+                        "ArrayBuffer resize exceeds maxByteLength",
+                    ));
+                    return Value::Undefined;
                 }
                 let mut bytes = state.bytes.lock().unwrap();
                 bytes.resize(new_len, 0);
@@ -268,6 +382,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     return Value::Null;
                 };
                 o.properties.insert("byteLength".into(), Value::I32(0));
+                o.properties.insert("detached".into(), Value::Bool(true));
                 drop(o);
 
                 let target_len = if requested < 0 {
@@ -292,6 +407,12 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("maxByteLength".into(), Value::I32(target_len as i32));
+                new_obj
+                    .properties
+                    .insert("resizable".into(), Value::Bool(false));
+                new_obj
+                    .properties
+                    .insert("detached".into(), Value::Bool(false));
                 return Value::Object(Arc::new(Mutex::new(new_obj)));
             }
             Value::Null
@@ -316,6 +437,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     return Value::Null;
                 };
                 o.properties.insert("byteLength".into(), Value::I32(0));
+                o.properties.insert("detached".into(), Value::Bool(true));
                 drop(o);
 
                 let target_len = if requested < 0 {
@@ -340,6 +462,12 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("maxByteLength".into(), Value::I32(target_len as i32));
+                new_obj
+                    .properties
+                    .insert("resizable".into(), Value::Bool(false));
+                new_obj
+                    .properties
+                    .insert("detached".into(), Value::Bool(false));
                 return Value::Object(Arc::new(Mutex::new(new_obj)));
             }
             Value::Null
@@ -505,7 +633,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
 
 // ── DataView ──────────────────────────────────────────────────────────
 
-fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value {
+pub(crate) fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value {
     let mut obj = Object::new();
     obj.properties.insert(DV_TAG.into(), Value::I32(1));
     obj.properties.insert(DV_BUFFER_PROP.into(), buffer.clone());
@@ -1193,6 +1321,7 @@ fn f16_to_f64(bits: u16) -> f64 {
 /// Dispatches instance method calls on ArrayBuffer objects.
 /// `args[0]` = the ArrayBuffer object; remaining args are user-supplied.
 pub fn dispatch_arraybuffer_method(
+    ctx: &mut vybe_bytecode::HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],
@@ -1201,12 +1330,23 @@ pub fn dispatch_arraybuffer_method(
         "slice" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                if state.detached {
+                    drop(o);
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "ArrayBuffer is detached",
+                    ));
+                    return Some(Value::Undefined);
+                }
                 let src = state.bytes.lock().unwrap();
                 let len = src.len() as i32;
                 let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(1).map(|v| v.as_i32()).unwrap_or(len);
-                let s = start.max(0).min(len) as usize;
-                let e = end.max(0).min(len) as usize;
+                let s = (if start < 0 { len + start } else { start })
+                    .max(0)
+                    .min(len) as usize;
+                let e = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
                 let slice: Vec<u8> = if s < e {
                     src[s..e].to_vec()
                 } else {
@@ -1239,9 +1379,117 @@ pub fn dispatch_arraybuffer_method(
                 new_obj
                     .properties
                     .insert("__type".into(), Value::String(Arc::from(type_name)));
-                return Some(Value::Object(Arc::new(Mutex::new(new_obj))));
+                let out = Value::Object(Arc::new(Mutex::new(new_obj)));
+                apply_arraybuffer_receiver_species(&out, &obj);
+                return Some(out);
             }
             Some(Value::Null)
+        }
+        "resize" => {
+            let new_len = args
+                .first()
+                .map(|v| v.as_i32().max(0) as usize)
+                .unwrap_or(0);
+            let mut o = obj.lock().unwrap();
+            let ObjectKind::ArrayBuffer(ref mut state) = o.kind else {
+                return Some(Value::Null);
+            };
+            if state.detached {
+                drop(o);
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "ArrayBuffer is detached",
+                ));
+                return Some(Value::Undefined);
+            }
+            if !state.resizable {
+                drop(o);
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "ArrayBuffer is not resizable",
+                ));
+                return Some(Value::Undefined);
+            }
+            if new_len > state.max_byte_length {
+                drop(o);
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "ArrayBuffer resize exceeds maxByteLength",
+                ));
+                return Some(Value::Undefined);
+            }
+            let mut bytes = state.bytes.lock().unwrap();
+            bytes.resize(new_len, 0);
+            drop(bytes);
+            o.properties
+                .insert("byteLength".into(), Value::I32(new_len as i32));
+            Some(Value::Undefined)
+        }
+        "transfer" | "transferToFixedLength" => {
+            let requested = args.first().map(|v| v.as_i32()).unwrap_or(-1);
+            let mut o = obj.lock().unwrap();
+            let (taken_bytes, shared) = if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
+                if state.detached {
+                    drop(o);
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "ArrayBuffer is detached",
+                    ));
+                    return Some(Value::Undefined);
+                }
+                let mut src = state.bytes.lock().unwrap();
+                let taken = std::mem::take(&mut *src);
+                drop(src);
+                state.detached = true;
+                (taken, state.shared)
+            } else {
+                return Some(Value::Null);
+            };
+            o.properties.insert("byteLength".into(), Value::I32(0));
+            o.properties.insert("detached".into(), Value::Bool(true));
+            drop(o);
+
+            let target_len = if requested < 0 {
+                taken_bytes.len()
+            } else {
+                requested.max(0) as usize
+            };
+            let mut new_bytes = taken_bytes;
+            new_bytes.resize(target_len, 0);
+            let new_state = ArrayBufferState {
+                bytes: Arc::new(Mutex::new(new_bytes)),
+                max_byte_length: target_len,
+                resizable: false,
+                detached: false,
+                shared,
+            };
+            let type_name = if shared {
+                "SharedArrayBuffer"
+            } else {
+                "ArrayBuffer"
+            };
+            let mut new_obj = Object::new();
+            new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+            new_obj
+                .properties
+                .insert("byteLength".into(), Value::I32(target_len as i32));
+            new_obj
+                .properties
+                .insert("maxByteLength".into(), Value::I32(target_len as i32));
+            new_obj
+                .properties
+                .insert("resizable".into(), Value::Bool(false));
+            new_obj
+                .properties
+                .insert("detached".into(), Value::Bool(false));
+            new_obj
+                .properties
+                .insert("__type".into(), Value::String(Arc::from(type_name)));
+            Some(Value::Object(Arc::new(Mutex::new(new_obj))))
         }
         _ => None,
     }

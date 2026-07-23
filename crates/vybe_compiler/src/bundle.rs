@@ -235,7 +235,20 @@ impl Bundle {
         php_entry_path_override: Option<&Path>,
     ) -> Result<CompiledBundle, String> {
         let module = self.prepared_module_with_php_entry_override(php_entry_path_override)?;
+        self.compile_prepared_module(&module, modules)
+    }
 
+    /// Compile an already-prepared (possibly transformed) common-AST module with
+    /// this bundle's full setup — profile, GUI namespace, module-export linking,
+    /// and WASM chunk appending. Split out of `compile_full_with_modules` so the
+    /// debugger's expression evaluator can transform the module (e.g. wrap the
+    /// trailing expression in a `return`) and still reuse the exact same compile
+    /// pipeline, language-agnostically.
+    pub fn compile_prepared_module(
+        &self,
+        module: &Module,
+        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+    ) -> Result<CompiledBundle, String> {
         // Load profile + compile source code.
         //
         // Flatten the VM's module registry into a per-module map of
@@ -268,7 +281,7 @@ impl Bundle {
         let compile_result = crate::compiler::Compiler::with_profile(profile)
             .with_module_exports(module_exports)
             .with_module_value_exports(value_exports)
-            .compile_with_imports(&module)?;
+            .compile_with_imports(module)?;
         let mut chunks = compile_result.chunks;
         let host_imports = compile_result.host_imports;
 
@@ -3721,7 +3734,7 @@ pub fn validate_imports_against_modules(
         None => return unresolved,
     };
     for imp in &imports_chunk.imports {
-        if imp.module == "*" || imp.module == "env" {
+        if imp.module == "*" || imp.module == "env" || imp.module == "wasm:string-constants" {
             continue;
         }
         // Name prefixed with `__vybe_` resolves via stdlib globals at

@@ -53,11 +53,7 @@ fn create_document_with_root() {
     let doc = call(
         "web:dom-parser",
         "createDocument",
-        vec![
-            Value::Null,
-            Value::String(Arc::from("root")),
-            Value::Null,
-        ],
+        vec![Value::Null, Value::String(Arc::from("root")), Value::Null],
     );
     let root = prop(&doc, "documentElement");
     assert!(matches!(prop(&root, "nodeType"), Value::I32(1)));
@@ -77,7 +73,9 @@ fn create_document_with_namespace() {
         ],
     );
     let root = prop(&doc, "documentElement");
-    assert!(matches!(prop(&root, "namespaceURI"), Value::String(s) if &*s == "http://example.com/ns"));
+    assert!(
+        matches!(prop(&root, "namespaceURI"), Value::String(s) if &*s == "http://example.com/ns")
+    );
 }
 
 /// `createCDATASection` (DOM §4.5 `Document.createCDATASection`) yields a
@@ -142,7 +140,11 @@ fn append_fragment_moves_children() {
         "createDocument",
         vec![Value::Null, Value::Null, Value::Null],
     );
-    let frag = call("web:dom-parser", "createDocumentFragment", vec![doc.clone()]);
+    let frag = call(
+        "web:dom-parser",
+        "createDocumentFragment",
+        vec![doc.clone()],
+    );
     call(
         "web:dom-parser",
         "appendXML",

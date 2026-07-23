@@ -33,7 +33,9 @@ pub fn register(vm: &mut VM) {
         vm.register_host_fn(
             "ecma:error",
             kind,
-            Box::new(move |ctx: &mut HostContext, args: &[Value]| make_error(ctx, &kind_owned, args)),
+            Box::new(move |ctx: &mut HostContext, args: &[Value]| {
+                make_error(ctx, &kind_owned, args)
+            }),
         );
     }
 
@@ -122,6 +124,26 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    vm.register_host_fn(
+        "ecma:error",
+        "SuppressedError",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            // SuppressedError(error, suppressed, message?)
+            let this = args.first().cloned().unwrap_or(Value::Null);
+            let error = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let suppressed = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let message = args.get(3).map(|v| format!("{}", v)).unwrap_or_default();
+            if let Value::Object(ref obj) = this {
+                let mut o = obj.lock().unwrap();
+                stamp_error_object(&mut o, "SuppressedError", &message, None);
+                o.properties.insert("error".into(), error);
+                o.properties.insert("suppressed".into(), suppressed);
+                link_error_prototype(ctx, &mut o, "SuppressedError");
+            }
+            this
+        }),
+    );
+
     // Error.prototype.toString() — §20.5.3.4
     // "name: message" (omit ": message" if message is empty; omit name if "Error")
     vm.register_host_fn(
@@ -161,7 +183,9 @@ fn link_error_prototype(ctx: &HostContext, obj: &mut Object, kind: &str) {
         let Value::Object(ctor) = ctx.get_global(&format!("__ctor_{kind}")) else {
             return;
         };
-        let Some(proto @ Value::Object(_)) = ctor.lock().unwrap().properties.get("prototype").cloned() else {
+        let Some(proto @ Value::Object(_)) =
+            ctor.lock().unwrap().properties.get("prototype").cloned()
+        else {
             return;
         };
         obj.properties.insert("__proto__".into(), proto);
@@ -253,6 +277,7 @@ fn error_ancestors(kind: &str) -> &'static [&'static str] {
         "URIError" => &["URIError", "Error"],
         "EvalError" => &["EvalError", "Error"],
         "AggregateError" => &["AggregateError", "Error"],
+        "SuppressedError" => &["SuppressedError", "Error"],
         _ => &[],
     }
 }

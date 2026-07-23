@@ -94,7 +94,13 @@ pub fn register(vm: &mut VM) {
         date_time_format.clone(),
     );
     set_prop(&date_time_format_proto, "__proto__", object_proto.clone());
-    for name in &["format", "formatToParts", "resolvedOptions"] {
+    for name in &[
+        "format",
+        "formatToParts",
+        "formatRange",
+        "formatRangeToParts",
+        "resolvedOptions",
+    ] {
         let idx = *vm
             .host_registry
             .get(&("ecma:intl/datetimeformat".to_string(), (*name).to_string()))
@@ -105,6 +111,11 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:intl/datetimeformat", name, idx),
         );
     }
+    set_prop(
+        &date_time_format,
+        "supportedLocalesOf",
+        host_fn_ref(vm, "ecma:intl/datetimeformat", "supportedLocalesOf"),
+    );
     set_prop(&date_time_format, "prototype", date_time_format_proto);
 
     let relative_time_format_proto = crate::ecma::intl::shared_relative_time_format_prototype();

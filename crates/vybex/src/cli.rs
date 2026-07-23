@@ -197,6 +197,9 @@ pub fn run() {
     let mut sandbox = false;
     let mut portable = false;
     let mut trace = false;
+    let mut debug = false;
+    let mut dap_port: Option<u16> = None;
+    let mut watch = false;
     let mut chunk_filter = None;
     let mut file_arg = None;
 
@@ -237,6 +240,15 @@ pub fn run() {
             "--sandbox" | "-s" => sandbox = true,
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
+            "--debug" | "-g" => debug = true,
+            "--dap-port" => {
+                let Some(p) = iter.next() else {
+                    eprintln!("Missing value for --dap-port");
+                    std::process::exit(1);
+                };
+                dap_port = p.parse().ok();
+            }
+            "--watch" | "-W" => watch = true,
             "--serve" => serve = true,
             "--bind" => {
                 let Some(bind) = iter.next() else {
@@ -282,6 +294,21 @@ pub fn run() {
             config.bind = bind;
         }
         crate::server::serve_directory(config);
+    }
+
+    // ── --watch: Phase-1 hot reload. Re-run the program in a fresh subprocess
+    //    on every source change. Diverges (Ctrl-C to stop). ──────────────────
+    if watch {
+        let Some(entry) = file_arg.clone() else {
+            eprintln!("--watch requires a source file");
+            std::process::exit(1);
+        };
+        let child_args: Vec<String> = args[1..]
+            .iter()
+            .filter(|a| a.as_str() != "--watch" && a.as_str() != "-W")
+            .cloned()
+            .collect();
+        crate::watch::run_watch(PathBuf::from(entry), child_args);
     }
 
     let dynamic_compile_caps = if sandbox {
@@ -498,11 +525,61 @@ pub fn run() {
         vm.set_trace_chunk_filter(chunk_filter.clone());
     }
 
+    // ── Debugger (--debug REPL or --dap-port VS Code): pause on entry ────────
+    if debug || dap_port.is_some() {
+        // Install the compiler-backed expression evaluator (for `p <expr>`,
+        // conditional breakpoints, watches, and DAP `evaluate`). Faithful
+        // semantics via an isolated mini-VM; never perturbs the paused VM.
+        let eval_language = bundle.language;
+        let eval_caps = dynamic_compile_caps.clone();
+        vm.set_eval_hook(Box::new(move |live, expr, locals| {
+            crate::dynamic::debug_eval_expression(live, expr, locals, eval_language, eval_caps.clone())
+        }));
+
+        // Install the hot-reload recompiler: re-read + recompile the source in a
+        // FRESH VM set up exactly like the original compile, so unchanged
+        // functions reproduce byte-for-byte (the live VM's module state has
+        // drifted since startup and would produce spurious diffs). `apply_reload`
+        // then swaps only the functions that actually changed.
+        let reload_path = source_path.clone();
+        let reload_caps = dynamic_compile_caps.clone();
+        vm.set_reload_hook(Box::new(move |_live| {
+            recompile_for_reload(&reload_path, reload_caps.clone())
+        }));
+        if let Some(port) = dap_port {
+            crate::dap::attach(&mut vm, port, source_path.display().to_string());
+        } else {
+            crate::debug_repl::attach(&mut vm);
+        }
+    }
+
     // ── Run ─────────────────────────────────────────────────────────────────
     let mut runtime_compiler =
         crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps);
     match runtime_compiler.run_compiled(compiled) {
-        Ok(_) => {}
+        Ok(v) => {
+            if debug {
+                eprintln!("\n● program exited → {v}");
+                std::process::exit(0);
+            }
+            if dap_port.is_some() {
+                // The client sees the socket close and ends the session.
+                std::process::exit(0);
+            }
+        }
+        Err(e) if e.contains("__debug_quit__") => {
+            eprintln!("\n● debugger quit");
+            std::process::exit(0);
+        }
+        Err(e) if e.contains("__debug_restart__") => {
+            // Replace this process with a fresh copy (same args) — clean restart.
+            use std::os::unix::process::CommandExt;
+            eprintln!("\n↻ restarting…");
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vybex"));
+            let _ = std::process::Command::new(exe).args(&args).exec();
+            std::process::exit(0);
+        }
         Err(e) => {
             eprintln!("Runtime error: {e}");
             std::process::exit(1);
@@ -512,6 +589,24 @@ pub fn run() {
     if gui.lock().unwrap().should_run {
         crate::gui_launch::launch_gui(vm, gui);
     }
+}
+
+/// Recompile the source for a hot reload in a FRESH VM whose host/module setup
+/// mirrors the original compile (so unchanged functions reproduce identically).
+/// Returns the fresh chunk set for `VM::debug_reload` to diff and swap.
+fn recompile_for_reload(
+    source_path: &Path,
+    caps: vybe_host::Capabilities,
+) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+    let bundle = vybe_compiler::projects::load(source_path).map_err(|e| e.to_string())?;
+    let mut tv = vybe_bytecode::VM::new();
+    let _gui = vybe_host::register_all_with_gui(&mut tv);
+    vybe_host::setup_namespaces(&mut tv);
+    crate::server::programmatic::register(&mut tv);
+    let _ = crate::adapters::register_all(&mut tv);
+    let compiled = crate::dynamic::RuntimeCompilerService::with_capabilities(&mut tv, caps)
+        .compile_bundle(&bundle)?;
+    Ok(compiled.chunks)
 }
 
 fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
@@ -594,6 +689,9 @@ fn print_usage() {
     eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)");
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
+    eprintln!("  -g, --debug       Step debugger: pause on entry, REPL on stdin (h for help)");
+    eprintln!("      --dap-port N  Debug Adapter Protocol server on 127.0.0.1:N (VS Code attach)");
+    eprintln!("  -W, --watch       Re-run on source change (Phase-1 hot reload)");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
     eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");

@@ -14,9 +14,8 @@ use vybe_bytecode::{HostContext, VM, Value};
 
 fn compile_python(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_python::parse(src).expect("parse");
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
-            .expect("profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
+        .expect("profile");
     vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")
@@ -25,8 +24,7 @@ fn compile_python(src: &str) -> Vec<vybe_bytecode::Chunk> {
 fn compile_js(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_js::parse(src).expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")
@@ -35,8 +33,7 @@ fn compile_js(src: &str) -> Vec<vybe_bytecode::Chunk> {
 fn compile_vb(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_vb::parse(src).expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_vb::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_vb::profile_source()).expect("profile");
     vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")

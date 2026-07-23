@@ -480,7 +480,10 @@ pub fn encode_code_section(
                 body.push(TYPE_VOID); // block type: void
                 write_leb128_u32(&mut body, 1); // 1 catch clause
                 body.push(0x00); // variant: catch (tag, label)
-                write_leb128_u32(&mut body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
+                write_leb128_u32(
+                    &mut body,
+                    crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
+                );
                 write_leb128_u32(&mut body, 0); // label 0 = $catch
                 ip += 10; // opcode(4) + [clause_count,kind,tag(2),offset(2)] = 6
                 continue;
@@ -831,7 +834,8 @@ fn emit_core_op(
         // and v8 correctly rejects it.
         _ if op == Op::GLOBAL_GET => {
             let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_bytecode::value::Value::String(name)) = chunk.constants.get(name_idx as usize)
+            if let Some(vybe_bytecode::value::Value::String(name)) =
+                chunk.constants.get(name_idx as usize)
             {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {
                     let wasm_gidx = gidx + crate::writer::sections::rt_globals().len() as u32;
@@ -848,7 +852,8 @@ fn emit_core_op(
         }
         _ if op == Op::GLOBAL_SET => {
             let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_bytecode::value::Value::String(name)) = chunk.constants.get(name_idx as usize)
+            if let Some(vybe_bytecode::value::Value::String(name)) =
+                chunk.constants.get(name_idx as usize)
             {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {
                     let wasm_gidx = gidx + crate::writer::sections::rt_globals().len() as u32;
@@ -884,11 +889,17 @@ fn emit_core_op(
             // declared foreign tags would need tag-section entries here.
             let _tag = read_u16(&chunk.code, ip);
             body.push(0x08); // throw
-            write_leb128_u32(body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
+            write_leb128_u32(
+                body,
+                crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
+            );
         }
         _ if op == Op::THROW_REF => {
             body.push(0x08);
-            write_leb128_u32(body, crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG);
+            write_leb128_u32(
+                body,
+                crate::writer::proposals::exception_handling::VYBE_EXCEPTION_TAG,
+            );
         }
         // Reference-types `table.get tbl` / `table.set tbl` (core prefix).
         // Bytecode carries a single-byte table index; WASM binary uses a

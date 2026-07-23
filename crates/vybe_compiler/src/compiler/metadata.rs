@@ -5,6 +5,22 @@
 
 use super::*;
 
+fn dotnet_descriptor_runtime_type_name(interface: &str, name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.starts_with("System.") {
+        return trimmed.to_string();
+    }
+    let namespace = interface
+        .strip_prefix("dotnet.")
+        .unwrap_or(interface)
+        .trim_end_matches('.');
+    if namespace.is_empty() {
+        trimmed.to_string()
+    } else {
+        format!("{namespace}.{trimmed}")
+    }
+}
+
 impl Compiler {
     pub(super) fn parse_pascal_array_bound_token(token: &str) -> Option<(i64, bool)> {
         let trimmed = token.trim();
@@ -109,8 +125,77 @@ impl Compiler {
         self.reflection_types.clear();
         self.attribute_usage.clear();
         self.reflection_bindings.clear();
+        self.seed_dotnet_reflection_metadata();
         for stmt in body {
             self.collect_reflection_stmt(stmt, None);
+        }
+    }
+
+    fn seed_dotnet_reflection_metadata(&mut self) {
+        use crate::profile::ReflectionTypeNaming;
+        use vybe_bytecode::component_model::ComponentItemKind;
+
+        if self.profile.reflection_type_naming != ReflectionTypeNaming::Dotnet {
+            return;
+        }
+
+        for export in crate::platforms::dotnet::emitter::dotnet_component_descriptor().exports {
+            let ComponentItemKind::Class(class) = export.kind else {
+                continue;
+            };
+            let runtime_name = dotnet_descriptor_runtime_type_name(&export.interface, &class.name);
+            let parents = class
+                .parent
+                .as_deref()
+                .map(|parent| dotnet_descriptor_runtime_type_name(&export.interface, parent))
+                .into_iter()
+                .collect();
+            let interfaces = class
+                .interfaces
+                .iter()
+                .map(|interface| dotnet_descriptor_runtime_type_name(&export.interface, interface))
+                .collect();
+            let mut metadata = ReflectionTypeMetadata {
+                parents,
+                interfaces,
+                decorators: Vec::new(),
+                is_value_type: runtime_name.eq_ignore_ascii_case("System.ValueType")
+                    || runtime_name.eq_ignore_ascii_case("System.Enum"),
+                ..ReflectionTypeMetadata::default()
+            };
+            if let Some(constructor) = class.constructor {
+                metadata.constructors.push(ReflectionConstructorMetadata {
+                    param_types: vec!["System.Object".to_string(); constructor.arity as usize],
+                });
+            }
+            for property in class.properties {
+                metadata.properties.insert(
+                    property.name,
+                    ReflectionMemberMetadata {
+                        decorators: Vec::new(),
+                        is_static: false,
+                        can_write: property.setter.is_some(),
+                    },
+                );
+            }
+            for method in class.methods {
+                metadata.methods.insert(
+                    method.name,
+                    ReflectionMethodMetadata {
+                        decorators: Vec::new(),
+                        params: (0..method.arity)
+                            .map(|index| ReflectionParamMetadata {
+                                name: format!("arg{index}"),
+                                decorators: Vec::new(),
+                            })
+                            .collect(),
+                        is_static: method.is_static,
+                    },
+                );
+            }
+            self.reflection_types.insert(runtime_name.clone(), metadata);
+            self.attribute_usage
+                .insert(runtime_name, AttributeUsageMetadata::default());
         }
     }
 
@@ -986,6 +1071,62 @@ impl Compiler {
         let line = self.line;
         common::errors::emit_throw(self.chunk(), line);
         Ok(())
+    }
+
+    pub(super) fn emit_js_private_brand_check(
+        &mut self,
+        object_slot: u16,
+        storage_name: &str,
+    ) -> Result<(), String> {
+        self.emit_u16(Op::LOCAL_GET, object_slot);
+        self.emit_const(Value::String(Arc::from(storage_name)));
+        let has_own_idx = self.import("ecma:object", "hasOwn");
+        let line = self.line;
+        self.emit_host_call(has_own_idx, 2);
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.chunk().emit_else(line);
+        self.emit_const(Value::String(Arc::from(
+            "Cannot read private member from an object whose class did not declare it",
+        )));
+        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+        common::errors::emit_throw(self.chunk(), line);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    pub(super) fn emit_js_current_this_value(&mut self) {
+        let self_kw = self.profile.self_keyword.clone();
+        if let Some(slot) = self
+            .scope()
+            .resolve(&self_kw)
+            .or_else(|| self.scope().resolve_ci(&self_kw))
+        {
+            self.emit_u16(Op::LOCAL_GET, slot);
+        } else if self.scopes.len() > 1
+            && self
+                .resolve_upvalue(self.scopes.len() - 1, &self_kw)
+                .is_some()
+        {
+            let env = self.closure_env_slot();
+            let idx = self.closure_env_index(&self_kw);
+            let line = self.line;
+            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, line);
+        } else if self.scopes.len() > 1
+            && self
+                .resolve_upvalue(self.scopes.len() - 1, "__js_this")
+                .is_some()
+        {
+            let env = self.closure_env_slot();
+            let idx = self.closure_env_index("__js_this");
+            let line = self.line;
+            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, line);
+        } else if self.profile.ambient_this_binding {
+            let js_this = self.str_const("__js_this");
+            self.emit_u16(Op::GLOBAL_GET, js_this);
+        } else {
+            self.emit(Op::NULL);
+        }
     }
 
     pub(super) fn emit_with_target_get(&mut self, name: &str) -> bool {

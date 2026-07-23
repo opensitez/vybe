@@ -18,8 +18,8 @@
 //! by [`Options`]; [`Options::for_language`] holds the quirk table.
 
 use crate::instructions::core_wasm;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use crate::collections;
 use crate::errors;

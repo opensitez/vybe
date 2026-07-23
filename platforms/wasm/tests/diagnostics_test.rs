@@ -9,8 +9,8 @@
 //!      running through an external disassembler.
 
 use vybe_bytecode::value::ValueTag;
-use vybe_platform_wasm::disassembler::{write_wat, write_wat_chunk};
 use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_platform_wasm::disassembler::{write_wat, write_wat_chunk};
 
 // ── Type recorder ──────────────────────────────────────────────────
 

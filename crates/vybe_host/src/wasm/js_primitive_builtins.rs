@@ -358,14 +358,14 @@ fn register_bigint(vm: &mut VM) {
     vm.register_host_fn(
         "wasm:js-bigint",
         "fromI64",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            match args.first() {
+        Box::new(
+            |_ctx: &mut HostContext, args: &[Value]| match args.first() {
                 Some(Value::I64(v)) => Value::bigint_i64(*v),
                 Some(Value::I32(v)) => Value::bigint_i64(*v as i64),
                 Some(Value::F64(v)) => Value::bigint_i64(*v as i64),
                 Some(Value::BigInt(v)) => Value::BigInt(v.clone()),
                 _ => Value::bigint_i64(0),
-            }
-        }),
+            },
+        ),
     );
 }

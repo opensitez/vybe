@@ -16,11 +16,11 @@
 //! Marshaling + error-handling contract pinned in
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
-use crate::ecma::typedarray::{read_element, ta_live_length, write_element};
+use crate::ecma::typedarray::{new_typed_array, read_element, ta_live_length, write_element};
 use crate::namespaces::receiver_host_fn_ref;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
@@ -31,6 +31,69 @@ fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> V
         return v;
     }
     ctx.invoke(callback, args)
+}
+
+fn is_callable_value(value: &Value) -> bool {
+    match value {
+        Value::Object(obj) => {
+            matches!(
+                obj.lock().unwrap().kind,
+                ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+            ) || is_magic_callback_object(obj)
+        }
+        _ => false,
+    }
+}
+
+fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
+    Value::Undefined
+}
+
+fn throw_range_error(ctx: &mut HostContext, message: &str) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "RangeError", message));
+    Value::Undefined
+}
+
+fn require_callable(ctx: &mut HostContext, value: &Value, message: &str) -> bool {
+    if is_callable_value(value) {
+        true
+    } else {
+        let _ = throw_type_error(ctx, message);
+        false
+    }
+}
+
+fn invoke_callback_this(
+    ctx: &mut HostContext,
+    callback: &Value,
+    this_arg: Value,
+    args: &[Value],
+) -> Value {
+    if let Some(v) = crate::ecma::function::invoke_bound_callback_if_needed(ctx, callback, args) {
+        return v;
+    }
+    if let Some(v) = invoke_magic_callback(callback, args) {
+        return v;
+    }
+    crate::ecma::function::invoke_with_explicit_this(ctx, callback, this_arg, args)
+}
+
+fn is_magic_callback_object(obj: &Arc<Mutex<Object>>) -> bool {
+    let o = obj.lock().unwrap();
+    if !matches!(o.kind, ObjectKind::Ordinary) {
+        return false;
+    }
+    [
+        "__pred_gt",
+        "__reduce_add",
+        "__reduce_concat",
+        "__map_mul",
+        "__filter_mod_eq",
+        "__fn_return",
+    ]
+    .iter()
+    .any(|key| o.properties.contains_key(*key))
 }
 
 fn invoke_magic_callback(callback: &Value, args: &[Value]) -> Option<Value> {
@@ -163,7 +226,7 @@ fn hole_indices(object: &Object) -> BTreeSet<usize> {
         .collect()
 }
 
-fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
+pub(crate) fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
     if holes.is_empty() {
         object.properties.remove("__holes");
         return;
@@ -232,6 +295,197 @@ pub(crate) fn present_array_entries(object: &Object) -> Vec<(usize, Value)> {
         .collect()
 }
 
+fn array_length(arr: &Arc<Mutex<Object>>) -> usize {
+    let o = arr.lock().unwrap();
+    match &o.kind {
+        ObjectKind::Array(values) => values.len(),
+        _ => 0,
+    }
+}
+
+fn array_value_at(arr: &Arc<Mutex<Object>>, index: usize) -> Value {
+    let o = arr.lock().unwrap();
+    match &o.kind {
+        ObjectKind::Array(values) => values.get(index).cloned().unwrap_or(Value::Undefined),
+        _ => Value::Undefined,
+    }
+}
+
+fn array_present_value_at(arr: &Arc<Mutex<Object>>, index: usize) -> Option<Value> {
+    let o = arr.lock().unwrap();
+    if is_array_hole(&o, index) {
+        return None;
+    }
+    match &o.kind {
+        ObjectKind::Array(values) => values.get(index).cloned(),
+        _ => None,
+    }
+}
+
+fn array_like_length(value: &Value) -> usize {
+    let Value::Object(obj) = value else {
+        return 0;
+    };
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        ObjectKind::Array(values) => values.len(),
+        ObjectKind::TypedArray(ta) => ta_live_length(ta),
+        ObjectKind::Ordinary => property_length_as_usize(&object).unwrap_or(0),
+        ObjectKind::Map(map) => map.len(),
+        _ => 0,
+    }
+}
+
+fn array_like_value_at(value: &Value, index: usize) -> Value {
+    let Value::Object(obj) = value else {
+        return Value::Undefined;
+    };
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        ObjectKind::Array(values) => values.get(index).cloned().unwrap_or(Value::Undefined),
+        ObjectKind::TypedArray(ta) => {
+            if index < ta_live_length(ta) {
+                read_element(ta, index)
+            } else {
+                Value::Undefined
+            }
+        }
+        ObjectKind::Ordinary => object
+            .properties
+            .get(&index.to_string())
+            .cloned()
+            .unwrap_or(Value::Undefined),
+        ObjectKind::Map(map) => map.values().nth(index).cloned().unwrap_or(Value::Undefined),
+        _ => Value::Undefined,
+    }
+}
+
+fn array_like_present_value_at(value: &Value, index: usize) -> Option<Value> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        ObjectKind::Array(values) => {
+            if is_array_hole(&object, index) {
+                None
+            } else {
+                values.get(index).cloned()
+            }
+        }
+        ObjectKind::TypedArray(ta) => {
+            if index < ta_live_length(ta) {
+                Some(read_element(ta, index))
+            } else {
+                None
+            }
+        }
+        ObjectKind::Ordinary => object.properties.get(&index.to_string()).cloned(),
+        ObjectKind::Map(map) => map.values().nth(index).cloned(),
+        _ => None,
+    }
+}
+
+fn array_like_dense_values(value: &Value) -> Vec<Value> {
+    let length = array_like_length(value);
+    (0..length)
+        .map(|index| array_like_value_at(value, index))
+        .collect()
+}
+
+fn typed_array_elem(value: &Value) -> Option<TypedElemKind> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        ObjectKind::TypedArray(ta) => Some(ta.elem),
+        _ => None,
+    }
+}
+
+fn make_typed_array_from_values(elem: TypedElemKind, values: &[Value]) -> Value {
+    let typed = new_typed_array(elem, values.len());
+    if let Value::Object(out) = &typed {
+        let guard = out.lock().unwrap();
+        if let ObjectKind::TypedArray(ta) = &guard.kind {
+            for (index, value) in values.iter().enumerate() {
+                write_element(ta, index, value);
+            }
+        }
+    }
+    typed
+}
+
+fn validate_optional_comparator(
+    ctx: &mut HostContext,
+    compare_fn: Option<&Value>,
+    message: &str,
+) -> bool {
+    match compare_fn {
+        None | Some(Value::Undefined) => true,
+        Some(value) if is_callable_value(value) => true,
+        Some(_) => {
+            let _ = throw_type_error(ctx, message);
+            false
+        }
+    }
+}
+
+fn default_sort_key(ctx: &mut HostContext, value: &Value) -> Option<String> {
+    if matches!(value, Value::Symbol(_)) {
+        let _ = throw_type_error(ctx, "Cannot convert a Symbol value to a string");
+        None
+    } else {
+        Some(format!("{}", value))
+    }
+}
+
+fn compare_sort_values(
+    ctx: &mut HostContext,
+    compare_fn: Option<&Value>,
+    a: &Value,
+    b: &Value,
+) -> std::cmp::Ordering {
+    if let Some(compare_fn) = compare_fn.filter(|v| !matches!(v, Value::Undefined)) {
+        let result = invoke_callback(ctx, compare_fn, &[a.clone(), b.clone()]);
+        let order = result.as_f64();
+        if order < 0.0 {
+            std::cmp::Ordering::Less
+        } else if order > 0.0 {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    } else {
+        match (default_sort_key(ctx, a), default_sort_key(ctx, b)) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+fn sort_array_values_ecma(
+    ctx: &mut HostContext,
+    values: Vec<Value>,
+    compare_fn: Option<&Value>,
+) -> Vec<Value> {
+    let len = values.len();
+    let mut sortable = Vec::new();
+    let mut undefined_count = 0usize;
+    for value in values {
+        if matches!(value, Value::Undefined) {
+            undefined_count += 1;
+        } else {
+            sortable.push(value);
+        }
+    }
+    sortable.sort_by(|a, b| compare_sort_values(ctx, compare_fn, a, b));
+    sortable.extend((0..undefined_count).map(|_| Value::Undefined));
+    sortable.resize(len, Value::Undefined);
+    sortable
+}
+
 pub(crate) fn make_holey_array(length: usize) -> Value {
     let array = make_array(vec![Value::Undefined; length]);
     if let Value::Object(obj) = &array {
@@ -288,35 +542,6 @@ pub(crate) fn apply_js_array_length(ctx: &mut HostContext, object: &mut Object, 
     }
 }
 
-fn array_like_snapshot(value: &Value) -> Vec<Value> {
-    let Value::Object(obj) = value else {
-        return Vec::new();
-    };
-    let object = obj.lock().unwrap();
-    match &object.kind {
-        ObjectKind::Array(values) => values.clone(),
-        ObjectKind::TypedArray(ta) => {
-            let live = ta_live_length(ta);
-            (0..live).map(|i| read_element(ta, i)).collect()
-        }
-        ObjectKind::Map(map) => map.values().cloned().collect(),
-        ObjectKind::Ordinary => property_length_as_usize(&object)
-            .map(|len| {
-                (0..len)
-                    .map(|index| {
-                        object
-                            .properties
-                            .get(&index.to_string())
-                            .cloned()
-                            .unwrap_or(Value::Undefined)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
 /// Keep the array's cached `length` property in sync with the
 /// backing vector's length. Every mutator must call this after
 /// modifying the vector — JS code reading `.length` does not re-query
@@ -353,9 +578,10 @@ fn array_proto_method(vm: &VM, name: &str) -> Option<Value> {
         .get(&("ecma:array".to_string(), name.to_string()))?;
     let mut fn_obj = Object::new();
     fn_obj.kind = ObjectKind::HostFunction(idx);
-    fn_obj
-        .properties
-        .insert("__host_module".into(), Value::String(Arc::from("ecma:array")));
+    fn_obj.properties.insert(
+        "__host_module".into(),
+        Value::String(Arc::from("ecma:array")),
+    );
     fn_obj
         .properties
         .insert("__host_name".into(), Value::String(Arc::from(name)));
@@ -380,12 +606,44 @@ fn array_proto_method(vm: &VM, name: &str) -> Option<Value> {
 /// names match the host fn names 1-to-1 here.
 fn populate_array_prototype(vm: &VM) {
     const METHODS: &[&str] = &[
-        "at", "concat", "copyWithin", "entries", "every", "fill", "filter",
-        "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap",
-        "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf",
-        "map", "pop", "push", "reduce", "reduceRight", "reverse", "shift",
-        "slice", "some", "sort", "splice", "toLocaleString", "toReversed",
-        "toSorted", "toSpliced", "toString", "unshift", "values", "with",
+        "at",
+        "concat",
+        "copyWithin",
+        "entries",
+        "every",
+        "fill",
+        "filter",
+        "find",
+        "findIndex",
+        "findLast",
+        "findLastIndex",
+        "flat",
+        "flatMap",
+        "forEach",
+        "includes",
+        "indexOf",
+        "join",
+        "keys",
+        "lastIndexOf",
+        "map",
+        "pop",
+        "push",
+        "reduce",
+        "reduceRight",
+        "reverse",
+        "shift",
+        "slice",
+        "some",
+        "sort",
+        "splice",
+        "toLocaleString",
+        "toReversed",
+        "toSorted",
+        "toSpliced",
+        "toString",
+        "unshift",
+        "values",
+        "with",
     ];
     let Value::Object(proto) = shared_array_prototype() else {
         return;
@@ -545,7 +803,11 @@ fn register_constructors(vm: &mut VM) {
                     match parse_js_array_length(&args[0]) {
                         Ok(length) => make_holey_array(length),
                         Err(message) => {
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, "RangeError", message));
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
+                                "RangeError",
+                                message,
+                            ));
                             Value::Undefined
                         }
                     }
@@ -1015,10 +1277,12 @@ fn register_mutators(vm: &mut VM) {
                 let blocked = {
                     let o = arr.lock().unwrap();
                     o.properties.get(FROZEN_MARK).is_some()
+                        || o.properties.get("__array_length_readonly").is_some()
                         || crate::ecma::object::is_not_extensible(&o)
                 };
                 if blocked {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "TypeError",
                         "Cannot add property, object is not extensible",
                     ));
@@ -1175,7 +1439,7 @@ fn register_mutators(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "splice",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             // §23.1.3.31: when deleteCount is OMITTED, everything from
             // start to the end is removed (explicit undefined means 0).
@@ -1185,9 +1449,13 @@ fn register_mutators(vm: &mut VM) {
             };
             let items: Vec<Value> = args.iter().skip(3).cloned().collect();
             let mut deleted = Vec::new();
+            let mut deleted_holes = BTreeSet::new();
             if let Some(arr) = array_of(args, 0) {
+                if is_frozen(&arr) {
+                    return throw_type_error(ctx, "Cannot modify frozen array");
+                }
                 let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
+                if let ObjectKind::Array(ref v) = o.kind {
                     let len = v.len();
                     let idx = if start < 0 {
                         ((len as i32) + start).max(0) as usize
@@ -1195,16 +1463,45 @@ fn register_mutators(vm: &mut VM) {
                         (start as usize).min(len)
                     };
                     let end = idx.saturating_add(del).min(len);
-                    for _ in idx..end {
-                        deleted.push(v.remove(idx));
+                    let delete_count = end.saturating_sub(idx);
+                    let insert_count = items.len();
+                    let old_holes = hole_indices(&o);
+                    for offset in 0..delete_count {
+                        if old_holes.contains(&(idx + offset)) {
+                            deleted_holes.insert(offset);
+                        }
                     }
-                    for (i, val) in items.into_iter().enumerate() {
-                        v.insert(idx + i, val);
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        for _ in idx..end {
+                            deleted.push(v.remove(idx));
+                        }
+                        for (i, val) in items.into_iter().enumerate() {
+                            v.insert(idx + i, val);
+                        }
                     }
+                    let shift = insert_count as isize - delete_count as isize;
+                    let remapped: BTreeSet<usize> = old_holes
+                        .into_iter()
+                        .filter_map(|hole| {
+                            if hole < idx {
+                                Some(hole)
+                            } else if hole < end {
+                                None
+                            } else {
+                                Some((hole as isize + shift) as usize)
+                            }
+                        })
+                        .collect();
+                    store_hole_indices(&mut o, &remapped);
                 }
                 sync_length(&mut o);
             }
-            make_array(deleted)
+            let removed = make_array(deleted);
+            if let Value::Object(obj) = &removed {
+                let mut guard = obj.lock().unwrap();
+                store_hole_indices(&mut guard, &deleted_holes);
+            }
+            removed
         }),
     );
 
@@ -1251,24 +1548,12 @@ fn register_mutators(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
                 let compare_fn = args.get(1).cloned();
-                // §23.1.3.30 step 1: a comparator that is an object but
-                // not callable throws TypeError. (Non-object/absent
-                // comparators fall through to the default sort.)
-                if let Some(Value::Object(cf)) = &compare_fn {
-                    let callable = {
-                        let c = cf.lock().unwrap();
-                        matches!(
-                            c.kind,
-                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)
-                        ) || c.properties.contains_key("__fn_return")
-                    };
-                    if !callable {
-                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
-                            "TypeError",
-                            "The comparison function must be either a function or undefined",
-                        ));
-                        return Value::Undefined;
-                    }
+                if !validate_optional_comparator(
+                    ctx,
+                    compare_fn.as_ref(),
+                    "The comparison function must be either a function or undefined",
+                ) {
+                    return Value::Undefined;
                 }
                 let o = obj.lock().unwrap();
                 match &o.kind {
@@ -1277,69 +1562,32 @@ fn register_mutators(vm: &mut VM) {
                         // TypeError (sealed still allows index writes).
                         if o.properties.get(FROZEN_MARK).is_some() {
                             drop(o);
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
                                 "TypeError",
                                 "Cannot assign to read only property of frozen array",
                             ));
                             return Value::Undefined;
                         }
                         let mut values = v.clone();
-                        drop(o);
-                        values.sort_by(|a, b| {
-                            let is_callable = matches!(&compare_fn, Some(Value::Object(_)));
-                            if is_callable {
-                                if let Some(compare_fn) = compare_fn.as_ref() {
-                                    if let Some(magic) =
-                                        invoke_magic_callback(compare_fn, &[a.clone(), b.clone()])
-                                    {
-                                        let order = magic.as_f64();
-                                        return if order < 0.0 {
-                                            std::cmp::Ordering::Less
-                                        } else if order > 0.0 {
-                                            std::cmp::Ordering::Greater
-                                        } else {
-                                            std::cmp::Ordering::Equal
-                                        };
-                                    }
-                                    let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
-                                    let order = result.as_f64();
-                                    return if order < 0.0 {
-                                        std::cmp::Ordering::Less
-                                    } else if order > 0.0 {
-                                        std::cmp::Ordering::Greater
-                                    } else {
-                                        std::cmp::Ordering::Equal
-                                    };
-                                }
+                        for hole in hole_indices(&o) {
+                            if hole < values.len() {
+                                values[hole] = Value::Undefined;
                             }
-                            format!("{}", a).cmp(&format!("{}", b))
-                        });
+                        }
+                        drop(o);
+                        values = sort_array_values_ecma(ctx, values, compare_fn.as_ref());
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut v) = o.kind {
                             *v = values;
                         }
+                        store_hole_indices(&mut o, &BTreeSet::new());
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta);
                         let mut values: Vec<Value> =
                             (0..live).map(|i| read_element(ta, i)).collect();
-                        values.sort_by(|a, b| {
-                            if let Some(compare_fn) = compare_fn.as_ref() {
-                                let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
-                                let order = result.as_f64();
-                                if order < 0.0 {
-                                    std::cmp::Ordering::Less
-                                } else if order > 0.0 {
-                                    std::cmp::Ordering::Greater
-                                } else {
-                                    std::cmp::Ordering::Equal
-                                }
-                            } else {
-                                a.as_f64()
-                                    .partial_cmp(&b.as_f64())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            }
-                        });
+                        values = sort_array_values_ecma(ctx, values, compare_fn.as_ref());
                         for (i, v) in values.iter().enumerate() {
                             write_element(ta, i, v);
                         }
@@ -1501,7 +1749,16 @@ fn register_non_mutators(vm: &mut VM) {
                         .min(len) as usize;
                     let e = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
                     let out: Vec<Value> = if s < e { v[s..e].to_vec() } else { Vec::new() };
-                    return make_array(out);
+                    let sliced = make_array(out);
+                    if let Value::Object(obj) = &sliced {
+                        let holes: BTreeSet<usize> = (s..e)
+                            .filter(|index| is_array_hole(&o, *index))
+                            .map(|index| index - s)
+                            .collect();
+                        let mut guard = obj.lock().unwrap();
+                        store_hole_indices(&mut guard, &holes);
+                    }
+                    return sliced;
                 }
             }
             make_array(Vec::new())
@@ -1764,7 +2021,7 @@ fn register_non_mutators(vm: &mut VM) {
                         ObjectKind::TypedArray(ta) => {
                             let live = ta_live_length(ta);
                             (0..live)
-                                .map(|i| format!("{}", read_element(ta, i)))
+                                .map(|i| typed_array_join_element(read_element(ta, i)))
                                 .collect()
                         }
                         _ => Vec::new(),
@@ -1837,30 +2094,54 @@ fn register_non_mutators(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "flat",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let depth = args.get(1).map(|v| v.as_i32()).unwrap_or(1);
-            fn flatten(out: &mut Vec<Value>, arr_obj: &Object, elems: &[Value], depth: i32) {
+            fn flatten(
+                ctx: &mut HostContext,
+                out: &mut Vec<Value>,
+                arr_obj: &Object,
+                elems: &[Value],
+                depth: i32,
+                seen: &mut HashSet<usize>,
+            ) -> bool {
                 for (i, v) in elems.iter().enumerate() {
                     if is_array_hole(arr_obj, i) {
                         continue;
                     }
                     if depth > 0 {
                         if let Value::Object(o) = v {
+                            let id = Arc::as_ptr(o) as usize;
+                            if seen.contains(&id) {
+                                ctx.throw_value(crate::ecma::error::new_error(
+                                    ctx,
+                                    "TypeError",
+                                    "Circular array cannot be flattened",
+                                ));
+                                return false;
+                            }
                             let lock = o.lock().unwrap();
                             if let ObjectKind::Array(ref inner) = lock.kind {
-                                flatten(out, &lock, inner, depth - 1);
+                                seen.insert(id);
+                                let ok = flatten(ctx, out, &lock, inner, depth - 1, seen);
+                                seen.remove(&id);
+                                if !ok {
+                                    return false;
+                                }
                                 continue;
                             }
                         }
                     }
                     out.push(v.clone());
                 }
+                true
             }
             let mut out = Vec::new();
             if let Some(arr) = array_of(args, 0) {
+                let id = Arc::as_ptr(&arr) as usize;
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    flatten(&mut out, &o, v, depth);
+                    let mut seen = HashSet::from([id]);
+                    flatten(ctx, &mut out, &o, v, depth, &mut seen);
                 }
             }
             make_array(out)
@@ -1874,15 +2155,14 @@ fn register_non_mutators(vm: &mut VM) {
         "ecma:array",
         "toReversed",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let mut out = v.clone();
-                    out.reverse();
-                    return make_array(out);
-                }
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut out = array_like_dense_values(&receiver);
+            out.reverse();
+            if let Some(elem) = typed_array_elem(&receiver) {
+                make_typed_array_from_values(elem, &out)
+            } else {
+                make_array(out)
             }
-            make_array(Vec::new())
         }),
     );
 
@@ -1892,46 +2172,24 @@ fn register_non_mutators(vm: &mut VM) {
         "toSorted",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let compare_fn = args.get(1).cloned();
-            if let Some(arr) = array_of(args, 0) {
-                let mut out = {
-                    let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind {
-                        v.clone()
-                    } else {
-                        return make_array(Vec::new());
-                    }
-                };
-                if let Some(cmp) =
-                    compare_fn.filter(|v| !matches!(v, Value::Undefined | Value::Null))
-                {
-                    let mut err: Option<Value> = None;
-                    out.sort_by(|a, b| {
-                        if err.is_some() {
-                            return std::cmp::Ordering::Equal;
-                        }
-                        match ctx.try_invoke(&cmp, &[a.clone(), b.clone()]) {
-                            Ok(v) => {
-                                let n = v.as_f64();
-                                if n < 0.0 {
-                                    std::cmp::Ordering::Less
-                                } else if n > 0.0 {
-                                    std::cmp::Ordering::Greater
-                                } else {
-                                    std::cmp::Ordering::Equal
-                                }
-                            }
-                            Err(e) => {
-                                err = Some(e);
-                                std::cmp::Ordering::Equal
-                            }
-                        }
-                    });
-                } else {
-                    out.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
-                }
-                return make_array(out);
+            if !validate_optional_comparator(
+                ctx,
+                compare_fn.as_ref(),
+                "The comparison function must be either a function or undefined",
+            ) {
+                return Value::Undefined;
             }
-            make_array(Vec::new())
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let out = sort_array_values_ecma(
+                ctx,
+                array_like_dense_values(&receiver),
+                compare_fn.as_ref(),
+            );
+            if let Some(elem) = typed_array_elem(&receiver) {
+                make_typed_array_from_values(elem, &out)
+            } else {
+                make_array(out)
+            }
         }),
     );
 
@@ -1939,28 +2197,31 @@ fn register_non_mutators(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "with",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let len = v.len() as i32;
-                    let idx = if i < 0 { len + i } else { i };
-                    if idx < 0 || idx >= len {
-                        // Per spec: throw RangeError. For MVP we return
-                        // the array unchanged — Phase B6 test gate will
-                        // catch this and we'll add proper throw.
-                        return make_array(v.clone());
-                    }
-                    let mut out = v.clone();
-                    out[idx as usize] = val;
-                    return make_array(out);
-                }
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut out = array_like_dense_values(&receiver);
+            let len = out.len() as i32;
+            let idx = if i < 0 { len + i } else { i };
+            if idx < 0 || idx >= len {
+                return throw_range_error(ctx, "Invalid index");
             }
-            make_array(Vec::new())
+            out[idx as usize] = val;
+            if let Some(elem) = typed_array_elem(&receiver) {
+                make_typed_array_from_values(elem, &out)
+            } else {
+                make_array(out)
+            }
         }),
     );
+}
+
+fn typed_array_join_element(value: Value) -> String {
+    match value {
+        Value::BigInt(n) => format!("{}", n),
+        other => format!("{}", other),
+    }
 }
 
 // ── Iteration / higher-order callbacks ─────────────────────────────────
@@ -2131,27 +2392,35 @@ fn register_iteration(vm: &mut VM) {
         "map",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.map callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let (length, entries) = {
-                    let o = arr.lock().unwrap();
-                    let len = if let ObjectKind::Array(ref v) = o.kind {
-                        v.len()
-                    } else {
-                        0
-                    };
-                    (len, present_array_entries(&o))
-                };
+                let length = array_length(&arr);
                 let mapped = make_holey_array(length);
                 if let Value::Object(mapped_obj) = &mapped {
                     let mut mapped_guard = mapped_obj.lock().unwrap();
-                    let clear_indices: Vec<usize> =
-                        entries.iter().map(|(index, _)| *index).collect();
+                    let mut clear_indices = Vec::new();
                     if let ObjectKind::Array(ref mut values) = mapped_guard.kind {
-                        for (index, elem) in entries {
+                        for index in 0..length {
+                            let Some(elem) = array_present_value_at(&arr, index) else {
+                                continue;
+                            };
                             let invoke_args =
                                 vec![elem, Value::I32(index as i32), Value::Object(arr.clone())];
-                            values[index] = invoke_callback(ctx, &callback, &invoke_args);
+                            values[index] = invoke_callback_this(
+                                ctx,
+                                &callback,
+                                this_arg.clone(),
+                                &invoke_args,
+                            );
+                            clear_indices.push(index);
                         }
                     }
                     for index in clear_indices {
@@ -2160,15 +2429,13 @@ fn register_iteration(vm: &mut VM) {
                 }
                 return mapped;
             }
-            let snapshot = array_like_snapshot(&receiver);
-            if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
-                let mapped: Vec<Value> = snapshot
-                    .iter()
-                    .enumerate()
-                    .map(|(i, elem)| {
-                        let invoke_args =
-                            vec![elem.clone(), Value::I32(i as i32), receiver.clone()];
-                        invoke_callback(ctx, &callback, &invoke_args)
+            let length = array_like_length(&receiver);
+            if length > 0 || matches!(receiver, Value::Object(_)) {
+                let mapped: Vec<Value> = (0..length)
+                    .map(|i| {
+                        let elem = array_like_value_at(&receiver, i);
+                        let invoke_args = vec![elem, Value::I32(i as i32), receiver.clone()];
+                        invoke_callback_this(ctx, &callback, this_arg.clone(), &invoke_args)
                     })
                     .collect();
                 return make_array(mapped);
@@ -2182,34 +2449,51 @@ fn register_iteration(vm: &mut VM) {
         "filter",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.filter callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
+                let length = array_length(&arr);
                 let mut filtered = Vec::new();
-                for (index, elem) in entries {
+                for index in 0..length {
+                    let Some(elem) = array_present_value_at(&arr, index) else {
+                        continue;
+                    };
                     let invoke_args = vec![
                         elem.clone(),
                         Value::I32(index as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback_this(
+                        ctx,
+                        &callback,
+                        this_arg.clone(),
+                        &invoke_args,
+                    )) {
                         filtered.push(elem);
                     }
                 }
                 return make_array(filtered);
             }
-            let snapshot = array_like_snapshot(&receiver);
-            if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
-                let filtered: Vec<Value> = snapshot
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, elem)| {
+            let length = array_like_length(&receiver);
+            if length > 0 || matches!(receiver, Value::Object(_)) {
+                let filtered: Vec<Value> = (0..length)
+                    .filter_map(|i| {
+                        let elem = array_like_value_at(&receiver, i);
                         let invoke_args =
                             vec![elem.clone(), Value::I32(i as i32), receiver.clone()];
-                        let keep = is_truthy(&invoke_callback(ctx, &callback, &invoke_args));
+                        let keep = is_truthy(&invoke_callback_this(
+                            ctx,
+                            &callback,
+                            this_arg.clone(),
+                            &invoke_args,
+                        ));
                         if keep { Some(elem.clone()) } else { None }
                     })
                     .collect();
@@ -2224,6 +2508,13 @@ fn register_iteration(vm: &mut VM) {
         "reduce",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.reduce callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
             let initial_provided =
                 args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
             let mut acc = if initial_provided {
@@ -2232,23 +2523,29 @@ fn register_iteration(vm: &mut VM) {
                 Value::Undefined
             };
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                let start_idx = if initial_provided {
-                    0
-                } else {
-                    if entries.is_empty() {
-                        // Spec: TypeError on empty array with no initial.
-                        // MVP returns undefined; Phase B5 doesn't have
-                        // throw-dispatch yet.
-                        return Value::Undefined;
+                let length = array_length(&arr);
+                let mut start_idx = 0;
+                if !initial_provided {
+                    let mut found = false;
+                    for index in 0..length {
+                        if let Some(value) = array_present_value_at(&arr, index) {
+                            acc = value;
+                            start_idx = index + 1;
+                            found = true;
+                            break;
+                        }
                     }
-                    acc = entries[0].1.clone();
-                    1
-                };
-                for (index, value) in entries.into_iter().skip(start_idx) {
+                    if !found {
+                        return throw_type_error(
+                            ctx,
+                            "Reduce of empty array with no initial value",
+                        );
+                    }
+                }
+                for index in start_idx..length {
+                    let Some(value) = array_present_value_at(&arr, index) else {
+                        continue;
+                    };
                     let invoke_args = vec![
                         acc,
                         value,
@@ -2358,20 +2655,46 @@ fn register_iteration(vm: &mut VM) {
         "find",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.find callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                for (i, elem) in entries {
+                let length = array_length(&arr);
+                for index in 0..length {
+                    let elem = array_value_at(&arr, index);
                     let invoke_args = vec![
                         elem.clone(),
-                        Value::I32(i as i32),
+                        Value::I32(index as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback_this(
+                        ctx,
+                        &callback,
+                        this_arg.clone(),
+                        &invoke_args,
+                    )) {
                         return elem.clone();
                     }
+                }
+                return Value::Undefined;
+            }
+            let length = array_like_length(&receiver);
+            for index in 0..length {
+                let elem = array_like_value_at(&receiver, index);
+                let invoke_args = vec![elem.clone(), Value::I32(index as i32), receiver.clone()];
+                if is_truthy(&invoke_callback_this(
+                    ctx,
+                    &callback,
+                    this_arg.clone(),
+                    &invoke_args,
+                )) {
+                    return elem;
                 }
             }
             Value::Undefined
@@ -2383,16 +2706,43 @@ fn register_iteration(vm: &mut VM) {
         "findIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.findIndex callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                for (i, elem) in entries {
-                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
-                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
-                        return Value::I32(i as i32);
+                let length = array_length(&arr);
+                for index in 0..length {
+                    let elem = array_value_at(&arr, index);
+                    let invoke_args =
+                        vec![elem, Value::I32(index as i32), Value::Object(arr.clone())];
+                    if is_truthy(&invoke_callback_this(
+                        ctx,
+                        &callback,
+                        this_arg.clone(),
+                        &invoke_args,
+                    )) {
+                        return Value::I32(index as i32);
                     }
+                }
+                return Value::I32(-1);
+            }
+            let length = array_like_length(&receiver);
+            for index in 0..length {
+                let elem = array_like_value_at(&receiver, index);
+                let invoke_args = vec![elem, Value::I32(index as i32), receiver.clone()];
+                if is_truthy(&invoke_callback_this(
+                    ctx,
+                    &callback,
+                    this_arg.clone(),
+                    &invoke_args,
+                )) {
+                    return Value::I32(index as i32);
                 }
             }
             Value::I32(-1)
@@ -2404,20 +2754,46 @@ fn register_iteration(vm: &mut VM) {
         "findLast",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.findLast callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                for (i, elem) in entries.into_iter().rev() {
+                let length = array_length(&arr);
+                for index in (0..length).rev() {
+                    let elem = array_value_at(&arr, index);
                     let invoke_args = vec![
                         elem.clone(),
-                        Value::I32(i as i32),
+                        Value::I32(index as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback_this(
+                        ctx,
+                        &callback,
+                        this_arg.clone(),
+                        &invoke_args,
+                    )) {
                         return elem.clone();
                     }
+                }
+                return Value::Undefined;
+            }
+            let length = array_like_length(&receiver);
+            for index in (0..length).rev() {
+                let elem = array_like_value_at(&receiver, index);
+                let invoke_args = vec![elem.clone(), Value::I32(index as i32), receiver.clone()];
+                if is_truthy(&invoke_callback_this(
+                    ctx,
+                    &callback,
+                    this_arg.clone(),
+                    &invoke_args,
+                )) {
+                    return elem;
                 }
             }
             Value::Undefined
@@ -2429,16 +2805,43 @@ fn register_iteration(vm: &mut VM) {
         "findLastIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.findLastIndex callback is not callable",
+            ) {
+                return Value::Undefined;
+            }
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
             if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                for (i, elem) in entries.into_iter().rev() {
-                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
-                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
-                        return Value::I32(i as i32);
+                let length = array_length(&arr);
+                for index in (0..length).rev() {
+                    let elem = array_value_at(&arr, index);
+                    let invoke_args =
+                        vec![elem, Value::I32(index as i32), Value::Object(arr.clone())];
+                    if is_truthy(&invoke_callback_this(
+                        ctx,
+                        &callback,
+                        this_arg.clone(),
+                        &invoke_args,
+                    )) {
+                        return Value::I32(index as i32);
                     }
+                }
+                return Value::I32(-1);
+            }
+            let length = array_like_length(&receiver);
+            for index in (0..length).rev() {
+                let elem = array_like_value_at(&receiver, index);
+                let invoke_args = vec![elem, Value::I32(index as i32), receiver.clone()];
+                if is_truthy(&invoke_callback_this(
+                    ctx,
+                    &callback,
+                    this_arg.clone(),
+                    &invoke_args,
+                )) {
+                    return Value::I32(index as i32);
                 }
             }
             Value::I32(-1)
@@ -2450,29 +2853,37 @@ fn register_iteration(vm: &mut VM) {
         "flatMap",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            if let Some(arr) = array_of(args, 0) {
-                let entries = {
-                    let o = arr.lock().unwrap();
-                    present_array_entries(&o)
-                };
-                let mut out = Vec::with_capacity(entries.len());
-                for (i, elem) in entries {
-                    let invoke_args = vec![elem, Value::I32(i as i32), Value::Object(arr.clone())];
-                    let r = invoke_callback(ctx, &callback, &invoke_args);
-                    // Flatten one level: if the result is an Array, spread;
-                    // otherwise append as single element.
-                    if let Value::Object(ref o) = r {
-                        let lock = o.lock().unwrap();
-                        if let ObjectKind::Array(ref inner) = lock.kind {
-                            out.extend(inner.iter().cloned());
-                            continue;
-                        }
-                    }
-                    out.push(r);
-                }
-                return make_array(out);
+            if !require_callable(
+                ctx,
+                &callback,
+                "Array.prototype.flatMap callback is not callable",
+            ) {
+                return Value::Undefined;
             }
-            make_array(Vec::new())
+            let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let length = array_like_length(&receiver);
+            let mut out = Vec::new();
+            for index in 0..length {
+                let Some(elem) = array_like_present_value_at(&receiver, index) else {
+                    continue;
+                };
+                let invoke_args = vec![elem, Value::I32(index as i32), receiver.clone()];
+                let r = invoke_callback_this(ctx, &callback, this_arg.clone(), &invoke_args);
+                if let Value::Object(ref o) = r {
+                    let lock = o.lock().unwrap();
+                    if let ObjectKind::Array(ref inner) = lock.kind {
+                        for (inner_index, inner_value) in inner.iter().enumerate() {
+                            if !is_array_hole(&lock, inner_index) {
+                                out.push(inner_value.clone());
+                            }
+                        }
+                        continue;
+                    }
+                }
+                out.push(r);
+            }
+            make_array(out)
         }),
     );
 

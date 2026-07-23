@@ -1,6 +1,9 @@
 pub mod cli;
+pub mod dap;
+pub mod debug_repl;
 pub mod gui_launch;
 pub mod server;
+pub mod watch;
 
 // The eval / dynamic-compile layer lives in `vybe_compiler` (the only crate
 // below the language crates that can call the compiler). Re-exported so the

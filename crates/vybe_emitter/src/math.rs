@@ -5,8 +5,8 @@
 //! Those use host imports (standard across all languages).
 
 use crate::Target;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 // ── Direct WASM opcodes (no host call) ──────────────────────
 
@@ -209,7 +209,7 @@ pub fn emit_is_inf(chunk: &mut Chunk, line: u32) {
     let base = chunk.alloc_scratch(2);
     chunk.emit_op_u16(Op::LOCAL_SET, base + 1, line); // sign
     chunk.emit_op_u16(Op::LOCAL_SET, base, line); // x
-                                                  // x == +Inf
+    // x == +Inf
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_f64_const(f64::INFINITY, line);
     chunk.emit_op(Op::F64_EQ, line);

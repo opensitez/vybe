@@ -3,8 +3,8 @@
 //! emitted `.wasm`, and chunks without the flag don't.
 
 use vybe_bytecode::value::Value;
-use vybe_platform_wasm::write_wasm;
 use vybe_bytecode::{Chunk, Op};
+use vybe_platform_wasm::write_wasm;
 
 /// Minimal LEB128-decoding walk of the resulting wasm. Finds the
 /// `vybe.jspi` custom section, returns the decoded

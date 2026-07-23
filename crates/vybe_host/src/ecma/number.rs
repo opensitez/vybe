@@ -119,7 +119,8 @@ fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result
         // ECMA-262 §21.1.1.1: Number(bigint) converts to the nearest f64.
         // Throwing TypeError here is wrong — that only applies to mixed arithmetic.
         Value::BigInt(n) => Ok(n.to_f64()),
-        Value::Symbol(_) => Err(crate::ecma::error::new_error(ctx, 
+        Value::Symbol(_) => Err(crate::ecma::error::new_error(
+            ctx,
             "TypeError",
             "Cannot convert a Symbol value to a number",
         )),
@@ -518,7 +519,8 @@ fn register_prototype(vm: &mut VM) {
             };
             // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
             if !(0.0..=100.0).contains(&digits_f) || digits_f.is_nan() {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toFixed() digits argument must be between 0 and 100",
                 ));
@@ -547,7 +549,8 @@ fn register_prototype(vm: &mut VM) {
             };
             // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
             if !(2..=36).contains(&radix) {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toString() radix must be between 2 and 36",
                 ));
@@ -645,7 +648,8 @@ fn register_prototype(vm: &mut VM) {
             };
             if let Some(d) = frac {
                 if !(0.0..=100.0).contains(&d) || d.is_nan() {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "RangeError",
                         "toExponential() argument must be between 0 and 100",
                     ));
@@ -684,7 +688,8 @@ fn register_prototype(vm: &mut VM) {
             };
             // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
             if !(1.0..=100.0).contains(&prec_f) || prec_f.is_nan() {
-                ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
                     "RangeError",
                     "toPrecision() argument must be between 1 and 100",
                 ));

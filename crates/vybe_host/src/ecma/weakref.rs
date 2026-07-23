@@ -118,7 +118,8 @@ pub fn register(vm: &mut VM) {
             match &target {
                 Value::Object(_) | Value::Symbol(_) => {}
                 _ => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "TypeError",
                         "WeakRef target must be an object",
                     ));

@@ -478,7 +478,10 @@ pub fn register(vm: &mut VM) {
             if let (Value::Object(d), Some(name)) = (&doc, qualified.as_ref()) {
                 let elem = new_element_node(name, Some(d));
                 if let (Value::Object(e), Some(ns)) = (&elem, namespace.as_ref()) {
-                    e.lock().unwrap().properties.insert("namespaceURI".into(), s(ns));
+                    e.lock()
+                        .unwrap()
+                        .properties
+                        .insert("namespaceURI".into(), s(ns));
                 }
                 if let Value::Object(child) = &elem {
                     append_child_inner(d, child);
@@ -775,38 +778,42 @@ pub fn register(vm: &mut VM) {
     // PHP `DOMDocumentFragment::appendXML($xml)` — parse the XML fragment and
     // append the resulting top-level nodes to the fragment. Not part of the
     // DOM standard, but composed here entirely from the spec parse surface.
-    vm.register_host_fn("web:dom-parser", "appendXML", Box::new(|_ctx, args| {
-        let Some(Value::Object(frag)) = args.first() else {
-            return Value::Bool(false);
-        };
-        let xml = match args.get(1) {
-            Some(Value::String(s)) => s.to_string(),
-            Some(other) => format!("{}", other),
-            None => return Value::Bool(false),
-        };
-        let doc = match parse_xml(&xml) {
-            Ok(doc) => doc,
-            Err(_) => return Value::Bool(false),
-        };
-        // Move the parsed document's top-level nodes into the fragment.
-        let roots: Vec<Value> = if let Value::Object(d) = &doc {
-            match d.lock().unwrap().properties.get("childNodes") {
-                Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
-                    ObjectKind::Array(items) => items.clone(),
+    vm.register_host_fn(
+        "web:dom-parser",
+        "appendXML",
+        Box::new(|_ctx, args| {
+            let Some(Value::Object(frag)) = args.first() else {
+                return Value::Bool(false);
+            };
+            let xml = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Bool(false),
+            };
+            let doc = match parse_xml(&xml) {
+                Ok(doc) => doc,
+                Err(_) => return Value::Bool(false),
+            };
+            // Move the parsed document's top-level nodes into the fragment.
+            let roots: Vec<Value> = if let Value::Object(d) = &doc {
+                match d.lock().unwrap().properties.get("childNodes") {
+                    Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
+                        ObjectKind::Array(items) => items.clone(),
+                        _ => Vec::new(),
+                    },
                     _ => Vec::new(),
-                },
-                _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            for node in &roots {
+                if let Value::Object(n) = node {
+                    append_child_inner(frag, n);
+                }
             }
-        } else {
-            Vec::new()
-        };
-        for node in &roots {
-            if let Value::Object(n) = node {
-                append_child_inner(frag, n);
-            }
-        }
-        Value::Bool(true)
-    }));
+            Value::Bool(true)
+        }),
+    );
 
     vm.register_host_fn("web:dom-parser", "createElementNS", Box::new(|_ctx, args| {
         let owner: Option<Arc<Mutex<Object>>> = match args.first() {
@@ -1261,8 +1268,7 @@ fn push_child(stack: &[Arc<Mutex<Object>>], child: Value) {
         return;
     };
     // Keep NodeList.length live on the parse path too (DOM §4.2.10).
-    a.properties
-        .insert("length".into(), Value::I32(len as i32));
+    a.properties.insert("length".into(), Value::I32(len as i32));
 }
 
 // ── Post-walk: parentNode / ownerDocument / textContent / siblings ──

@@ -6,13 +6,13 @@
 //! and the WASM writer can still aggregate those imports into a module
 //! section.
 
+use crate::Target;
 #[allow(unused_imports)]
 use crate::instructions::core_wasm;
-use crate::Target;
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
+use vybe_bytecode::opcode::Op;
 
 // ── `ecma:array.*` import helpers (Phase D) ─────────────────
 //

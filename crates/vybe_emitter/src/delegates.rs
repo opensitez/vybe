@@ -5,10 +5,19 @@
 //! - remove:  [current, handler] -> [delegate]
 
 use crate::instructions::core_wasm;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use crate::collections;
+
+fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let idx = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(idx, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+}
 
 /// Delegate combine semantics compatible with .NET multicast delegates.
 pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -18,14 +27,12 @@ pub fn emit_combine(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_nullish(chunks, current, cur_slot, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     chunks[current].emit_else(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_nullish(chunks, current, handler_slot, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_else(line);
@@ -89,8 +96,7 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     // if delegate is non-null
-    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_nullish(chunks, current, delegate_slot, line);
     crate::ops::emit_dyn_not(&mut chunks[current], line);
     crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -125,12 +131,18 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
+    emit_slot_is_nullish(chunks, current, handler_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     for j in 0..n {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
     }
     chunks[current].emit_op_u8(Op::CALL_REF, n as u8, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
 
     // i++
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -166,8 +178,7 @@ pub fn emit_get_invocation_list(chunks: &mut [Chunk], current: usize, line: u32)
     let delegate_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, delegate_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_nullish(chunks, current, delegate_slot, line);
     chunks[current].emit_if_value(line);
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
@@ -203,8 +214,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    emit_slot_is_nullish(chunks, current, cur_slot, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_else(line);
@@ -224,12 +234,12 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
-    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_i32_const(-1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
 
     let block_patch = chunks[current].emit_block(line);
@@ -258,7 +268,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, loop_counter, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);

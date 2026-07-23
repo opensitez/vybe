@@ -182,7 +182,8 @@ impl TypeDef {
     }
 
     pub fn host_method(mut self, name: &str, host_fn_idx: usize) -> Self {
-        self.methods.insert(name.to_string(), Method::HostFn(host_fn_idx));
+        self.methods
+            .insert(name.to_string(), Method::HostFn(host_fn_idx));
         self
     }
 

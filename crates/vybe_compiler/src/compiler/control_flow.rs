@@ -78,6 +78,20 @@ impl Compiler {
         self.emit_u8(Op::CALL_REF, 0);
         self.emit_u16(Op::LOCAL_SET, step_slot);
 
+        // ECMA-262 IteratorNext: next() must return an Object. A primitive
+        // result is a TypeError, not an endless loop over missing done/value.
+        self.emit_u16(Op::LOCAL_GET, step_slot);
+        let typeof_idx = self.import("ecma:value", "typeof");
+        self.emit_host_call(typeof_idx, 1);
+        self.emit_const(Value::String(Arc::from("object")));
+        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.emit_const(Value::String(Arc::from("Iterator result is not an object")));
+        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+        common::errors::emit_throw(self.chunk(), line);
+        self.chunk().emit_end(line);
+
         // step.done check
         self.emit_u16(Op::LOCAL_GET, step_slot);
         self.emit_u16(Op::STRUCT_GET, done_key_c);
@@ -469,7 +483,9 @@ impl Compiler {
                         self.collect_multi_return_functions(body);
                     }
                 }
-                StmtKind::While { body, else_body, .. } => {
+                StmtKind::While {
+                    body, else_body, ..
+                } => {
                     self.collect_multi_return_functions(body);
                     if let Some(body) = else_body {
                         self.collect_multi_return_functions(body);
@@ -512,9 +528,7 @@ impl Compiler {
                         self.collect_multi_return_functions(body);
                     }
                 }
-                StmtKind::Switch {
-                    cases, default, ..
-                } => {
+                StmtKind::Switch { cases, default, .. } => {
                     for case in cases {
                         self.collect_multi_return_functions(&case.body);
                     }

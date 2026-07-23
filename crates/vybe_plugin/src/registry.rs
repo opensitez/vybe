@@ -59,7 +59,12 @@ pub fn register_language(plugin: LanguagePlugin) {
 
 /// The plugin registered under `name`, if any.
 pub fn find(name: &str) -> Option<LanguagePlugin> {
-    registry().lock().unwrap().iter().find(|p| p.name == name).copied()
+    registry()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|p| p.name == name)
+        .copied()
 }
 
 /// All registered plugins (a snapshot).
@@ -107,8 +112,7 @@ pub struct LanguageHooks {
     pub value_eq: Option<fn(&mut Chunk, u32)>,
     pub relational_compare: Option<fn(&mut Chunk, fn(&mut Chunk, u32), u32)>,
     pub constructor_ref_autoload: Option<fn(&mut Chunk, &str, &str, u32)>,
-    pub dynamic_constructor_ref_autoload:
-        Option<fn(&mut Chunk, &str, Option<&str>, &str, u32)>,
+    pub dynamic_constructor_ref_autoload: Option<fn(&mut Chunk, &str, Option<&str>, &str, u32)>,
     pub proxy_get: Option<fn(&mut [Chunk], usize, u32)>,
     pub proxy_set: Option<fn(&mut [Chunk], usize, u32)>,
     pub proxy_set_bool: Option<fn(&mut [Chunk], usize, u32)>,

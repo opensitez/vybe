@@ -219,7 +219,11 @@ fn import_new_form_try_table_catches_and_returns_payload() {
     ];
     let wasm = eh_import_module(&body);
     let result = import_and_run(&wasm).expect("caught new-form try_table must run");
-    assert_eq!(format!("{result}"), "99", "catch must deliver the payload 99");
+    assert_eq!(
+        format!("{result}"),
+        "99",
+        "catch must deliver the payload 99"
+    );
 }
 
 #[test]

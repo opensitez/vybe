@@ -83,6 +83,10 @@ impl Compiler {
     }
 
     fn build_event_binding_target(&self, control: &Expression, event: &str) -> Expression {
+        let control = match &control.kind {
+            ExprKind::Cast { expr, .. } => expr.as_ref(),
+            _ => control,
+        };
         if event.is_empty() {
             control.clone()
         } else {
@@ -250,14 +254,15 @@ impl Compiler {
         event_name: &str,
         args: &[Expression],
     ) -> Result<(), String> {
+        let event_field = self.canon(event_name);
         let target = if self.current_class.is_some() {
             Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
-                field: event_name.to_string(),
+                field: event_field,
                 null_safe: false,
             })
         } else {
-            Expression::ident(event_name)
+            Expression::ident(&event_field)
         };
         self.compile_delegate_event_invoke(&target, args)
     }

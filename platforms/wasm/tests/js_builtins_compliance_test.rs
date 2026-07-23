@@ -11,12 +11,12 @@
 //!
 //! See `dynamicruntime_support.md` Phase B6.
 
+use vybe_bytecode::{Chunk, Op, Value};
 use vybe_platform_wasm::write_wasm;
 use vybe_platform_wasm::writer::builtins::{
     js_array_builtins, js_arraybuffer_builtins, js_map_builtins, js_object_builtins,
     js_set_builtins, js_typedarray_builtins, js_weakmap_builtins,
 };
-use vybe_bytecode::{Chunk, Op, Value};
 
 // ──────────────────────────────────────────────────────────────────────
 // Contract 1: every declared import produces a valid signature

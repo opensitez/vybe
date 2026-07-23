@@ -166,9 +166,14 @@ impl Compiler {
                 if make_scope {
                     self.scope_mut().begin_scope();
                 }
+                let saved_strict = self.in_strict;
+                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(stmts) {
+                    self.in_strict = true;
+                }
                 for s in stmts {
                     self.compile_stmt(s)?;
                 }
+                self.in_strict = saved_strict;
                 if make_scope {
                     self.scope_mut().end_scope();
                 }
@@ -1258,9 +1263,14 @@ impl Compiler {
                     self.active_finally_blocks
                         .push(FinallyAction::Statements(fin));
                 }
+                let saved_try_strict = self.in_strict;
+                if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(body) {
+                    self.in_strict = true;
+                }
                 for s in body {
                     self.compile_stmt(s)?;
                 }
+                self.in_strict = saved_try_strict;
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 self.label_depth -= 1;
                 // Python else: runs if no exception
@@ -1531,6 +1541,25 @@ impl Compiler {
 
                 if let Some(v) = val {
                     self.compile_expr(v)?;
+                    if let Some((ctx_chunk, this_slot)) = self.js_derived_ctor_ctx {
+                        if ctx_chunk == self.current && self.profile.name == "js" {
+                            let return_slot = self.define_local("__js_derived_return_value");
+                            self.emit_u16(Op::LOCAL_SET, return_slot);
+                            self.emit_u16(Op::LOCAL_GET, return_slot);
+                            let line = self.line;
+                            crate::emitter::instructions::recipes::is_object(self.chunk(), line);
+                            self.chunk().emit_if(line);
+                            self.emit_u16(Op::LOCAL_GET, return_slot);
+                            self.chunk().emit_else(line);
+                            common::classes::emit_this_initialized_guard(
+                                self.chunk(),
+                                this_slot,
+                                line,
+                            );
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.chunk().emit_end(line);
+                        }
+                    }
                 } else if let Some(rs) = self.current_result_slot {
                     // ResultSlot return: return the result slot value
                     self.emit_u16(Op::LOCAL_GET, rs);
@@ -3342,9 +3371,10 @@ impl Compiler {
                 // instantiation-time copy. Passive segments (offset None) stay in
                 // `data_segments` for `memory.init`.
                 if let Some(off) = offset {
-                    let offset_val = const_eval_u64(off, &self.global_const_values).ok_or_else(|| {
-                        "data segment offset must be a constant integer expression".to_string()
-                    })?;
+                    let offset_val =
+                        const_eval_u64(off, &self.global_const_values).ok_or_else(|| {
+                            "data segment offset must be a constant integer expression".to_string()
+                        })?;
                     self.chunks[0].active_data_segments.push(
                         vybe_bytecode::chunk::ActiveDataSegment {
                             memory_index: *memory_index,
@@ -4575,7 +4605,6 @@ impl Compiler {
                 let class_tmp = self.define_local("__static_access_class");
                 self.emit_u16(Op::LOCAL_SET, class_tmp);
 
-                self.emit_u16(Op::LOCAL_GET, class_tmp);
                 if let ExprKind::Ident(name) = &member.kind {
                     if self.private_member_access_forbidden(name) {
                         self.emit_private_access_denied(name)?;
@@ -4587,11 +4616,41 @@ impl Compiler {
                         }
                         _ => self.canon(name),
                     };
-                    self.emit_u16(Op::LOCAL_GET, value_tmp);
-                    let idx = self.str_const(&field_name);
-                    self.emit_u16(Op::STRUCT_SET, idx);
-                    self.emit(Op::DROP);
+                    if self.profile.supports_private_fields && name.starts_with('#') {
+                        let setter_name = format!("__set_{}", field_name);
+                        self.emit_u16(Op::LOCAL_GET, class_tmp);
+                        self.emit_const(Value::String(Arc::from(setter_name.as_str())));
+                        let has_own_idx = self.import("ecma:object", "hasOwn");
+                        let line = self.line;
+                        self.emit_host_call(has_own_idx, 2);
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if(line);
+
+                        self.emit_u16(Op::LOCAL_GET, class_tmp);
+                        let setter_key = self.str_const(&setter_name);
+                        self.emit_u16(Op::STRUCT_GET, setter_key);
+                        self.emit_u16(Op::LOCAL_GET, class_tmp);
+                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit(Op::DROP);
+
+                        self.chunk().emit_else(line);
+                        self.emit_js_private_brand_check(class_tmp, &field_name)?;
+                        self.emit_u16(Op::LOCAL_GET, class_tmp);
+                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
+                        self.chunk().emit_end(line);
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, class_tmp);
+                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
+                    }
                 } else {
+                    self.emit_u16(Op::LOCAL_GET, class_tmp);
                     self.compile_expr(member)?;
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
                     let line = self.line;
@@ -4604,12 +4663,59 @@ impl Compiler {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
+                if self.class_prototype_dispatch()
+                    && self.profile.ecma_object_literals
+                    && matches!(&object.kind, ExprKind::Super)
+                {
+                    let value_tmp = self.define_local("__js_super_set_value");
+                    self.emit_u16(Op::LOCAL_SET, value_tmp);
+
+                    let receiver_tmp = self.define_local("__js_super_set_receiver");
+                    let self_kw = self.profile.self_keyword.clone();
+                    if let Some(slot) = self
+                        .scope()
+                        .resolve(&self_kw)
+                        .or_else(|| self.scope().resolve_ci(&self_kw))
+                    {
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                    } else {
+                        let js_this = self.str_const("__js_this");
+                        self.emit_u16(Op::GLOBAL_GET, js_this);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, receiver_tmp);
+
+                    self.emit_js_super_home_base();
+                    let setter_key = self.str_const(&format!("__set_{}", field));
+                    self.emit_u16(Op::STRUCT_GET, setter_key);
+                    let setter_tmp = self.define_local("__js_super_setter");
+                    self.emit_u16(Op::LOCAL_SET, setter_tmp);
+
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    fn_call!(self, "wasm:js-undefined", "test", 1);
+                    let line = self.line;
+                    self.chunk().emit_if_value(line);
+                    self.emit_u16(Op::LOCAL_GET, receiver_tmp);
+                    self.emit_u16(Op::LOCAL_GET, value_tmp);
+                    let field_idx = self.str_const(field);
+                    self.emit_u16(Op::STRUCT_SET, field_idx);
+                    self.emit(Op::DROP);
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    self.emit_u16(Op::LOCAL_GET, receiver_tmp);
+                    self.emit_u16(Op::LOCAL_GET, value_tmp);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit(Op::DROP);
+                    self.chunk().emit_end(line);
+                    return Ok(());
+                }
                 // .NET control property write resolves through the component
                 // descriptor to a direct `vybe:gui` host call — no emitted
                 // accessor. Stack on entry is [value]. The generic property
                 // setter takes (this, "Key", value); dedicated setters (this,
                 // value).
-                if self.profile.namespaces.use_dotnet && !self.expr_user_value_type_name(object).is_some() {
+                if self.profile.namespaces.use_dotnet
+                    && !self.expr_user_value_type_name(object).is_some()
+                {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
                         if let Some(common::dotnet::InstancePropertyTarget::Host {
@@ -4747,6 +4853,55 @@ impl Compiler {
                         self.compile_assign_target(collection_owner)?;
                         return Ok(());
                     }
+                }
+                if self.profile.supports_private_fields && field.starts_with('#') {
+                    self.compile_expr(object)?;
+                    let obj_tmp = self.define_local("__js_private_set_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_tmp);
+
+                    let setter_name = format!("__set_{}", field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(setter_name.as_str())));
+                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    let line = self.line;
+                    self.emit_host_call(has_own_idx, 2);
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if(line);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let setter_key = self.str_const(&setter_name);
+                    self.emit_u16(Op::STRUCT_GET, setter_key);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit(Op::DROP);
+
+                    self.chunk().emit_else(line);
+
+                    let getter_name = format!("__get_{}", field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(getter_name.as_str())));
+                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    self.emit_host_call(has_own_idx, 2);
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if(line);
+                    self.emit_const(Value::String(Arc::from(
+                        "Cannot set private accessor without a setter",
+                    )));
+                    self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                    common::errors::emit_throw(self.chunk(), line);
+                    self.chunk().emit_else(line);
+
+                    self.emit_js_private_brand_check(obj_tmp, &field_name)?;
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
+
+                    self.chunk().emit_end(line);
+                    self.chunk().emit_end(line);
+                    return Ok(());
                 }
                 if self.profile.namespaces.use_dotnet {
                     self.compile_expr(object)?;
@@ -5413,7 +5568,37 @@ impl Compiler {
                     common::collections::emit_push(&mut self.chunks, self.current, line);
                     // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
+                } else if self.profile.ecma_object_literals {
+                    self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
+                    self.compile_array_index_operand_for_owner(object, index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let set_idx = self.import("ecma:object", "set");
+                    if self.in_strict {
+                        inst!(self, core_wasm::bool_const, true);
+                        self.chunk().emit_call(set_idx, 4, line);
+                    } else {
+                        self.chunk().emit_call(set_idx, 3, line);
+                    }
+                    self.emit(Op::DROP);
                 } else if self.profile.namespaces.use_dotnet {
+                    if self
+                        .infer_expr_type_hint(object)
+                        .as_deref()
+                        .map(Self::normalize_type_hint)
+                        .is_some_and(|type_hint| {
+                            type_hint.rsplit('.').next().is_some_and(|name| {
+                                name.eq_ignore_ascii_case("ObservableCollection")
+                            })
+                        })
+                    {
+                        self.compile_expr(object)?;
+                        self.compile_collection_key(object, index)?;
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        self.emit_common("dotnet.observable_collection_set_index", 3, line);
+                        self.emit(Op::DROP);
+                        return Ok(());
+                    }
                     if self.profile.namespaces.use_dotnet
                         && self
                             .infer_expr_type_hint(object)
@@ -5867,7 +6052,10 @@ impl Compiler {
 /// also permits `i32.add`/`sub`/`mul` and `global.get` of an immutable global
 /// whose initializer is itself a constant expression. Returns `None` for
 /// anything non-constant so the caller can report it rather than guess.
-fn const_eval_i128(expr: &Expression, globals: &std::collections::HashMap<String, i64>) -> Option<i128> {
+fn const_eval_i128(
+    expr: &Expression,
+    globals: &std::collections::HashMap<String, i64>,
+) -> Option<i128> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) => Some(*n as i128),
         ExprKind::Lit(Literal::Float(f)) => Some(*f as i128),
@@ -5909,6 +6097,9 @@ fn const_eval_i128(expr: &Expression, globals: &std::collections::HashMap<String
 
 /// Extended-const evaluation to a `u64` byte offset (wrapping to 32/64-bit is
 /// handled by the caller's memory model; a WASM i32 offset wraps mod 2^32).
-fn const_eval_u64(expr: &Expression, globals: &std::collections::HashMap<String, i64>) -> Option<u64> {
+fn const_eval_u64(
+    expr: &Expression,
+    globals: &std::collections::HashMap<String, i64>,
+) -> Option<u64> {
     const_eval_i128(expr, globals).map(|v| v as u64)
 }

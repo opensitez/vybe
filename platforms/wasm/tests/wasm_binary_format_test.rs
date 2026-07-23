@@ -3,8 +3,8 @@
 //! Binary I/O compliance — not execution semantics (those live in per-opcode files).
 
 use vybe_bytecode::value::Value;
-use vybe_platform_wasm as wasm;
 use vybe_bytecode::{Chunk, Op, VM};
+use vybe_platform_wasm as wasm;
 
 // ── WASM binary magic and version ─────────────────────────────────────────
 

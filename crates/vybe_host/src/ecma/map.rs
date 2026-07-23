@@ -106,6 +106,59 @@ fn map_groupby_magic(callback: &Value, item: &Value) -> Option<Value> {
     None
 }
 
+fn map_groupby_magic_callable(callback: &Value) -> bool {
+    let Value::Object(obj) = callback else {
+        return false;
+    };
+    let o = obj.lock().unwrap();
+    matches!(o.kind, ObjectKind::Ordinary) && o.properties.contains_key("__groupby_even_odd")
+}
+
+fn is_callable_value(value: &Value) -> bool {
+    match value {
+        Value::Object(obj) => {
+            matches!(
+                obj.lock().unwrap().kind,
+                ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+            ) || map_groupby_magic_callable(value)
+        }
+        _ => false,
+    }
+}
+
+fn throw_type_error(ctx: &mut vybe_bytecode::HostContext, message: &str) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
+    Value::Undefined
+}
+
+fn collect_groupby_items(
+    ctx: &mut vybe_bytecode::HostContext,
+    items: &Value,
+    message: &str,
+) -> Option<Vec<Value>> {
+    match items {
+        Value::Null
+        | Value::Undefined
+        | Value::Bool(_)
+        | Value::I32(_)
+        | Value::I64(_)
+        | Value::F32(_)
+        | Value::F64(_)
+        | Value::Symbol(_)
+        | Value::BigInt(_) => {
+            let _ = throw_type_error(ctx, message);
+            None
+        }
+        _ => match crate::ecma::iterator::try_materialize_iterable_values(ctx, items, false) {
+            Ok(values) => Some(values),
+            Err(error) => {
+                ctx.throw_value(error);
+                None
+            }
+        },
+    }
+}
+
 fn map_factory_magic(factory: &Value) -> Option<Value> {
     if let Value::Object(obj) = factory {
         let o = obj.lock().unwrap();
@@ -404,16 +457,17 @@ pub fn register(vm: &mut VM) {
         "groupBy",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            if !is_callable_value(&callback) {
+                return throw_type_error(ctx, "Map.groupBy callback is not callable");
+            }
+            let source = args.first().cloned().unwrap_or(Value::Undefined);
+            let Some(items) =
+                collect_groupby_items(ctx, &source, "Map.groupBy argument is not iterable")
+            else {
+                return Value::Undefined;
+            };
             let out = new_map_value();
-            if let (Value::Object(outobj), Some(Value::Object(src))) = (&out, args.first()) {
-                let items: Vec<Value> = {
-                    let s = src.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = s.kind {
-                        v.clone()
-                    } else {
-                        Vec::new()
-                    }
-                };
+            if let Value::Object(outobj) = &out {
                 for (i, item) in items.iter().enumerate() {
                     let key = if let Some(k) = map_groupby_magic(&callback, item) {
                         k

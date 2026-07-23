@@ -464,6 +464,29 @@ pub struct ActiveContinuation {
     pub handlers: Vec<crate::chunk::StackSwitchHandler>,
 }
 
+/// Order-insensitive equality of two import tables (compile emits imports in
+/// HashMap order, which varies run to run). A genuine edit changes the SET.
+fn imports_equal_as_set(a: &[crate::chunk::Import], b: &[crate::chunk::Import]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut av: Vec<(&str, &str)> = a.iter().map(|i| (i.module.as_str(), i.name.as_str())).collect();
+    let mut bv: Vec<(&str, &str)> = b.iter().map(|i| (i.module.as_str(), i.name.as_str())).collect();
+    av.sort_unstable();
+    bv.sort_unstable();
+    av == bv
+}
+
+/// Structural equality for a chunk's exception-tag declarations (`TagDecl` has
+/// no derived `PartialEq`). Used by hot reload to require identical tag layout
+/// before swapping a body — so the per-chunk tag→entity maps stay valid.
+fn tags_equal(a: &[crate::chunk::TagDecl], b: &[crate::chunk::TagDecl]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(x, y)| {
+            x.debug_name == y.debug_name && x.arity == y.arity && x.imported == y.imported
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumeMode {
     /// Bare `RESUME` — push only the yielded value on caller's stack.
@@ -712,6 +735,27 @@ pub struct VM {
     /// Optional chunk-name filter for execution trace output.
     /// When set, only matching chunks emit trace lines.
     pub(crate) trace_chunk_filter: Option<String>,
+    /// Attached step debugger (see `debugger.rs`). `None` in normal runs.
+    pub(crate) debugger: Option<crate::debugger::Debugger>,
+    /// Compiler-backed expression evaluator for the debugger. Installed by the
+    /// shell (`vybex`) since compilation lives above this crate. Given the live
+    /// VM (read-only), an expression string, and the paused frame's locals as
+    /// (name, value) pairs, it compiles + evaluates the expression in an
+    /// isolated mini-VM (never perturbing this VM's stack/frames) and returns
+    /// the value. `None` → expression eval reports as unavailable.
+    #[allow(clippy::type_complexity)]
+    pub(crate) eval_hook:
+        Option<Box<dyn FnMut(&VM, &str, &[(String, Value)]) -> Result<Value, String>>>,
+    /// Debugger hot-reload recompiler. Installed by the shell: given the live VM
+    /// (for aligned import/module resolution), re-reads + recompiles the source
+    /// and returns the fresh chunk set. `apply_reload` decides what is safe to
+    /// swap. `None` → hot reload reports as unavailable.
+    #[allow(clippy::type_complexity)]
+    pub(crate) reload_hook: Option<Box<dyn FnMut(&mut VM) -> Result<Vec<Chunk>, String>>>,
+    /// Single hot-path gate = `trace || debugger.is_some()`. Kept in sync by
+    /// `set_trace` / `attach_debugger` / `detach_debugger` so the dispatch loop
+    /// tests one bool, not two.
+    pub(crate) instrumented: bool,
     // ── CM3 Canonical ABI (Track A) ─────────────────────────────────────────
     /// Handle table — maps i32 indices to typed component resources.
     pub handle_table: crate::handle_table::HandleTable,
@@ -855,6 +899,10 @@ impl VM {
             next_thread_id: 1,
             trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
+            debugger: None,
+            eval_hook: None,
+            reload_hook: None,
+            instrumented: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             handle_table: crate::handle_table::HandleTable::new(),
             cm_tasks: Vec::new(),
             next_cm_task_id: 1,
@@ -868,6 +916,270 @@ impl VM {
     /// Can also be enabled via `VYBE_TRACE=1` environment variable.
     pub fn set_trace(&mut self, enabled: bool) {
         self.trace = enabled;
+        self.instrumented = self.trace || self.debugger.is_some();
+    }
+
+    /// Attach a step debugger. The dispatch loop will call into it at every
+    /// instruction boundary until detached. `cmd_rx`/`evt_tx` are the VM-side
+    /// ends of the channels whose other ends the transport (in `vybex`) holds.
+    pub fn attach_debugger(
+        &mut self,
+        cmd_rx: std::sync::mpsc::Receiver<crate::debugger::DebugRequest>,
+        evt_tx: std::sync::mpsc::Sender<crate::debugger::DebugEvent>,
+        pause_on_entry: bool,
+    ) {
+        self.debugger = Some(crate::debugger::Debugger::new(
+            cmd_rx,
+            evt_tx,
+            pause_on_entry,
+        ));
+        self.instrumented = true;
+    }
+
+    /// Detach the debugger and (unless tracing) leave the hot path uninstrumented.
+    pub fn detach_debugger(&mut self) {
+        self.debugger = None;
+        self.instrumented = self.trace;
+    }
+
+    /// Install the debugger's compiler-backed expression evaluator (see the
+    /// `eval_hook` field). Called by the shell once, before running.
+    #[allow(clippy::type_complexity)]
+    pub fn set_eval_hook(
+        &mut self,
+        hook: Box<dyn FnMut(&VM, &str, &[(String, Value)]) -> Result<Value, String>>,
+    ) {
+        self.eval_hook = Some(hook);
+    }
+
+    /// Evaluate a debugger expression against the live VM with the paused
+    /// frame's `locals` in scope. Faithful semantics (real compiler, isolated
+    /// mini-VM); this VM's execution state is never touched. Errors if no hook
+    /// is installed.
+    pub fn debug_eval(&mut self, expr: &str, locals: &[(String, Value)]) -> Result<Value, String> {
+        let mut hook = self.eval_hook.take();
+        let result = match hook.as_mut() {
+            Some(h) => h(self, expr, locals),
+            None => Err("expression eval unavailable (no compiler hook attached)".to_string()),
+        };
+        self.eval_hook = hook;
+        result
+    }
+
+    /// Install the debugger's hot-reload recompiler (see the `reload_hook` field).
+    #[allow(clippy::type_complexity)]
+    pub fn set_reload_hook(&mut self, hook: Box<dyn FnMut(&mut VM) -> Result<Vec<Chunk>, String>>) {
+        self.reload_hook = Some(hook);
+    }
+
+    /// Dart-style stateful hot reload (stage 1): recompile the source and swap
+    /// the bodies of *changed* functions IN PLACE — heap, globals, and the
+    /// current call stack are preserved (`main` is NOT re-run). Only body-only
+    /// edits to functions that are not currently executing are applied; anything
+    /// structural, or a change to a live function, is rejected with a reason so
+    /// old state is never left half-updated. Returns a human-readable report.
+    pub fn debug_reload(&mut self) -> Result<String, String> {
+        let mut hook = self.reload_hook.take();
+        let compiled = match hook.as_mut() {
+            Some(h) => h(self),
+            None => Err("hot reload unavailable (no compiler hook attached)".to_string()),
+        };
+        self.reload_hook = hook;
+        let new_chunks = compiled?;
+        self.apply_reload(new_chunks)
+    }
+
+    fn apply_reload(&mut self, mut new_chunks: Vec<Chunk>) -> Result<String, String> {
+        // 1. Structural identity: same count, names in order, imports, and tags.
+        // A shifted/renamed/added/removed function invalidates the chunk-index
+        // identity every funcref depends on → reject, don't corrupt.
+        if new_chunks.len() != self.chunks.len() {
+            return Err(format!(
+                "structure changed ({} → {} functions) — restart needed",
+                self.chunks.len(),
+                new_chunks.len()
+            ));
+        }
+        for i in 0..new_chunks.len() {
+            if new_chunks[i].name != self.chunks[i].name {
+                return Err(format!(
+                    "structure changed (function #{i}: '{}' → '{}') — restart needed",
+                    self.chunks[i].name, new_chunks[i].name
+                ));
+            }
+        }
+        // 2. Content diff: bodies whose code, constants, OR imports changed.
+        // Imports matter because JS string literals are `wasm:string-constants`
+        // imports (the import name IS the string) — editing a string changes the
+        // import table, not the code. Swapping the WHOLE chunk (code+imports
+        // together) stays consistent since import resolution reads the chunk's
+        // own table lazily per call. (Drops the unchanged runtime prelude.)
+        // Imports compared as a SORTED SET, not by order: two compiles can emit
+        // the same imports in a different order (HashMap iteration), and since
+        // identical code references identical import indices, only a set
+        // difference (a string added/removed) is a real change.
+        let changed: Vec<usize> = (0..new_chunks.len())
+            .filter(|&i| {
+                new_chunks[i].code != self.chunks[i].code
+                    || !imports_equal_as_set(&new_chunks[i].imports, &self.chunks[i].imports)
+                    || format!("{:?}", new_chunks[i].constants)
+                        != format!("{:?}", self.chunks[i].constants)
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok("no changes — nothing to reload".to_string());
+        }
+        // 2b. Exception tags are the one structure cached by chunk index (the
+        // per-chunk tag→entity maps), so a body swap must keep them identical;
+        // a tag change is beyond a body swap → reject.
+        for &i in &changed {
+            if !tags_equal(&new_chunks[i].tags, &self.chunks[i].tags) {
+                return Err(format!(
+                    "exception tags changed in '{}' — restart needed",
+                    self.chunks[i].name
+                ));
+            }
+        }
+        // 3. Liveness. A changed function that is live in a SUSPENDED async task
+        // (a fiber not on the current stack) can't be safely relocated (its saved
+        // frames live in fiber storage we don't rewrite) → reject, no corruption.
+        // A changed function live on the CURRENT stack is handled by relocation
+        // (step 4) — its old body finishes; the next call uses the new body.
+        let all_live = self.live_chunk_indices();
+        let mut current_live = HashSet::new();
+        for f in &self.frames {
+            current_live.insert(f.chunk_index);
+        }
+        let suspended_live: Vec<usize> = changed
+            .iter()
+            .copied()
+            .filter(|i| all_live.contains(i) && !current_live.contains(i))
+            .collect();
+        if !suspended_live.is_empty() {
+            let names: Vec<String> = suspended_live
+                .iter()
+                .map(|&i| self.chunks[i].name.clone())
+                .collect();
+            return Err(format!(
+                "cannot reload {} — live in a suspended async task (restart)",
+                names.join(", ")
+            ));
+        }
+
+        // 4. Apply. For each changed function:
+        //   • not on the stack  → swap the new body in place at its index.
+        //   • live on the stack → RELOCATE: copy the old body to a fresh chunk
+        //     index, repoint the live frame(s) there so the current activation
+        //     keeps running the old (self-consistent) body to completion, then
+        //     install the new body at the original index for the next call.
+        // Either way the index identity funcrefs depend on now resolves to the
+        // new body, and heap/globals/stack are untouched (Dart hot reload).
+        let mut reloaded = Vec::new();
+        for &i in &changed {
+            reloaded.push(self.chunks[i].name.clone());
+            if current_live.contains(&i) {
+                let old = self.chunks[i].clone();
+                let relocated = self.chunks.len();
+                self.chunks.push(old);
+                for f in self.frames.iter_mut() {
+                    if f.chunk_index == i {
+                        f.chunk_index = relocated;
+                    }
+                }
+            }
+            std::mem::swap(&mut self.chunks[i], &mut new_chunks[i]);
+            // Pre-scanned BLOCK/LOOP/IF jump targets are keyed by chunk index and
+            // derived from code bytes — drop this index's so they rebuild for the
+            // new body. (The relocated old index builds its own lazily.)
+            self.block_tables.remove(&i);
+        }
+        // 5. Drop cached funcref values whose chunk bodies changed.
+        self.funcref_cache.clear();
+        let relocated = changed.iter().any(|i| current_live.contains(i));
+        let relocated_note = if relocated {
+            " (live frame kept on old body until it returns)"
+        } else {
+            ""
+        };
+        // `new_chunks.len()` is the original chunk count (relocation appended to
+        // `self.chunks`, so use it — not the now-grown live length).
+        Ok(format!(
+            "reloaded {} function(s): {} · {} unchanged (heap/globals preserved){}",
+            reloaded.len(),
+            reloaded.join(", "),
+            new_chunks.len() - changed.len(),
+            relocated_note
+        ))
+    }
+
+    /// One `(frame chunk-indices, label)` per suspended fiber — for the debugger
+    /// `fibers` command. Bottom-to-top frame order per fiber.
+    pub fn debug_suspended_fibers(&self) -> Vec<(Vec<usize>, String)> {
+        let mut out = Vec::new();
+        for ac in &self.active_continuations {
+            let idxs: Vec<usize> = ac.caller_fiber.frames.iter().map(|f| f.chunk_index).collect();
+            out.push((idxs, "continuation".to_string()));
+        }
+        let el = self.event_loop.borrow();
+        for (pid, fib) in el.waiting_fibers.iter() {
+            let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
+            out.push((idxs, format!("await promise {pid}")));
+        }
+        for (fid, fib) in el.future_waiting_fibers.iter() {
+            let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
+            out.push((idxs, format!("await future {fid}")));
+        }
+        for (sid, fib) in el.stream_waiting_fibers.iter() {
+            let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
+            out.push((idxs, format!("await stream {sid}")));
+        }
+        for task in el.microtasks.iter().chain(el.macrotasks.iter()) {
+            if let crate::event_loop::Task::ResumeFiber(fib) = task {
+                let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
+                out.push((idxs, "queued resume".to_string()));
+            }
+        }
+        out
+    }
+
+    /// Every chunk index referenced by a LIVE frame — the current call stack plus
+    /// all suspended fibers (continuations + event-loop waiters + queued resume
+    /// tasks). Current-stack live chunks are relocated on reload; suspended-fiber
+    /// live chunks (in this set but not on the current stack) are rejected.
+    fn live_chunk_indices(&self) -> HashSet<usize> {
+        let mut set = HashSet::new();
+        for f in &self.frames {
+            set.insert(f.chunk_index);
+        }
+        for ac in &self.active_continuations {
+            for sf in &ac.caller_fiber.frames {
+                set.insert(sf.chunk_index);
+            }
+        }
+        let el = self.event_loop.borrow();
+        for (_, fib) in el.waiting_fibers.iter() {
+            for sf in &fib.frames {
+                set.insert(sf.chunk_index);
+            }
+        }
+        for (_, fib) in el.future_waiting_fibers.iter() {
+            for sf in &fib.frames {
+                set.insert(sf.chunk_index);
+            }
+        }
+        for (_, fib) in el.stream_waiting_fibers.iter() {
+            for sf in &fib.frames {
+                set.insert(sf.chunk_index);
+            }
+        }
+        for task in el.microtasks.iter().chain(el.macrotasks.iter()) {
+            if let crate::event_loop::Task::ResumeFiber(fib) = task {
+                for sf in &fib.frames {
+                    set.insert(sf.chunk_index);
+                }
+            }
+        }
+        set
     }
 
     /// Restrict execution trace output to a specific chunk name.
@@ -1822,7 +2134,7 @@ impl VM {
         self.stack.clear();
         self.frames.clear();
         let script_idx = self.chunks.len(); // offset for new chunks
-                                            // Offset ref_func indices in the new chunks so they point to correct positions
+        // Offset ref_func indices in the new chunks so they point to correct positions
         let mut adjusted = chunks;
         if script_idx > 0 {
             for chunk in &mut adjusted {

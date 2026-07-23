@@ -317,7 +317,12 @@ fn table_fill_zero_count_at_table_end_is_noop() {
 #[test]
 fn table_copy_overlapping_forward_preserves_source_snapshot() {
     let mut vm = VM::new();
-    vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]];
+    vm.wasm_tables = vec![vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]];
 
     let mut chunk = Chunk::new("<script>");
     let dst = chunk.add_constant(Value::I32(1));

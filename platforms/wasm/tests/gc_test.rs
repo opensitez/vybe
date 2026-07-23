@@ -8,9 +8,9 @@
 use std::sync::Arc;
 use vybe_bytecode::chunk::TypeEntry;
 use vybe_bytecode::value::Value;
-use vybe_platform_wasm::write_wasm;
-use vybe_platform_wasm::read_wasm;
 use vybe_bytecode::{Chunk, Op, VM};
+use vybe_platform_wasm::read_wasm;
+use vybe_platform_wasm::write_wasm;
 
 /// Run without appending RETURN — caller is responsible for the full layout.
 fn run_raw(emit: impl FnOnce(&mut Chunk)) -> Value {

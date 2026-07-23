@@ -20,8 +20,8 @@
 //! `false` if the name is unknown — letting the caller fall through to its
 //! own dispatch for language-specific common ops.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use crate::emitter::{
     channels, collections, dict, heap, object, ops, reflection, strings, threading, xml,
@@ -353,6 +353,10 @@ pub fn emit_common(
         "xml.equal" => xml::emit_equal(chunks, current, argc, line),
         "xml.from_dom_node" => xml::emit_from_dom_node(chunks, current, argc, line),
         "xml.node_name" => xml::emit_node_name(chunks, current, argc, line),
+        "xml.parse" => xml::emit_parse(chunks, current, argc, line),
+        "xml.load" => xml::emit_load(chunks, current, argc, line),
+        "xml.save" => xml::emit_save(chunks, current, argc, line),
+        "xml.elements" => xml::emit_elements(chunks, current, argc, line),
 
         // ── Collection ops (route through ecma:array imports;
         // `chunks` slice lets the helper register on chunks[0] while

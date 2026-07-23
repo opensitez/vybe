@@ -1,8 +1,8 @@
 //! WASM binary encoding/decoding primitives.
 //! Constants, LEB128, section writing, value serialization.
 
-use vybe_bytecode::value::Value;
 use std::sync::Arc;
+use vybe_bytecode::value::Value;
 
 // ── WASM binary format constants ────────────────────────────────────────
 

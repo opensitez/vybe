@@ -75,7 +75,7 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
     chunk.emit_op_u16(Op::STRUCT_SET, link_key, line); // [err, err]
     chunk.emit_op(Op::DROP, line); // [err]
-                                   // delete err.name — own stamp off, prototype `name` takes over
+    // delete err.name — own stamp off, prototype `name` takes over
     crate::instructions::core_wasm::dup(chunk, line); // [err, err]
     chunk.emit_string_const("name", line); // [err, err, "name"]
     let del = chunk.add_import("ecma:object", "delete");
@@ -252,7 +252,7 @@ pub fn is_exception_type(name: &str) -> bool {
         | "errorexception"
         // JS
         | "rangeerror" | "syntaxerror" | "referenceerror" | "urierror"
-        | "evalerror" | "aggregateerror"
+        | "evalerror" | "aggregateerror" | "suppressederror"
         // Ruby
         | "standarderror" | "argumenterror" | "nameerror" | "nomethoderror"
     )

@@ -43,4 +43,5 @@ form_urlencoded = { workspace = true }
 indexmap = { workspace = true }
 mime_guess = { workspace = true }
 dashmap = { workspace = true }
+serde_json = { workspace = true }
 

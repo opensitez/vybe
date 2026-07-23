@@ -30,6 +30,10 @@ pub struct Scope {
     pub upvalues: Vec<UpvalueDesc>,
     pub depth: u32,
     pub next_slot: u16,
+    /// Debug accumulator: every `(slot, name)` ever defined in this function,
+    /// NOT popped by `end_scope`. Copied into `Chunk.local_names` at finalize
+    /// so the debugger can resolve variable names ↔ slots. Inspection only.
+    pub defined_names: Vec<(u16, String)>,
 }
 
 impl Scope {
@@ -39,6 +43,7 @@ impl Scope {
             upvalues: Vec::new(),
             depth: 0,
             next_slot: 0,
+            defined_names: Vec::new(),
         }
     }
 
@@ -62,6 +67,7 @@ impl Scope {
             type_hint,
             is_const: false,
         });
+        self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
     }
@@ -81,6 +87,7 @@ impl Scope {
             type_hint,
             is_const: false,
         });
+        self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
     }

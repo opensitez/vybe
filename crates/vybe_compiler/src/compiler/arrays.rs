@@ -70,10 +70,12 @@ impl Compiler {
             .next()
             .unwrap_or(leaf)
             .trim();
-        matches!(
-            bare,
-            "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter"
-        ) || lower.contains(" delegate")
+        bare.ends_with("eventhandler")
+            || matches!(
+                bare,
+                "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter"
+            )
+            || lower.contains(" delegate")
     }
 
     pub(super) fn callable_return_type_hint(type_hint: &str) -> Option<String> {

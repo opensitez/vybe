@@ -5,6 +5,20 @@
 
 use super::*;
 
+fn dotnet_ambient_tree_root(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "system.threading.tasks" {
+        return None;
+    }
+    if lower == "system" {
+        return Some("dotnet.system".into());
+    }
+    lower
+        .strip_prefix("system.")
+        .map(|tail| format!("dotnet.system.{tail}"))
+}
+
 impl Compiler {
     /// Drain the compiler's host-import metadata into the shape the VM
     /// setup expects.
@@ -572,13 +586,23 @@ impl Compiler {
                         self.host_namespace_aliases.insert(key, path);
                     }
                 }
-                // Simple imports (`Imports System.Text` / `using X;`) will
-                // feed ambient tree roots when the legacy dotnet cascade is
-                // deleted — until then bare-name resolution stays with the
-                // cascade fallback (ambient duplicates shadowed the
-                // compiler's Task.Run THREAD_SPAWN special path; each
-                // ambient entry needs per-entry verification first).
-                // Default + Simple: no meaning for host modules; skip.
+                // Simple .NET namespace imports (`Imports System.Text` /
+                // `using System.Text;`) make bare qualified chains resolve
+                // under the shared dotnet tree (`Regex.IsMatch` →
+                // `dotnet.system.text.regularexpressions.regex.ismatch`).
+                // Keep `System.Threading.Tasks` out of ambient lookup so
+                // `Task.Run` / `Task.Delay` stay on the compiler's JSPI
+                // THREAD_SPAWN special path.
+                crate::ast::ImportKind::Simple { path, alias: None }
+                    if self.profile.namespaces.use_dotnet =>
+                {
+                    if let Some(root) = dotnet_ambient_tree_root(path) {
+                        if !self.ambient_tree_roots.iter().any(|p| p == &root) {
+                            self.ambient_tree_roots.push(root);
+                        }
+                    }
+                }
+                // Default + other Simple imports: no meaning for host modules; skip.
                 crate::ast::ImportKind::Default { .. } | crate::ast::ImportKind::Simple { .. } => {}
             }
         }

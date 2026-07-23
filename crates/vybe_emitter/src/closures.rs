@@ -8,8 +8,8 @@
 //! The name→index mapping is compile-time only. At runtime, the env
 //! is a plain array: env[0] = first captured var, env[1] = second, etc.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 /// Read a captured variable from the environment array by index.
 pub fn emit_env_get(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {
@@ -45,12 +45,8 @@ pub fn emit_env_set(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {
 ///
 /// Stack after: [env_array]
 pub fn emit_env_new(chunk: &mut Chunk, slots: &[u16], line: u32) {
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, slots.len() as u16, line);
-    for (i, slot) in slots.iter().enumerate() {
-        chunk.emit_dup(line);
-        chunk.emit_i32_const(i as i32, line);
+    for slot in slots {
         chunk.emit_op_u16(Op::LOCAL_GET, *slot, line);
-        chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
     }
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, slots.len() as u16, line);
 }

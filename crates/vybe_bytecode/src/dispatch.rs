@@ -11,9 +11,7 @@
 
 use crate::error::VMError;
 use crate::opcode::{Op, read_leb_u32};
-use crate::value::{
-    Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, Value,
-};
+use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, Value};
 use crate::vm::{
     ActiveContinuation, BlockTargets, ExceptionHandler, ImportTarget, LabelEntry, ResumeMode, VM,
 };
@@ -34,7 +32,9 @@ impl VM {
         if !matches!(ob.kind, ObjectKind::Array(_)) {
             return false;
         }
-        self.type_registry.get(ob.type_id).is_some_and(|td| td.is_array())
+        self.type_registry
+            .get(ob.type_id)
+            .is_some_and(|td| td.is_array())
     }
 
     /// Resolve an `array.new` type immediate to the instance rtt (registry id).
@@ -711,7 +711,10 @@ impl VM {
         if start > end || end > elems.len() {
             return Err(VMError::new("trap: array access out of bounds"));
         }
-        Ok(elems[start..end].iter().map(|v| v.as_i32() as u32).collect())
+        Ok(elems[start..end]
+            .iter()
+            .map(|v| v.as_i32() as u32)
+            .collect())
     }
 
     pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
@@ -927,31 +930,43 @@ impl VM {
             };
             dbg_last_op = Some(op);
 
-            // ── Execution trace ──────────────────────────────────────────
-            if self.trace {
-                let f = self.frame();
-                let chunk_name = &self.chunks[f.chunk_index].name;
-                let should_trace = self
-                    .trace_chunk_filter
-                    .as_ref()
-                    .map(|filter| filter == chunk_name)
-                    .unwrap_or(true);
-                if should_trace {
-                    let ip = f.ip;
-                    let stack_top = if self.stack.is_empty() {
-                        "[]".to_string()
-                    } else {
-                        let top = &self.stack[self.stack.len() - 1];
-                        let depth = self.stack.len();
-                        format!("[{}] (depth={})", top, depth)
-                    };
-                    eprintln!(
-                        "  TRACE {:>12} @{:04} {:?}  stack: {}",
-                        chunk_name,
-                        ip.saturating_sub(1),
-                        op,
-                        stack_top
-                    );
+            // ── Instrumentation (step debugger + execution trace) ────────
+            // Single hot-path gate: false in normal runs. `opcode_start` is the
+            // instruction's own offset (ip has already advanced past the opcode).
+            if self.instrumented {
+                // Step debugger: taken out of `self` for the call so it can
+                // borrow the VM freely, then put back. May BLOCK (pause) or
+                // return `__debug_quit__` to terminate.
+                if let Some(mut dbg) = self.debugger.take() {
+                    let r = dbg.on_instruction(self, opcode_start, op);
+                    self.debugger = Some(dbg);
+                    r?;
+                }
+                if self.trace {
+                    let f = self.frame();
+                    let chunk_name = &self.chunks[f.chunk_index].name;
+                    let should_trace = self
+                        .trace_chunk_filter
+                        .as_ref()
+                        .map(|filter| filter == chunk_name)
+                        .unwrap_or(true);
+                    if should_trace {
+                        let ip = f.ip;
+                        let stack_top = if self.stack.is_empty() {
+                            "[]".to_string()
+                        } else {
+                            let top = &self.stack[self.stack.len() - 1];
+                            let depth = self.stack.len();
+                            format!("[{}] (depth={})", top, depth)
+                        };
+                        eprintln!(
+                            "  TRACE {:>12} @{:04} {:?}  stack: {}",
+                            chunk_name,
+                            ip.saturating_sub(1),
+                            op,
+                            stack_top
+                        );
+                    }
                 }
             }
 
@@ -1364,9 +1379,7 @@ impl VM {
                             let idx = match &key {
                                 Value::I32(n) if *n >= 0 => Some(*n as usize),
                                 Value::I64(n) if *n >= 0 => Some(*n as usize),
-                                Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => {
-                                    Some(*n as usize)
-                                }
+                                Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                                 _ => None,
                             };
                             let mut ob = o.lock().unwrap();
@@ -1379,9 +1392,7 @@ impl VM {
                                         continue;
                                     }
                                     _ => {
-                                        return Err(VMError::new(
-                                            "trap: array.set out of bounds",
-                                        ));
+                                        return Err(VMError::new("trap: array.set out of bounds"));
                                     }
                                 }
                             }
@@ -2944,9 +2955,7 @@ impl VM {
                     let s = String::from_utf8_lossy(&bytes).into_owned();
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_NEW_UTF8_ARRAY
-                    || op == Op::STRING_NEW_WTF16_ARRAY =>
-                {
+                _ if op == Op::STRING_NEW_UTF8_ARRAY || op == Op::STRING_NEW_WTF16_ARRAY => {
                     let end = self.pop().as_i32() as u32 as usize;
                     let start = self.pop().as_i32() as u32 as usize;
                     let arr = self.pop();
@@ -2956,14 +2965,11 @@ impl VM {
                         String::from_utf16_lossy(&u16s)
                     } else {
                         let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
-                        String::from_utf8(bytes)
-                            .map_err(|_| VMError::new("trap: invalid UTF-8"))?
+                        String::from_utf8(bytes).map_err(|_| VMError::new("trap: invalid UTF-8"))?
                     };
                     self.push(Value::String(Arc::from(s.as_str())))?;
                 }
-                _ if op == Op::STRING_MEASURE_UTF8
-                    || op == Op::STRING_MEASURE_WTF8 =>
-                {
+                _ if op == Op::STRING_MEASURE_UTF8 || op == Op::STRING_MEASURE_WTF8 => {
                     let s = self.pop_stringref()?;
                     self.push(Value::I32(s.len() as i32))?;
                 }
@@ -2989,9 +2995,7 @@ impl VM {
                     self.write_memory_bytes(0, ptr, &bytes)?;
                     self.push(Value::I32(units.len() as i32))?;
                 }
-                _ if op == Op::STRING_ENCODE_UTF8_ARRAY
-                    || op == Op::STRING_ENCODE_WTF16_ARRAY =>
-                {
+                _ if op == Op::STRING_ENCODE_UTF8_ARRAY || op == Op::STRING_ENCODE_WTF16_ARRAY => {
                     let start = self.pop().as_i32() as u32 as usize;
                     let arr = self.pop();
                     let s = self.pop_stringref()?;
@@ -3131,9 +3135,9 @@ impl VM {
                     let pos = self.pop().as_i32() as u32 as usize;
                     let s = self.pop_stringref()?;
                     let units: Vec<u16> = s.encode_utf16().collect();
-                    let u = *units
-                        .get(pos)
-                        .ok_or_else(|| VMError::new("trap: stringview_wtf16 index out of bounds"))?;
+                    let u = *units.get(pos).ok_or_else(|| {
+                        VMError::new("trap: stringview_wtf16 index out of bounds")
+                    })?;
                     self.push(Value::I32(u as i32))?;
                 }
                 _ if op == Op::STRINGVIEW_WTF16_SLICE => {
@@ -3186,7 +3190,11 @@ impl VM {
                     let s = self.pop_stringref()?;
                     let a = wtf8_treat(&s, start);
                     let b = wtf8_treat(&s, end);
-                    let out = if a < b { s[a..b].to_string() } else { String::new() };
+                    let out = if a < b {
+                        s[a..b].to_string()
+                    } else {
+                        String::new()
+                    };
                     self.push(Value::String(Arc::from(out.as_str())))?;
                 }
                 _ if op == Op::STRINGVIEW_WTF8_ENCODE_UTF8 => {
@@ -3215,8 +3223,10 @@ impl VM {
                 _ if op == Op::STRING_AS_ITER => {
                     let s = self.pop_stringref()?;
                     let mut obj = crate::value::Object::new();
-                    obj.properties.insert("__iter_str".to_string(), Value::String(s));
-                    obj.properties.insert("__iter_pos".to_string(), Value::I32(0));
+                    obj.properties
+                        .insert("__iter_str".to_string(), Value::String(s));
+                    obj.properties
+                        .insert("__iter_pos".to_string(), Value::I32(0));
                     self.push(Value::Object(Arc::new(std::sync::Mutex::new(obj))))?;
                 }
                 _ if op == Op::STRINGVIEW_ITER_NEXT => {
@@ -3260,11 +3270,13 @@ impl VM {
 
                 _ if op == Op::REF_IS_NULL => {
                     let v = self.pop();
-                    self.push(Value::I32(if v.is_null_ref() || matches!(v, Value::Undefined) {
-                        1
-                    } else {
-                        0
-                    }))?;
+                    self.push(Value::I32(
+                        if v.is_null_ref() || matches!(v, Value::Undefined) {
+                            1
+                        } else {
+                            0
+                        },
+                    ))?;
                 }
                 // -- Conversions --
                 _ if op == Op::F64_FROM_I32 => {
@@ -3404,9 +3416,8 @@ impl VM {
                     // Spec `throw_ref`: rethrow the exception an exnref
                     // refers to — same tag identity, same payload.
                     let val = self.pop();
-                    let (entity, payload) = Self::unpack_exnref(&val).ok_or_else(|| {
-                        VMError::new("throw_ref: operand is not an exnref")
-                    })?;
+                    let (entity, payload) = Self::unpack_exnref(&val)
+                        .ok_or_else(|| VMError::new("throw_ref: operand is not an exnref"))?;
                     self.raise_exception(entity, payload, 0)?;
                 }
                 _ if op == Op::RETHROW => {
@@ -7090,7 +7101,6 @@ impl VM {
                 }
 
                 // -- CM3 / WASI 0.3 async (Track B) --
-
                 _ if op == Op::STREAM_READ => {
                     use crate::value::ObjectKind;
                     let val = self.pop();

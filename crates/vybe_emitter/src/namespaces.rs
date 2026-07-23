@@ -34,8 +34,8 @@
 use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};
 
-use vybe_bytecode::component::FuncSig;
 use vybe_bytecode::Value;
+use vybe_bytecode::component::FuncSig;
 
 /// A dot-separated canonical path into the tree (`"ecma.json.stringify"`).
 pub type Path = String;
@@ -134,6 +134,32 @@ fn merge_into(map: &mut Subtree, key: String, node: NamespaceNode) {
             for (k, v) in new_children {
                 merge_into(existing, k, v);
             }
+        }
+        (Some(NamespaceNode::Type { statics, .. }), NamespaceNode::Namespace(new_children)) => {
+            for (k, v) in new_children {
+                merge_into(statics, k, v);
+            }
+        }
+        (
+            Some(existing @ NamespaceNode::Namespace(_)),
+            NamespaceNode::Type {
+                ctor,
+                mut statics,
+                methods,
+            },
+        ) => {
+            if let NamespaceNode::Namespace(existing_children) = existing {
+                let mut merged = existing_children.clone();
+                for (k, v) in statics {
+                    merge_into(&mut merged, k, v);
+                }
+                statics = merged;
+            }
+            *existing = NamespaceNode::Type {
+                ctor,
+                statics,
+                methods,
+            };
         }
         (_, node) => {
             map.insert(key, node);

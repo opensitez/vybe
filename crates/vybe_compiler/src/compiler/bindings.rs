@@ -157,6 +157,7 @@ impl Compiler {
                     | "TypeError"
                     | "URIError"
                     | "AggregateError"
+                    | "SuppressedError"
                     | "ArrayBuffer"
                     | "SharedArrayBuffer"
                     | "DataView"

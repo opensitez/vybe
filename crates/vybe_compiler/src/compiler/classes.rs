@@ -172,6 +172,27 @@ impl Compiler {
         self.emit(Op::DROP);
     }
 
+    /// Push the ECMA [[HomeObject]].[[Prototype]] base used by `super`.
+    ///
+    /// Instance methods resolve through `CurrentClass.prototype.__proto__`;
+    /// static methods resolve through `CurrentClass.__proto__`. Looking this
+    /// up at runtime keeps `Object.setPrototypeOf(C.prototype, ...)` visible
+    /// to already-compiled `super.foo()` calls.
+    pub(super) fn emit_js_super_home_base(&mut self) {
+        let Some(class_name) = self.current_class.clone() else {
+            self.emit(Op::NULL);
+            return;
+        };
+
+        self.emit_var_get(&class_name);
+        if !self.current_member_is_static {
+            let prototype_key = self.str_const("prototype");
+            self.emit_u16(Op::STRUCT_GET, prototype_key);
+        }
+        let proto_link_key = self.str_const("__proto__");
+        self.emit_u16(Op::STRUCT_GET, proto_link_key);
+    }
+
     /// Instance identity + member stamps a derived constructor applies to
     /// the `this` produced by `super()`: __type / type-id, __super link,
     /// base-method saves, field initializers, instance-method binds, form
@@ -199,9 +220,61 @@ impl Compiler {
         {
             let key = self.str_const(&format!("__ctor_{parent_name}"));
             self.emit_u16(Op::GLOBAL_GET, key);
+        } else if !bound
+            && self.profile.has_ecma_globals
+            && Self::is_ecma_typed_array_ctor_name(parent_name)
+            && !self.shadows_builtin_type(parent_name)
+        {
+            let key = self.str_const(&format!("__ctor_{parent_name}"));
+            self.emit_u16(Op::GLOBAL_GET, key);
+        } else if !bound
+            && self.profile.has_ecma_globals
+            && Self::is_ecma_array_buffer_ctor_name(parent_name)
+            && !self.shadows_builtin_type(parent_name)
+        {
+            let key = self.str_const(&format!("__ctor_{parent_name}"));
+            self.emit_u16(Op::GLOBAL_GET, key);
+        } else if !bound
+            && self.profile.has_ecma_globals
+            && Self::is_ecma_collection_ctor_name(parent_name)
+            && !self.shadows_builtin_type(parent_name)
+        {
+            let key = self.str_const(&format!("__ctor_{parent_name}"));
+            self.emit_u16(Op::GLOBAL_GET, key);
         } else {
             self.emit_var_get(&pname);
         }
+    }
+
+    fn is_ecma_typed_array_ctor_name(name: &str) -> bool {
+        matches!(
+            Self::normalize_type_hint(name).as_str(),
+            "int8array"
+                | "uint8array"
+                | "uint8clampedarray"
+                | "int16array"
+                | "uint16array"
+                | "int32array"
+                | "uint32array"
+                | "float32array"
+                | "float64array"
+                | "bigint64array"
+                | "biguint64array"
+        )
+    }
+
+    fn is_ecma_array_buffer_ctor_name(name: &str) -> bool {
+        matches!(
+            Self::normalize_type_hint(name).as_str(),
+            "arraybuffer" | "sharedarraybuffer"
+        )
+    }
+
+    fn is_ecma_collection_ctor_name(name: &str) -> bool {
+        matches!(
+            Self::normalize_type_hint(name).as_str(),
+            "array" | "map" | "set" | "weakmap" | "weakset" | "object"
+        )
     }
 
     /// True when `parent_name` is a framework GUI control used as a class
@@ -220,6 +293,13 @@ impl Compiler {
             // mirroring the standalone-`new` path's `!dotnet_ctor_registered`
             // guard — otherwise `class X : Timer` over the user's own Timer
             // would misroute to `vybe:gui new_Timer`.
+            && !self.defined_classes.contains(&self.canon(parent_name))
+    }
+
+    fn dotnet_descriptor_parent_has_no_user_ctor(&self, parent_name: &str) -> bool {
+        self.profile.namespaces.use_dotnet
+            && crate::platforms::dotnet::emitter::is_component_descriptor_class(parent_name)
+            && !self.is_framework_control_parent(parent_name)
             && !self.defined_classes.contains(&self.canon(parent_name))
     }
 
@@ -613,6 +693,18 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.emit_u16(Op::STRUCT_SET, receiver_key);
                 self.emit(Op::DROP);
+            }
+            if self.profile.supports_private_fields && bind_name.starts_with("__js_private_") {
+                inst!(self, core_wasm::dup);
+                let display_name = bind_name
+                    .rsplit_once('.')
+                    .map(|(_, tail)| format!("#{tail}"))
+                    .unwrap_or_else(|| method_name.to_string());
+                self.emit_const(Value::String(Arc::from(display_name.as_str())));
+                let name_key = self.str_const("name");
+                self.emit_u16(Op::STRUCT_SET, name_key);
+                let line = self.line;
+                crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
             }
             if let Some(fixed_count) = rest_fixed_count {
                 inst!(self, core_wasm::dup);
@@ -1179,6 +1271,7 @@ impl Compiler {
 
         let ns = self.scope().next_slot;
         self.chunks[func_idx].finalize_local_count(ns);
+        self.chunks[func_idx].local_names = self.scope().defined_names.clone();
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         let inner_scope_idx = self.scopes.len() - 1;
         let uv_names: Vec<Option<String>> = (0..uvs.len())
@@ -1912,9 +2005,19 @@ impl Compiler {
             // (`__js_this`) rather than passed as an explicit first positional
             // parameter. Capability-driven — not gated on the language name.
             let ambient_this = cc.profile.ambient_this_binding;
+            let uses_js_arguments = cc.profile.has_arguments_object
+                && ambient_this
+                && !m.is_generator
+                && (user_params
+                    .iter()
+                    .any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                    || m.body.iter().any(stmt_uses_js_arguments));
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
-            let generator_control_arity = usize::from(m.is_generator && !has_rest);
-            if has_rest {
+            let lowered_has_rest = has_rest || uses_js_arguments;
+            let generator_control_arity = usize::from(m.is_generator && !lowered_has_rest);
+            if uses_js_arguments {
+                cc.rest_fixed_arities.insert(0);
+            } else if has_rest {
                 cc.rest_fixed_arities
                     .insert(user_params.len().saturating_sub(1) as u8);
             }
@@ -1929,8 +2032,11 @@ impl Compiler {
             } else {
                 true
             };
-            let arity =
-                (user_params.len() + usize::from(has_receiver) + generator_control_arity) as u8;
+            let arity = if uses_js_arguments {
+                (1 + usize::from(has_receiver) + generator_control_arity) as u8
+            } else {
+                (user_params.len() + usize::from(has_receiver) + generator_control_arity) as u8
+            };
 
             let ci = cc.chunks.len();
             let mut chunk = common::functions::create_function_chunk(mname, arity);
@@ -1983,6 +2089,11 @@ impl Compiler {
             if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
             }
+            let js_arguments_source_slot = if uses_js_arguments {
+                Some(cc.define_local("__vybe_js_arguments_array"))
+            } else {
+                None
+            };
             for p in &user_params {
                 cc.define_local_typed(&p.name, p.type_hint.clone());
                 let normalized_type_hint =
@@ -2005,6 +2116,50 @@ impl Compiler {
                         },
                     );
                 }
+            }
+            let js_arguments_len_slot = if uses_js_arguments {
+                let slot = cc.define_local("arguments");
+                cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+                cc.emit_u16(Op::LOCAL_SET, slot);
+                cc.emit_u16(Op::LOCAL_GET, slot);
+                cc.chunk().emit_string_const("Arguments", 0);
+                let type_key = cc.str_const("__type");
+                cc.emit_u16(Op::STRUCT_SET, type_key);
+                cc.emit(Op::DROP);
+
+                let len_slot = cc.define_local("__vybe_js_arguments_length");
+                cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+                common::collections::emit_len(&mut cc.chunks, cc.current, cc.line);
+                cc.emit_u16(Op::LOCAL_SET, len_slot);
+                Some(len_slot)
+            } else {
+                None
+            };
+            if uses_js_arguments {
+                for (index, p) in user_params.iter().enumerate() {
+                    let slot = cc.scope().resolve(&p.name).unwrap();
+                    if p.is_rest {
+                        cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+                        cc.emit_const(Value::F64(index as f64));
+                        cc.emit_u16(Op::LOCAL_GET, js_arguments_len_slot.unwrap());
+                        common::collections::emit_slice(&mut cc.chunks, cc.current, cc.line);
+                        cc.emit_u16(Op::LOCAL_SET, slot);
+                    } else {
+                        cc.emit_array_value_or_undefined(
+                            js_arguments_source_slot.unwrap(),
+                            js_arguments_len_slot.unwrap(),
+                            index,
+                        );
+                        cc.emit_u16(Op::LOCAL_SET, slot);
+                    }
+                }
+            }
+            if ambient_this && !is_static && mname.starts_with('#') {
+                let this_slot = cc.define_local("__js_private_method_this");
+                let js_this = cc.str_const("__js_this");
+                cc.emit_u16(Op::GLOBAL_GET, js_this);
+                cc.emit_u16(Op::LOCAL_SET, this_slot);
+                cc.emit_js_private_brand_check(this_slot, &bound_name)?;
             }
             if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 if class.explicit_self_param {
@@ -2220,6 +2375,7 @@ impl Compiler {
 
             let ns = cc.scope().next_slot;
             cc.chunks[ci].finalize_local_count(ns);
+            cc.chunks[ci].local_names = cc.scope().defined_names.clone();
             let method_scope_idx = cc.scopes.len() - 1;
             let mut capture_names: Vec<String> = cc.scopes[method_scope_idx]
                 .upvalues
@@ -2274,12 +2430,23 @@ impl Compiler {
                         param_types,
                         chunk_idx: ci,
                         return_type: m.return_type.clone(),
-                        signature: CallSignature::from_params(
-                            &user_params
+                        signature: CallSignature::from_params(&if uses_js_arguments {
+                            vec![Param {
+                                name: "__vybe_js_arguments_array".to_string(),
+                                type_hint: None,
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: true,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
+                            }]
+                        } else {
+                            user_params
                                 .iter()
                                 .map(|param| (*param).clone())
-                                .collect::<Vec<_>>(),
-                        ),
+                                .collect::<Vec<_>>()
+                        }),
                         is_virtual,
                     });
             }
@@ -2334,17 +2501,14 @@ impl Compiler {
             if let Some(getter) = &p.getter {
                 let get_name = format!("__get_{}", pname_canon);
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(
-                    &get_name,
-                    if prop_is_static { 0 } else { 1 },
-                );
+                let chunk = common::functions::create_function_chunk(&get_name, 1);
                 self.chunks.push(chunk);
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                if !prop_is_static {
-                    self.define_local(&self_kw);
-                }
+                let saved_member_static = self.current_member_is_static;
+                self.current_member_is_static = prop_is_static;
+                self.define_local(&self_kw);
 
                 if getter.body.is_empty() {
                     // Auto-property getter: return backing field
@@ -2375,26 +2539,25 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
+                    self.chunks[ci].local_names = self.scope().defined_names.clone();
                 }
                 self.scopes.pop();
                 self.current = saved;
+                self.current_member_is_static = saved_member_static;
                 method_chunks.push((get_name, ci, false, prop_is_static));
             }
 
             if let Some(setter) = &p.setter {
                 let set_name = format!("__set_{}", pname_canon);
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(
-                    &set_name,
-                    if prop_is_static { 1 } else { 2 },
-                );
+                let chunk = common::functions::create_function_chunk(&set_name, 2);
                 self.chunks.push(chunk);
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                if !prop_is_static {
-                    self.define_local(&self_kw);
-                }
+                let saved_member_static = self.current_member_is_static;
+                self.current_member_is_static = prop_is_static;
+                self.define_local(&self_kw);
                 let value_param_name = setter
                     .params
                     .first()
@@ -2424,9 +2587,11 @@ impl Compiler {
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
+                    self.chunks[ci].local_names = self.scope().defined_names.clone();
                 }
                 self.scopes.pop();
                 self.current = saved;
+                self.current_member_is_static = saved_member_static;
                 method_chunks.push((set_name, ci, false, prop_is_static));
             }
         }
@@ -2690,6 +2855,12 @@ impl Compiler {
                             .get(mci)
                             .map(Vec::as_slice)
                             .unwrap_or(&[]);
+                        if self.class_prototype_dispatch()
+                            && capture_names.is_empty()
+                            && !mname.starts_with("__js_private_")
+                        {
+                            continue;
+                        }
                         self.emit_bind_instance_method_with_aliases(
                             this_slot,
                             mname,
@@ -2704,28 +2875,41 @@ impl Compiler {
             } else {
                 let is_child = parent.is_some();
                 let parent_ctor_is_bound = if let Some(parent_name) = parent {
-                    let pname = self.canon(parent_name);
-                    let has_local = self
-                        .scope()
-                        .resolve(parent_name)
-                        .or_else(|| {
-                            if self.case_sensitive {
-                                None
-                            } else {
-                                self.scope().resolve_ci(parent_name)
-                            }
-                        })
-                        .is_some();
-                    let has_upvalue = self.scopes.len() > 1
-                        && self
-                            .resolve_upvalue(self.scopes.len() - 1, parent_name)
+                    if self.dotnet_descriptor_parent_has_no_user_ctor(parent_name) {
+                        false
+                    } else {
+                        let pname = self.canon(parent_name);
+                        let has_local = self
+                            .scope()
+                            .resolve(parent_name)
+                            .or_else(|| {
+                                if self.case_sensitive {
+                                    None
+                                } else {
+                                    self.scope().resolve_ci(parent_name)
+                                }
+                            })
                             .is_some();
-                    let has_static_local = self.static_local_binding(parent_name).is_some();
-                    has_local
-                        || has_upvalue
-                        || has_static_local
-                        || self.defined_globals.contains(&pname)
-                        || self.defined_classes.contains(&pname)
+                        let has_upvalue = self.scopes.len() > 1
+                            && self
+                                .resolve_upvalue(self.scopes.len() - 1, parent_name)
+                                .is_some();
+                        let has_static_local = self.static_local_binding(parent_name).is_some();
+                        has_local
+                            || has_upvalue
+                            || has_static_local
+                            || self.defined_globals.contains(&pname)
+                            || self.defined_classes.contains(&pname)
+                            || (self.profile.has_ecma_globals
+                                && Self::is_ecma_typed_array_ctor_name(parent_name)
+                                && !self.shadows_builtin_type(parent_name))
+                            || (self.profile.has_ecma_globals
+                                && Self::is_ecma_array_buffer_ctor_name(parent_name)
+                                && !self.shadows_builtin_type(parent_name))
+                            || (self.profile.has_ecma_globals
+                                && Self::is_ecma_collection_ctor_name(parent_name)
+                                && !self.shadows_builtin_type(parent_name))
+                    }
                 } else {
                     false
                 };
@@ -2774,7 +2958,7 @@ impl Compiler {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
                                     self.emit_default_js_new_target(name);
-                                    self.emit_var_get(parent_name);
+                                    self.emit_parent_ctor_value(parent_name);
                                     for a in *bargs {
                                         self.compile_expr(a)?;
                                     }
@@ -2794,7 +2978,7 @@ impl Compiler {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
                                     self.emit_default_js_new_target(name);
-                                    self.emit_var_get(parent_name);
+                                    self.emit_parent_ctor_value(parent_name);
                                     self.emit_u8(Op::CALL_REF, 0);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
@@ -2811,7 +2995,7 @@ impl Compiler {
                     } else if let Some(parent_name) = parent {
                         if parent_ctor_is_bound {
                             self.emit_default_js_new_target(name);
-                            self.emit_var_get(parent_name);
+                            self.emit_parent_ctor_value(parent_name);
                             if synthesized_forward_args {
                                 let parent_ctor_slot =
                                     self.define_local(&format!("__{}_parent_ctor", helper_name));
@@ -2959,6 +3143,12 @@ impl Compiler {
                                     .get(mci)
                                     .map(Vec::as_slice)
                                     .unwrap_or(&[]);
+                                if self.class_prototype_dispatch()
+                                    && capture_names.is_empty()
+                                    && !mname.starts_with("__js_private_")
+                                {
+                                    continue;
+                                }
                                 self.emit_bind_instance_method_with_aliases(
                                     this_slot,
                                     mname,
@@ -3121,6 +3311,12 @@ impl Compiler {
                                 .get(mci)
                                 .map(Vec::as_slice)
                                 .unwrap_or(&[]);
+                            if self.class_prototype_dispatch()
+                                && capture_names.is_empty()
+                                && !mname.starts_with("__js_private_")
+                            {
+                                continue;
+                            }
                             self.emit_bind_instance_method_with_aliases(
                                 this_slot,
                                 mname,
@@ -3284,6 +3480,7 @@ impl Compiler {
             {
                 let ns = self.scope().next_slot;
                 self.chunks[helper_idx].finalize_local_count(ns);
+                self.chunks[helper_idx].local_names = self.scope().defined_names.clone();
             }
             // Names, not slot coordinates — see `emit_helper_ref`. Resolved
             // while the helper's scope is still on the stack, since
@@ -3386,6 +3583,7 @@ impl Compiler {
         {
             let ns = self.scope().next_slot;
             self.chunks[ctor_idx].finalize_local_count(ns);
+            self.chunks[ctor_idx].local_names = self.scope().defined_names.clone();
         }
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
@@ -3475,9 +3673,26 @@ impl Compiler {
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.emit_const(Value::String(Arc::from("prototype")));
+            common::dict::emit_new(&mut self.chunks, self.current, self.line);
+            inst!(self, core_wasm::dup);
             self.emit_u16(Op::LOCAL_GET, proto_local);
-            let proto_key = self.str_const("prototype");
-            self.emit_u16(Op::STRUCT_SET, proto_key);
+            let value_key = self.str_const("value");
+            self.emit_u16(Op::STRUCT_SET, value_key);
+            self.emit(Op::DROP);
+            for (flag, value) in [
+                ("writable", false),
+                ("enumerable", false),
+                ("configurable", false),
+            ] {
+                inst!(self, core_wasm::dup);
+                self.emit_const(Value::Bool(value));
+                let flag_key = self.str_const(flag);
+                self.emit_u16(Op::STRUCT_SET, flag_key);
+                self.emit(Op::DROP);
+            }
+            let define_prop_idx = self.import("ecma:object", "defineProperty");
+            self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -3485,6 +3700,15 @@ impl Compiler {
             let name_key = self.str_const("name");
             self.emit_u16(Op::STRUCT_SET, name_key);
             self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.emit_const(Value::F64(0.0));
+            let length_key = self.str_const("length");
+            self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
 
             // §15.7.5 step 7 (JS): the class constructor's own
             // [[Prototype]] — the parent constructor for derived classes
@@ -3500,6 +3724,26 @@ impl Compiler {
                     let proto_link_key = self.str_const("__proto__");
                     self.emit_u16(Op::STRUCT_SET, proto_link_key);
                     self.emit(Op::DROP);
+                    if self.profile.has_ecma_globals
+                        && Self::is_ecma_typed_array_ctor_name(parent_name)
+                    {
+                        self.emit_u16(Op::LOCAL_GET, ctor_local);
+                        self.emit_const(Value::Bool(true));
+                        let marker_key = self.str_const("__vybe_typed_array_ctor");
+                        self.emit_u16(Op::STRUCT_SET, marker_key);
+                        self.emit(Op::DROP);
+                        for static_name in ["from", "of"] {
+                            self.emit_u16(Op::LOCAL_GET, ctor_local);
+                            self.emit_parent_ctor_value(parent_name);
+                            let static_key = self.str_const(static_name);
+                            self.emit_u16(Op::STRUCT_GET, static_key);
+                            self.emit_u16(Op::LOCAL_GET, ctor_local);
+                            let bind_idx = self.import("ecma:function", "bind");
+                            self.emit_host_call(bind_idx, 2);
+                            self.emit_u16(Op::STRUCT_SET, static_key);
+                            self.emit(Op::DROP);
+                        }
+                    }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
                     crate::emitter::prototypes::emit_stamp_function_kind_proto(
@@ -3517,9 +3761,6 @@ impl Compiler {
             // methods are skipped — their upvalues bind in the
             // constructor's frame, not at definition scope.
             for (mname, mci, _, _) in &instance_methods {
-                if mname.starts_with("__get_") || mname.starts_with("__set_") {
-                    continue;
-                }
                 let has_captures = method_capture_name_map
                     .get(mci)
                     .is_some_and(|c| !c.is_empty());
@@ -3567,14 +3808,29 @@ impl Compiler {
         // field initializer is the class itself), so `static y = this.x * 2`
         // can read sibling static fields. Bind the self-keyword to `ctor_local`
         // for the duration of the initializer emission.
+        let saved_static_init_class = self.current_class.take();
+        let saved_static_init_implicit = self.current_class_implicit_self;
+        self.current_class = Some(name.to_string());
+        self.current_class_implicit_self = class.implicit_self_fields;
         let static_self_kw = self.profile.self_keyword.clone();
         let static_self_slot = self.define_local(&static_self_kw);
         self.emit_u16(Op::LOCAL_GET, ctor_local);
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
 
+        let saved_static_js_this = if self.profile.ambient_this_binding {
+            let saved = self.save_js_this("__js_prev_this_static_init");
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.set_js_this_from_stack();
+            Some(saved)
+        } else {
+            None
+        };
+
         // Initialize static fields on the constructor object
         for (fname, type_hint, init, array_bounds) in &static_field_inits {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
+            let saved_member_static = self.current_member_is_static;
+            self.current_member_is_static = true;
             if let Some(init_expr) = init {
                 self.compile_expr(init_expr)?;
             } else if let Some(extent) = array_bounds
@@ -3592,13 +3848,56 @@ impl Compiler {
                     optional: false,
                 });
                 self.compile_expr(&init_expr)?;
+            } else if self.profile.has_undefined_value {
+                inst!(self, core_wasm::undefined);
             } else {
                 self.emit(Op::NULL);
+            }
+            self.current_member_is_static = saved_member_static;
+            if self.profile.name == "js" && fname.starts_with("__static_block_") {
+                self.emit(Op::DROP);
+                self.emit(Op::DROP);
+                continue;
+            }
+            if self.profile.name == "js" && !fname.starts_with("__js_private_") {
+                let value_slot = self.define_local("__js_static_field_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                self.emit_const(Value::String(Arc::from(fname.as_str())));
+                common::dict::emit_new(&mut self.chunks, self.current, self.line);
+                inst!(self, core_wasm::dup);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                let value_key = self.str_const("value");
+                self.emit_u16(Op::STRUCT_SET, value_key);
+                self.emit(Op::DROP);
+                for (flag, value) in [
+                    ("writable", true),
+                    ("enumerable", true),
+                    ("configurable", true),
+                ] {
+                    inst!(self, core_wasm::dup);
+                    self.emit_const(Value::Bool(value));
+                    let flag_key = self.str_const(flag);
+                    self.emit_u16(Op::STRUCT_SET, flag_key);
+                    self.emit(Op::DROP);
+                }
+                let define_prop_idx = self.import("ecma:object", "defineProperty");
+                self.emit_host_call(define_prop_idx, 3);
+                self.emit(Op::DROP);
+                continue;
             }
             let fk = self.str_const(fname);
             self.emit_u16(Op::STRUCT_SET, fk);
             self.emit(Op::DROP);
         }
+
+        if let Some(saved) = saved_static_js_this {
+            self.restore_js_this(saved);
+        }
+        self.current_class = saved_static_init_class;
+        self.current_class_implicit_self = saved_static_init_implicit;
 
         for const_name in &static_const_names {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -3632,6 +3931,11 @@ impl Compiler {
                     .get(pname.as_str())
                     .and_then(|pc| pc.parent.clone());
                 for field_name in &parent_static_fields {
+                    if self.profile.supports_private_fields
+                        && field_name.starts_with("__js_private_")
+                    {
+                        continue;
+                    }
                     if own_static_member_names
                         .iter()
                         .any(|name| name == field_name)
@@ -3676,6 +3980,9 @@ impl Compiler {
             None
         };
         for (mname, mci, _, _) in &static_methods {
+            if self.profile.supports_private_fields && mname.starts_with("__js_private_") {
+                continue;
+            }
             let (m_async, m_gen) = self
                 .method_fn_kinds
                 .get(mci)
@@ -3707,15 +4014,31 @@ impl Compiler {
                         !*is_ctor && *is_static && name == &bound_name
                     })
                 {
-                    common::classes::emit_attach_static_method(
-                        self.chunk(),
-                        ctor_local,
-                        &bound_name,
-                        *chunk_idx,
-                        php_static_receiver,
-                        method_rest_fixed_count(*chunk_idx),
-                        line,
-                    );
+                    self.emit_u16(Op::LOCAL_GET, ctor_local);
+                    self.emit_u16(Op::REF_FUNC, *chunk_idx as u16);
+                    self.chunk().emit(0, line);
+                    if let Some(receiver_slot) = php_static_receiver {
+                        inst!(self, core_wasm::dup);
+                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                        let receiver_key = self.str_const("__vybe_method_receiver");
+                        self.emit_u16(Op::STRUCT_SET, receiver_key);
+                        self.emit(Op::DROP);
+                    }
+                    if let Some(fixed_count) = method_rest_fixed_count(*chunk_idx) {
+                        inst!(self, core_wasm::dup);
+                        self.emit_const(Value::F64(fixed_count as f64));
+                        let rest_key = self.str_const("__vybe_rest_fixed_arity");
+                        self.emit_u16(Op::STRUCT_SET, rest_key);
+                        self.emit(Op::DROP);
+                    }
+                    inst!(self, core_wasm::dup);
+                    self.emit_const(Value::String(Arc::from(method.source_name.as_str())));
+                    let name_key = self.str_const("name");
+                    self.emit_u16(Op::STRUCT_SET, name_key);
+                    crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                    let storage_key = self.str_const(&bound_name);
+                    self.emit_u16(Op::STRUCT_SET, storage_key);
+                    self.emit(Op::DROP);
                 }
             }
         }
@@ -3726,9 +4049,16 @@ impl Compiler {
             .find(|(mname, _, _, _)| mname.eq_ignore_ascii_case("__static_init__"))
         {
             let line = self.line;
+            let saved_js_this = self.save_js_this("__js_prev_static_init_this");
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.set_js_this_from_stack();
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
             self.emit_u8(Op::CALL_REF, 0);
+            let result_slot = self.define_local("__js_static_init_result");
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.restore_js_this(saved_js_this);
+            self.emit_u16(Op::LOCAL_GET, result_slot);
             self.emit(Op::DROP);
         }
 

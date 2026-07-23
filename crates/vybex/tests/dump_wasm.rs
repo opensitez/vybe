@@ -8,8 +8,7 @@ fn dump_wasm_imports() {
     "#;
     let module = vybe_language_js::parse(src).expect("parse");
     let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
-            .expect("profile");
+        vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");

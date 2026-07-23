@@ -23,7 +23,7 @@
 //! `Plugin` factory, the host `dlopen`s it, and calls the same `init`.
 
 use crate::registry::{LanguageHooks, LanguagePlugin};
-use vybe_bytecode::{HostContext, Value, VM};
+use vybe_bytecode::{HostContext, VM, Value};
 
 /// A capability provider. Its [`init`](Plugin::init) registers everything the
 /// plugin offers into the [`Framework`].

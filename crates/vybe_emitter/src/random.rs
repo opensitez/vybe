@@ -18,9 +18,9 @@
 
 use crate::instructions::core_wasm;
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
+use vybe_bytecode::opcode::Op;
 
 const RNG_GLOBAL: &str = "__vybe_rng";
 
@@ -117,7 +117,7 @@ pub fn emit_rand_int_inclusive(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, hi, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, lo, line);
     emit_next_unit(chunks, current, line); // u
-                                           // range = hi - lo + 1
+    // range = hi - lo + 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, hi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, lo, line);
     chunks[current].emit_op(Op::I32_SUB, line);

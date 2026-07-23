@@ -28,6 +28,14 @@ pub mod platforms {
     pub use vybe_platform_dotnet as dotnet;
     pub use vybe_platform_libc as libc;
     pub use vybe_platform_plib as plib;
+
+    /// Register every statically linked platform namespace tree.
+    pub(crate) fn register_namespace_trees() {
+        vybe_emitter::xml::register_namespace_tree();
+        dotnet::emitter::tree_register::register_namespace_tree();
+        libc::emitter::tree_register::register_namespace_tree();
+        plib::emitter::tree_register::register_namespace_tree();
+    }
 }
 pub use vybe_plugin::profile;
 pub mod projects;

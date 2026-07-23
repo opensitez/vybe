@@ -114,7 +114,9 @@ fn mag_bit_len(a: &[u64]) -> usize {
 }
 
 fn mag_get_bit(a: &[u64], i: usize) -> bool {
-    a.get(i / 64).map(|w| (w >> (i % 64)) & 1 == 1).unwrap_or(false)
+    a.get(i / 64)
+        .map(|w| (w >> (i % 64)) & 1 == 1)
+        .unwrap_or(false)
 }
 
 fn mag_set_bit(a: &mut Vec<u64>, i: usize) {
@@ -177,7 +179,11 @@ fn mag_divrem(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
             q[i] = (cur / d) as u64;
             rem = cur % d;
         }
-        let r = if rem == 0 { Vec::new() } else { vec![rem as u64] };
+        let r = if rem == 0 {
+            Vec::new()
+        } else {
+            vec![rem as u64]
+        };
         return (mag_norm(q), r);
     }
     let n = mag_bit_len(a);
@@ -311,7 +317,9 @@ impl BigIntVal {
     }
 
     pub fn fits_u32(&self) -> bool {
-        !self.negative && self.limbs.len() <= 1 && self.limbs.first().copied().unwrap_or(0) <= u32::MAX as u64
+        !self.negative
+            && self.limbs.len() <= 1
+            && self.limbs.first().copied().unwrap_or(0) <= u32::MAX as u64
     }
 
     /// js-types JS-API ToBigInt64: the value modulo 2^64, as signed.
@@ -323,7 +331,11 @@ impl BigIntVal {
     /// ToBigUint64: the value modulo 2^64, as unsigned.
     pub fn to_u64_wrapping(&self) -> u64 {
         let low = self.limbs.first().copied().unwrap_or(0);
-        if self.negative { low.wrapping_neg() } else { low }
+        if self.negative {
+            low.wrapping_neg()
+        } else {
+            low
+        }
     }
 
     /// §6.1.6.2 mathematical value → Number (f64 rounding applies).

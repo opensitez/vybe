@@ -356,10 +356,12 @@ fn memory_init_after_data_drop_traps() {
 fn table_copy_copies_entries() {
     let mut vm = VM::new();
     // Set up func_table with 8 slots: [0,1,2,3,null,null,null,null]
-    vm.wasm_tables = vec![(0..4)
-        .map(|i| Value::I32(i))
-        .chain(std::iter::repeat(Value::Null).take(4))
-        .collect()];
+    vm.wasm_tables = vec![
+        (0..4)
+            .map(|i| Value::I32(i))
+            .chain(std::iter::repeat(Value::Null).take(4))
+            .collect(),
+    ];
 
     let mut chunk = Chunk::new("<script>");
     // table.copy dst_table=0; stack: dst=4, src=0, count=4

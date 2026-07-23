@@ -4,8 +4,8 @@
 //! String conversion uses host imports (not in WASM spec).
 
 use crate::Target;
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 // ── Direct WASM opcodes ─────────────────────────────────────
 

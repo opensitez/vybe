@@ -124,8 +124,14 @@ fn set_then_get_round_trips_value() {
 #[test]
 fn bigint64_get_returns_bigint_primitive() {
     let ta = bi64ns("newWithLength", vec![Value::I32(1)]);
-    bi64ns("set", vec![ta.clone(), Value::I32(0), Value::bigint_i64(-7)]);
-    assert_eq!(bi64ns("get", vec![ta, Value::I32(0)]), Value::bigint_i64(-7));
+    bi64ns(
+        "set",
+        vec![ta.clone(), Value::I32(0), Value::bigint_i64(-7)],
+    );
+    assert_eq!(
+        bi64ns("get", vec![ta, Value::I32(0)]),
+        Value::bigint_i64(-7)
+    );
 }
 
 #[test]

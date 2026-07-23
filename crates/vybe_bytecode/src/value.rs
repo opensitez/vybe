@@ -288,10 +288,7 @@ impl Value {
         match (self, other) {
             // A typed null and a plain null are both "null" — equal regardless
             // of the referenced type (only the GC accessors distinguish them).
-            (
-                Value::Null | Value::TypedNull(_),
-                Value::Null | Value::TypedNull(_),
-            )
+            (Value::Null | Value::TypedNull(_), Value::Null | Value::TypedNull(_))
             | (Value::Undefined, Value::Undefined) => true,
             // null == undefined is true in JS loose equality, but this is strict eq
             // JS loose eq is handled by js_loose_eq in the JS compiler
@@ -399,10 +396,7 @@ impl Value {
     pub fn same_value_zero(a: &Value, b: &Value) -> bool {
         match (a, b) {
             // All nulls (typed or plain) are SameValueZero-equal.
-            (
-                Value::Null | Value::TypedNull(_),
-                Value::Null | Value::TypedNull(_),
-            ) => true,
+            (Value::Null | Value::TypedNull(_), Value::Null | Value::TypedNull(_)) => true,
             (Value::Undefined, Value::Undefined) => true,
             (Value::Bool(x), Value::Bool(y)) => x == y,
 

@@ -25,6 +25,8 @@ const FROZEN_MARK: &str = "__vybe_frozen";
 const SEALED_MARK: &str = "__vybe_sealed";
 const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible
 const PROTO_KEY: &str = "__proto__";
+const NULL_PROTO_MARK: &str = "__vybe_null_proto";
+const ACCESSOR_SETTER_ACTIVE_MARK: &str = "__vybe_accessor_setter_active";
 const PROXY_TARGET_KEY: &str = "__vybe_proxy_target";
 const PROXY_HANDLER_KEY: &str = "__vybe_proxy_handler";
 /// PHP-array next-int-key tracker. Used by `appendAutoKey`.
@@ -64,6 +66,9 @@ pub(crate) fn js_prototype_of(value: &Value) -> Value {
     match value {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
+            if o.properties.contains_key(NULL_PROTO_MARK) {
+                return Value::Null;
+            }
             if let Some(explicit) = o.properties.get(PROTO_KEY) {
                 return explicit.clone();
             }
@@ -97,11 +102,353 @@ fn obj_of(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
     }
 }
 
+fn to_object_for_object_static(
+    ctx: &mut HostContext,
+    value: &Value,
+    message: &str,
+) -> Option<Value> {
+    match value {
+        Value::Null | Value::Undefined => {
+            ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
+            None
+        }
+        value @ Value::Object(_) => Some(value.clone()),
+        Value::Bool(value) => Some(crate::ecma::boolean::boxed_boolean(*value)),
+        Value::String(text) => Some(crate::ecma::string::boxed_string(text.clone())),
+        value @ Value::F64(_) | value @ Value::I32(_) | value @ Value::I64(_) => {
+            Some(crate::ecma::number::boxed_number(value.clone()))
+        }
+        Value::Symbol(desc) => {
+            let mut obj = Object::new();
+            obj.properties
+                .insert("__type".into(), Value::String(Arc::from("Symbol")));
+            obj.properties
+                .insert("__primitive".into(), Value::Symbol(desc.clone()));
+            obj.properties
+                .insert(PROTO_KEY.into(), shared_object_prototype());
+            Some(Value::Object(Arc::new(Mutex::new(obj))))
+        }
+        Value::BigInt(value) => {
+            let mut obj = Object::new();
+            obj.properties
+                .insert("__type".into(), Value::String(Arc::from("BigInt")));
+            obj.properties
+                .insert("__primitive".into(), Value::BigInt(value.clone()));
+            obj.properties
+                .insert(PROTO_KEY.into(), shared_object_prototype());
+            Some(Value::Object(Arc::new(Mutex::new(obj))))
+        }
+        _ => Some(new_ordinary_object_with_proto()),
+    }
+}
+
 fn key_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
         Value::Symbol(sym) => crate::ecma::symbol::canonical_property_key(sym),
         _ => format!("{}", v),
+    }
+}
+
+fn array_index_key(key: &str) -> Option<u32> {
+    let n = key.parse::<u32>().ok()?;
+    if n != u32::MAX && n.to_string() == key {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn sort_array_indices_first(keys: &mut Vec<String>) {
+    let mut indexed: Vec<(u32, String)> = Vec::new();
+    let mut rest = Vec::new();
+    for key in keys.drain(..) {
+        if let Some(index) = array_index_key(&key) {
+            indexed.push((index, key));
+        } else {
+            rest.push(key);
+        }
+    }
+    indexed.sort_by_key(|(index, _)| *index);
+    keys.extend(indexed.into_iter().map(|(_, key)| key));
+    keys.extend(rest);
+}
+
+fn enumerable_assign_keys(source: &Arc<Mutex<Object>>) -> Vec<(String, Option<Value>)> {
+    let src = source.lock().unwrap();
+    let mut out: Vec<(String, Option<Value>)> = Vec::new();
+    let symbol_storage_keys: std::collections::HashSet<String> = src
+        .properties
+        .get("__sym_keys")
+        .and_then(|v| {
+            if let Value::Object(a) = v {
+                let lock = a.lock().unwrap();
+                if let ObjectKind::Array(ref elems) = lock.kind {
+                    Some(elems.iter().map(key_string).collect())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    match &src.kind {
+        ObjectKind::Array(values) => {
+            for index in 0..values.len() {
+                if !is_array_hole(&src, index as i32) {
+                    out.push((index.to_string(), None));
+                }
+            }
+            for key in descriptor_own_keys(&src)
+                .into_iter()
+                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| !symbol_storage_keys.contains(key))
+            {
+                if array_index_key(&key).is_none() {
+                    out.push((key, None));
+                }
+            }
+        }
+        ObjectKind::TypedArray(ta) => {
+            for index in 0..crate::ecma::typedarray::ta_live_length(ta) {
+                out.push((index.to_string(), None));
+            }
+            for key in descriptor_own_keys(&src)
+                .into_iter()
+                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| !symbol_storage_keys.contains(key))
+            {
+                if array_index_key(&key).is_none() {
+                    out.push((key, None));
+                }
+            }
+        }
+        ObjectKind::Map(_) | ObjectKind::Set(_) => {
+            for key in descriptor_own_keys(&src)
+                .into_iter()
+                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| !symbol_storage_keys.contains(key))
+            {
+                out.push((key, None));
+            }
+        }
+        _ => {
+            for key in descriptor_own_keys(&src)
+                .into_iter()
+                .filter(|key| !is_nonenum(&src, key))
+                .filter(|key| !symbol_storage_keys.contains(key))
+            {
+                out.push((key, None));
+            }
+        }
+    }
+    if let Some(Value::Object(sym_arr)) = src.properties.get("__sym_keys") {
+        let syms = sym_arr.lock().unwrap();
+        if let ObjectKind::Array(ref elems) = syms.kind {
+            for key in elems {
+                let storage_key = key_string(key);
+                if !is_nonenum(&src, &storage_key) && src.properties.contains_key(&storage_key) {
+                    out.push((storage_key, Some(key.clone())));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn assign_source_get(ctx: &mut HostContext, source: &Arc<Mutex<Object>>, key: &str) -> Value {
+    {
+        let src = source.lock().unwrap();
+        if let ObjectKind::Array(values) = &src.kind {
+            if let Some(index) = array_index_key(key) {
+                if !is_array_hole(&src, index as i32) {
+                    if let Some(value) = values.get(index as usize) {
+                        return value.clone();
+                    }
+                }
+            }
+        }
+        if let ObjectKind::TypedArray(ta) = &src.kind {
+            if let Some(index) = array_index_key(key) {
+                if (index as usize) < crate::ecma::typedarray::ta_live_length(ta) {
+                    return crate::ecma::typedarray::read_element(ta, index as usize);
+                }
+            }
+        }
+        if !src.properties.contains_key(&format!("__get_{}", key)) {
+            if let Some(value) = src.properties.get(key) {
+                return value.clone();
+            }
+        }
+    }
+    proto_walk_invoke_getter(ctx, source, key).unwrap_or(Value::Undefined)
+}
+
+fn assign_strict_set(
+    ctx: &mut HostContext,
+    target: &Arc<Mutex<Object>>,
+    key: &str,
+    value: Value,
+    symbol_key: Option<Value>,
+) -> bool {
+    {
+        let tgt = target.lock().unwrap();
+        let exists = tgt.properties.contains_key(key)
+            || tgt.properties.contains_key(&format!("__get_{}", key))
+            || tgt.properties.contains_key(&format!("__set_{}", key));
+        if is_not_extensible(&tgt) && !exists {
+            drop(tgt);
+            ctx.throw_value(crate::ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "Cannot add property, object is not extensible",
+            ));
+            return false;
+        }
+    }
+
+    {
+        let mut tgt = target.lock().unwrap();
+        if matches!(&tgt.kind, ObjectKind::Array(_)) && (key == "length" || key == "__len__") {
+            crate::ecma::array::apply_js_array_length(ctx, &mut tgt, &value);
+            return true;
+        }
+    }
+
+    let setter_key = format!("__set_{}", key);
+    let setter = {
+        let tgt = target.lock().unwrap();
+        tgt.properties.get(&setter_key).cloned()
+    }
+    .or_else(|| proto_walk_get(target, &setter_key));
+
+    if let Some(setter_val) = setter {
+        if let Value::Object(setter_obj) = &setter_val {
+            let is_noop_setter = {
+                let so = setter_obj.lock().unwrap();
+                matches!(
+                    so.kind,
+                    ObjectKind::HostFunction(idx)
+                        if idx == NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed)
+                )
+            };
+            if is_noop_setter {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot assign to read only property",
+                ));
+                return false;
+            }
+            let setter_arity = {
+                let so = setter_obj.lock().unwrap();
+                match &so.kind {
+                    ObjectKind::Function(func) => Some(func.arity),
+                    ObjectKind::HostFunction(_) => Some(0),
+                    _ => None,
+                }
+            };
+            match setter_arity {
+                Some(1) => {
+                    ctx.invoke(&setter_val, &[value]);
+                }
+                _ => {
+                    ctx.invoke(&setter_val, &[Value::Object(target.clone()), value]);
+                }
+            }
+            return true;
+        }
+    }
+
+    let has_getter_without_setter = {
+        let getter_key = format!("__get_{}", key);
+        let own_getter = {
+            let tgt = target.lock().unwrap();
+            tgt.properties.contains_key(&getter_key)
+        };
+        own_getter || proto_walk_get(target, &getter_key).is_some()
+    };
+    if has_getter_without_setter {
+        ctx.throw_value(crate::ecma::error::new_error(
+            ctx,
+            "TypeError",
+            "Cannot set property which has only a getter",
+        ));
+        return false;
+    }
+
+    {
+        let tgt = target.lock().unwrap();
+        if tgt.properties.get(FROZEN_MARK).is_some() {
+            drop(tgt);
+            ctx.throw_value(crate::ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "Cannot assign to read only property of frozen object",
+            ));
+            return false;
+        }
+    }
+
+    if let Some(sym) = symbol_key {
+        track_sym_key(target, sym);
+    } else {
+        track_key(target, key);
+    }
+    let mut tgt = target.lock().unwrap();
+    tgt.properties.insert(key.to_string(), value);
+    true
+}
+
+fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
+    let key = key_string(key_raw);
+    match value {
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            match &o.kind {
+                ObjectKind::Array(values) => {
+                    if key == "length" {
+                        return Some(true);
+                    }
+                    if let Some(index) = array_index_key(&key) {
+                        return Some(
+                            (index as usize) < values.len() && !is_array_hole(&o, index as i32),
+                        );
+                    }
+                }
+                ObjectKind::TypedArray(ta) => {
+                    if let Some(index) = array_index_key(&key) {
+                        return Some(
+                            (index as usize) < crate::ecma::typedarray::ta_live_length(ta),
+                        );
+                    }
+                }
+                ObjectKind::Map(_) | ObjectKind::Set(_) => {
+                    if key == "size" {
+                        return Some(false);
+                    }
+                }
+                _ => {}
+            }
+            Some(
+                (!key.starts_with("__") || key_raw == &Value::String(Arc::from("__proto__")))
+                    && (o.properties.contains_key(&key)
+                        || o.properties.contains_key(&format!("__get_{}", key))
+                        || o.properties.contains_key(&format!("__set_{}", key))),
+            )
+        }
+        Value::String(text) => {
+            if key == "length" {
+                return Some(true);
+            }
+            if let Some(index) = array_index_key(&key) {
+                return Some((index as usize) < text.chars().count());
+            }
+            Some(false)
+        }
+        Value::Null | Value::Undefined => None,
+        _ => Some(false),
     }
 }
 
@@ -546,9 +893,14 @@ pub(crate) fn ordered_own_string_keys(o: &Object) -> Vec<String> {
                 }
             }
             keys.extend(extras);
+            sort_array_indices_first(&mut keys);
             keys
         }
-        None => live,
+        None => {
+            let mut keys = live;
+            sort_array_indices_first(&mut keys);
+            keys
+        }
     }
 }
 
@@ -572,6 +924,61 @@ fn groupby_magic_key(key_fn: &Value, item: &Value) -> Option<String> {
         drop(o);
     }
     None
+}
+
+fn groupby_magic_key_callable(key_fn: &Value) -> bool {
+    let Value::Object(kf) = key_fn else {
+        return false;
+    };
+    let o = kf.lock().unwrap();
+    matches!(o.kind, ObjectKind::Ordinary)
+        && (o.properties.contains_key("__groupby_le2_small_large")
+            || o.properties.contains_key("__group_by_mod"))
+}
+
+fn is_callable_value(value: &Value) -> bool {
+    match value {
+        Value::Object(obj) => {
+            matches!(
+                obj.lock().unwrap().kind,
+                ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+            ) || groupby_magic_key_callable(value)
+        }
+        _ => false,
+    }
+}
+
+fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(ctx, "TypeError", message));
+    Value::Undefined
+}
+
+fn collect_groupby_items(
+    ctx: &mut HostContext,
+    items: &Value,
+    message: &str,
+) -> Option<Vec<Value>> {
+    match items {
+        Value::Null
+        | Value::Undefined
+        | Value::Bool(_)
+        | Value::I32(_)
+        | Value::I64(_)
+        | Value::F32(_)
+        | Value::F64(_)
+        | Value::Symbol(_)
+        | Value::BigInt(_) => {
+            let _ = throw_type_error(ctx, message);
+            None
+        }
+        _ => match crate::ecma::iterator::try_materialize_iterable_values(ctx, items, false) {
+            Ok(values) => Some(values),
+            Err(error) => {
+                ctx.throw_value(error);
+                None
+            }
+        },
+    }
 }
 
 /// Walk the prototype chain looking for `key`. Returns the value if
@@ -787,7 +1194,7 @@ fn register_construction(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "create",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             // Object.create(proto, descriptors?) — ECMA-262 §20.1.2.2.
             //
             // True spec semantics ([[Get]] walking [[Prototype]]) need
@@ -818,6 +1225,16 @@ fn register_construction(vm: &mut VM) {
                     // Object vtable; no placeholder own-properties (they
                     // made `hasOwnProperty.call(o, "toString")` lie).
                     o.properties.insert(PROTO_KEY.into(), Value::Null);
+                    o.properties
+                        .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
+                }
+                Some(_) => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "Object prototype may only be an Object or null",
+                    ));
+                    return Value::Undefined;
                 }
                 _ => {}
             }
@@ -827,26 +1244,30 @@ fn register_construction(vm: &mut VM) {
             if let Some(Value::Object(descs)) = args.get(1) {
                 // Snapshot descriptor entries (preserving __keys order
                 // when present) before mutating the target.
-                let entries: Vec<(String, Value)> = {
+                let entries: Vec<(String, Value, Option<Value>)> = {
                     let d = descs.lock().unwrap();
-                    let order = if let Some(Value::Object(arr)) = d.properties.get("__keys") {
-                        let ka = arr.lock().unwrap();
-                        if let ObjectKind::Array(ref el) = ka.kind {
-                            el.iter()
-                                .filter_map(|v| {
-                                    if let Value::String(s) = v {
-                                        Some(s.to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
+                    let order = descriptor_own_keys(&d);
+                    let sym_values: std::collections::HashMap<String, Value> = d
+                        .properties
+                        .get("__sym_keys")
+                        .and_then(|v| {
+                            if let Value::Object(arr) = v {
+                                let ka = arr.lock().unwrap();
+                                if let ObjectKind::Array(ref elems) = ka.kind {
+                                    Some(
+                                        elems
+                                            .iter()
+                                            .map(|key| (key_string(key), key.clone()))
+                                            .collect(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
                     let mut out = Vec::new();
                     if !order.is_empty() {
                         for k in order {
@@ -854,7 +1275,8 @@ fn register_construction(vm: &mut VM) {
                                 continue;
                             }
                             if let Some(v) = d.properties.get(&k) {
-                                out.push((k, v.clone()));
+                                let sym = sym_values.get(&k).cloned();
+                                out.push((k, v.clone(), sym));
                             }
                         }
                     } else {
@@ -862,44 +1284,90 @@ fn register_construction(vm: &mut VM) {
                             if k.starts_with("__") {
                                 continue;
                             }
-                            out.push((k.clone(), v.clone()));
+                            let sym = sym_values.get(k).cloned();
+                            out.push((k.clone(), v.clone(), sym));
                         }
                     }
                     out
                 };
-                for (k, v) in entries {
-                    if let Value::Object(desc) = v {
-                        let dlock = desc.lock().unwrap();
-                        let val = dlock
-                            .properties
-                            .get("value")
-                            .cloned()
-                            .unwrap_or(Value::Undefined);
-                        let enumerable = dlock
-                            .properties
-                            .get("enumerable")
-                            .map(|x| x.as_bool())
-                            .unwrap_or(false);
-                        let writable = dlock.properties.get("writable").map(|x| x.as_bool());
+                for (k, v, sym_key) in entries {
+                    let Value::Object(desc) = v else {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
+                            "TypeError",
+                            "Property descriptor must be an object",
+                        ));
+                        return Value::Undefined;
+                    };
+                    let dlock = desc.lock().unwrap();
+                    let has_value = dlock.properties.contains_key("value");
+                    let has_writable = dlock.properties.contains_key("writable");
+                    let has_get = dlock.properties.contains_key("get");
+                    let has_set = dlock.properties.contains_key("set");
+                    if (has_value || has_writable) && (has_get || has_set) {
                         drop(dlock);
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
+                            "TypeError",
+                            "Invalid property descriptor",
+                        ));
+                        return Value::Undefined;
+                    }
+                    let val = dlock.properties.get("value").cloned();
+                    let getter = dlock.properties.get("get").cloned().filter(|v| {
+                        matches!(v, Value::Object(o)
+                            if matches!(o.lock().unwrap().kind,
+                                ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+                    });
+                    let setter = dlock.properties.get("set").cloned().filter(|v| {
+                        matches!(v, Value::Object(o)
+                            if matches!(o.lock().unwrap().kind,
+                                ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+                    });
+                    let enumerable = dlock
+                        .properties
+                        .get("enumerable")
+                        .map(|x| x.as_bool())
+                        .unwrap_or(false);
+                    let configurable = dlock
+                        .properties
+                        .get("configurable")
+                        .map(|x| x.as_bool())
+                        .unwrap_or(false);
+                    let writable = dlock.properties.get("writable").map(|x| x.as_bool());
+                    drop(dlock);
+
+                    if let Some(sym) = sym_key {
+                        track_sym_key(&arc, sym);
+                    } else {
                         track_key(&arc, &k);
-                        if !enumerable {
-                            track_nonenum(&arc, &k);
+                    }
+                    if !enumerable {
+                        track_nonenum(&arc, &k);
+                    }
+                    if !configurable {
+                        track_nonconfig(&arc, &k);
+                    }
+                    let mut o = arc.lock().unwrap();
+                    if let Some(g) = getter {
+                        o.properties.insert(format!("__get_{}", k), g);
+                    }
+                    if let Some(s) = setter {
+                        o.properties.insert(format!("__set_{}", k), s);
+                    }
+                    if let Some(v) = val {
+                        o.properties.remove(&format!("__get_{}", k));
+                        o.properties.remove(&format!("__set_{}", k));
+                        o.properties.insert(k.clone(), v);
+                        if matches!(writable, Some(false) | None) {
+                            install_noop_setter(&mut o, &k);
                         }
-                        arc.lock().unwrap().properties.insert(k.clone(), val);
-                        if matches!(writable, Some(false)) {
-                            let noop_idx =
-                                NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed);
-                            if noop_idx > 0 {
-                                let mut noop_obj = Object::new();
-                                noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
-                                let setter_key = format!("__set_{}", k);
-                                let mut o = arc.lock().unwrap();
-                                if !o.properties.contains_key(&setter_key) {
-                                    o.properties.insert(setter_key, noop_val);
-                                }
-                            }
+                    } else if has_get || has_set {
+                        o.properties.insert(k.clone(), Value::Undefined);
+                    } else if has_writable {
+                        o.properties.insert(k.clone(), Value::Undefined);
+                        if matches!(writable, Some(false) | None) {
+                            install_noop_setter(&mut o, &k);
                         }
                     }
                 }
@@ -912,7 +1380,7 @@ fn register_construction(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "fromEntries",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let mut obj = Object::new();
             // ECMA-262 §7.3.22: the resulting object's property order is the
             // entries' insertion order. `Object::properties` is an unordered
@@ -926,34 +1394,44 @@ fn register_construction(vm: &mut VM) {
                 }
                 obj.properties.insert(key, val);
             };
-            if let Some(Value::Object(src)) = args.first() {
-                let s = src.lock().unwrap();
-                match s.kind {
-                    ObjectKind::Array(ref pairs) => {
-                        for pair in pairs {
-                            if let Value::Object(p) = pair {
-                                let pl = p.lock().unwrap();
-                                if let ObjectKind::Array(ref kv) = pl.kind {
-                                    if kv.len() >= 2 {
-                                        put(
-                                            &mut obj,
-                                            &mut order,
-                                            key_string(&kv[0]),
-                                            kv[1].clone(),
-                                        );
-                                    }
-                                }
+            let Some(source) = args.first() else {
+                return throw_type_error(ctx, "undefined is not iterable");
+            };
+            let pairs =
+                match crate::ecma::iterator::try_materialize_iterable_values(ctx, source, false) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        ctx.throw_value(error);
+                        return Value::Undefined;
+                    }
+                };
+            for pair in pairs {
+                let Value::Object(pair_obj) = pair else {
+                    return throw_type_error(ctx, "Iterator value is not an entry object");
+                };
+                let pair_values = {
+                    let p = pair_obj.lock().unwrap();
+                    match &p.kind {
+                        ObjectKind::Array(kv) => kv.clone(),
+                        _ => {
+                            let key = p.properties.get("0").cloned();
+                            let value = p.properties.get("1").cloned();
+                            match (key, value) {
+                                (Some(k), Some(v)) => vec![k, v],
+                                _ => Vec::new(),
                             }
                         }
                     }
-                    // Map iterates as `[key, value]` pairs (§24.1.3.5).
-                    ObjectKind::Map(ref m) => {
-                        for (k, v) in m.iter() {
-                            put(&mut obj, &mut order, key_string(k), v.clone());
-                        }
-                    }
-                    _ => {}
+                };
+                if pair_values.len() < 2 {
+                    return throw_type_error(ctx, "Iterator value is not an entry object");
                 }
+                put(
+                    &mut obj,
+                    &mut order,
+                    key_string(&pair_values[0]),
+                    pair_values[1].clone(),
+                );
             }
             if !order.is_empty() {
                 obj.properties.insert(
@@ -974,86 +1452,36 @@ fn register_construction(vm: &mut VM) {
         "ecma:object",
         "assign",
         Box::new(|ctx, args| {
-            let target = match args.first() {
-                Some(t) => t.clone(),
-                None => return Value::Null,
+            let Some(raw_target) = args.first() else {
+                return throw_type_error(ctx, "Cannot convert undefined or null to object");
             };
-            if let Value::Object(t) = &target {
-                for source in args.iter().skip(1) {
-                    if let Value::Object(s) = source {
-                        let props: Vec<(String, Value, Option<Value>)> = {
-                            let src = s.lock().unwrap();
-                            match &src.kind {
-                                ObjectKind::Map(map) => map
-                                    .iter()
-                                    .filter_map(|(k, v)| match k {
-                                        Value::String(name) if !name.starts_with("__") => {
-                                            Some((name.to_string(), v.clone(), None))
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                _ => {
-                                    let mut out: Vec<(String, Value, Option<Value>)> =
-                                        ordered_own_string_keys(&src)
-                                            .into_iter()
-                                            .filter(|k| !is_nonenum(&src, k))
-                                            .filter_map(|k| {
-                                                src.properties
-                                                    .get(&k)
-                                                    .cloned()
-                                                    .map(|v| (k, v, None))
-                                            })
-                                            .collect();
-                                    if let Some(Value::Object(sym_arr)) =
-                                        src.properties.get("__sym_keys")
-                                    {
-                                        let syms = sym_arr.lock().unwrap();
-                                        if let ObjectKind::Array(ref elems) = syms.kind {
-                                            for key in elems {
-                                                let storage_key = key_string(key);
-                                                if is_nonenum(&src, &storage_key) {
-                                                    continue;
-                                                }
-                                                if let Some(value) =
-                                                    src.properties.get(&storage_key).cloned()
-                                                {
-                                                    out.push((
-                                                        storage_key,
-                                                        value,
-                                                        Some(key.clone()),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    out
-                                }
-                            }
-                        };
-                        for (k, v, sym_key) in props {
-                            // §20.1.2.1 step 4c: assign uses [[Set]] with
-                            // throw semantics — a NEW key on a
-                            // non-extensible target throws TypeError.
-                            {
-                                let tgt = t.lock().unwrap();
-                                if !tgt.properties.contains_key(&k) && is_not_extensible(&tgt) {
-                                    drop(tgt);
-                                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
-                                        "TypeError",
-                                        "Cannot add property, object is not extensible",
-                                    ));
-                                    return Value::Undefined;
-                                }
-                            }
-                            if let Some(sym) = sym_key {
-                                track_sym_key(t, sym);
-                            } else {
-                                track_key(t, &k);
-                            }
-                            let mut tgt = t.lock().unwrap();
-                            tgt.properties.insert(k, v);
-                        }
+            let Some(target) = to_object_for_object_static(
+                ctx,
+                raw_target,
+                "Cannot convert undefined or null to object",
+            ) else {
+                return Value::Undefined;
+            };
+            let Value::Object(target_obj) = &target else {
+                return target;
+            };
+
+            for source in args.iter().skip(1) {
+                if matches!(source, Value::Null | Value::Undefined) {
+                    continue;
+                }
+                let Some(source_value) =
+                    to_object_for_object_static(ctx, source, "Cannot convert source to object")
+                else {
+                    return Value::Undefined;
+                };
+                let Value::Object(source_obj) = source_value else {
+                    continue;
+                };
+                for (key, symbol_key) in enumerable_assign_keys(&source_obj) {
+                    let value = assign_source_get(ctx, &source_obj, &key);
+                    if !assign_strict_set(ctx, target_obj, &key, value, symbol_key) {
+                        return Value::Undefined;
                     }
                 }
             }
@@ -1108,23 +1536,16 @@ fn register_access(vm: &mut VM) {
                     .unwrap_or(false);
                 {
                     let o = obj.lock().unwrap();
-                    if o.properties.get(FROZEN_MARK).is_some() {
-                        drop(o);
-                        if strict {
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
-                                "TypeError",
-                                "Cannot assign to read only property of frozen object",
-                            ));
-                            return Value::Undefined;
-                        }
-                        return Value::Null;
-                    }
                     let not_extensible =
                         matches!(o.properties.get(EXTENSIBLE_MARK), Some(Value::I32(0)));
-                    if not_extensible && !o.properties.contains_key(&key) {
+                    let exists = o.properties.contains_key(&key)
+                        || o.properties.contains_key(&format!("__get_{}", key))
+                        || o.properties.contains_key(&format!("__set_{}", key));
+                    if not_extensible && !exists {
                         drop(o);
                         if strict {
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
                                 "TypeError",
                                 "Cannot add property, object is not extensible",
                             ));
@@ -1156,9 +1577,33 @@ fn register_access(vm: &mut VM) {
                 let setter = if skip_setter {
                     None
                 } else {
-                    let o = obj.lock().unwrap();
-                    o.properties.get(&setter_key).cloned()
+                    let own_setter = {
+                        let o = obj.lock().unwrap();
+                        o.properties.get(&setter_key).cloned()
+                    };
+                    own_setter.or_else(|| proto_walk_get(&obj, &setter_key))
                 };
+                let has_getter_without_setter = if setter.is_none() && !skip_setter {
+                    let getter_key = format!("__get_{}", key);
+                    let own_getter = {
+                        let o = obj.lock().unwrap();
+                        o.properties.contains_key(&getter_key)
+                    };
+                    own_getter || proto_walk_get(&obj, &getter_key).is_some()
+                } else {
+                    false
+                };
+                if has_getter_without_setter {
+                    if strict {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
+                            "TypeError",
+                            "Cannot set property which has only a getter",
+                        ));
+                        return Value::Undefined;
+                    }
+                    return Value::Null;
+                }
                 if let Some(setter_val) = setter {
                     if let Value::Object(setter_obj) = &setter_val {
                         // ECMA-262 §10.1.5 step 6.b: the setter is
@@ -1178,15 +1623,80 @@ fn register_access(vm: &mut VM) {
                                 _ => None,
                             }
                         };
-                        match setter_arity {
-                            Some(1) => {
-                                ctx.invoke(&setter_val, &[val]);
+                        let is_noop_setter = {
+                            let so = setter_obj.lock().unwrap();
+                            matches!(
+                                so.kind,
+                                vybe_bytecode::value::ObjectKind::HostFunction(idx)
+                                    if idx == NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed)
+                            )
+                        };
+                        if is_noop_setter {
+                            let accessor_setter_active = {
+                                let o = obj.lock().unwrap();
+                                o.properties.get(ACCESSOR_SETTER_ACTIVE_MARK).is_some()
+                                    || is_accessor_backing_slot_write(&o, &key)
+                            };
+                            if !accessor_setter_active && strict {
+                                ctx.throw_value(crate::ecma::error::new_error(
+                                    ctx,
+                                    "TypeError",
+                                    "Cannot assign to read only property",
+                                ));
+                                return Value::Undefined;
                             }
-                            _ => {
-                                ctx.invoke(&setter_val, &[Value::Object(obj.clone()), val]);
+                            if !accessor_setter_active {
+                                return Value::Null;
                             }
+                        } else {
+                            {
+                                let mut o = obj.lock().unwrap();
+                                o.properties
+                                    .insert(ACCESSOR_SETTER_ACTIVE_MARK.into(), Value::Bool(true));
+                            }
+                            match setter_arity {
+                                Some(1) => {
+                                    ctx.invoke(&setter_val, &[val]);
+                                }
+                                _ => {
+                                    ctx.invoke(&setter_val, &[Value::Object(obj.clone()), val]);
+                                }
+                            }
+                            obj.lock()
+                                .unwrap()
+                                .properties
+                                .remove(ACCESSOR_SETTER_ACTIVE_MARK);
+                            return Value::Null;
+                        }
+                    }
+                }
+                {
+                    let o = obj.lock().unwrap();
+                    if o.properties.get(FROZEN_MARK).is_some()
+                        && o.properties.get(ACCESSOR_SETTER_ACTIVE_MARK).is_none()
+                        && !is_accessor_backing_slot_write(&o, &key)
+                    {
+                        drop(o);
+                        if strict {
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
+                                "TypeError",
+                                "Cannot assign to read only property of frozen object",
+                            ));
+                            return Value::Undefined;
                         }
                         return Value::Null;
+                    }
+                }
+                {
+                    let mut o = obj.lock().unwrap();
+                    if let ObjectKind::Array(values) = &mut o.kind {
+                        if let Some(index) = array_index_key(&key) {
+                            if (index as usize) < values.len() {
+                                values[index as usize] = val;
+                                return Value::Null;
+                            }
+                        }
                     }
                 }
                 {
@@ -1314,36 +1824,18 @@ fn register_access(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "hasOwn",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
-            if let Some(obj) = obj_of(args, 0) {
-                let o = obj.lock().unwrap();
-                let found = match &o.kind {
-                    ObjectKind::Array(v) => {
-                        let i = key_raw.as_i32();
-                        i >= 0 && (i as usize) < v.len() && !is_array_hole(&o, i)
-                    }
-                    ObjectKind::Map(m) => {
-                        if m.contains_key(&key_raw) {
-                            true
-                        } else if let Value::String(s) = &key_raw {
-                            s.parse::<i32>()
-                                .ok()
-                                .map_or(false, |n| m.contains_key(&Value::I32(n)))
-                        } else if let Value::I32(n) = &key_raw {
-                            m.contains_key(&Value::String(Arc::from(n.to_string().as_str())))
-                        } else {
-                            false
-                        }
-                    }
-                    _ => {
-                        let key = args.get(1).map(key_string).unwrap_or_default();
-                        o.properties.contains_key(&key)
-                    }
-                };
-                return Value::Bool(found);
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            if matches!(target, Value::Null | Value::Undefined) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert undefined or null to object",
+                ));
+                return Value::Undefined;
             }
-            Value::Bool(false)
+            Value::Bool(has_own_property_key(&target, &key_raw).unwrap_or(false))
         }),
     );
 
@@ -1442,6 +1934,23 @@ fn register_access(vm: &mut VM) {
                         }
                     }
                     return Value::Bool(false);
+                }
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let idx = match &key_raw {
+                        Value::I32(n) if *n >= 0 => Some(*n as usize),
+                        Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
+                        Value::String(s) => s.parse::<usize>().ok(),
+                        _ => None,
+                    };
+                    if matches!(idx, Some(i) if i < crate::ecma::typedarray::ta_live_length(ta)) {
+                        drop(o);
+                        _ctx.throw_value(crate::ecma::error::new_error(
+                            _ctx,
+                            "TypeError",
+                            "Cannot delete typed array indexed property",
+                        ));
+                        return Value::Undefined;
+                    }
                 }
                 // Map entry delete: remove from the IndexMap backing.
                 // Polymorphism: PHP `array` stores assoc data as Map, so
@@ -1573,9 +2082,14 @@ fn register_enumeration(vm: &mut VM) {
                     }
                 }
                 tk.extend(extras);
+                sort_array_indices_first(&mut tk);
                 tk
             }
-            None => live,
+            None => {
+                let mut keys = live;
+                sort_array_indices_first(&mut keys);
+                keys
+            }
         }
     }
 
@@ -1584,7 +2098,7 @@ fn register_enumeration(vm: &mut VM) {
     /// by `Object.keys` / `Object.values` / `Object.entries` per
     /// ECMA-262 §7.3.22 (only enumerable own properties).
     fn ordinary_enumerable_keys(o: &Object) -> Vec<String> {
-        ordinary_ordered_keys(o)
+        descriptor_own_keys(o)
             .into_iter()
             .filter(|k| !is_nonenum(o, k))
             .collect()
@@ -1594,14 +2108,22 @@ fn register_enumeration(vm: &mut VM) {
         "ecma:object",
         "keys",
         Box::new(|ctx, args| {
+            let Some(raw_value) = args.first() else {
+                return throw_type_error(ctx, "Cannot convert undefined or null to object");
+            };
+            let Some(value) = to_object_for_object_static(
+                ctx,
+                raw_value,
+                "Cannot convert undefined or null to object",
+            ) else {
+                return Value::Undefined;
+            };
             // §20.1.2.17 Object.keys routes through [[OwnPropertyKeys]] —
             // for proxy exotic objects that is the ownKeys trap.
-            if let Some(value) = args.first() {
-                if let Some(keys) = crate::ecma::proxy::own_keys_dispatch(ctx, value) {
-                    return keys;
-                }
+            if let Some(keys) = crate::ecma::proxy::own_keys_dispatch(ctx, &value) {
+                return keys;
             }
-            if let Some(obj) = obj_of(args, 0) {
+            if let Value::Object(obj) = value {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
@@ -1667,6 +2189,14 @@ fn register_enumeration(vm: &mut VM) {
                                     let ks = format!("{}", k);
                                     if seen.insert(ks.clone()) {
                                         out.push(Value::String(Arc::from(ks.as_str())));
+                                    }
+                                }
+                            }
+                            ObjectKind::TypedArray(ta) => {
+                                for i in 0..crate::ecma::typedarray::ta_live_length(ta) {
+                                    let k = i.to_string();
+                                    if seen.insert(k.clone()) {
+                                        out.push(Value::String(Arc::from(k.as_str())));
                                     }
                                 }
                             }
@@ -1795,12 +2325,18 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "values",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(v.clone()))));
+                        let values: Vec<Value> = v
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| !is_array_hole(&o, *index as i32))
+                            .map(|(_, value)| value.clone())
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
                     }
                     ObjectKind::Map(m) => {
                         let vals: Vec<Value> = m.values().cloned().collect();
@@ -1815,9 +2351,11 @@ fn register_enumeration(vm: &mut VM) {
                     }
                     _ => {}
                 }
-                let values: Vec<Value> = ordinary_enumerable_keys(&o)
+                let keys = ordinary_enumerable_keys(&o);
+                drop(o);
+                let values: Vec<Value> = keys
                     .into_iter()
-                    .filter_map(|k| o.properties.get(&k).cloned())
+                    .map(|k| assign_source_get(ctx, &obj, &k))
                     .collect();
                 return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
             }
@@ -1828,7 +2366,7 @@ fn register_enumeration(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "entries",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
@@ -1867,13 +2405,14 @@ fn register_enumeration(vm: &mut VM) {
                     }
                     _ => {}
                 }
-                let entries: Vec<Value> = ordinary_enumerable_keys(&o)
+                let keys = ordinary_enumerable_keys(&o);
+                drop(o);
+                let entries: Vec<Value> = keys
                     .into_iter()
-                    .filter_map(|k| {
-                        o.properties.get(&k).map(|v| {
-                            let pair = vec![Value::String(Arc::from(k.as_str())), v.clone()];
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
-                        })
+                    .map(|k| {
+                        let v = assign_source_get(ctx, &obj, &k);
+                        let pair = vec![Value::String(Arc::from(k.as_str())), v];
+                        Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
                     })
                     .collect();
                 return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
@@ -2000,7 +2539,8 @@ fn register_descriptors(vm: &mut VM) {
                         || o.properties.contains_key(&format!("__set_{}", key));
                     if !exists && is_not_extensible(&o) {
                         drop(o);
-                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
                             "TypeError",
                             "Cannot define property, object is not extensible",
                         ));
@@ -2017,6 +2557,19 @@ fn register_descriptors(vm: &mut VM) {
                     match &descriptor {
                         Value::Object(desc) => {
                             let d = desc.lock().unwrap();
+                            let has_value = d.properties.contains_key("value");
+                            let has_writable = d.properties.contains_key("writable");
+                            let has_get = d.properties.contains_key("get");
+                            let has_set = d.properties.contains_key("set");
+                            if (has_value || has_writable) && (has_get || has_set) {
+                                drop(d);
+                                ctx.throw_value(crate::ecma::error::new_error(
+                                    ctx,
+                                    "TypeError",
+                                    "Invalid property descriptor",
+                                ));
+                                return Value::Undefined;
+                            }
                             let val = d.properties.get("value").cloned();
                             let get = d.properties.get("get").cloned().filter(|v| {
                                 matches!(v, Value::Object(o)
@@ -2050,18 +2603,59 @@ fn register_descriptors(vm: &mut VM) {
                         }
                         _ => (None, None, None, false, None, false),
                     };
-                track_key(&define_obj, &key);
+                {
+                    let mut o = define_obj.lock().unwrap();
+                    if matches!(o.kind, ObjectKind::Array(_)) && key == "length" {
+                        if let Some(v) = val_or_none.as_ref() {
+                            crate::ecma::array::apply_js_array_length(ctx, &mut o, v);
+                        }
+                        if matches!(writable, Some(false)) {
+                            o.properties
+                                .insert("__array_length_readonly".into(), Value::Bool(true));
+                        }
+                        return Value::Object(original_obj);
+                    }
+                }
+                if matches!(key_value, Value::Symbol(_)) {
+                    track_sym_key(&define_obj, key_value.clone());
+                } else {
+                    track_key(&define_obj, &key);
+                }
                 if !enumerable {
                     track_nonenum(&define_obj, &key);
                 }
                 {
                     let mut o = define_obj.lock().unwrap();
                     if o.properties.contains_key(&key) && is_nonconfig(&o, &key) {
-                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
-                            "TypeError",
-                            "Cannot redefine property",
-                        ));
-                        return Value::Null;
+                        let current_value = o.properties.get(&key).cloned();
+                        let value_changes = val_or_none
+                            .as_ref()
+                            .zip(current_value.as_ref())
+                            .is_some_and(|(next, current)| next != current);
+                        let tries_configurable = configurable;
+                        let writable_false_transition = matches!(writable, Some(false));
+                        if value_changes || tries_configurable {
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
+                                "TypeError",
+                                "Cannot redefine property",
+                            ));
+                            return Value::Null;
+                        }
+                        if writable_false_transition {
+                            let noop_idx =
+                                NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed);
+                            if noop_idx > 0 {
+                                let mut noop_obj = Object::new();
+                                noop_obj.kind = ObjectKind::HostFunction(noop_idx);
+                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                let setter_key = format!("__set_{}", key);
+                                if !o.properties.contains_key(&setter_key) {
+                                    o.properties.insert(setter_key, noop_val);
+                                }
+                            }
+                        }
+                        return Value::Object(original_obj);
                     }
                     if let Some(g) = getter {
                         o.properties.insert(format!("__get_{}", key), g);
@@ -2109,7 +2703,12 @@ fn register_descriptors(vm: &mut VM) {
                 }
                 return Value::Object(original_obj);
             }
-            Value::Null
+            ctx.throw_value(crate::ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "Object.defineProperty called on non-object",
+            ));
+            Value::Undefined
         }),
     );
 
@@ -2123,7 +2722,7 @@ fn register_descriptors(vm: &mut VM) {
                 // (ECMA-262 §20.1.2.4 step 5 — `OwnPropertyKeys` over
                 // descriptors). HashMap iter would non-deterministically
                 // shuffle on every run.
-                let entries: Vec<(String, Value, bool)> = {
+                let entries: Vec<(String, Value)> = {
                     let d = descs.lock().unwrap();
                     let order: Vec<String> =
                         if let Some(Value::Object(arr)) = d.properties.get("__keys") {
@@ -2157,32 +2756,62 @@ fn register_descriptors(vm: &mut VM) {
                             .collect()
                     };
                     keys.into_iter()
-                        .filter_map(|k| {
-                            if let Some(Value::Object(dv)) = d.properties.get(&k) {
-                                let dlock = dv.lock().unwrap();
-                                let val = dlock
-                                    .properties
-                                    .get("value")
-                                    .cloned()
-                                    .unwrap_or(Value::Undefined);
-                                let enumerable = dlock
-                                    .properties
-                                    .get("enumerable")
-                                    .map(|x| x.as_bool())
-                                    .unwrap_or(false);
-                                Some((k, val, enumerable))
-                            } else {
-                                None
-                            }
-                        })
+                        .filter_map(|k| d.properties.get(&k).cloned().map(|v| (k, v)))
                         .collect()
                 };
-                for (k, v, enumerable) in entries {
+                for (k, desc_value) in entries {
+                    let Value::Object(desc) = desc_value else {
+                        continue;
+                    };
+                    let dlock = desc.lock().unwrap();
+                    let val = dlock.properties.get("value").cloned();
+                    let getter = dlock.properties.get("get").cloned();
+                    let setter = dlock.properties.get("set").cloned();
+                    let enumerable = dlock
+                        .properties
+                        .get("enumerable")
+                        .map(|x| x.as_bool())
+                        .unwrap_or(false);
+                    let writable = dlock.properties.get("writable").map(|x| x.as_bool());
+                    let configurable = dlock
+                        .properties
+                        .get("configurable")
+                        .map(|x| x.as_bool())
+                        .unwrap_or(false);
+                    drop(dlock);
                     track_key(&target, &k);
                     if !enumerable {
                         track_nonenum(&target, &k);
                     }
-                    target.lock().unwrap().properties.insert(k, v);
+                    {
+                        let mut o = target.lock().unwrap();
+                        if let Some(g) = getter {
+                            o.properties.insert(format!("__get_{}", k), g);
+                        }
+                        if let Some(s) = setter {
+                            o.properties.insert(format!("__set_{}", k), s);
+                        }
+                        if let Some(v) = val {
+                            o.properties.remove(&format!("__get_{}", k));
+                            o.properties.remove(&format!("__set_{}", k));
+                            o.properties.insert(k.clone(), v);
+                            if matches!(writable, Some(false) | None) {
+                                let noop_idx =
+                                    NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed);
+                                if noop_idx > 0 {
+                                    let mut noop_obj = Object::new();
+                                    noop_obj.kind = ObjectKind::HostFunction(noop_idx);
+                                    let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                    o.properties.insert(format!("__set_{}", k), noop_val);
+                                }
+                            }
+                        } else if !o.properties.contains_key(&k) {
+                            o.properties.insert(k.clone(), Value::Undefined);
+                        }
+                    }
+                    if !configurable {
+                        track_nonconfig(&target, &k);
+                    }
                 }
                 return Value::Object(target);
             }
@@ -2199,6 +2828,15 @@ fn register_descriptors(vm: &mut VM) {
         "ecma:object",
         "getOwnPropertyDescriptor",
         Box::new(|ctx, args| {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            if matches!(target, Value::Null | Value::Undefined) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert undefined or null to object",
+                ));
+                return Value::Undefined;
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 // §10.5.5: proxies answer via their trap (with the
@@ -2241,7 +2879,7 @@ fn register_descriptors(vm: &mut VM) {
                             false
                         };
                         if violation {
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                            ctx.throw_value(crate::ecma::error::new_error(ctx,
                                 "TypeError",
                                 "proxy getOwnPropertyDescriptor trap violated its invariant: property is non-configurable on the target",
                             ));
@@ -2253,6 +2891,10 @@ fn register_descriptors(vm: &mut VM) {
                 }
                 return own_property_descriptor(&obj, &key);
             }
+            let key = args.get(1).map(key_string).unwrap_or_default();
+            if matches!(target, Value::String(_)) {
+                return string_length_descriptor(&target, &key);
+            }
             Value::Undefined
         }),
     );
@@ -2261,48 +2903,44 @@ fn register_descriptors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "getOwnPropertyDescriptors",
-        Box::new(|_ctx, args| {
-            let mut result = Object::new();
+        Box::new(|ctx, args| {
+            if matches!(args.first(), Some(Value::Null | Value::Undefined) | None) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert undefined or null to object",
+                ));
+                return Value::Undefined;
+            }
+            let result = Arc::new(Mutex::new(Object::new()));
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                for (k, v) in &o.properties {
-                    if k.starts_with("__") {
+                let keys = descriptor_own_keys(&o);
+                drop(o);
+                for k in keys {
+                    let desc = own_property_descriptor(&obj, &k);
+                    if matches!(desc, Value::Undefined) {
                         continue;
                     }
-                    let mut desc = Object::new();
-                    let getter_key = format!("__get_{}", k);
-                    let setter_key = format!("__set_{}", k);
-                    if o.properties.contains_key(&getter_key)
-                        || o.properties.contains_key(&setter_key)
-                    {
-                        desc.properties.insert(
-                            "get".into(),
-                            o.properties
-                                .get(&getter_key)
-                                .cloned()
-                                .unwrap_or(Value::Undefined),
-                        );
-                        desc.properties.insert(
-                            "set".into(),
-                            o.properties
-                                .get(&setter_key)
-                                .cloned()
-                                .unwrap_or(Value::Undefined),
-                        );
+                    if k.starts_with("Symbol(") {
+                        result.lock().unwrap().properties.insert(k, desc);
                     } else {
-                        desc.properties.insert("value".into(), v.clone());
-                        desc.properties.insert("writable".into(), Value::Bool(true));
+                        track_key(&result, &k);
+                        result.lock().unwrap().properties.insert(k, desc);
                     }
-                    desc.properties
-                        .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, k)));
-                    desc.properties
-                        .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, k)));
+                }
+            } else if let Some(value @ Value::String(_)) = args.first() {
+                let desc = string_length_descriptor(value, "length");
+                if !matches!(desc, Value::Undefined) {
+                    track_key(&result, "length");
                     result
+                        .lock()
+                        .unwrap()
                         .properties
-                        .insert(k.clone(), Value::Object(Arc::new(Mutex::new(desc))));
+                        .insert("length".into(), desc);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(result)))
+            Value::Object(result)
         }),
     );
 }
@@ -2312,6 +2950,32 @@ fn register_descriptors(vm: &mut VM) {
 /// their target first and pass it here.
 fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
     let o = obj.lock().unwrap();
+    if let ObjectKind::Array(values) = &o.kind {
+        if key == "length" {
+            let mut desc = Object::new();
+            desc.properties
+                .insert("value".into(), Value::I32(values.len() as i32));
+            desc.properties.insert("writable".into(), Value::Bool(true));
+            desc.properties
+                .insert("enumerable".into(), Value::Bool(false));
+            desc.properties
+                .insert("configurable".into(), Value::Bool(false));
+            return Value::Object(Arc::new(Mutex::new(desc)));
+        }
+        if let Ok(index) = key.parse::<usize>() {
+            if index < values.len() && !is_array_hole(&o, index as i32) {
+                let mut desc = Object::new();
+                desc.properties
+                    .insert("value".into(), values[index].clone());
+                desc.properties.insert("writable".into(), Value::Bool(true));
+                desc.properties
+                    .insert("enumerable".into(), Value::Bool(true));
+                desc.properties
+                    .insert("configurable".into(), Value::Bool(true));
+                return Value::Object(Arc::new(Mutex::new(desc)));
+            }
+        }
+    }
     let getter_key = format!("__get_{}", key);
     let setter_key = format!("__set_{}", key);
     // Discriminating data vs accessor in the accessor convention:
@@ -2325,9 +2989,11 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
         if let Some(v) = o.properties.get(key) {
             let mut desc = Object::new();
             desc.properties.insert("value".into(), v.clone());
+            let function_metadata =
+                matches!(o.kind, ObjectKind::Function(_)) && (key == "name" || key == "length");
             desc.properties.insert(
                 "writable".into(),
-                Value::Bool(!o.properties.contains_key(&setter_key)),
+                Value::Bool(!function_metadata && !o.properties.contains_key(&setter_key)),
             );
             desc.properties
                 .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
@@ -2361,6 +3027,124 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
     Value::Undefined
 }
 
+fn string_length_descriptor(value: &Value, key: &str) -> Value {
+    if key != "length" {
+        return Value::Undefined;
+    }
+    let Value::String(text) = value else {
+        return Value::Undefined;
+    };
+    let mut desc = Object::new();
+    desc.properties
+        .insert("value".into(), Value::I32(text.chars().count() as i32));
+    desc.properties
+        .insert("writable".into(), Value::Bool(false));
+    desc.properties
+        .insert("enumerable".into(), Value::Bool(false));
+    desc.properties
+        .insert("configurable".into(), Value::Bool(false));
+    Value::Object(Arc::new(Mutex::new(desc)))
+}
+
+fn descriptor_own_keys(o: &Object) -> Vec<String> {
+    let mut keys = Vec::new();
+    match &o.kind {
+        ObjectKind::Array(values) => {
+            for index in 0..values.len() {
+                if !is_array_hole(o, index as i32) {
+                    keys.push(index.to_string());
+                }
+            }
+            keys.push("length".to_string());
+        }
+        ObjectKind::TypedArray(ta) => {
+            for index in 0..crate::ecma::typedarray::ta_live_length(ta) {
+                keys.push(index.to_string());
+            }
+        }
+        _ => {}
+    }
+    keys.extend(ordered_own_string_keys(o));
+    for key in o.properties.keys() {
+        if let Some(name) = key.strip_prefix("__get_") {
+            keys.push(name.to_string());
+        } else if let Some(name) = key.strip_prefix("__set_") {
+            keys.push(name.to_string());
+        }
+    }
+    if let Some(Value::Object(sym_arr)) = o.properties.get("__sym_keys") {
+        let syms = sym_arr.lock().unwrap();
+        if let ObjectKind::Array(ref elems) = syms.kind {
+            for key in elems {
+                keys.push(key_string(key));
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    keys.into_iter()
+        .filter(|key| !key.starts_with("__") && seen.insert(key.clone()))
+        .collect()
+}
+
+fn is_noop_setter_value(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    let noop_idx = NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed);
+    noop_idx > 0
+        && matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(idx) if idx == noop_idx)
+}
+
+fn is_data_property_writable(o: &Object, key: &str) -> bool {
+    if o.properties.contains_key(FROZEN_MARK) {
+        return false;
+    }
+    if o.properties.contains_key(&format!("__get_{}", key)) {
+        return false;
+    }
+    match &o.kind {
+        ObjectKind::Array(values) => {
+            if key == "length" {
+                return !o.properties.contains_key("__array_length_readonly")
+                    && !o.properties.contains_key(FROZEN_MARK);
+            }
+            if let Some(index) = array_index_key(key) {
+                return (index as usize) < values.len() && !o.properties.contains_key(FROZEN_MARK);
+            }
+        }
+        ObjectKind::TypedArray(ta) => {
+            if let Some(index) = array_index_key(key) {
+                return (index as usize) < crate::ecma::typedarray::ta_live_length(ta);
+            }
+        }
+        _ => {}
+    }
+    let setter_key = format!("__set_{}", key);
+    !matches!(o.properties.get(&setter_key), Some(setter) if is_noop_setter_value(setter))
+}
+
+fn is_accessor_backing_slot_write(o: &Object, key: &str) -> bool {
+    key.starts_with('_') && o.properties.keys().any(|name| name.starts_with("__set_"))
+}
+
+fn is_effectively_sealed(o: &Object) -> bool {
+    if !is_not_extensible(o) {
+        return false;
+    }
+    descriptor_own_keys(o)
+        .into_iter()
+        .all(|key| is_nonconfig(o, &key))
+}
+
+fn is_effectively_frozen(o: &Object) -> bool {
+    if !is_effectively_sealed(o) {
+        return false;
+    }
+    descriptor_own_keys(o)
+        .into_iter()
+        .all(|key| !is_data_property_writable(o, &key))
+}
+
 // ── Prototype ─────────────────────────────────────────────────────────
 
 fn register_prototype(vm: &mut VM) {
@@ -2388,6 +3172,14 @@ fn register_prototype(vm: &mut VM) {
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let proto = args.get(1).cloned().unwrap_or(Value::Null);
+                if !matches!(proto, Value::Object(_) | Value::Null) {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "Object prototype may only be an Object or null",
+                    ));
+                    return Value::Undefined;
+                }
                 // §10.5.2: trap when present, otherwise the TARGET's
                 // [[Prototype]] changes — never the proxy shell's.
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
@@ -2397,32 +3189,72 @@ fn register_prototype(vm: &mut VM) {
                         return Value::Bool(crate::ecma::boolean::to_boolean(&result));
                     }
                     if let Value::Object(t) = &target {
-                        t.lock().unwrap().properties.insert(PROTO_KEY.into(), proto);
-                        return Value::Bool(true);
+                        let mut target_lock = t.lock().unwrap();
+                        target_lock
+                            .properties
+                            .insert(PROTO_KEY.into(), proto.clone());
+                        if matches!(proto, Value::Null) {
+                            target_lock
+                                .properties
+                                .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
+                        } else {
+                            target_lock.properties.remove(NULL_PROTO_MARK);
+                        }
+                        return Value::Object(t.clone());
                     }
                     return Value::Bool(false);
                 }
                 let mut o = obj.lock().unwrap();
+                let current_proto = if o.properties.contains_key(NULL_PROTO_MARK) {
+                    Value::Null
+                } else {
+                    o.properties
+                        .get(PROTO_KEY)
+                        .cloned()
+                        .unwrap_or_else(shared_object_prototype)
+                };
+                if let Value::Object(next_proto) = &proto {
+                    let mut current = next_proto.clone();
+                    for _ in 0..100 {
+                        if Arc::ptr_eq(&current, &obj) {
+                            drop(o);
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
+                                "TypeError",
+                                "Cyclic __proto__ value",
+                            ));
+                            return Value::Undefined;
+                        }
+                        let next = js_prototype_of(&Value::Object(current.clone()));
+                        match next {
+                            Value::Object(p) => current = p,
+                            _ => break,
+                        }
+                    }
+                }
                 // §20.1.2.22: a non-extensible target rejects prototype
                 // changes — Object.setPrototypeOf surfaces TypeError
                 // (unless the prototype is unchanged, §10.1.2.1 step 5).
                 if is_not_extensible(&o) {
-                    let unchanged = match (o.properties.get(PROTO_KEY), &proto) {
-                        (Some(cur), p) => cur == p,
-                        (None, Value::Null) => true,
-                        _ => false,
-                    };
+                    let unchanged = current_proto == proto;
                     if !unchanged {
                         drop(o);
-                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
                             "TypeError",
                             "Object is not extensible",
                         ));
                         return Value::Undefined;
                     }
                 }
-                o.properties.insert(PROTO_KEY.into(), proto);
-                return Value::Bool(true);
+                o.properties.insert(PROTO_KEY.into(), proto.clone());
+                if matches!(proto, Value::Null) {
+                    o.properties
+                        .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
+                } else {
+                    o.properties.remove(NULL_PROTO_MARK);
+                }
+                return Value::Object(obj.clone());
             }
             Value::Bool(false)
         }),
@@ -2466,7 +3298,8 @@ fn register_locking(vm: &mut VM) {
                     if let ObjectKind::TypedArray(ta) = &o.kind {
                         if crate::ecma::typedarray::ta_live_length(ta) > 0 {
                             drop(o);
-                            ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                            ctx.throw_value(crate::ecma::error::new_error(
+                                ctx,
                                 "TypeError",
                                 "Cannot freeze array buffer views with elements",
                             ));
@@ -2484,15 +3317,7 @@ fn register_locking(vm: &mut VM) {
                 // check, and would need VM-level enforcement.
                 let keys: Vec<String> = {
                     let o = obj.lock().unwrap();
-                    o.properties
-                        .keys()
-                        .filter(|k| {
-                            !k.starts_with("__")
-                                && !k.starts_with("__get_")
-                                && !k.starts_with("__set_")
-                        })
-                        .cloned()
-                        .collect()
+                    descriptor_own_keys(&o)
                 };
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(FROZEN_MARK.into(), Value::I32(1));
@@ -2503,7 +3328,10 @@ fn register_locking(vm: &mut VM) {
                     let mut noop_obj = Object::new();
                     noop_obj.kind = ObjectKind::HostFunction(noop_idx);
                     let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
-                    for k in keys {
+                    for k in &keys {
+                        if is_accessor_backing_slot_write(&o, k) {
+                            continue;
+                        }
                         let setter_key = format!("__set_{}", k);
                         if !o.properties.contains_key(&setter_key) {
                             o.properties.insert(setter_key, noop_val.clone());
@@ -2511,6 +3339,9 @@ fn register_locking(vm: &mut VM) {
                     }
                 }
                 drop(o);
+                for k in keys {
+                    track_nonconfig(&obj, &k);
+                }
                 return Value::Object(obj);
             }
             // §20.1.2.7 step 1 (ES2015+): non-object → return it unchanged.
@@ -2524,9 +3355,9 @@ fn register_locking(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                return Value::Bool(o.properties.get(FROZEN_MARK).is_some());
+                return Value::Bool(is_effectively_frozen(&o));
             }
-            Value::Bool(false)
+            Value::Bool(true)
         }),
     );
 
@@ -2535,10 +3366,18 @@ fn register_locking(vm: &mut VM) {
         "seal",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
-                let mut o = obj.lock().unwrap();
-                o.properties.insert(SEALED_MARK.into(), Value::I32(1));
-                o.properties.insert(EXTENSIBLE_MARK.into(), Value::I32(0));
-                drop(o);
+                let keys = {
+                    let o = obj.lock().unwrap();
+                    descriptor_own_keys(&o)
+                };
+                {
+                    let mut o = obj.lock().unwrap();
+                    o.properties.insert(SEALED_MARK.into(), Value::I32(1));
+                    o.properties.insert(EXTENSIBLE_MARK.into(), Value::I32(0));
+                }
+                for k in keys {
+                    track_nonconfig(&obj, &k);
+                }
                 return Value::Object(obj);
             }
             // §20.1.2.20 step 1 (ES2015+): non-object → return it unchanged.
@@ -2552,9 +3391,9 @@ fn register_locking(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                return Value::Bool(o.properties.get(SEALED_MARK).is_some());
+                return Value::Bool(is_effectively_sealed(&o));
             }
-            Value::Bool(false)
+            Value::Bool(true)
         }),
     );
 
@@ -2654,10 +3493,7 @@ fn register_comparison(vm: &mut VM) {
 /// §20.1.3: a user-defined method on the receiver (or its prototype
 /// chain) SHADOWS the Object.prototype intrinsic. Compile-time routed
 /// intrinsics call this first so overrides win.
-fn user_method_override(
-    obj: &Arc<Mutex<Object>>,
-    name: &str,
-) -> Option<Value> {
+fn user_method_override(obj: &Arc<Mutex<Object>>, name: &str) -> Option<Value> {
     let mut current = Some(obj.clone());
     let mut guard = 0;
     while let Some(cur) = current {
@@ -2691,23 +3527,9 @@ fn user_method_override(
 /// §20.1.3.2 raw intrinsic (no override dispatch) — the value installed
 /// on %Object.prototype% for borrowed-call forms.
 fn has_own_property_intrinsic(args: &[Value]) -> Value {
-    if let Some(obj) = obj_of(args, 0) {
-        let key = args.get(1).map(key_string).unwrap_or_default();
-        let o = obj.lock().unwrap();
-        if let ObjectKind::Array(ref elems) = o.kind {
-            if key == "length" {
-                return Value::Bool(true);
-            }
-            if let Ok(idx) = key.parse::<usize>() {
-                return Value::Bool(idx < elems.len());
-            }
-        }
-        if matches!(o.kind, ObjectKind::Map(_) | ObjectKind::Set(_)) && key == "size" {
-            return Value::Bool(false);
-        }
-        return Value::Bool(o.properties.contains_key(&key) && !key.starts_with("__"));
-    }
-    Value::Bool(false)
+    let target = args.first().cloned().unwrap_or(Value::Undefined);
+    let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+    Value::Bool(has_own_property_key(&target, &key).unwrap_or(false))
 }
 
 fn register_prototype_methods(vm: &mut VM) {
@@ -2721,6 +3543,14 @@ fn register_prototype_methods(vm: &mut VM) {
         "hasOwnProperty",
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if obj.lock().unwrap().properties.contains_key(NULL_PROTO_MARK) {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
+                        "TypeError",
+                        "hasOwnProperty is not a function",
+                    ));
+                    return Value::Undefined;
+                }
                 if let Some(f) = user_method_override(&obj, "hasOwnProperty") {
                     return invoke_with_explicit_this(
                         ctx,
@@ -2729,26 +3559,9 @@ fn register_prototype_methods(vm: &mut VM) {
                         args.get(1..).unwrap_or(&[]),
                     );
                 }
-                let key = args.get(1).map(key_string).unwrap_or_default();
-                let o = obj.lock().unwrap();
-                // §10.4.2 array exotics: element indices and `length` are
-                // own properties even though elements live in the kind.
-                if let ObjectKind::Array(ref elems) = o.kind {
-                    if key == "length" {
-                        return Value::Bool(true);
-                    }
-                    if let Ok(idx) = key.parse::<usize>() {
-                        return Value::Bool(idx < elems.len());
-                    }
-                }
-                // §24.1/§24.2: Map/Set expose `size` (and their methods)
-                // via the PROTOTYPE — instances have no own `size`.
-                if matches!(o.kind, ObjectKind::Map(_) | ObjectKind::Set(_)) && key == "size" {
-                    return Value::Bool(false);
-                }
-                return Value::Bool(
-                    o.properties.contains_key(&key) && !key.starts_with("__"),
-                );
+                let target = Value::Object(obj);
+                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                return Value::Bool(has_own_property_key(&target, &key).unwrap_or(false));
             }
             Value::Bool(false)
         }),
@@ -2911,37 +3724,62 @@ fn register_prototype_methods(vm: &mut VM) {
         Box::new(|ctx, args| {
             let items = args.first().cloned().unwrap_or(Value::Undefined);
             let key_fn = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let mut result = Object::new();
-            let arr_items = match &items {
-                Value::Object(obj) => {
-                    let o = obj.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind {
-                        v.clone()
-                    } else {
-                        Vec::new()
+            if !is_callable_value(&key_fn) {
+                return throw_type_error(ctx, "Object.groupBy callback is not callable");
+            }
+            let Some(arr_items) =
+                collect_groupby_items(ctx, &items, "Object.groupBy argument is not iterable")
+            else {
+                return Value::Undefined;
+            };
+            let result = Arc::new(Mutex::new(Object::new()));
+            {
+                let mut out = result.lock().unwrap();
+                out.properties.insert(PROTO_KEY.into(), Value::Null);
+            }
+            for (i, item) in arr_items.into_iter().enumerate() {
+                let key_value = if let Some(k) = groupby_magic_key(&key_fn, &item) {
+                    Value::String(Arc::from(k.as_str()))
+                } else {
+                    ctx.invoke(&key_fn, &[item.clone(), Value::I32(i as i32)])
+                };
+                let key = match key_value {
+                    Value::Symbol(_) => {
+                        return throw_type_error(
+                            ctx,
+                            "Cannot convert a Symbol value to a property key",
+                        );
+                    }
+                    other => format!("{}", other),
+                };
+                {
+                    let needs_track = {
+                        let out = result.lock().unwrap();
+                        !out.properties.contains_key(&key)
+                    };
+                    if needs_track {
+                        track_key(&result, &key);
                     }
                 }
-                _ => Vec::new(),
-            };
-            for (i, item) in arr_items.into_iter().enumerate() {
-                let key = if matches!(key_fn, Value::Null | Value::Undefined) {
-                    format!("{}", i)
-                } else if let Some(k) = groupby_magic_key(&key_fn, &item) {
-                    k
-                } else {
-                    let k = ctx.invoke(&key_fn, &[item.clone(), Value::I32(i as i32)]);
-                    format!("{}", k)
-                };
-                let group = result.properties.entry(key).or_insert_with(|| {
+                let mut out = result.lock().unwrap();
+                let group = out.properties.entry(key).or_insert_with(|| {
                     Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
                 });
                 if let Value::Object(arr) = group {
-                    if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
+                    let mut group = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut elems) = group.kind {
                         elems.push(item);
                     }
+                    let len = match &group.kind {
+                        ObjectKind::Array(v) => v.len(),
+                        _ => 0,
+                    };
+                    group
+                        .properties
+                        .insert("length".into(), Value::F64(len as f64));
                 }
             }
-            Value::Object(Arc::new(Mutex::new(result)))
+            Value::Object(result)
         }),
     );
 }

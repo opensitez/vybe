@@ -22,7 +22,6 @@
 
 use super::Compiler;
 use crate::emitter::namespaces::{self, ResolutionTarget};
-use vybe_bytecode::Op;
 
 /// Lazy platform-tree registration: every platform/language package
 /// contributes its descriptor DATA to the shared tree before a walk
@@ -30,9 +29,7 @@ use vybe_bytecode::Op;
 /// `dart.*`; `ecma.*`/`wasi.*` mount from the host FunctionRegistry
 /// inside `resolve_path` itself). Each registrar is Once-guarded.
 fn register_platform_trees() {
-    crate::platforms::dotnet::emitter::tree_register::register_namespace_tree();
-    crate::platforms::libc::emitter::tree_register::register_namespace_tree();
-    crate::platforms::plib::emitter::tree_register::register_namespace_tree();
+    crate::platforms::register_namespace_trees();
     // Language namespace trees dispatch through the registry (c/php/dart/java),
     // so no `crate::languages::<lang>` paths are hardcoded here.
     crate::ensure_languages_registered();
@@ -61,6 +58,12 @@ pub(crate) enum Resolution {
     /// walk. Enum values, static props on namespace objects, and the
     /// deliberate multi-segment detours (Task.Run -> threading routing).
     NamespaceChain { parts: Vec<String> },
+    /// A namespace-tree value leaf followed by ordinary member accesses,
+    /// e.g. `System.Environment.CurrentDirectory.Length`.
+    ResolvedPrefix {
+        target: ResolutionTarget,
+        suffix: Vec<String>,
+    },
     /// The chain head is a scope binding (local/global/class field) --
     /// ordinary instance member access (locals shadow, always). Callers
     /// keep their special intercepts (GUI Controls.Add, Thread.Join).
@@ -233,25 +236,14 @@ impl Compiler {
 }
 
 impl Compiler {
-    /// Resolve a .NET-shaped dotted chain — the dotnet platform's OLD
-    /// `resolve_dotted_name` step ordering, now living in the common
-    /// resolver over platform DATA (noop list, ctor aliases, namespace
-    /// roots, host_map, descriptor tree) and REAL compiler scope state
-    /// (the legacy `ResolutionContext` closure stubs are gone).
+    /// Resolve a dotted chain through the profile-mounted namespace tree.
     ///
-    /// Step order preserved verbatim from the legacy cascade: noop →
-    /// scope shadow → class field → user-type bail → WinForms ctor
-    /// alias → tree (full chain) → imports (direct + expansion,
-    /// ranked) → namespace roots.
-    pub(crate) fn resolve_dotnet_chain(&self, parts: &[String]) -> Option<Resolution> {
-        use crate::platforms::dotnet::emitter as dn;
-        let lower: Vec<String> = parts.iter().map(|s| s.to_lowercase()).collect();
-        let first = lower.first()?.clone();
-
-        // Step 0: no-op methods (WinForms layout) — data.
-        if lower.last().is_some_and(|l| dn::is_noop_method(l)) {
-            return Some(Resolution::NoOp);
-        }
+    /// The compiler owns only the common resolution rules: scope shadowing,
+    /// tree mounts, ambient roots, and namespace objects. Platform-specific
+    /// surface lives in `vybe_emitter::namespaces` registrations.
+    pub(crate) fn resolve_profile_namespace_chain(&self, parts: &[String]) -> Option<Resolution> {
+        let first = parts.first()?;
+        let lower: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
 
         let is_user_type = |name: &str| -> bool {
             self.defined_classes.contains(name)
@@ -261,171 +253,69 @@ impl Compiler {
                     .any(|c| c.eq_ignore_ascii_case(name))
         };
 
-        // Step 1: locals/module globals shadow namespaces — real scope
-        // state (the legacy `is_local` closures reimplemented this).
-        let head_is_local = !is_user_type(&first)
+        let head_is_local = !is_user_type(&lower[0])
             && (self.scopes.iter().any(|scope| {
                 scope
                     .locals
                     .iter()
-                    .any(|l| l.name.eq_ignore_ascii_case(&first))
-            }) || self.defined_globals.contains(&first)
+                    .any(|l| l.name.eq_ignore_ascii_case(first))
+            }) || self.defined_globals.contains(&lower[0])
                 || self
                     .defined_globals
                     .iter()
-                    .any(|g| g.eq_ignore_ascii_case(&first)));
+                    .any(|g| g.eq_ignore_ascii_case(first)));
         if head_is_local {
             return Some(Resolution::ScopedMember {
-                local: first,
+                local: lower[0].clone(),
                 members: lower[1..].to_vec(),
             });
         }
 
-        // Step 2: implicit `Me.field` — fields of the current class.
         let head_is_field = self
             .current_class
             .as_ref()
             .and_then(|cn| self.pending_classes.get(cn.as_str()))
-            .is_some_and(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(&first)));
+            .is_some_and(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(first)));
         if head_is_field && lower.len() > 1 {
             return Some(Resolution::ScopedMember {
-                local: first,
+                local: lower[0].clone(),
                 members: lower[1..].to_vec(),
             });
         }
 
-        // Step 2b: user-defined type — bail so static class dispatch
-        // handles it (never a namespace FQN).
-        if is_user_type(&first) {
+        if is_user_type(&lower[0]) {
             return None;
         }
 
-        // Step 2c: WinForms constructor aliases (`Window.Forms.X`) — data.
-        if lower.len() >= 2 {
-            let type_name = lower.last().unwrap();
-            let prefix = lower[..lower.len() - 1].join(".");
-            if (prefix.eq_ignore_ascii_case("system.windows.forms")
-                || prefix.eq_ignore_ascii_case("window.forms"))
-                && dn::lookup_component_constructor(type_name).is_some()
-            {
-                return Some(Resolution::GlobalAccess {
-                    name: type_name.clone(),
-                });
-            }
-        }
-
-        // Steps 2d/3: the chain against the descriptor tree + imports.
-        let imports = {
-            let mut v = crate::emitter::dotnet::surface().default_imports().to_vec();
-            v.extend(self.profile.namespaces.extra_imports.clone());
-            v
-        };
-        if let Some(r) = self.dotnet_via_imports(&lower, &imports) {
-            return Some(r);
-        }
-
-        // Step 4: bare chain expanded under each ambient import, ranked
-        // (callables beat namespace chains; longer imports win ties).
-        let first_is_ns_root = dn::is_namespace_root(&first);
-        let mut best: Option<(Resolution, usize, usize)> = None;
-        for import_path in &imports {
-            let mut expanded: Vec<String> = import_path.split('.').map(|p| p.to_string()).collect();
-            expanded.extend(lower.iter().cloned());
-            if let Some(r) = self.dotnet_via_imports(&expanded, &imports) {
-                if first_is_ns_root && matches!(r, Resolution::NamespaceChain { .. }) {
-                    continue;
-                }
-                let rank = match &r {
-                    Resolution::GlobalAccess { .. } => 3,
-                    Resolution::NamespaceChain { .. } => 1,
-                    _ => 2,
-                };
-                let import_parts = import_path.split('.').count();
-                let better = best
-                    .as_ref()
-                    .is_none_or(|(_, br, bp)| rank > *br || (rank == *br && import_parts > *bp));
-                if better {
-                    best = Some((r, rank, import_parts));
-                }
-            }
-        }
-        if let Some((r, _, _)) = best {
-            return Some(r);
-        }
-
-        // Steps 5/6: namespace-object chains.
-        if dn::is_namespace_root(&first) {
-            return Some(Resolution::NamespaceChain { parts: lower });
-        }
-        for import_path in &imports {
-            let mut expanded: Vec<String> = import_path.split('.').map(|p| p.to_string()).collect();
-            expanded.extend(lower.iter().cloned());
-            if dn::is_namespace_root(&expanded[0]) {
-                return Some(Resolution::NamespaceChain { parts: expanded });
-            }
-        }
-        None
-    }
-
-    /// One chain against the tree + import prefixes — the tree-backed
-    /// port of the legacy `try_resolve_via_imports_refs`, arm for arm,
-    /// including the deliberate multi-segment `NamespaceChain` detour
-    /// (Task.Run → threading routing) and the host_map fabrication tail.
-    fn dotnet_via_imports(&self, lower: &[String], imports: &[String]) -> Option<Resolution> {
-        use crate::platforms::dotnet::emitter as dn;
-        if lower.len() < 2 {
-            return None;
-        }
-        if let Some(r) = self.dotnet_tree_static(lower) {
-            return Some(r);
-        }
-        for prefix_len in (1..lower.len()).rev() {
-            let prefix = lower[..prefix_len].join(".");
-            if imports.iter().any(|i| i == &prefix) {
-                let suffix = &lower[prefix_len..];
-                if suffix.len() == 1 {
-                    let mut segs: Vec<String> = lower[..prefix_len].to_vec();
-                    segs.push(suffix[0].clone());
-                    if let Some(r) = self.dotnet_tree_static(&segs) {
-                        return Some(r);
+        let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+        if let Some(resolution) = self.resolve_namespace_path(&refs) {
+            return Some(match resolution {
+                Resolution::Tree(ResolutionTarget::NamespaceObject(path)) => {
+                    Resolution::NamespaceChain {
+                        parts: path.split('.').map(str::to_string).collect(),
                     }
                 }
-                if suffix.len() > 1 {
-                    return Some(Resolution::NamespaceChain {
-                        parts: lower.to_vec(),
-                    });
-                }
-                if dn::is_namespace_root(&suffix[0]) {
-                    return Some(Resolution::NamespaceChain {
-                        parts: lower.to_vec(),
-                    });
-                }
-                let func = suffix.join(".");
-                let module = dn::namespace_to_host_module(&prefix);
-                let mapped = dn::map_host_func(module, &func);
-                return Some(Resolution::HostImport {
-                    module: module.to_string(),
-                    func: mapped,
+                other => other,
+            });
+        }
+
+        for prefix_len in (1..parts.len()).rev() {
+            let prefix_refs: Vec<&str> = parts[..prefix_len].iter().map(String::as_str).collect();
+            let Some(Resolution::Tree(target)) = self.resolve_namespace_path(&prefix_refs) else {
+                continue;
+            };
+            if matches!(
+                target,
+                ResolutionTarget::CommonEmit(_)
+                    | ResolutionTarget::HostCall { .. }
+                    | ResolutionTarget::Const(_)
+            ) {
+                return Some(Resolution::ResolvedPrefix {
+                    target,
+                    suffix: lower[prefix_len..].to_vec(),
                 });
             }
         }
         None
-    }
-
-    /// Static member walk of the platform-registered `dotnet.*` tree.
-    fn dotnet_tree_static(&self, lower: &[String]) -> Option<Resolution> {
-        if lower.len() < 2 {
-            return None;
-        }
-        register_platform_trees();
-        let mut segs: Vec<&str> = Vec::with_capacity(lower.len() + 1);
-        segs.push("dotnet");
-        segs.extend(lower.iter().map(|s| s.as_str()));
-        match namespaces::resolve_path(&segs)? {
-            t @ (ResolutionTarget::CommonEmit(_) | ResolutionTarget::HostCall { .. }) => {
-                Some(Resolution::Tree(t))
-            }
-            _ => None,
-        }
     }
 }

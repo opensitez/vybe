@@ -60,7 +60,8 @@ pub fn register(vm: &mut VM) {
                 return match BigIntVal::parse(text) {
                     Some(n) => big(n),
                     None => {
-                        ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            ctx,
                             "SyntaxError",
                             &format!("Cannot convert {} to a BigInt", text),
                         ));
@@ -197,7 +198,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let a = to_bigint(args.first().unwrap_or(&Value::Null));
             let b = to_bigint(args.get(1).unwrap_or(&Value::Null));
-            let (b, right) = if b.is_negative() { (b.neg(), false) } else { (b, true) };
+            let (b, right) = if b.is_negative() {
+                (b.neg(), false)
+            } else {
+                (b, true)
+            };
             if !b.fits_i64() {
                 return if right {
                     big(BigIntVal::from_i64(if a.is_negative() { -1 } else { 0 }))
@@ -296,9 +301,7 @@ pub fn register(vm: &mut VM) {
                     // != is true (§7.2.13 / IsLessThan undefined).
                     let ord: Option<Ordering> = match (&a, &b) {
                         (Value::BigInt(x), Value::F64(f)) => x.cmp_f64(*f),
-                        (Value::F64(f), Value::BigInt(y)) => {
-                            y.cmp_f64(*f).map(Ordering::reverse)
-                        }
+                        (Value::F64(f), Value::BigInt(y)) => y.cmp_f64(*f).map(Ordering::reverse),
                         _ => Some(to_bigint(&a).cmp_big(&to_bigint(&b))),
                     };
                     let accept: fn(Ordering) -> bool = $accept;

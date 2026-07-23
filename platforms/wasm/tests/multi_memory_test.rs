@@ -419,30 +419,10 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
         ("i32.load16_u", 0x2F, &[0x42, 0x00], Op::I32_LOAD16_U),
         ("i64.load8_s", 0x30, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_S),
         ("i64.load8_u", 0x31, &[0x42, 0x00, 0xA7], Op::I64_LOAD8_U),
-        (
-            "i64.load16_s",
-            0x32,
-            &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD16_S,
-        ),
-        (
-            "i64.load16_u",
-            0x33,
-            &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD16_U,
-        ),
-        (
-            "i64.load32_s",
-            0x34,
-            &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD32_S,
-        ),
-        (
-            "i64.load32_u",
-            0x35,
-            &[0x42, 0x00, 0xA7],
-            Op::I64_LOAD32_U,
-        ),
+        ("i64.load16_s", 0x32, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_S),
+        ("i64.load16_u", 0x33, &[0x42, 0x00, 0xA7], Op::I64_LOAD16_U),
+        ("i64.load32_s", 0x34, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_S),
+        ("i64.load32_u", 0x35, &[0x42, 0x00, 0xA7], Op::I64_LOAD32_U),
     ];
 
     for (name, opcode, prefix, decoded_op) in load_cases {
@@ -457,18 +437,8 @@ fn all_standard_memory64_core_load_store_widths_must_not_decode_as_i32_memory() 
     }
 
     let store_cases: &[(&str, u8, &[u8], Op)] = &[
-        (
-            "i32.store",
-            0x36,
-            &[0x42, 0x00, 0x41, 0x01],
-            Op::I32_STORE,
-        ),
-        (
-            "i64.store",
-            0x37,
-            &[0x42, 0x00, 0x42, 0x01],
-            Op::I64_STORE,
-        ),
+        ("i32.store", 0x36, &[0x42, 0x00, 0x41, 0x01], Op::I32_STORE),
+        ("i64.store", 0x37, &[0x42, 0x00, 0x42, 0x01], Op::I64_STORE),
         (
             "f32.store",
             0x38,

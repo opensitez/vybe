@@ -185,7 +185,7 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_string_const(class_name, line); // [this, array, array, name]
     crate::collections::emit_push(chunks, current, line); // [this, array, len]
     chunks[current].emit_op(Op::DROP, line); // [this, array]
-                                             // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
+    // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
     chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line); // [array]
     chunks[current].emit_op(Op::DROP, line); // []
 }
@@ -203,7 +203,7 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     let (obj_s, klass_s, types_s) = (base, base + 1, base + 2);
     chunks[current].emit_op_u16(Op::LOCAL_SET, klass_s, line); // [obj]
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_s, line); // []
-                                                             // types = obj["__types"]
+    // types = obj["__types"]
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
     chunks[current].emit_string_const(reflection::FIELD_TYPES, line);
     crate::collections::emit_get(chunks, current, line);
@@ -449,7 +449,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
     }
     c.emit_end(line); // end if passed==0
-                      // i += 1
+    // i += 1
     c.emit_op_u16(Op::LOCAL_GET, i, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::I32_ADD, line);
@@ -495,7 +495,7 @@ fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
     );
 }
 
-fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
+pub fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_f64_const(fixed_count as f64, line);
     let key = chunk.add_constant(Value::String(Arc::from("__vybe_rest_fixed_arity")));

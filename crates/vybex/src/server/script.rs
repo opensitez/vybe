@@ -594,9 +594,8 @@ mod tests {
     use vybe_bytecode::{HostContext, VM, Value};
     fn compile_php(src: &str) -> Vec<vybe_bytecode::Chunk> {
         let module = vybe_language_php::parse(src).expect("parse php");
-        let profile =
-            vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
-                .expect("parse php profile");
+        let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
+            .expect("parse php profile");
         vybe_compiler::compiler::Compiler::with_profile(profile)
             .compile(&module)
             .expect("compile php")

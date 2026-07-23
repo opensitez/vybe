@@ -6,7 +6,6 @@ use super::*;
 use crate::compiler::calls::{strip_generic_suffix, terminal_type_name};
 
 impl Compiler {
-
     pub(crate) fn resolve_reflection_binding_expr(
         &self,
         expr: &Expression,
@@ -14,6 +13,16 @@ impl Compiler {
         match &expr.kind {
             ExprKind::Lit(Literal::Str(type_name)) if type_name.starts_with("System.") => {
                 Some(ReflectionBinding::Type(type_name.clone()))
+            }
+            ExprKind::TypeOf(inner) => {
+                let raw_name = match &inner.kind {
+                    ExprKind::Ident(name) => name.clone(),
+                    ExprKind::Member { .. } => self.flatten_member_chain(inner).join("."),
+                    _ => return None,
+                };
+                Some(ReflectionBinding::Type(
+                    self.reflection_runtime_type_name(&raw_name, None),
+                ))
             }
             ExprKind::Ident(name) => self.reflection_bindings.get(&self.canon(name)).cloned(),
             ExprKind::Member { object, field, .. } => {

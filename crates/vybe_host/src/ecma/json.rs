@@ -47,7 +47,8 @@ pub fn register(vm: &mut VM) {
             let parsed = match parse_json(&text) {
                 Some(parsed) => parsed,
                 None => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "SyntaxError",
                         "Unexpected token in JSON",
                     ));
@@ -91,7 +92,8 @@ pub fn register(vm: &mut VM) {
             let parsed = match parse_json(&text) {
                 Some(parsed) => parsed,
                 None => {
-                    ctx.throw_value(crate::ecma::error::new_error(ctx, 
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        ctx,
                         "SyntaxError",
                         "Unexpected token in JSON",
                     ));
@@ -237,8 +239,11 @@ fn serialize_json_value(
         Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
         // ECMA-262 §25.5.2: BigInt values must throw TypeError.
         Value::BigInt(_) => {
-            let err =
-                crate::ecma::error::new_error(ctx, "TypeError", "Do not know how to serialize a BigInt");
+            let err = crate::ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "Do not know how to serialize a BigInt",
+            );
             ctx.throw_value(err);
             return None;
         }
@@ -260,7 +265,8 @@ fn serialize_object(
 ) -> Option<String> {
     let id = Arc::as_ptr(obj) as usize;
     if !state.visited.insert(id) {
-        ctx.throw_value(crate::ecma::error::new_error(ctx, 
+        ctx.throw_value(crate::ecma::error::new_error(
+            ctx,
             "TypeError",
             "Converting circular structure to JSON",
         ));

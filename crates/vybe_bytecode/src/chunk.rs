@@ -184,6 +184,12 @@ pub struct Chunk {
     pub name: String,
     pub arity: u8,
     pub local_count: u16,
+    /// Debug metadata: `(slot, name)` for every local variable the compiler
+    /// defined in this chunk (params + block locals). Slots may repeat when
+    /// sibling blocks reuse a slot; consumers (the debugger) take the last
+    /// name per slot. Empty when the frontend emitted no debug names. Never
+    /// read during execution — inspection/eval only.
+    pub local_names: Vec<(u16, String)>,
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
@@ -307,6 +313,7 @@ impl Chunk {
             name: name.into(),
             arity: 0,
             local_count: 0,
+            local_names: Vec::new(),
             dup_slot: None,
             imports: Vec::new(),
             types: Vec::new(),

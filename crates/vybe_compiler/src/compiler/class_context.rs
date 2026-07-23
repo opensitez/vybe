@@ -124,6 +124,25 @@ impl Compiler {
             })
     }
 
+    pub(super) fn class_extends_builtin(&self, class_name: &str, builtin: &str) -> bool {
+        let mut current = Some(self.canon(class_name));
+        let target = self.canon(builtin);
+        while let Some(name) = current {
+            let Some(pc) = self.pending_classes.get(name.as_str()) else {
+                return false;
+            };
+            let Some(parent) = pc.parent.as_ref() else {
+                return false;
+            };
+            let parent_canon = self.canon(parent);
+            if parent_canon == target {
+                return true;
+            }
+            current = Some(parent_canon);
+        }
+        false
+    }
+
     /// Check if a name is a field of the current class (for implicit self resolution).
     pub(super) fn is_class_field(&self, name: &str) -> bool {
         if !self.current_class_implicit_self {

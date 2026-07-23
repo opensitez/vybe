@@ -74,7 +74,14 @@ pub fn register(vm: &mut VM) {
         "getOwnPropertyNames",
         "defineProperty",
     ] {
-        set_prop(&object, name, host_fn_ref(vm, "ecma:object", name));
+        let value = host_fn_ref(vm, "ecma:object", name);
+        if *name == "hasOwn" {
+            set_prop(&value, "length", Value::I32(2));
+        }
+        set_prop(&object, name, value);
+        if let Value::Object(object_obj) = &object {
+            crate::ecma::object::track_nonenum(object_obj, name);
+        }
     }
     set_prop(&object, "groupBy", Value::Bool(true));
     vm.globals.insert("Object".to_string(), object.clone());
@@ -317,6 +324,80 @@ pub fn register(vm: &mut VM) {
     vm.globals.insert("Array".to_string(), array.clone());
     vm.globals.insert("array".to_string(), array.clone());
 
+    for (global_name, module, methods) in [
+        (
+            "Map",
+            "ecma:map",
+            &[
+                "clear",
+                "delete",
+                "entries",
+                "forEach",
+                "get",
+                "has",
+                "keys",
+                "set",
+                "size",
+                "values",
+                "getOrInsert",
+                "getOrInsertComputed",
+            ][..],
+        ),
+        (
+            "Set",
+            "ecma:set",
+            &[
+                "add",
+                "clear",
+                "delete",
+                "difference",
+                "entries",
+                "forEach",
+                "has",
+                "intersection",
+                "isDisjointFrom",
+                "isSubsetOf",
+                "isSupersetOf",
+                "keys",
+                "size",
+                "symmetricDifference",
+                "union",
+                "values",
+            ][..],
+        ),
+    ] {
+        let ctor = host_fn_ref(vm, module, "new");
+        if !matches!(ctor, Value::Null) {
+            set_prop(&ctor, "name", Value::String(Arc::from(global_name)));
+            set_prop(
+                &ctor,
+                "__proto__",
+                crate::ecma::function::shared_function_prototype(),
+            );
+            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            set_prop(&proto, "__proto__", object_proto.clone());
+            set_constructor_once(&proto, ctor.clone());
+            if let Value::Object(p) = &proto {
+                crate::ecma::object::track_nonenum(p, "constructor");
+            }
+            for method in methods {
+                if let Some(&idx) = vm
+                    .host_registry
+                    .get(&(module.to_string(), (*method).to_string()))
+                {
+                    set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
+                    if let Value::Object(p) = &proto {
+                        crate::ecma::object::track_nonenum(p, method);
+                    }
+                }
+            }
+            set_prop(&ctor, "prototype", proto);
+            vm.globals.insert(global_name.to_string(), ctor.clone());
+            vm.globals
+                .insert(global_name.to_ascii_lowercase().to_string(), ctor);
+        }
+    }
+
     let date = host_fn_ref(vm, "ecma:date", "new");
     if !matches!(date, Value::Null) {
         set_prop(&date, "name", Value::String(Arc::from("Date")));
@@ -548,9 +629,101 @@ pub fn register(vm: &mut VM) {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
             set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
-            set_prop(&ctor, "from", host_fn_ref(vm, module, "from"));
-            set_prop(&ctor, "of", host_fn_ref(vm, module, "of"));
+            if let Some(&idx) = vm
+                .host_registry
+                .get(&(module.to_string(), "from".to_string()))
+            {
+                set_prop(&ctor, "from", receiver_host_fn_ref(module, "from", idx));
+            }
+            if let Some(&idx) = vm
+                .host_registry
+                .get(&(module.to_string(), "of".to_string()))
+            {
+                set_prop(&ctor, "of", receiver_host_fn_ref(module, "of", idx));
+            }
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
+            set_prop(&ctor, "__vybe_typed_array_ctor", Value::Bool(true));
+            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            set_prop(&proto, "__proto__", object_proto.clone());
+            for method in [
+                "at",
+                "copyWithin",
+                "entries",
+                "every",
+                "fill",
+                "filter",
+                "find",
+                "findIndex",
+                "findLast",
+                "findLastIndex",
+                "forEach",
+                "includes",
+                "indexOf",
+                "join",
+                "keys",
+                "lastIndexOf",
+                "map",
+                "reduce",
+                "reduceRight",
+                "reverse",
+                "set",
+                "slice",
+                "some",
+                "sort",
+                "subarray",
+                "toLocaleString",
+                "toReversed",
+                "toSorted",
+                "toString",
+                "values",
+                "with",
+            ] {
+                if let Some(&idx) = vm
+                    .host_registry
+                    .get(&(module.to_string(), method.to_string()))
+                {
+                    set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
+                }
+            }
+            set_constructor_once(&proto, ctor.clone());
+            if let Value::Object(p) = &proto {
+                crate::ecma::object::track_nonenum(p, "constructor");
+            }
+            set_prop(&ctor, "prototype", proto);
+            vm.globals.insert(global_name.to_string(), ctor.clone());
+            vm.globals
+                .insert(global_name.to_ascii_lowercase().to_string(), ctor);
+        }
+    }
+
+    // ── ArrayBuffer / SharedArrayBuffer / DataView constructors ─────────
+    // These are primarily emitted through known_types for `new X(...)`, but
+    // code also feature-probes `X.prototype.foo`. Provide an ordinary
+    // prototype object so missing Stage-4 methods read as `undefined` instead
+    // of throwing while accessing `.prototype`.
+    for (global_name, module) in &[
+        ("ArrayBuffer", "ecma:arraybuffer"),
+        ("SharedArrayBuffer", "ecma:sharedarraybuffer"),
+        ("DataView", "ecma:dataview"),
+    ] {
+        let ctor = host_fn_ref(vm, module, "new");
+        if !matches!(ctor, Value::Null) {
+            set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
+            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            set_prop(&proto, "__proto__", object_proto.clone());
+            for method in ["slice", "resize", "transfer", "transferToFixedLength"] {
+                if let Some(&idx) = vm
+                    .host_registry
+                    .get(&(module.to_string(), method.to_string()))
+                {
+                    set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
+                }
+            }
+            set_constructor_once(&proto, ctor.clone());
+            if let Value::Object(p) = &proto {
+                crate::ecma::object::track_nonenum(p, "constructor");
+            }
+            set_prop(&ctor, "prototype", proto);
             vm.globals.insert(global_name.to_string(), ctor);
         }
     }
@@ -634,7 +807,28 @@ pub fn register(vm: &mut VM) {
         }
     }
     // Remaining builtins (no shared-prototype singleton): per-VM global is fine.
-    for name in &["Symbol", "BigInt", "Date", "RegExp"] {
+    for name in &[
+        "Symbol",
+        "BigInt",
+        "Date",
+        "RegExp",
+        "Map",
+        "Set",
+        "ArrayBuffer",
+        "SharedArrayBuffer",
+        "DataView",
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+        "BigInt64Array",
+        "BigUint64Array",
+    ] {
         if let Some(ctor) = vm.globals.get(*name).cloned() {
             vm.globals.insert(format!("__ctor_{name}"), ctor);
         }

@@ -370,7 +370,9 @@ impl VM {
         let result_promise = Self::make_pending_promise(result_id);
         fiber.result_promise = Some(result_promise.clone());
 
-        self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+        self.event_loop
+            .borrow_mut()
+            .suspend_fiber(promise_id, fiber);
         result_promise
     }
 
