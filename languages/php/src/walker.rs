@@ -2934,103 +2934,6 @@ function php_uname($mode = 'a') {
 }
 "##;
 
-/// PHP `pack`/`unpack` (binary string ↔ values). Integer/hex/NUL codes are
-/// done with `chr`/`ord`/bitshift (byte-correct — vybe strings are byte-exact
-/// for these); the IEEE-754 float codes `f`/`d` defer to `__php_pack_float`, a
-/// PHP emitter adapter over DataView (PHP source can't reach DataView directly).
-/// Supported: C/c, n/v, N/V (endian ints), x (NUL), H/h* (hex), f/d (float).
-const PACK_PRELUDE: &str = r##"
-function __php_pack_int($v, $bytes, $le) {
-    $s = '';
-    for ($i = 0; $i < $bytes; $i++) {
-        $shift = $le ? ($i * 8) : (($bytes - 1 - $i) * 8);
-        $s .= chr(($v >> $shift) & 0xFF);
-    }
-    return $s;
-}
-function __php_pack_float($v, $bytes) {
-    // __php_float_bytes is an emitter adapter (DataView) returning a Uint8Array
-    // of the IEEE-754 encoding; read it back into a byte string.
-    $u = __php_float_bytes($v, $bytes);
-    $s = '';
-    for ($j = 0; $j < $bytes; $j++) {
-        $s .= chr($u[$j]);
-    }
-    return $s;
-}
-function pack($format, ...$args) {
-    $out = '';
-    $ai = 0;
-    $fl = strlen($format);
-    $i = 0;
-    while ($i < $fl) {
-        $code = $format[$i];
-        $i++;
-        $cnt = '';
-        while ($i < $fl && ($format[$i] === '*' || ($format[$i] >= '0' && $format[$i] <= '9'))) {
-            $cnt .= $format[$i];
-            $i++;
-        }
-        $star = $cnt === '*';
-        $repeat = ($cnt === '' || $star) ? 1 : (int)$cnt;
-        if ($code === 'x') { $out .= chr(0); continue; }
-        if ($code === 'H' || $code === 'h') { $out .= hex2bin($args[$ai++]); continue; }
-        $bytes = ($code === 'C' || $code === 'c') ? 1
-               : (($code === 'n' || $code === 'v') ? 2
-               : (($code === 'N' || $code === 'V') ? 4 : 0));
-        $le = ($code === 'v' || $code === 'V');
-        $r = $star ? (count($args) - $ai) : $repeat;
-        for ($k = 0; $k < $r; $k++) {
-            if ($code === 'f') { $out .= __php_pack_float($args[$ai++], 4); }
-            elseif ($code === 'd') { $out .= __php_pack_float($args[$ai++], 8); }
-            elseif ($bytes > 0) { $out .= __php_pack_int($args[$ai++], $bytes, $le); }
-        }
-    }
-    return $out;
-}
-function __php_unpack_int($string, $off, $bytes, $le) {
-    $v = 0;
-    for ($i = 0; $i < $bytes; $i++) {
-        $b = ord($string[$off + $i]);
-        $shift = $le ? ($i * 8) : (($bytes - 1 - $i) * 8);
-        $v = $v | ($b << $shift);
-    }
-    return $v;
-}
-function unpack($format, $string, $offset = 0) {
-    // Collect into 0-based key/value lists and array_combine at the end:
-    // assigning a 1-based integer key straight onto `[]` leaves an index-0 hole
-    // (JS-array semantics), which array_combine avoids.
-    $keys = [];
-    $vals = [];
-    $off = $offset;
-    $idx = 1;
-    $slen = strlen($string);
-    foreach (explode('/', $format) as $part) {
-        if ($part === '') continue;
-        $code = $part[0];
-        $rest = substr($part, 1);
-        $bytes = ($code === 'C' || $code === 'c') ? 1
-               : (($code === 'n' || $code === 'v') ? 2 : 4);
-        $le = ($code === 'v' || $code === 'V');
-        // `*` = all remaining elements; a leading number = repeat count (keys
-        // stay numeric); anything else = a name for a single element. Ternaries,
-        // not if/elseif — an in-function var assigned across branches reads back
-        // empty (project_php_conditional_assign_bug).
-        $repeat = ($rest === '*') ? (int)(($slen - $off) / $bytes)
-                : (is_numeric($rest) ? (int)$rest : 1);
-        $name = ($rest === '*' || $rest === '' || is_numeric($rest)) ? null : $rest;
-        for ($r = 0; $r < $repeat; $r++) {
-            $vals[] = __php_unpack_int($string, $off, $bytes, $le);
-            $keys[] = $name !== null ? $name : $idx;
-            $off += $bytes;
-            $idx++;
-        }
-    }
-    return array_combine($keys, $vals);
-}
-"##;
-
 /// PHP arrays are VALUE types: `$b = $a` copies, so a later `$b[0]=…` must not
 /// touch `$a`. In vybe a PHP array is an ObjectKind::Map (a reference handle),
 /// so a plain assignment aliases — same problem Go solves for its value-type
@@ -3107,8 +3010,6 @@ fn cached_php_prelude() -> Vec<Statement> {
             prelude.append(&mut parse_prelude(VERSION_PRELUDE));
             LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(COPY_ON_ASSIGN_PRELUDE));
             prelude.append(&mut parse_prelude(COPY_ON_ASSIGN_PRELUDE));
-            LINE_STARTS.with(|s| *s.borrow_mut() = build_line_starts(PACK_PRELUDE));
-            prelude.append(&mut parse_prelude(PACK_PRELUDE));
             LINE_STARTS.with(|s| s.borrow_mut().clear());
             prelude
         })

@@ -7,7 +7,7 @@ lua_print! {
     },
     select_picks_value_from_varargs => {
         "print(select(2, \"a\", \"b\", \"c\"))\n",
-        "b"
+        "b	c"
     },
     varargs_packed_into_table_spread => {
         "function all(...) return {...} end\nlocal t = all(4, 5)\nprint(t[1] + t[2])\n",
@@ -23,7 +23,7 @@ lua_print! {
     },
     select_returns_nth_vararg => {
         "function third(...) return select(3, ...) end\nprint(third(10, 20, 30, 40))\n",
-        "30"
+        "30	40"
     },
     select_negative_index_counts_from_end => {
         "function last(...) return select(-1, ...) end\nprint(last(1, 2, 9))\n",

@@ -622,36 +622,14 @@ fn emit_lua_pack_u16_from_slot(
     little_endian: bool,
     line: u32,
 ) {
-    let from_char_code = chunks[current].add_import("ecma:string", "fromCharCode");
-    let lo_slot = alloc_local(&mut chunks[current]);
-    let hi_slot = alloc_local(&mut chunks[current]);
-
-    lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
-    chunks[current].emit_i32_const(255, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    lset(&mut chunks[current], lo_slot, line);
-
-    lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
-    chunks[current].emit_i32_const(8, line);
-    chunks[current].emit_op(Op::I32_SHR_U, line);
-    chunks[current].emit_i32_const(255, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    lset(&mut chunks[current], hi_slot, line);
-
-    if little_endian {
-        lget(&mut chunks[current], lo_slot, line);
-        chunks[current].emit_call(from_char_code, 1, line);
-        lget(&mut chunks[current], hi_slot, line);
-        chunks[current].emit_call(from_char_code, 1, line);
+    let endian = if little_endian {
+        vybe_emitter::packing::Endian::Little
     } else {
-        lget(&mut chunks[current], hi_slot, line);
-        chunks[current].emit_call(from_char_code, 1, line);
-        lget(&mut chunks[current], lo_slot, line);
-        chunks[current].emit_call(from_char_code, 1, line);
-    }
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+        vybe_emitter::packing::Endian::Big
+    };
+    vybe_emitter::packing::emit_pack_u16_from_f64_slot(
+        chunks, current, value_slot, endian, line,
+    );
 }
 
 fn emit_lua_pack_byte_from_slot(
@@ -660,21 +638,7 @@ fn emit_lua_pack_byte_from_slot(
     value_slot: u16,
     line: u32,
 ) {
-    let from_char_code = chunks[current].add_import("ecma:string", "fromCharCode");
-    lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_op(Op::F64_LT, line);
-    chunks[current].emit_if(line);
-    lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_f64_const(256.0, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_else(line);
-    lget(&mut chunks[current], value_slot, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
-    chunks[current].emit_i32_const(255, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_call(from_char_code, 1, line);
+    vybe_emitter::packing::emit_pack_byte_from_f64_slot(chunks, current, value_slot, line);
 }
 
 fn emit_lua_pack_u32_from_slot(
@@ -684,36 +648,14 @@ fn emit_lua_pack_u32_from_slot(
     little_endian: bool,
     line: u32,
 ) {
-    let from_char_code = chunks[current].add_import("ecma:string", "fromCharCode");
-    let b0 = alloc_local(&mut chunks[current]);
-    let b1 = alloc_local(&mut chunks[current]);
-    let b2 = alloc_local(&mut chunks[current]);
-    let b3 = alloc_local(&mut chunks[current]);
-
-    for (slot, shift) in [(b0, 0), (b1, 8), (b2, 16), (b3, 24)] {
-        lget(&mut chunks[current], value_slot, line);
-        chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
-        if shift > 0 {
-            chunks[current].emit_i32_const(shift, line);
-            chunks[current].emit_op(Op::I32_SHR_U, line);
-        }
-        chunks[current].emit_i32_const(255, line);
-        chunks[current].emit_op(Op::I32_AND, line);
-        lset(&mut chunks[current], slot, line);
-    }
-
-    let order = if little_endian {
-        [b0, b1, b2, b3]
+    let endian = if little_endian {
+        vybe_emitter::packing::Endian::Little
     } else {
-        [b3, b2, b1, b0]
+        vybe_emitter::packing::Endian::Big
     };
-    lget(&mut chunks[current], order[0], line);
-    chunks[current].emit_call(from_char_code, 1, line);
-    for slot in order.iter().copied().skip(1) {
-        lget(&mut chunks[current], slot, line);
-        chunks[current].emit_call(from_char_code, 1, line);
-        vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
-    }
+    vybe_emitter::packing::emit_pack_u32_from_f64_slot(
+        chunks, current, value_slot, endian, line,
+    );
 }
 
 pub fn emit_lua_string_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -881,11 +823,9 @@ fn emit_lua_char_code_at_lua_pos(
     pos_slot: u16,
     line: u32,
 ) {
-    lget(&mut chunks[current], s_slot, line);
-    lget(&mut chunks[current], pos_slot, line);
-    chunks[current].emit_f64_const(1.0, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    vybe_emitter::packing::emit_char_code_at_one_based_pos_f64(
+        chunks, current, s_slot, pos_slot, line,
+    );
 }
 
 fn emit_lua_char_code_at_zero(
@@ -895,9 +835,7 @@ fn emit_lua_char_code_at_zero(
     index: f64,
     line: u32,
 ) {
-    lget(&mut chunks[current], s_slot, line);
-    chunks[current].emit_f64_const(index, line);
-    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    vybe_emitter::packing::emit_char_code_at_zero_f64(chunks, current, s_slot, index, line);
 }
 
 fn emit_lua_unpack_u16(
@@ -907,19 +845,14 @@ fn emit_lua_unpack_u16(
     little_endian: bool,
     line: u32,
 ) {
-    if little_endian {
-        emit_lua_char_code_at_zero(chunks, current, s_slot, 0.0, line);
-        emit_lua_char_code_at_zero(chunks, current, s_slot, 1.0, line);
-        chunks[current].emit_f64_const(256.0, line);
-        chunks[current].emit_op(Op::F64_MUL, line);
-        chunks[current].emit_op(Op::F64_ADD, line);
+    let endian = if little_endian {
+        vybe_emitter::packing::Endian::Little
     } else {
-        emit_lua_char_code_at_zero(chunks, current, s_slot, 0.0, line);
-        chunks[current].emit_f64_const(256.0, line);
-        chunks[current].emit_op(Op::F64_MUL, line);
-        emit_lua_char_code_at_zero(chunks, current, s_slot, 1.0, line);
-        chunks[current].emit_op(Op::F64_ADD, line);
-    }
+        vybe_emitter::packing::Endian::Big
+    };
+    vybe_emitter::packing::emit_unpack_u16_from_string_slot_f64(
+        chunks, current, s_slot, endian, line,
+    );
 }
 
 fn emit_lua_unpack_u32(
@@ -929,24 +862,14 @@ fn emit_lua_unpack_u32(
     little_endian: bool,
     line: u32,
 ) {
-    let order = if little_endian {
-        [0.0, 1.0, 2.0, 3.0]
+    let endian = if little_endian {
+        vybe_emitter::packing::Endian::Little
     } else {
-        [3.0, 2.0, 1.0, 0.0]
+        vybe_emitter::packing::Endian::Big
     };
-    emit_lua_char_code_at_zero(chunks, current, s_slot, order[0], line);
-    emit_lua_char_code_at_zero(chunks, current, s_slot, order[1], line);
-    chunks[current].emit_f64_const(256.0, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    emit_lua_char_code_at_zero(chunks, current, s_slot, order[2], line);
-    chunks[current].emit_f64_const(65536.0, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    emit_lua_char_code_at_zero(chunks, current, s_slot, order[3], line);
-    chunks[current].emit_f64_const(16777216.0, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
+    vybe_emitter::packing::emit_unpack_u32_from_string_slot_f64(
+        chunks, current, s_slot, endian, line,
+    );
 }
 
 pub fn emit_lua_string_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {

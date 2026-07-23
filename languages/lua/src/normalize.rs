@@ -329,27 +329,12 @@ fn is_lua_internal_multi_helper(expr: &Expression) -> bool {
 }
 
 fn is_lua_direct_identifier_call(name: &str) -> bool {
-    name.starts_with("__lua_")
-        || matches!(
-            name,
-            "print"
-                | "tonumber"
-                | "tostring"
-                | "type"
-                | "rawlen"
-                | "rawget"
-                | "rawset"
-                | "assert"
-                | "setmetatable"
-                | "getmetatable"
-                | "pairs"
-                | "ipairs"
-                | "next"
-                | "pcall"
-                | "xpcall"
-                | "error"
-                | "select"
-        )
+    // Keep ordinary identifier calls on the common AST call path. The compiler
+    // can then see calls to Lua FunctionDecls directly and use the shared
+    // multi-value tuple-return ABI instead of hiding the call behind the Lua
+    // dynamic/metamethod shim.
+    let _ = name;
+    true
 }
 
 fn lua_multi_row(value: Expression) -> Expression {
@@ -642,6 +627,33 @@ fn normalize_lua_multi_return_source(expr: &mut Expression) {
     }
 }
 
+fn normalize_lua_return_tuple(values: &mut [Expression]) {
+    let last_index = values.len().saturating_sub(1);
+    for (index, value) in values.iter_mut().enumerate() {
+        let is_last = index == last_index;
+        if matches!(&value.kind, ExprKind::Spread(inner) if matches!(inner.kind, ExprKind::Lit(Literal::Null)))
+        {
+            if is_last {
+                *value = lua_multi_row(lua_varargs());
+            } else {
+                *value = lua_first(lua_multi_row(lua_varargs()));
+            }
+            continue;
+        }
+        if is_lua_multi_return_call(value) {
+            let mut call_value = value.clone();
+            normalize_lua_multi_return_source(&mut call_value);
+            if is_last {
+                *value = lua_multi_row(call_value);
+            } else {
+                *value = lua_first(lua_as_multi_row(call_value));
+            }
+            continue;
+        }
+        normalize_expr(value);
+    }
+}
+
 fn lua_multi_index(source: Expression, index: i64) -> Expression {
     lua_multi_index_expr(source, Expression::new(ExprKind::Lit(Literal::Int(index))))
 }
@@ -863,6 +875,16 @@ fn normalize_expr(expr: &mut Expression) {
                         }
                         _ => {}
                     }
+                    if arg_index == last_arg_index
+                        && call_name_before.as_deref() != Some("error")
+                        && !arg.spread
+                        && is_lua_multi_return_call(&arg.value)
+                        && !is_lua_assert_call(&arg.value)
+                    {
+                        normalize_lua_multi_return_source(&mut arg.value);
+                        arg.spread = true;
+                        continue;
+                    }
                     normalize_expr(&mut arg.value);
                 }
                 if call_name_before.as_deref() == Some("error") {
@@ -952,7 +974,7 @@ fn normalize_expr(expr: &mut Expression) {
             let direct_callee_name = callee_name.or(call_name_before.as_deref());
             if matches!(direct_callee_name, Some("print") | Some("__lua_print")) {
                 if args.len() == 1 && args[0].spread {
-                    let row = args[0].value.clone();
+                    let row = lua_as_multi_row(args[0].value.clone());
                     expr.kind = ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Ident(
                             "__lua_print_row".to_string(),
@@ -1960,6 +1982,16 @@ fn normalize_stmt(kind: &mut StmtKind) {
                     }
                 }
             }
+            if declarations.iter().all(|decl| {
+                matches!(&decl.pattern, BindingPattern::Ident(name) if name.starts_with("__lua_"))
+            }) {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        normalize_expr(init);
+                    }
+                }
+                return;
+            }
             if declarations.len() > 1
                 && let Some(first_init) = declarations.first().and_then(|decl| decl.init.as_ref())
                 && matches!(first_init.kind, ExprKind::Call { .. })
@@ -2614,30 +2646,17 @@ fn normalize_stmt(kind: &mut StmtKind) {
             }
         }
         StmtKind::FunctionDecl {
-            name,
             params,
             body,
-            is_async,
             ..
         } => {
             rewrite_lua_current_getinfo_stmts(body, params);
             normalize_lua_stmt_sequence(body);
-            if let Some(fixed_count) = lua_lower_rest_param(params) {
-                let lambda = Expression::new(ExprKind::Lambda {
-                    params: params.clone(),
-                    body: LambdaBody::Block(std::mem::take(body)),
-                    is_async: *is_async,
-                    captures: Vec::new(),
-                });
-                *kind = StmtKind::Assign {
-                    targets: vec![lua_ident(name.clone())],
-                    value: lua_mark_rest(lambda, fixed_count),
-                };
-                normalize_stmt(kind);
-            }
         }
         StmtKind::Return(Some(expr)) => {
-            if matches!(&expr.kind, ExprKind::Spread(inner) if matches!(inner.kind, ExprKind::Lit(Literal::Null)))
+            if let ExprKind::Tuple(values) = &mut expr.kind {
+                normalize_lua_return_tuple(values);
+            } else if matches!(&expr.kind, ExprKind::Spread(inner) if matches!(inner.kind, ExprKind::Lit(Literal::Null)))
             {
                 *expr = lua_multi_row(lua_varargs());
             } else if is_lua_multi_return_call(expr) {

@@ -302,6 +302,8 @@ mt_rand             = { emit = "common:php.rand",             min_args = 0, max_
 random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
 lcg_value           = { emit = "common:php.lcg_value",        min_args = 0, max_args = 0 }
 __php_float_bytes   = { emit = "common:php.pack_float_bytes", min_args = 2, max_args = 2 }
+pack                = { emit = "common:php.pack",             min_args = 1, max_args = 255 }
+unpack              = { emit = "common:php.unpack",           min_args = 2, max_args = 3 }
 # `fmod` uses a pure-WASM emit (emit_c_fmod) that works with any numeric type.
 fmod                = { emit = "common:expressions.f64_mod", min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }

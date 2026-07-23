@@ -522,6 +522,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.pack_float_bytes" => {
             crate::emitter::numeric_adapter::emit_pack_float_bytes(chunks, current, argc, line)
         }
+        "php.pack" => crate::emitter::packing_adapter::emit_php_pack(chunks, current, argc, line),
+        "php.unpack" => {
+            crate::emitter::packing_adapter::emit_php_unpack(chunks, current, argc, line)
+        }
 
         // ── PHP ctype_* predicates ─────────────────────────────────
         // Char-iteration loops over the input string; each predicate

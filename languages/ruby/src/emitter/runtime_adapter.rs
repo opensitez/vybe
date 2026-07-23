@@ -12155,9 +12155,7 @@ fn emit_array_with_slot(chunks: &mut [Chunk], current: usize, value_s: u16, line
 }
 
 fn emit_char_code_at_slot(chunks: &mut [Chunk], current: usize, str_s: u16, idx_s: u16, line: u32) {
-    chunks[current].emit_op_u16(Op::LOCAL_GET, str_s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
-    call_import(chunks, current, "ecma:string", "charCodeAt", 2, line);
+    vybe_emitter::packing::emit_char_code_at_i32_slot(chunks, current, str_s, idx_s, line);
 }
 
 fn emit_ruby_unpack_codes(chunks: &mut [Chunk], current: usize, str_s: u16, line: u32) {
@@ -12200,9 +12198,7 @@ fn emit_ruby_unpack_single_code(
     line: u32,
 ) {
     let value_s = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, str_s, line);
-    core_wasm::i32_const(&mut chunks[current], line, idx);
-    call_import(chunks, current, "ecma:string", "charCodeAt", 2, line);
+    vybe_emitter::packing::emit_char_code_at_i32_const(chunks, current, str_s, idx, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     if signed {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
@@ -12320,29 +12316,15 @@ fn emit_ruby_unpack_string_piece(
 }
 
 fn emit_ruby_unpack_u16(chunks: &mut [Chunk], current: usize, str_s: u16, little: bool, line: u32) {
-    let a_s = chunks[current].alloc_scratch(1);
-    let b_s = chunks[current].alloc_scratch(1);
     let value_s = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, str_s, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    call_import(chunks, current, "ecma:string", "charCodeAt", 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, a_s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, str_s, line);
-    core_wasm::i32_const(&mut chunks[current], line, 1);
-    call_import(chunks, current, "ecma:string", "charCodeAt", 2, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, b_s, line);
-    if little {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
-        core_wasm::i32_const(&mut chunks[current], line, 256);
-        chunks[current].emit_op(Op::I32_MUL, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
+    let endian = if little {
+        vybe_emitter::packing::Endian::Little
     } else {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, a_s, line);
-        core_wasm::i32_const(&mut chunks[current], line, 256);
-        chunks[current].emit_op(Op::I32_MUL, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, b_s, line);
-    }
-    chunks[current].emit_op(Op::I32_ADD, line);
+        vybe_emitter::packing::Endian::Big
+    };
+    vybe_emitter::packing::emit_unpack_u16_from_string_slot_i32(
+        chunks, current, str_s, endian, line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     emit_array_with_slot(chunks, current, value_s, line);
 }
