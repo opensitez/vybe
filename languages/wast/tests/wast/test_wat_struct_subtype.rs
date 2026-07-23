@@ -66,7 +66,7 @@ wat_exec! {
   call $log
 )
 "#, "99" },
-    
+
     test_struct_subtype_func_return => { r#"
 (type $Base (struct (field i32)))
 (type $Sub (struct_subtype (field i32) (field i32) $Base))

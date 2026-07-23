@@ -1,8 +1,8 @@
 //! WASM text-format abbreviations (spec 6.4) — inline exports/imports, implicit
 //! type uses, abbreviated data/elem, and folded instruction forms all expand to
 //! the same module.
-use crate::wat_exec;
 use super::helpers::parse_ok;
+use crate::wat_exec;
 
 wat_exec! {
     test_inline_export_on_func => { r#"(module
@@ -60,5 +60,7 @@ fn multiple_inline_exports_parse() {
 }
 #[test]
 fn abbreviated_typeuse_reference() {
-    parse_ok(r#"(module (type $t (func (param i32) (result i32))) (func (type $t) (param i32) (result i32) local.get 0))"#);
+    parse_ok(
+        r#"(module (type $t (func (param i32) (result i32))) (func (type $t) (param i32) (result i32) local.get 0))"#,
+    );
 }

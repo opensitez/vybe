@@ -35,4 +35,3 @@ wat_exec! {
           i32.const 0 i32.const 0 i32.const 4 memory.copy 1 0
           i32.const 0 i32.load 1 call $log))"#, "42" },
 }
-

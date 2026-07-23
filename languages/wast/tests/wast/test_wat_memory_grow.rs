@@ -52,7 +52,7 @@ wat_exec! {
   memory.size
   call $log)
 "#, "5" },
-    
+
     test_memory_size_after_failed_grow => { r#"
 (memory 1 2)
 (func (export "_start") 

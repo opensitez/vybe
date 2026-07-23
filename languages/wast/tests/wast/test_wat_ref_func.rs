@@ -98,7 +98,7 @@ wat_exec! {
   return_call_ref $sig
 )
 "#, "30" },
-    
+
     test_return_call_ref_null => { r#"
 (type $sig (func (result i32)))
 (func (export "_start") (local $r (ref null $sig))

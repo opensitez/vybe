@@ -81,7 +81,7 @@ wat_exec! {
   call $log
 )
 "#, "2" },
-    
+
     test_string_new_lossy_utf8 => { r#"
 (memory 1)
 (data (i32.const 0) "\ff\ff") ;; invalid utf8

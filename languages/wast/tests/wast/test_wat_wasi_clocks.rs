@@ -5,9 +5,7 @@ use super::helpers::{compile_ok, parse_ok};
 
 #[test]
 fn import_monotonic_now() {
-    parse_ok(
-        r#"(module (import "wasi:clocks/monotonic-clock" "now" (func $now (result i64))))"#,
-    );
+    parse_ok(r#"(module (import "wasi:clocks/monotonic-clock" "now" (func $now (result i64))))"#);
 }
 #[test]
 fn import_monotonic_resolution() {
@@ -17,9 +15,7 @@ fn import_monotonic_resolution() {
 }
 #[test]
 fn import_wall_clock_now() {
-    parse_ok(
-        r#"(module (import "wasi:clocks/wall-clock" "now" (func $now (result i64 i32))))"#,
-    );
+    parse_ok(r#"(module (import "wasi:clocks/wall-clock" "now" (func $now (result i64 i32))))"#);
 }
 #[test]
 fn call_monotonic_now_and_drop() {

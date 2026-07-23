@@ -120,7 +120,7 @@ wat_exec! {
   call $log_i64
 )
 "#, "4607182418800017408" },
-    
+
     test_i32_trunc_sat_f32_s_pos => { r#"
 (func (export "_start")
   f32.const 3000000000.0 ;; > i32.max

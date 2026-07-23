@@ -103,7 +103,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_select_ref_null => { r#"
 (func $f1)
 (func (export "_start")

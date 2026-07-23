@@ -92,7 +92,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_global_struct_type => { r#"
 (type $S (struct (field i32)))
 (global $g (mut (ref null $S)) (ref.null $S))

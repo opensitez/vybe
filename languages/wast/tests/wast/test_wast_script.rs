@@ -375,4 +375,3 @@ fn compile_register_and_invoke() {
 "#,
     );
 }
-

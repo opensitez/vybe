@@ -80,20 +80,26 @@ fn assert_f64_division() {
 }
 #[test]
 fn assert_i32_clz() {
-    ok(r#"(module (func (export "c") (param i32) (result i32) local.get 0 i32.clz))
-          (assert_return (invoke "c" (i32.const 1)) (i32.const 31))"#);
+    ok(
+        r#"(module (func (export "c") (param i32) (result i32) local.get 0 i32.clz))
+          (assert_return (invoke "c" (i32.const 1)) (i32.const 31))"#,
+    );
 }
 #[test]
 fn assert_i32_popcnt() {
-    ok(r#"(module (func (export "p") (param i32) (result i32) local.get 0 i32.popcnt))
-          (assert_return (invoke "p" (i32.const 255)) (i32.const 8))"#);
+    ok(
+        r#"(module (func (export "p") (param i32) (result i32) local.get 0 i32.popcnt))
+          (assert_return (invoke "p" (i32.const 255)) (i32.const 8))"#,
+    );
 }
 #[test]
 fn assert_multiple_invocations_same_module() {
-    ok(r#"(module (func (export "sq") (param i32) (result i32) local.get 0 local.get 0 i32.mul))
+    ok(
+        r#"(module (func (export "sq") (param i32) (result i32) local.get 0 local.get 0 i32.mul))
           (assert_return (invoke "sq" (i32.const 3)) (i32.const 9))
           (assert_return (invoke "sq" (i32.const 5)) (i32.const 25))
-          (assert_return (invoke "sq" (i32.const 12)) (i32.const 144))"#);
+          (assert_return (invoke "sq" (i32.const 12)) (i32.const 144))"#,
+    );
 }
 #[test]
 fn wrong_wrapping_result_is_caught() {

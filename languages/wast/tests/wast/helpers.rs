@@ -35,12 +35,14 @@ pub fn parse_err(src: &str) {
 
 /// Parse + compile through the full pipeline (no VM execution).
 pub fn compile_ok(src: &str) {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_wast::register); }
-    let module = vybe_language_wast::parse(src)
-        .unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
-            .expect("Failed to parse WAST profile");
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_wast::register);
+    }
+    let module =
+        vybe_language_wast::parse(src).unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
+        .expect("Failed to parse WAST profile");
     vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
@@ -55,11 +57,10 @@ pub fn run_wast(src: &str) -> Vec<String> {
 /// instead of panicking, so trap-expecting spec tests can assert on it. Parse
 /// and compile failures still panic — those are test-setup errors, not traps.
 pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
-    let module = vybe_language_wast::parse(src)
-        .unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
-            .expect("Failed to parse WAST profile");
+    let module =
+        vybe_language_wast::parse(src).unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
+        .expect("Failed to parse WAST profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
@@ -142,7 +143,9 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
                 // keeps the original any-match behavior.
                 let raw = format!("{}", args[0]);
                 let actuals: Vec<String> = if expected.len() > 1 {
-                    raw.split(',').map(|s| norm_str(s.trim().to_string())).collect()
+                    raw.split(',')
+                        .map(|s| norm_str(s.trim().to_string()))
+                        .collect()
                 } else {
                     vec![norm(&args[0])]
                 };

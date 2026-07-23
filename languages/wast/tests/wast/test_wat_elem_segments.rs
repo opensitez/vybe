@@ -64,7 +64,7 @@ wat_exec! {
   call $log
 )
 "#, "42" }, // allows ref.func without putting it in a table
-    
+
     test_elem_drop => { r#"
 (table 5 funcref)
 (func $f1 (result i32) i32.const 42)

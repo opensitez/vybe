@@ -80,7 +80,7 @@ wat_exec! {
   call $log
 )
 "#, "42" },
-    
+
     test_drop_function_result => { r#"
 (func $f1 (result i32) i32.const 99)
 (func (export "_start")

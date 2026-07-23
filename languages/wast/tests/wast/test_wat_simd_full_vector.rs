@@ -446,7 +446,12 @@ fn i8x16_bitmask_gathers_high_bits() {
 fn f32x4_sqrt_all_lanes_with_nan() {
     f32x4_eq(
         "  v128.const f32x4 4.0 9.0 16.0 -1.0\n  f32x4.sqrt",
-        ["f32.const 2.0", "f32.const 3.0", "f32.const 4.0", "f32.const nan:canonical"],
+        [
+            "f32.const 2.0",
+            "f32.const 3.0",
+            "f32.const 4.0",
+            "f32.const nan:canonical",
+        ],
     );
 }
 
@@ -458,7 +463,12 @@ fn f32x4_min_nan_propagates_per_lane() {
          \x20 v128.const f32x4 1.0 nan 8.0 2.0\n\
          \x20 f32x4.min",
         // lane0 left-NaN, lane1 right-NaN, lane2 min(3,8)=3, lane3 min(6,2)=2
-        ["f32.const nan:canonical", "f32.const nan:canonical", "f32.const 3.0", "f32.const 2.0"],
+        [
+            "f32.const nan:canonical",
+            "f32.const nan:canonical",
+            "f32.const 3.0",
+            "f32.const 2.0",
+        ],
     );
 }
 
@@ -468,7 +478,12 @@ fn f32x4_max_nan_propagates_per_lane() {
         "  v128.const f32x4 nan 5.0 3.0 7.0\n\
          \x20 v128.const f32x4 1.0 nan 8.0 2.0\n\
          \x20 f32x4.max",
-        ["f32.const nan:canonical", "f32.const nan:canonical", "f32.const 8.0", "f32.const 7.0"],
+        [
+            "f32.const nan:canonical",
+            "f32.const nan:canonical",
+            "f32.const 8.0",
+            "f32.const 7.0",
+        ],
     );
 }
 
@@ -481,7 +496,12 @@ fn f32x4_pmin_returns_first_on_nan() {
          \x20 v128.const f32x4 8.0 3.0 2.0 nan\n\
          \x20 f32x4.pmin",
         // lane0 8<3?no→3, lane1 3<8?yes→3, lane2 2<nan?no→nan(a), lane3 nan<5?no→5(a)
-        ["f32.const 3.0", "f32.const 3.0", "f32.const nan:canonical", "f32.const 5.0"],
+        [
+            "f32.const 3.0",
+            "f32.const 3.0",
+            "f32.const nan:canonical",
+            "f32.const 5.0",
+        ],
     );
 }
 
@@ -490,7 +510,12 @@ fn f32x4_pmin_returns_first_on_nan() {
 fn f32x4_ceil_all_lanes() {
     f32x4_eq(
         "  v128.const f32x4 1.1 -1.1 2.9 -2.9\n  f32x4.ceil",
-        ["f32.const 2.0", "f32.const -1.0", "f32.const 3.0", "f32.const -2.0"],
+        [
+            "f32.const 2.0",
+            "f32.const -1.0",
+            "f32.const 3.0",
+            "f32.const -2.0",
+        ],
     );
 }
 
@@ -498,7 +523,12 @@ fn f32x4_ceil_all_lanes() {
 fn f32x4_floor_all_lanes() {
     f32x4_eq(
         "  v128.const f32x4 1.1 -1.1 2.9 -2.9\n  f32x4.floor",
-        ["f32.const 1.0", "f32.const -2.0", "f32.const 2.0", "f32.const -3.0"],
+        [
+            "f32.const 1.0",
+            "f32.const -2.0",
+            "f32.const 2.0",
+            "f32.const -3.0",
+        ],
     );
 }
 
@@ -506,7 +536,12 @@ fn f32x4_floor_all_lanes() {
 fn f32x4_trunc_all_lanes() {
     f32x4_eq(
         "  v128.const f32x4 1.9 -1.9 2.1 -2.1\n  f32x4.trunc",
-        ["f32.const 1.0", "f32.const -1.0", "f32.const 2.0", "f32.const -2.0"],
+        [
+            "f32.const 1.0",
+            "f32.const -1.0",
+            "f32.const 2.0",
+            "f32.const -2.0",
+        ],
     );
 }
 
@@ -515,7 +550,12 @@ fn f32x4_trunc_all_lanes() {
 fn f32x4_nearest_ties_to_even() {
     f32x4_eq(
         "  v128.const f32x4 0.5 1.5 2.5 3.5\n  f32x4.nearest",
-        ["f32.const 0.0", "f32.const 2.0", "f32.const 2.0", "f32.const 4.0"],
+        [
+            "f32.const 0.0",
+            "f32.const 2.0",
+            "f32.const 2.0",
+            "f32.const 4.0",
+        ],
     );
 }
 
@@ -524,7 +564,12 @@ fn f32x4_nearest_ties_to_even() {
 fn f32x4_abs_all_lanes() {
     f32x4_eq(
         "  v128.const f32x4 -1.5 2.5 -3.5 0.0\n  f32x4.abs",
-        ["f32.const 1.5", "f32.const 2.5", "f32.const 3.5", "f32.const 0.0"],
+        [
+            "f32.const 1.5",
+            "f32.const 2.5",
+            "f32.const 3.5",
+            "f32.const 0.0",
+        ],
     );
 }
 
@@ -532,7 +577,12 @@ fn f32x4_abs_all_lanes() {
 fn f32x4_neg_all_lanes() {
     f32x4_eq(
         "  v128.const f32x4 1.5 -2.5 3.5 -4.5\n  f32x4.neg",
-        ["f32.const -1.5", "f32.const 2.5", "f32.const -3.5", "f32.const 4.5"],
+        [
+            "f32.const -1.5",
+            "f32.const 2.5",
+            "f32.const -3.5",
+            "f32.const 4.5",
+        ],
     );
 }
 
@@ -542,7 +592,12 @@ fn f32x4_div_all_lanes() {
         "  v128.const f32x4 10.0 9.0 8.0 7.0\n\
          \x20 v128.const f32x4 2.0 3.0 4.0 7.0\n\
          \x20 f32x4.div",
-        ["f32.const 5.0", "f32.const 3.0", "f32.const 2.0", "f32.const 1.0"],
+        [
+            "f32.const 5.0",
+            "f32.const 3.0",
+            "f32.const 2.0",
+            "f32.const 1.0",
+        ],
     );
 }
 
@@ -551,7 +606,12 @@ fn f32x4_div_all_lanes() {
 fn f32x4_convert_i32x4_s_all_lanes() {
     f32x4_eq(
         "  v128.const i32x4 -5 0 100 1000\n  f32x4.convert_i32x4_s",
-        ["f32.const -5.0", "f32.const 0.0", "f32.const 100.0", "f32.const 1000.0"],
+        [
+            "f32.const -5.0",
+            "f32.const 0.0",
+            "f32.const 100.0",
+            "f32.const 1000.0",
+        ],
     );
 }
 

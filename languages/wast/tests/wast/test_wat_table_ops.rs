@@ -148,7 +148,7 @@ wat_exec! {
   call $log
 )
 "#, "0" },
-    
+
     test_table_init => { r#"
 (table 5 funcref)
 (func $f1)
